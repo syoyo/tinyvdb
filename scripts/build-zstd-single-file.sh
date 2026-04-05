@@ -16,8 +16,9 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TMP_DIR="$ROOT_DIR/tmp"
 DEPS_DIR="$ROOT_DIR/deps"
 ZSTD_REPO="https://github.com/facebook/zstd.git"
+ZSTD_TAG="v1.5.7"  # Latest stable release
 
-echo "=== Building single-file zstd ==="
+echo "=== Building single-file zstd ($ZSTD_TAG) ==="
 
 # Clone zstd to tmp/
 mkdir -p "$TMP_DIR"
@@ -26,8 +27,8 @@ if [ -d "$TMP_DIR/zstd" ]; then
     rm -rf "$TMP_DIR/zstd"
 fi
 
-echo "Cloning $ZSTD_REPO ..."
-git clone --depth 1 "$ZSTD_REPO" "$TMP_DIR/zstd"
+echo "Cloning $ZSTD_REPO ($ZSTD_TAG) ..."
+git clone --depth 1 --branch "$ZSTD_TAG" "$ZSTD_REPO" "$TMP_DIR/zstd"
 
 # Print version
 ZSTD_VERSION=$(grep -oP 'ZSTD_VERSION_MAJOR\s+\K\d+' "$TMP_DIR/zstd/lib/zstd.h").$(grep -oP 'ZSTD_VERSION_MINOR\s+\K\d+' "$TMP_DIR/zstd/lib/zstd.h").$(grep -oP 'ZSTD_VERSION_RELEASE\s+\K\d+' "$TMP_DIR/zstd/lib/zstd.h")
@@ -47,6 +48,9 @@ python3 combine.py \
 mkdir -p "$DEPS_DIR"
 cp "$TMP_DIR/zstd/build/single_file_libs/zstd.c" "$DEPS_DIR/zstd.c"
 cp "$TMP_DIR/zstd/lib/zstd.h" "$DEPS_DIR/zstd.h"
+
+# Fix include path: zstd.c references "../zstd.h" but both files live in deps/
+sed -i 's|#include "../zstd.h"|#include "zstd.h"|g' "$DEPS_DIR/zstd.c"
 
 echo ""
 echo "=== Done ==="

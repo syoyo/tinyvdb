@@ -470,6 +470,10 @@ tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
 /* LZ4 for BLOSC frame decompression/compression */
 #include "lz4.h"
 
+#if defined(TVDB_USE_ZSTD)
+#  include <zstd.h>
+#endif
+
 /* ========================================================================== */
 /*  VDB file format constants                                                 */
 /* ========================================================================== */
@@ -1617,8 +1621,12 @@ static int tvdb__decompress_blosc(uint8_t *dst, size_t dst_cap,
     }
 
     /* Validate compressor */
-    if (compformat != 1 && compformat != 3) {
-        /* Only LZ4 (1) and ZLIB (3) supported */
+    /* Validate compressor: LZ4(1), ZLIB(3), ZSTD(4) */
+    if (compformat != 1 && compformat != 3
+#if defined(TVDB_USE_ZSTD)
+        && compformat != 4
+#endif
+    ) {
         return 0;
     }
 
@@ -1684,6 +1692,16 @@ static int tvdb__decompress_blosc(uint8_t *dst, size_t dst_cap,
                                           (size_t)split_cbytes))
                     goto fail;
             }
+#if defined(TVDB_USE_ZSTD)
+            else if (compformat == 4) {
+                /* ZSTD */
+                size_t dec = ZSTD_decompress(
+                    split_dst, (size_t)neblock,
+                    src + block_offset, (size_t)split_cbytes);
+                if (ZSTD_isError(dec) || dec != (size_t)neblock)
+                    goto fail;
+            }
+#endif
             block_offset += split_cbytes;
         }
 
