@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  #  Linux x64
+  # ---------------------------------------------------------------------------
+  linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j$(nproc)
+      - name: Verify binaries
+        run: |
+          ./build/vdbdump --help || true
+          ./build/vdbrender --help || true
+
+  # ---------------------------------------------------------------------------
+  #  Linux arm64 (cross-compile)
+  # ---------------------------------------------------------------------------
+  linux-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: Configure
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64
+      - name: Build
+        run: cmake --build build -j$(nproc)
+      - name: Verify binaries exist
+        run: file build/vdbdump build/vdbrender
+
+  # ---------------------------------------------------------------------------
+  #  macOS arm64
+  # ---------------------------------------------------------------------------
+  macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build -j$(sysctl -n hw.ncpu)
+      - name: Verify binaries
+        run: |
+          ./build/vdbdump --help || true
+          ./build/vdbrender --help || true
+
+  # ---------------------------------------------------------------------------
+  #  Windows x64 (MSVC)
+  # ---------------------------------------------------------------------------
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure
+        run: cmake -B build -A x64
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Verify binaries
+        run: |
+          dir build\Release\*.exe
+
+  # ---------------------------------------------------------------------------
+  #  Windows arm64 (MSVC cross-compile)
+  # ---------------------------------------------------------------------------
+  windows-arm64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure
+        run: cmake -B build -A ARM64
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Verify binaries
+        run: |
+          dir build\Release\*.exe
