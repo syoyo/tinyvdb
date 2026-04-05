@@ -21,9 +21,10 @@
  *   #include "tinyvdbio.h"
  *
  * Compile flags:
- *   TVDB_USE_BLOSC        — Enable BLOSC compression (link c-blosc2)
  *   TVDB_USE_SYSTEM_ZLIB  — Use system zlib instead of bundled miniz
  *   TVDB_NO_MMAP          — Disable mmap, always read into heap buffer
+ *
+ * BLOSC compression (LZ4) is always available — no external dependency needed.
  */
 #ifndef TINYVDBIO_H_
 #define TINYVDBIO_H_
@@ -466,9 +467,8 @@ tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
 #  include <zlib.h>
 #endif
 
-#if defined(TVDB_USE_BLOSC)
-#  include <blosc2.h>
-#endif
+/* LZ4 for BLOSC frame decompression/compression */
+#include "lz4.h"
 
 /* ========================================================================== */
 /*  VDB file format constants                                                 */
@@ -1536,19 +1536,257 @@ static int tvdb__decompress_zip(uint8_t *dst, size_t *uncompressed_size,
     return 1;
 }
 
-#if defined(TVDB_USE_BLOSC)
-static int tvdb__decompress_blosc(uint8_t *dst, size_t uncompressed_size,
-                                  const uint8_t *src, size_t src_size) {
-    if (uncompressed_size == src_size) {
-        memcpy(dst, src, src_size);
+/* ========================================================================== */
+/*  Inline BLOSC frame decode/encode (no external blosc dependency)           */
+/* ========================================================================== */
+
+static int32_t tvdb__blosc_le32(const uint8_t *p) {
+    return (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                     ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24));
+}
+
+static void tvdb__blosc_put_le32(uint8_t *p, int32_t v) {
+    uint32_t u = (uint32_t)v;
+    p[0] = (uint8_t)(u);        p[1] = (uint8_t)(u >> 8);
+    p[2] = (uint8_t)(u >> 16);  p[3] = (uint8_t)(u >> 24);
+}
+
+static void tvdb__blosc_unshuffle(size_t type_size, size_t block_size,
+                                  const uint8_t *src, uint8_t *dst) {
+    size_t neblock = block_size / type_size;
+    size_t leftover = block_size % type_size;
+    for (size_t i = 0; i < neblock; i++)
+        for (size_t j = 0; j < type_size; j++)
+            dst[i * type_size + j] = src[j * neblock + i];
+    if (leftover)
+        memcpy(dst + neblock * type_size,
+               src + neblock * type_size, leftover);
+}
+
+static void tvdb__blosc_shuffle(size_t type_size, size_t block_size,
+                                const uint8_t *src, uint8_t *dst) {
+    size_t neblock = block_size / type_size;
+    size_t leftover = block_size % type_size;
+    for (size_t j = 0; j < type_size; j++)
+        for (size_t i = 0; i < neblock; i++)
+            dst[j * neblock + i] = src[i * type_size + j];
+    if (leftover)
+        memcpy(dst + neblock * type_size,
+               src + neblock * type_size, leftover);
+}
+
+/* Decompress a complete BLOSC frame. Supports blosc1 (v2) and blosc2 (v5+)
+   headers, LZ4 and ZLIB compressors, byte-shuffle, split and non-split modes.
+   Returns 1 on success, 0 on failure. */
+static int tvdb__decompress_blosc(uint8_t *dst, size_t dst_cap,
+                                  const uint8_t *src, size_t src_size,
+                                  tvdb_allocator_t *alloc) {
+    if (src_size < 16) return 0;
+
+    /* Parse header */
+    uint8_t version   = src[0];
+    uint8_t flags     = src[2];
+    uint8_t typesize  = src[3];
+    int32_t nbytes    = tvdb__blosc_le32(src + 4);
+    int32_t blocksize = tvdb__blosc_le32(src + 8);
+    int32_t cbytes    = tvdb__blosc_le32(src + 12);
+
+    if (nbytes < 0 || blocksize <= 0 || cbytes < 16) return 0;
+    if ((size_t)nbytes > dst_cap) return 0;
+    if ((size_t)cbytes > src_size) return 0;
+    if (typesize == 0) typesize = 1;
+
+    int do_shuffle = (flags & 0x01) && (typesize > 1);
+    int memcpyed   = (flags & 0x02);
+    int do_bitshuffle = (flags & 0x04);
+    int dont_split = (flags >> 4) & 1;
+    int compformat = (flags >> 5) & 7;
+
+    /* Determine header length */
+    int header_len = (version >= 5) ? 32 : 16;
+    if ((size_t)header_len > src_size) return 0;
+
+    /* Bitshuffle not supported in minimal implementation */
+    if (do_bitshuffle) return 0;
+
+    /* Memcpy (uncompressed) frame */
+    if (memcpyed) {
+        if ((size_t)(header_len + nbytes) > src_size) return 0;
+        memcpy(dst, src + header_len, (size_t)nbytes);
         return 1;
     }
-    /* blosc2's blosc1-compat API: reads blosc1-format frames used by OpenVDB */
-    int n = blosc1_decompress(src, dst, uncompressed_size);
-    if (n < 0) return 0;
-    return (size_t)n == uncompressed_size;
+
+    /* Validate compressor */
+    if (compformat != 1 && compformat != 3) {
+        /* Only LZ4 (1) and ZLIB (3) supported */
+        return 0;
+    }
+
+    int nblocks = (nbytes + blocksize - 1) / blocksize;
+    const uint8_t *bstarts = src + header_len;
+
+    /* Validate block offsets fit in src */
+    if ((size_t)(header_len + nblocks * 4) > src_size) return 0;
+
+    /* Temp buffer for unshuffle */
+    uint8_t *tmp = NULL;
+    if (do_shuffle) {
+        tmp = (uint8_t *)tvdb__alloc(alloc, (size_t)blocksize);
+        if (!tmp) return 0;
+    }
+
+    int32_t bytes_written = 0;
+    for (int j = 0; j < nblocks; j++) {
+        int32_t bsize = blocksize;
+        if (j == nblocks - 1 && (nbytes % blocksize) != 0)
+            bsize = nbytes % blocksize;
+
+        int32_t block_offset = tvdb__blosc_le32(bstarts + j * 4);
+        if (block_offset < 0 || (size_t)block_offset >= src_size) goto fail;
+
+        /* Determine splits */
+        int nsplits;
+        if (!dont_split && typesize > 1 && typesize <= 16 &&
+            (bsize / typesize) >= 1) {
+            nsplits = typesize;
+        } else {
+            nsplits = 1;
+        }
+        int neblock = bsize / nsplits;
+
+        uint8_t *block_dst = do_shuffle ? tmp : (dst + (size_t)j * blocksize);
+
+        for (int k = 0; k < nsplits; k++) {
+            if ((size_t)(block_offset + 4) > src_size) goto fail;
+            int32_t split_cbytes = tvdb__blosc_le32(src + block_offset);
+            block_offset += 4;
+
+            if (split_cbytes < 0 || (size_t)(block_offset + split_cbytes) > src_size)
+                goto fail;
+
+            uint8_t *split_dst = block_dst + k * neblock;
+
+            if (split_cbytes == neblock) {
+                /* Stored uncompressed */
+                memcpy(split_dst, src + block_offset, (size_t)neblock);
+            } else if (compformat == 1) {
+                /* LZ4 */
+                int dec = LZ4_decompress_safe(
+                    (const char *)(src + block_offset),
+                    (char *)split_dst,
+                    split_cbytes, neblock);
+                if (dec < 0 || dec != neblock) goto fail;
+            } else if (compformat == 3) {
+                /* ZLIB via miniz */
+                size_t usz = (size_t)neblock;
+                if (!tvdb__decompress_zip(split_dst, &usz,
+                                          src + block_offset,
+                                          (size_t)split_cbytes))
+                    goto fail;
+            }
+            block_offset += split_cbytes;
+        }
+
+        if (do_shuffle) {
+            tvdb__blosc_unshuffle((size_t)typesize, (size_t)bsize,
+                                 tmp, dst + (size_t)j * blocksize);
+        }
+        bytes_written += bsize;
+    }
+
+    if (tmp) tvdb__free(alloc, tmp, (size_t)blocksize);
+    return bytes_written == nbytes ? 1 : 0;
+
+fail:
+    if (tmp) tvdb__free(alloc, tmp, (size_t)blocksize);
+    return 0;
 }
-#endif
+
+/* Compress data into a BLOSC1 frame using LZ4 + byte-shuffle.
+   Returns total compressed size (including header), 0 if compression
+   didn't help (caller should store uncompressed), or -1 on error. */
+static int tvdb__compress_blosc(const uint8_t *src, size_t src_size,
+                                uint8_t *dst, size_t dst_cap,
+                                size_t typesize, int clevel,
+                                tvdb_allocator_t *alloc) {
+    if (src_size == 0) return 0;
+    if (typesize == 0) typesize = 1;
+    if (clevel < 1) clevel = 1;
+    if (clevel > 9) clevel = 9;
+
+    int32_t blocksize = (int32_t)src_size; /* single block for simplicity */
+    int nblocks = 1;
+    int do_shuffle = (typesize > 1) ? 1 : 0;
+
+    /* Header(16) + block_offsets(nblocks*4) + compressed data */
+    size_t overhead = 16 + (size_t)nblocks * 4;
+    if (dst_cap < overhead + 4) return -1;
+
+    /* Write header */
+    dst[0] = 2;  /* blosc1 format version */
+    dst[1] = 1;  /* LZ4 format version */
+    /* flags: shuffle(bit0) | dont_split(bit4) | LZ4(bits5-7=1) */
+    dst[2] = (uint8_t)((do_shuffle ? 0x01 : 0x00) | 0x10 | (1 << 5));
+    dst[3] = (uint8_t)(typesize > 255 ? 255 : typesize);
+    tvdb__blosc_put_le32(dst + 4,  (int32_t)src_size);
+    tvdb__blosc_put_le32(dst + 8,  blocksize);
+    /* cbytes placeholder at dst+12, filled at end */
+
+    size_t out_pos = overhead;
+
+    /* Temp buffer for shuffle */
+    uint8_t *shuffled = NULL;
+    if (do_shuffle) {
+        shuffled = (uint8_t *)tvdb__alloc(alloc, src_size);
+        if (!shuffled) return -1;
+    }
+
+    for (int j = 0; j < nblocks; j++) {
+        size_t bsize = (j == nblocks - 1 && (src_size % (size_t)blocksize) != 0)
+                           ? (src_size % (size_t)blocksize)
+                           : (size_t)blocksize;
+
+        /* Record block offset */
+        tvdb__blosc_put_le32(dst + 16 + j * 4, (int32_t)out_pos);
+
+        const uint8_t *block_src = src + (size_t)j * blocksize;
+        if (do_shuffle) {
+            tvdb__blosc_shuffle(typesize, bsize, block_src, shuffled);
+            block_src = shuffled;
+        }
+
+        /* Compress with LZ4 (dont_split=1: single stream per block) */
+        int max_out = (int)(dst_cap - out_pos - 4);
+        if (max_out < 1) { if (shuffled) tvdb__free(alloc, shuffled, src_size); return -1; }
+
+        int acceleration = 10 - clevel; /* higher clevel = lower accel = better ratio */
+        if (acceleration < 1) acceleration = 1;
+
+        int csize = LZ4_compress_fast(
+            (const char *)block_src, (char *)(dst + out_pos + 4),
+            (int)bsize, max_out, acceleration);
+
+        if (csize <= 0 || (size_t)csize >= bsize) {
+            /* Compression didn't help — store uncompressed */
+            if (out_pos + 4 + bsize > dst_cap) {
+                if (shuffled) tvdb__free(alloc, shuffled, src_size);
+                return -1;
+            }
+            tvdb__blosc_put_le32(dst + out_pos, (int32_t)bsize);
+            memcpy(dst + out_pos + 4, block_src, bsize);
+            out_pos += 4 + bsize;
+        } else {
+            tvdb__blosc_put_le32(dst + out_pos, (int32_t)csize);
+            out_pos += 4 + (size_t)csize;
+        }
+    }
+
+    if (shuffled) tvdb__free(alloc, shuffled, src_size);
+
+    /* Backpatch cbytes */
+    tvdb__blosc_put_le32(dst + 12, (int32_t)out_pos);
+    return (int)out_pos;
+}
 
 /* Read compressed data from stream, decompress into dst_data.
    dst_data must be pre-allocated to element_size * count bytes.
@@ -1560,7 +1798,6 @@ static tvdb_status_t tvdb__read_and_decompress(
     size_t total_size = element_size * count;
 
     if (compression_mask & TVDB_COMPRESS_BLOSC) {
-#if defined(TVDB_USE_BLOSC)
         int64_t num_compressed;
         if (!tvdb__sr_read_i64(sr, &num_compressed)) {
             tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
@@ -1568,7 +1805,6 @@ static tvdb_status_t tvdb__read_and_decompress(
             return TVDB_ERROR_INVALID_DATA;
         }
         if (num_compressed <= 0) {
-            /* Uncompressed data */
             if (dst_data)
                 tvdb__sr_read(sr, total_size, dst_data);
             else
@@ -1588,7 +1824,7 @@ static tvdb_status_t tvdb__read_and_decompress(
             }
             if (dst_data) {
                 if (!tvdb__decompress_blosc(dst_data, total_size, tmp,
-                                            (size_t)num_compressed)) {
+                                            (size_t)num_compressed, alloc)) {
                     tvdb__free(alloc, tmp, (size_t)num_compressed);
                     tvdb__set_error(err, TVDB_ERROR_DECOMPRESSION_FAILED,
                                     "BLOSC decompression failed");
@@ -1597,11 +1833,6 @@ static tvdb_status_t tvdb__read_and_decompress(
             }
             tvdb__free(alloc, tmp, (size_t)num_compressed);
         }
-#else
-        tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_COMPRESSION,
-                        "BLOSC not enabled (compile with TVDB_USE_BLOSC)");
-        return TVDB_ERROR_UNSUPPORTED_COMPRESSION;
-#endif
     } else if (compression_mask & TVDB_COMPRESS_ZIP) {
         int64_t num_zipped;
         if (!tvdb__sr_read_i64(sr, &num_zipped)) {
@@ -2744,25 +2975,23 @@ static tvdb_status_t tvdb__compress_and_write(
     }
 
     if (compression_mask & TVDB_COMPRESS_BLOSC) {
-#if defined(TVDB_USE_BLOSC)
         if (total_size == 0) {
-            tvdb__sw_write_i64(sw, -1); /* signal: no data */
+            tvdb__sw_write_i64(sw, -1);
             if (swapped) tvdb__free(alloc, swapped, total_size);
             return TVDB_OK;
         }
-        /* blosc needs dest buffer; worst case is slightly larger than src */
-        size_t dest_cap = total_size + BLOSC2_MAX_OVERHEAD;
+        /* BLOSC overhead: 16-byte header + nblocks*4 offsets + LZ4 expansion */
+        size_t dest_cap = (size_t)LZ4_compressBound((int)total_size) + 16 + 256;
         uint8_t *dest = (uint8_t *)tvdb__alloc(alloc, dest_cap);
         if (!dest) {
             if (swapped) tvdb__free(alloc, swapped, total_size);
             tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
             return TVDB_ERROR_OUT_OF_MEMORY;
         }
-        int csize = blosc1_compress(
-            /*clevel=*/5, /*doshuffle=*/1, element_size,
-            total_size, src_data, dest, dest_cap);
+        int csize = tvdb__compress_blosc(
+            src_data, total_size, dest, dest_cap,
+            element_size, 5, alloc);
         if (csize <= 0 || (size_t)csize >= total_size) {
-            /* Compression didn't help — store uncompressed */
             tvdb__sw_write_i64(sw, -1);
             tvdb__sw_write(sw, src_data, total_size);
         } else {
@@ -2770,12 +2999,6 @@ static tvdb_status_t tvdb__compress_and_write(
             tvdb__sw_write(sw, dest, (size_t)csize);
         }
         tvdb__free(alloc, dest, dest_cap);
-#else
-        if (swapped) tvdb__free(alloc, swapped, total_size);
-        tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_COMPRESSION,
-                        "BLOSC not enabled");
-        return TVDB_ERROR_UNSUPPORTED_COMPRESSION;
-#endif
     } else if (compression_mask & TVDB_COMPRESS_ZIP) {
         if (total_size == 0) {
             tvdb__sw_write_i64(sw, -1);

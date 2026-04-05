@@ -6,7 +6,6 @@ project(tinyvdbio C CXX)
 option(TINYVDBIO_USE_CCACHE "Use ccache for faster recompile." ON)
 option(TINYVDBIO_BUILD_TESTS "Build tests" OFF)
 option(TINYVDBIO_BUILD_EXAMPLES "Build examples" ON)
-option(TINYVDBIO_USE_BLOSC "Build with BLOSC compression support" ON)
 option(TINYVDBIO_USE_SYSTEM_ZLIB "Use system zlib instead of bundled miniz" OFF)
 option(TINYVDBIO_BUILD_VDBRENDER "Build vdbrender volume path tracer example" ON)
 
@@ -36,8 +35,10 @@ if(TINYVDBIO_USE_CCACHE)
   endif()
 endif()
 
-# tinyvdbio as a static library (C11 implementation + miniz)
-set(TINYVDBIO_C_SOURCES ${PROJECT_SOURCE_DIR}/src/tinyvdbio.c)
+# tinyvdbio static library (C11 implementation + miniz + lz4)
+set(TINYVDBIO_C_SOURCES
+  ${PROJECT_SOURCE_DIR}/src/tinyvdbio.c
+  ${PROJECT_SOURCE_DIR}/src/lz4.c)
 if(NOT TINYVDBIO_USE_SYSTEM_ZLIB)
   list(APPEND TINYVDBIO_C_SOURCES ${PROJECT_SOURCE_DIR}/src/miniz.c)
 endif()
@@ -55,35 +56,6 @@ if(TINYVDBIO_USE_SYSTEM_ZLIB)
   find_package(ZLIB REQUIRED)
   target_link_libraries(tinyvdbio PUBLIC ZLIB::ZLIB)
   target_compile_definitions(tinyvdbio PUBLIC TVDB_USE_SYSTEM_ZLIB)
-endif()
-
-# BLOSC (c-blosc2)
-if(TINYVDBIO_USE_BLOSC)
-  function(add_blosc2_lib)
-    set(BUILD_TESTS OFF CACHE INTERNAL "" FORCE)
-    set(BUILD_FUZZERS OFF CACHE INTERNAL "" FORCE)
-    set(BUILD_BENCHMARKS OFF CACHE INTERNAL "" FORCE)
-    set(BUILD_EXAMPLES OFF CACHE INTERNAL "" FORCE)
-    set(BUILD_PLUGINS OFF CACHE INTERNAL "" FORCE)
-    set(BUILD_SHARED OFF CACHE INTERNAL "" FORCE)
-    set(BUILD_STATIC ON CACHE INTERNAL "" FORCE)
-    set(DEACTIVATE_AVX2 OFF CACHE INTERNAL "" FORCE)
-    set(DEACTIVATE_ZSTD ON CACHE INTERNAL "" FORCE)
-    if(IOS)
-      set(DEACTIVATE_ZLIB ON CACHE INTERNAL "" FORCE)
-    endif()
-    # blosc2 needs POSIX extensions (pthread_barrier_*) — allow C extensions
-    # within the blosc2 subdirectory scope
-    set(CMAKE_C_EXTENSIONS ON)
-    add_subdirectory(${PROJECT_SOURCE_DIR}/third_party/c-blosc2)
-  endfunction()
-
-  add_blosc2_lib()
-
-  target_link_libraries(tinyvdbio PUBLIC blosc2_static)
-  target_include_directories(tinyvdbio PUBLIC
-    ${PROJECT_SOURCE_DIR}/third_party/c-blosc2/include)
-  target_compile_definitions(tinyvdbio PUBLIC TVDB_USE_BLOSC)
 endif()
 
 # Examples

@@ -15,7 +15,7 @@ TinyVDBIO is suitable for graphics applications, HPC visualization tools, and an
 * [x] Read and write OpenVDB files (version 220 to 225)
 * [x] Multiple grid/tree topologies (not limited to `Tree_float_5_4_3`)
 * [x] ZIP compression (via bundled miniz or system zlib)
-* [x] BLOSC compression (via c-blosc2)
+* [x] BLOSC compression (built-in, using bundled LZ4 — no external blosc dependency)
 * [x] Active mask compression (per-node flags 0-6)
 * [x] Half-float (FP16) grid support
 
@@ -32,9 +32,7 @@ TinyVDBIO is suitable for graphics applications, HPC visualization tools, and an
 
 ## How to use
 
-Copy `src/tinyvdbio.h`, `src/miniz.c`, and `src/miniz.h` to your project.
-
-For BLOSC compression support (recommended for modern VDB files), also link against [c-blosc2](https://github.com/Blosc/c-blosc2).
+Copy `src/tinyvdbio.h`, `src/miniz.c`, `src/miniz.h`, `src/lz4.c`, and `src/lz4.h` to your project. BLOSC compression (LZ4) is built-in — no external dependency needed.
 
 ```c
 /* In exactly one .c or .cc file: */
@@ -103,7 +101,6 @@ The allocator passes `old_size` to `realloc_fn` and `size` to `free_fn`, enablin
 
 | Flag | Description |
 |------|-------------|
-| `TVDB_USE_BLOSC` | Enable BLOSC compression (link c-blosc2) |
 | `TVDB_USE_SYSTEM_ZLIB` | Use system zlib instead of bundled miniz |
 | `TVDB_NO_MMAP` | Disable mmap, always read into heap buffer |
 
@@ -122,7 +119,7 @@ $ git submodule update --init --recursive --depth 1
 ```
 $ mkdir build
 $ cd build
-$ cmake -DTINYVDBIO_USE_BLOSC=ON ..
+$ cmake ..
 $ make
 ```
 
@@ -130,9 +127,9 @@ $ make
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `TINYVDBIO_USE_BLOSC` | `ON` | Enable BLOSC compression via c-blosc2 |
 | `TINYVDBIO_USE_SYSTEM_ZLIB` | `OFF` | Use system zlib instead of bundled miniz |
 | `TINYVDBIO_BUILD_EXAMPLES` | `ON` | Build the vdbdump example |
+| `TINYVDBIO_BUILD_VDBRENDER` | `ON` | Build the vdbrender volume path tracer |
 
 ## vdbdump example
 
@@ -202,5 +199,6 @@ limitations under the License.
 | Library | License |
 |---------|---------|
 | OpenVDB (original I/O logic) | Apache 2.0 |
-| c-blosc2 | BSD 3-Clause |
+| LZ4 | BSD 2-Clause |
 | miniz | MIT |
+| tinyexr (vdbrender example) | BSD 3-Clause |
