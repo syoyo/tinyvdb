@@ -8,6 +8,7 @@ option(TINYVDBIO_BUILD_TESTS "Build tests" OFF)
 option(TINYVDBIO_BUILD_EXAMPLES "Build examples" ON)
 option(TINYVDBIO_USE_BLOSC "Build with BLOSC compression support" ON)
 option(TINYVDBIO_USE_SYSTEM_ZLIB "Use system zlib instead of bundled miniz" OFF)
+option(TINYVDBIO_BUILD_VDBRENDER "Build vdbrender volume path tracer example" ON)
 
 # cmake modules
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
@@ -35,18 +36,15 @@ if(TINYVDBIO_USE_CCACHE)
   endif()
 endif()
 
-# Header-only library as INTERFACE target
-add_library(tinyvdbio INTERFACE)
-target_include_directories(tinyvdbio INTERFACE ${PROJECT_SOURCE_DIR}/src)
-
-# miniz (bundled C source, needed by implementations that #define
-# TINYVDBIO_IMPLEMENTATION)
+# tinyvdbio as a static library (C11 implementation + miniz)
+set(TINYVDBIO_C_SOURCES ${PROJECT_SOURCE_DIR}/src/tinyvdbio.c)
 if(NOT TINYVDBIO_USE_SYSTEM_ZLIB)
-  add_library(tinyvdbio_miniz STATIC ${PROJECT_SOURCE_DIR}/src/miniz.c)
-  target_include_directories(tinyvdbio_miniz PUBLIC ${PROJECT_SOURCE_DIR}/src)
-  target_compile_definitions(tinyvdbio_miniz PRIVATE MINIZ_NO_STDIO)
-  target_link_libraries(tinyvdbio INTERFACE tinyvdbio_miniz)
+  list(APPEND TINYVDBIO_C_SOURCES ${PROJECT_SOURCE_DIR}/src/miniz.c)
 endif()
+
+add_library(tinyvdbio STATIC ${TINYVDBIO_C_SOURCES})
+target_include_directories(tinyvdbio PUBLIC ${PROJECT_SOURCE_DIR}/src)
+target_compile_definitions(tinyvdbio PRIVATE TINYVDBIO_IMPLEMENTATION MINIZ_NO_STDIO)
 
 # Force system zlib for iOS
 if(IOS)
@@ -55,8 +53,8 @@ endif()
 
 if(TINYVDBIO_USE_SYSTEM_ZLIB)
   find_package(ZLIB REQUIRED)
-  target_link_libraries(tinyvdbio INTERFACE ZLIB::ZLIB)
-  target_compile_definitions(tinyvdbio INTERFACE TVDB_USE_SYSTEM_ZLIB)
+  target_link_libraries(tinyvdbio PUBLIC ZLIB::ZLIB)
+  target_compile_definitions(tinyvdbio PUBLIC TVDB_USE_SYSTEM_ZLIB)
 endif()
 
 # BLOSC (c-blosc2)
@@ -82,15 +80,20 @@ if(TINYVDBIO_USE_BLOSC)
 
   add_blosc2_lib()
 
-  target_link_libraries(tinyvdbio INTERFACE blosc2_static)
-  target_include_directories(tinyvdbio INTERFACE
+  target_link_libraries(tinyvdbio PUBLIC blosc2_static)
+  target_include_directories(tinyvdbio PUBLIC
     ${PROJECT_SOURCE_DIR}/third_party/c-blosc2/include)
-  target_compile_definitions(tinyvdbio INTERFACE TVDB_USE_BLOSC)
+  target_compile_definitions(tinyvdbio PUBLIC TVDB_USE_BLOSC)
 endif()
 
 # Examples
 if(TINYVDBIO_BUILD_EXAMPLES)
   add_subdirectory(examples/vdbdump)
+endif()
+
+# vdbrender (volume path tracer)
+if(TINYVDBIO_BUILD_VDBRENDER)
+  add_subdirectory(examples/vdbrender)
 endif()
 
 # [VisualStudio]

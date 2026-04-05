@@ -1,3974 +1,3599 @@
-//////////////////////////////////////////////////////////////////////////
-//
-// Copyright (c) 2018-2022 Syoyo Fujita
-// Copyright (c) 2012-2018 DreamWorks Animation LLC
-//
-// All rights reserved. This software is distributed under the
-// Mozilla Public License 2.0 ( http://www.mozilla.org/MPL/2.0/ )
-//
-// Redistributions of source code must retain the above copyright
-// and license notice and the following restrictions and disclaimer.
-//
-// *     Neither the name of Syoyo Fujita and DreamWorks Animation nor the names
-// of its contributors may be used to endorse or promote products derived from
-// this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-// IN NO EVENT SHALL THE COPYRIGHT HOLDERS' AND CONTRIBUTORS' AGGREGATE
-// LIABILITY FOR ALL CLAIMS REGARDLESS OF THEIR BASIS EXCEED US$250.00.
-//
-///////////////////////////////////////////////////////////////////////////
-#ifndef TINY_VDB_IO_H_
-#define TINY_VDB_IO_H_
-
-#include <algorithm>
-#include <array>
-#include <bitset>
-#include <cassert>
-#include <cstring>
-#include <fstream>
-#include <functional>
-#include <iostream>
-#include <limits>
-#include <map>
-#include <sstream>
-#include <string>
-#include <unordered_map>
-#include <vector>
-
-#if defined(_MSC_VER) || defined(__MINGW32__)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#endif
-
-namespace tinyvdb {
-
-// For voxel coordinate.
-template <typename T>
-struct Vec3 {
-  T x;
-  T y;
-  T z;
-};
-
-using Vec3i = Vec3<int>;
-using Vec3ui = Vec3<uint32_t>;
-
-// Simple voxel hash for small voxel indexing(less than < 1024^3)
-template <int N = 1024>
-struct VoxelIndexHash {
-  static uint64_t hash(const Vec3ui v) { return v.z * N * N + v.y * N + v.x; }
-
-  static uint64_t hash(const uint32_t x, const uint32_t y, const uint32_t z) {
-    return z * N * N + y * N + x;
-  }
-};
-
-template <typename T>
-class Bounds {
- public:
-  Bounds() {
-    bmin.x = std::numeric_limits<T>::max();
-    bmin.y = std::numeric_limits<T>::max();
-    bmin.z = std::numeric_limits<T>::max();
-
-    bmax.x = -std::numeric_limits<T>::max();
-    bmax.y = -std::numeric_limits<T>::max();
-    bmax.z = -std::numeric_limits<T>::max();
-  }
-
-  ///
-  /// Returns true if given coordinate is within this bound
-  ///
-  bool Contains(const Vec3<T> &v) {
-    if ((bmin.x <= v.x) && (v.x <= bmax.x) && (bmin.y <= v.y) &&
-        (v.y <= bmax.y) && (bmin.z <= v.z) && (v.z <= bmax.z)) {
-      return true;
-    }
-
-    return false;
-  }
-
-  ///
-  /// Returns true if given bounding box overlaps with this bound.
-  ///
-  bool Overlaps(const Bounds<T> &b) {
-    if (Contains(b.bmin) || Contains(b.bmax)) {
-      return true;
-    }
-    return false;
-  }
-
-  ///
-  /// Compute union of two bounds.
-  ///
-  static Bounds Union(const Bounds &a, const Bounds &b) {
-    Bounds bound;
-
-    bound.bmin.x = std::min(a.bmin.x, b.bmin.x);
-    bound.bmin.y = std::min(a.bmin.y, b.bmin.y);
-    bound.bmin.z = std::min(a.bmin.z, b.bmin.z);
-
-    bound.bmax.x = std::max(a.bmax.x, b.bmax.x);
-    bound.bmax.y = std::max(a.bmax.y, b.bmax.y);
-    bound.bmax.z = std::max(a.bmax.z, b.bmax.z);
-
-    return bound;
-  }
-
-  template <typename U>
-  friend std::ostream &operator<<(std::ostream &os, const Bounds<U> &bound);
-
-  Vec3<T> bmin;
-  Vec3<T> bmax;
-};
-
-using Boundsi = Bounds<int>;
-
-// --- vvv --------------------------------------------------
-
-
 /*
-The MIT License (MIT)
+ * TinyVDBIO — Header-only C11 OpenVDB I/O library.
+ *
+ * Copyright (c) 2018-2026 Syoyo Fujita
+ * Copyright (c) 2012-2018 DreamWorks Animation LLC (original I/O logic)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * Usage:
+ *   #define TINYVDBIO_IMPLEMENTATION
+ *   #include "tinyvdbio.h"
+ *
+ * Compile flags:
+ *   TVDB_USE_BLOSC        — Enable BLOSC compression (link c-blosc2)
+ *   TVDB_USE_SYSTEM_ZLIB  — Use system zlib instead of bundled miniz
+ *   TVDB_NO_MMAP          — Disable mmap, always read into heap buffer
+ */
+#ifndef TINYVDBIO_H_
+#define TINYVDBIO_H_
 
-Copyright (c) 2019 Syoyo Fujita.
+#include <stdint.h>
+#include <stddef.h>
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-*/
-
-///
-/// @brief dynamically allocatable bitset
-///
-class dynamic_bitset {
- public:
-  dynamic_bitset() = default;
-  dynamic_bitset(dynamic_bitset &&) = default;
-  dynamic_bitset(const dynamic_bitset &) = default;
-
-  dynamic_bitset &operator=(const dynamic_bitset &) = default;
-
-  ~dynamic_bitset() = default;
-
-  ///
-  /// @brief Construct dynamic_bitset with given number of bits.
-  ///
-  /// @param[in] nbits The number of bits to use.
-  /// @param[in] value Initize bitfield with this value.
-  ///
-  explicit dynamic_bitset(size_t nbits, uint64_t value) {
-    _num_bits = nbits;
-
-    size_t num_bytes;
-    if (nbits < 8) {
-      num_bytes = 1;
-    } else {
-      num_bytes = 1 + (nbits - 1) / 8;
-    }
-
-    _data.resize(num_bytes);
-
-    // init with zeros
-    std::fill_n(_data.begin(), _data.size(), 0);
-
-    // init with `value`.
-
-    if (nbits < sizeof(uint64_t)) {
-      assert(num_bytes < 3);
-
-      uint64_t masked_value = value & ((1 << (nbits + 1)) - 1);
-
-      for (size_t i = 0; i < _data.size(); i++) {
-        _data[i] = (masked_value >> (i * 8)) & 0xff;
-      }
-
-    } else {
-      for (size_t i = 0; i < sizeof(uint64_t); i++) {
-        _data[i] = (value >> (i * 8)) & 0xff;
-      }
-    }
-  }
-
-  ///
-  /// Equivalent to std::bitset::any()
-  ///
-  bool any() const {
-    for (size_t i = 0; i < _num_bits; i++) {
-      if ((*this)[i]) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  ///
-  /// Equivalent to std::bitset::all()
-  ///
-  bool all() const {
-    for (size_t i = 0; i < _num_bits; i++) {
-      if (false == (*this)[i]) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  ///
-  /// Equivalent to std::bitset::none()
-  ///
-  bool none() const {
-    for (size_t i = 0; i < _num_bits; i++) {
-      if ((*this)[i]) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  ///
-  /// Equivalent to std::bitset::flip()
-  ///
-  dynamic_bitset &flip() {
-    for (size_t i = 0; i < _num_bits; i++) {
-      set(i, (*this)[i] ? false : true);
-    }
-
-    return (*this);
-  }
-
-  ///
-  /// @brief Resize dynamic_bitset.
-  ///
-  /// @details Resize dynamic_bitset. Resize behavior is similar to
-  /// std::vector::resize.
-  ///
-  /// @param[in] nbits The number of bits to use.
-  ///
-  void resize(size_t nbits) {
-    _num_bits = nbits;
-
-    size_t num_bytes;
-    if (nbits < 8) {
-      num_bytes = 1;
-    } else {
-      num_bytes = 1 + (nbits - 1) / 8;
-    }
-
-    _data.resize(num_bytes);
-  }
-
-  ///
-  /// @return The number of bits that are set to `true`
-  ///
-  uint32_t count() const {
-    uint32_t c = 0;
-
-    for (size_t i = 0; i < _num_bits; i++) {
-      c += (*this)[i] ? 1 : 0;
-    }
-
-    return c;
-  }
-
-  bool test(size_t pos) const {
-    // TODO(syoyo): Do range check and throw when out-of-bounds access.
-    return (*this)[pos];
-  }
-
-  void reset() { std::fill_n(_data.begin(), _data.size(), 0); }
-
-  // Set all bitfield with `value`
-  void setall(bool value) {
-    for (size_t i = 0; i < _num_bits; i++) {
-      set(i, value);
-    }
-  }
-
-  void set(size_t pos, bool value = true) {
-    size_t byte_loc = pos / 8;
-    uint8_t offset = pos % 8;
-
-    uint8_t bitfield = uint8_t(1 << offset);
-
-    if (value == true) {
-      // bit on
-      _data[byte_loc] |= bitfield;
-    } else {
-      // turn off bit
-      _data[byte_loc] &= (~bitfield);
-    }
-  }
-
-  std::string to_string() const {
-    std::stringstream ss;
-
-    for (size_t i = 0; i < _num_bits; i++) {
-      ss << ((*this)[_num_bits - i - 1] ? "1" : "0");
-    }
-
-    return ss.str();
-  }
-
-  bool operator[](size_t pos) const {
-    size_t byte_loc = pos / 8;
-    size_t offset = pos % 8;
-
-    return (_data[byte_loc] >> offset) & 0x1;
-  }
-
-  // Return the number of bits.
-  size_t nbits() const { return _num_bits; }
-
-  // Return storage size.
-  size_t size() const { return _data.size(); }
-
-  // Return memory address of bitfield(as an byte array)
-  const uint8_t *data() const { return _data.data(); }
-
-  // Return memory address of bitfield(as an byte array)
-  uint8_t *data() { return _data.data(); }
-
- private:
-  size_t _num_bits{0};
-
-  // bitfields are reprentated as an array of bytes.
-  std::vector<uint8_t> _data;
-};
-
-// --^^^---------------------------------------------------------------
-
-// TODO(syoyo): Move to IMPLEMENTATION
-#define TINYVDBIO_ASSERT(x) assert(x)
-
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wpadded"
-#pragma clang diagnostic ignored "-Wc++11-long-long"
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-// Forward
-class RootNode;
-class IntermediateNode;
-class LeafNode;
+/* ========================================================================== */
+/*  Compile-time configuration                                                */
+/* ========================================================================== */
 
-enum class TypeId {
-  VOID,
-  ROOT_NODE,
-  INTERMEDIATE_NODE,
-  LEAF_NODE,
-};
-
-template <typename dtype>
-struct TypeTrait;
-
-template <>
-struct TypeTrait<void> {
-  static constexpr auto type_name = "void";
-  static constexpr TypeId type_id = TypeId::VOID;
-};
-
-template <>
-struct TypeTrait<RootNode> {
-  static constexpr auto type_name = "RootNode";
-  static constexpr TypeId type_id = TypeId::ROOT_NODE;
-};
-
-template <>
-struct TypeTrait<IntermediateNode> {
-  static constexpr auto type_name = "IntermediateNode";
-  static constexpr TypeId type_id = TypeId::INTERMEDIATE_NODE;
-};
-
-template <>
-struct TypeTrait<LeafNode> {
-  static constexpr auto type_name = "LeafNode";
-  static constexpr TypeId type_id = TypeId::LEAF_NODE;
-};
-
-
-typedef struct {
-  uint32_t file_version;
-  uint32_t major_version;
-  uint32_t minor_version;
-  // bool has_grid_offsets;
-  bool is_compressed;
-  bool half_precision;
-  std::string uuid;
-  uint64_t offset_to_data;  // Byte offset to VDB data
-} VDBHeader;
-
-typedef struct {
-} VDBMeta;
-
-typedef enum {
-  TINYVDBIO_SUCCESS,
-  TINYVDBIO_ERROR_INVALID_FILE,
-  TINYVDBIO_ERROR_INVALID_HEADER,
-  TINYVDBIO_ERROR_INVALID_DATA,
-  TINYVDBIO_ERROR_INVALID_ARGUMENT,
-  TINYVDBIO_ERROR_UNIMPLEMENTED
-} VDBStatus;
-
-std::string GetStatusString(VDBStatus status);
-
-// --- variant -------------------------------------------------------
-//
-// Based on
-// https://gist.github.com/calebh/fd00632d9c616d4b0c14e7c2865f3085
-//
-// Modification by Syoyo Fujita.
-// - Use tinyusdz::value::TypeTrait for type_id
-// - Disable exception
-// - Implement set and get, get_if
-//
-
-/*
-This is free and unencumbered software released into the public domain.
-Anyone is free to copy, modify, publish, use, compile, sell, or
-distribute this software, either in source code form or as a compiled
-binary, for any purpose, commercial or non-commercial, and by any
-means.
-In jurisdictions that recognize copyright laws, the author or authors
-of this software dedicate any and all copyright interest in the
-software to the public domain. We make this dedication for the benefit
-of the public at large and to the detriment of our heirs and
-successors. We intend this dedication to be an overt act of
-relinquishment in perpetuity of all present and future rights to this
-software under copyright law.
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
-OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-OTHER DEALINGS IN THE SOFTWARE.
-For more information, please refer to <http://unlicense.org/>
-*/
-
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Weverything"
+#ifndef TVDB_MAX_TREE_DEPTH
+#define TVDB_MAX_TREE_DEPTH 8
 #endif
 
-//#include "nonstd/optional.hpp" // for optional<T>& get()
-
-// Equivalent to std::aligned_storage
-template <unsigned int Len, unsigned int Align>
-struct aligned_storage {
-  struct type {
-    alignas(Align) unsigned char data[Len];
-  };
-};
-
-template <unsigned int arg1, unsigned int... others>
-struct static_max;
-
-template <unsigned int arg>
-struct static_max<arg> {
-  static const unsigned int value = arg;
-};
-
-template <unsigned int arg1, unsigned int arg2, unsigned int... others>
-struct static_max<arg1, arg2, others...> {
-  static const unsigned int value = arg1 >= arg2
-                                        ? static_max<arg1, others...>::value
-                                        : static_max<arg2, others...>::value;
-};
-
-template <class T>
-struct remove_reference {
-  typedef T type;
-};
-template <class T>
-struct remove_reference<T&> {
-  typedef T type;
-};
-template <class T>
-struct remove_reference<T&&> {
-  typedef T type;
-};
-
-template <typename... Ts>
-struct variant_helper_rec;
-
-template <typename F, typename... Ts>
-struct variant_helper_rec<F, Ts...> {
-  inline static void destroy(uint32_t id, void* data) {
-    if (TypeTrait<F>::type_id == id) {
-      reinterpret_cast<F*>(data)->~F();
-    } else {
-      variant_helper_rec<Ts...>::destroy(id, data);
-    }
-  }
-
-  inline static void move(uint32_t id, void* from, void* to) {
-    if (TypeTrait<F>::type_id == id) {
-      // This static_cast and use of remove_reference is equivalent to the use
-      // of std::move
-      new (to) F(static_cast<typename remove_reference<F>::type&&>(
-          *reinterpret_cast<F*>(from)));
-    } else {
-      variant_helper_rec<Ts...>::move(id, from, to);
-    }
-  }
-
-  inline static void copy(uint32_t id, const void* from, void* to) {
-    if (TypeTrait<F>::type_id == id) {
-      new (to) F(*reinterpret_cast<const F*>(from));
-    } else {
-      variant_helper_rec<Ts...>::copy(id, from, to);
-    }
-  }
-};
-
-template <>
-struct variant_helper_rec<> {
-  inline static void destroy(uint32_t id, void* data) {}
-  inline static void move(uint32_t old_t, void* from, void* to) {}
-  inline static void copy(uint32_t old_t, const void* from, void* to) {}
-};
-
-template <typename... Ts>
-struct variant_helper {
-  inline static void destroy(uint32_t id, void* data) {
-    variant_helper_rec<Ts...>::destroy(id, data);
-  }
-
-  inline static void move(uint32_t id, void* from, void* to) {
-    variant_helper_rec<Ts...>::move(id, from, to);
-  }
-
-  inline static void copy(uint32_t id, const void* old_v, void* new_v) {
-    variant_helper_rec<Ts...>::copy(id, old_v, new_v);
-  }
-};
-
-template <>
-struct variant_helper<> {
-  inline static void destroy(uint32_t id, void* data) {}
-  inline static void move(uint32_t old_t, void* old_v, void* new_v) {}
-  inline static void copy(uint32_t old_t, const void* old_v, void* new_v) {}
-};
-
-template <typename F>
-struct variant_helper_static;
-
-template <typename F>
-struct variant_helper_static {
-  inline static void move(void* from, void* to) {
-    new (to) F(static_cast<typename remove_reference<F>::type&&>(
-        *reinterpret_cast<F*>(from)));
-  }
-
-  inline static void copy(const void* from, void* to) {
-    new (to) F(*reinterpret_cast<const F*>(from));
-  }
-};
-
-#if 0  // not used
-// Given a uint8_t i, selects the ith type from the list of item types
-template <uint8_t i, typename... Items>
-struct variant_alternative;
-
-template <typename HeadItem, typename... TailItems>
-struct variant_alternative<0, HeadItem, TailItems...> {
-  using type = HeadItem;
-};
-
-template <uint8_t i, typename HeadItem, typename... TailItems>
-struct variant_alternative<i, HeadItem, TailItems...> {
-  using type = typename variant_alternative<i - 1, TailItems...>::type;
-};
+#ifndef TVDB_MAX_ERROR_MSG
+#define TVDB_MAX_ERROR_MSG 512
 #endif
 
-template <uint8_t n, typename... Ts>
-struct variant_get_rec;
+/* ========================================================================== */
+/*  Status codes                                                              */
+/* ========================================================================== */
 
-template <typename...>
-struct is_one_of {
-  static constexpr bool value = false;
-};
+typedef enum tvdb_status {
+    TVDB_OK = 0,
+    TVDB_ERROR_INVALID_FILE,
+    TVDB_ERROR_INVALID_HEADER,
+    TVDB_ERROR_INVALID_DATA,
+    TVDB_ERROR_INVALID_ARGUMENT,
+    TVDB_ERROR_UNSUPPORTED_VERSION,
+    TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
+    TVDB_ERROR_UNSUPPORTED_COMPRESSION,
+    TVDB_ERROR_UNSUPPORTED_TRANSFORM,
+    TVDB_ERROR_DECOMPRESSION_FAILED,
+    TVDB_ERROR_OUT_OF_MEMORY,
+    TVDB_ERROR_IO,
+    TVDB_ERROR_MMAP_FAILED,
+    TVDB_ERROR_PATH_CONVERSION,
+    TVDB_ERROR_UNIMPLEMENTED
+} tvdb_status_t;
 
-template <typename T, typename S, typename... Ts>
-struct is_one_of<T, S, Ts...> {
-  static constexpr bool value =
-      std::is_same<T, S>::value || is_one_of<T, Ts...>::value;
-};
+/* ========================================================================== */
+/*  Error context                                                             */
+/* ========================================================================== */
 
-template <typename... Ts>
-struct variant {
- private:
-  static const unsigned int data_size = static_max<sizeof(Ts)...>::value;
-  static const unsigned int data_align = static_max<alignof(Ts)...>::value;
+typedef struct tvdb_error {
+    tvdb_status_t status;
+    char          message[TVDB_MAX_ERROR_MSG];
+    uint64_t      byte_offset;
+    int32_t       grid_index;
+} tvdb_error_t;
 
-  using data_t = typename aligned_storage<data_size, data_align>::type;
+/* ========================================================================== */
+/*  Custom memory allocator                                                   */
+/* ========================================================================== */
 
-  using helper_t = variant_helper<Ts...>;
+typedef struct tvdb_allocator {
+    void *(*malloc_fn)(size_t size, void *user_ctx);
+    void *(*realloc_fn)(void *ptr, size_t old_size, size_t new_size,
+                        void *user_ctx);
+    void (*free_fn)(void *ptr, size_t size, void *user_ctx);
+    void *user_ctx;
+} tvdb_allocator_t;
 
-  // template <uint8_t i>
-  // using alternative = typename variant_alternative<i, Ts...>::type;
+/* ========================================================================== */
+/*  Value types                                                               */
+/* ========================================================================== */
 
-  static inline TypeId invalid_type() {
-    return TypeTrait<void>::type_id;
-  }
+typedef enum tvdb_value_type {
+    TVDB_VALUE_NULL = 0,
+    TVDB_VALUE_BOOL,
+    TVDB_VALUE_INT32,
+    TVDB_VALUE_INT64,
+    TVDB_VALUE_FLOAT,
+    TVDB_VALUE_DOUBLE,
+    TVDB_VALUE_HALF,
+    TVDB_VALUE_VEC3I,
+    TVDB_VALUE_VEC3F,
+    TVDB_VALUE_VEC3D,
+    TVDB_VALUE_STRING
+} tvdb_value_type_t;
 
-  TypeId variant_id;
-  data_t data;
+typedef struct tvdb_value {
+    tvdb_value_type_t type;
+    union {
+        int       b;
+        int32_t   i32;
+        int64_t   i64;
+        float     f;
+        double    d;
+        int32_t   vec3i[3];
+        float     vec3f[3];
+        double    vec3d[3];
+        struct {
+            char  *str;
+            size_t len;
+        } s;
+    } u;
+} tvdb_value_t;
 
-  static void *nulldata() {
-    return nullptr;
-  }
+/* ========================================================================== */
+/*  Node / tree types                                                         */
+/* ========================================================================== */
 
- public:
+typedef enum tvdb_node_type {
+    TVDB_NODE_ROOT = 0,
+    TVDB_NODE_INTERNAL,
+    TVDB_NODE_LEAF
+} tvdb_node_type_t;
 
-  variant() : variant_id(invalid_type()) {}
+/* ========================================================================== */
+/*  Bitset & node mask                                                        */
+/* ========================================================================== */
 
+typedef struct tvdb_bitset {
+    uint8_t         *data;
+    size_t           num_bits;
+    size_t           num_bytes;
+    tvdb_allocator_t *alloc;
+} tvdb_bitset_t;
 
-  variant(const variant<Ts...>& from) : variant_id(from.variant_id) {
-    helper_t::copy(from.variant_id, &from.data, &data);
-  }
+typedef struct tvdb_nodemask {
+    tvdb_bitset_t bits;
+    int32_t       log2dim;
+    int32_t       bitsize; /* 1 << (3 * log2dim) */
+} tvdb_nodemask_t;
 
-  variant(variant<Ts...>&& from) : variant_id(from.variant_id) {
-    helper_t::move(from.variant_id, &from.data, &data);
-  }
+/* ========================================================================== */
+/*  Metadata                                                                  */
+/* ========================================================================== */
 
-  variant<Ts...>& operator=(const variant<Ts...>& rhs) {
-    helper_t::destroy(variant_id, &data);
-    variant_id = rhs.variant_id;
-    helper_t::copy(rhs.variant_id, &rhs.data, &data);
-    return *this;
-  }
+typedef struct tvdb_meta_entry {
+    char            *name;
+    char            *type_name;
+    tvdb_value_t     value;
+    uint8_t         *raw_data;
+    size_t           raw_data_len;
+} tvdb_meta_entry_t;
 
-  variant<Ts...>& operator=(variant<Ts...>&& rhs) {
-    helper_t::destroy(variant_id, &data);
-    variant_id = rhs.variant_id;
-    helper_t::move(rhs.variant_id, &rhs.data, &data);
-    return *this;
-  }
+typedef struct tvdb_metadata {
+    tvdb_meta_entry_t *entries;
+    size_t             count;
+    size_t             capacity;
+    tvdb_allocator_t  *alloc;
+} tvdb_metadata_t;
 
-  template <typename T>
-  bool is() const {
-    return variant_id == TypeTrait<T>::type_id;
-  }
+/* ========================================================================== */
+/*  Grid descriptor                                                           */
+/* ========================================================================== */
 
-  TypeId type_id() const { return variant_id; }
+typedef struct tvdb_grid_descriptor {
+    char    *grid_name;
+    char    *unique_name;
+    char    *grid_type;
+    char    *instance_parent_name;
+    int      save_float_as_half;
+    uint64_t grid_byte_offset;
+    uint64_t block_byte_offset;
+    uint64_t end_byte_offset;
+} tvdb_grid_descriptor_t;
 
-  // template<typename T, typename... Args>
-  template <typename T, typename... Args,
-            typename =
-                typename std::enable_if<is_one_of<T, Ts...>::value, void>::type>
-  void set(Args&&... args) {
-    helper_t::destroy(variant_id, &data);
-    new (&data) T(std::forward<Args>(args)...);
-    variant_id = TypeTrait<T>::type_id;
-    // variant_helper_static<alternative<i>>::copy(&value, &data);
-  }
+/* ========================================================================== */
+/*  Header                                                                    */
+/* ========================================================================== */
 
-  template<typename T>
-  variant(const T &v) {
-    set<T>(v);
-  }
+typedef struct tvdb_header {
+    uint32_t file_version;
+    uint32_t major_version;
+    uint32_t minor_version;
+    uint32_t compression_flags;
+    int      has_grid_offsets;
+    int      half_precision;
+    char     uuid[37]; /* 36 chars + NUL */
+    uint64_t offset_to_data;
+} tvdb_header_t;
 
-#if 1
-  // allow seg fault.
-  template <typename T, typename... Args,
-            typename =
-                typename std::enable_if<is_one_of<T, Ts...>::value, void>::type>
-  T& cast() {
-    // It is a dynamic_cast-like behaviour
-    if (variant_id == TypeTrait<T>::type_id) {
-      return *reinterpret_cast<T*>(&data);
-    }
+/* ========================================================================== */
+/*  Transform                                                                 */
+/* ========================================================================== */
 
-    // Will raise null-pointer dereference error.
-    return *reinterpret_cast<T*>(nulldata());
-  }
+typedef enum tvdb_transform_type {
+    TVDB_TRANSFORM_UNIFORM_SCALE,
+    TVDB_TRANSFORM_UNIFORM_SCALE_TRANSLATE,
+    TVDB_TRANSFORM_SCALE,
+    TVDB_TRANSFORM_SCALE_TRANSLATE,
+    TVDB_TRANSFORM_TRANSLATION,
+    TVDB_TRANSFORM_AFFINE,
+    TVDB_TRANSFORM_UNKNOWN
+} tvdb_transform_type_t;
+
+typedef struct tvdb_transform {
+    tvdb_transform_type_t type;
+    double scale_values[3];
+    double voxel_size[3];
+    double translation[3];
+    double matrix[4][4]; /* for AffineMap: row-major 4x4 */
+} tvdb_transform_t;
+
+/* ========================================================================== */
+/*  Grid layout                                                               */
+/* ========================================================================== */
+
+typedef struct tvdb_node_info {
+    tvdb_node_type_t  node_type;
+    tvdb_value_type_t value_type;
+    int32_t           log2dim;
+} tvdb_node_info_t;
+
+typedef struct tvdb_grid_layout {
+    tvdb_node_info_t levels[TVDB_MAX_TREE_DEPTH];
+    int              num_levels;
+} tvdb_grid_layout_t;
+
+/* ========================================================================== */
+/*  Tree nodes                                                                */
+/* ========================================================================== */
+
+typedef struct tvdb_root_node {
+    tvdb_value_t  background;
+    uint32_t      num_tiles;
+    uint32_t      num_children;
+    int32_t      *tile_origins;   /* [num_tiles * 3] */
+    tvdb_value_t *tile_values;
+    int          *tile_active;
+    int32_t      *child_origins;  /* [num_children * 3] */
+    size_t       *child_indices;  /* indices into tree.nodes[] */
+} tvdb_root_node_t;
+
+typedef struct tvdb_internal_node {
+    tvdb_nodemask_t child_mask;
+    tvdb_nodemask_t value_mask;
+    uint8_t        *values;
+    size_t          values_size;
+    size_t         *child_indices; /* sparse: count_on(child_mask) entries */
+    size_t          num_children;
+} tvdb_internal_node_t;
+
+typedef struct tvdb_leaf_node {
+    tvdb_nodemask_t value_mask;
+    uint8_t        *data;
+    size_t          data_size;
+    uint32_t        num_voxels;
+} tvdb_leaf_node_t;
+
+typedef struct tvdb_tree_node {
+    tvdb_node_type_t type;
+    int              level;
+    int32_t          origin[3];
+    union {
+        tvdb_root_node_t     root;
+        tvdb_internal_node_t internal;
+        tvdb_leaf_node_t     leaf;
+    } u;
+} tvdb_tree_node_t;
+
+typedef struct tvdb_tree {
+    tvdb_tree_node_t *nodes;
+    size_t            num_nodes;
+    size_t            nodes_capacity;
+    tvdb_grid_layout_t layout;
+    tvdb_allocator_t  *alloc;
+} tvdb_tree_t;
+
+/* ========================================================================== */
+/*  Grid                                                                      */
+/* ========================================================================== */
+
+typedef struct tvdb_grid {
+    tvdb_grid_descriptor_t descriptor;
+    tvdb_metadata_t        metadata;
+    tvdb_transform_t       transform;
+    tvdb_tree_t            tree;
+    uint32_t               compression_flags;
+} tvdb_grid_t;
+
+/* ========================================================================== */
+/*  mmap                                                                      */
+/* ========================================================================== */
+
+typedef struct tvdb_mmap {
+    const uint8_t *data;
+    uint64_t       mapped_len;
+    uint64_t       file_size;
+#if defined(_WIN32)
+    void          *file_handle_;
+    void          *map_handle_;
+    void          *base_addr_;
+#else
+    int            fd_;
+    void          *base_addr_;
+    uint64_t       base_len_;
+#endif
+} tvdb_mmap_t;
+
+/* ========================================================================== */
+/*  File data source                                                          */
+/* ========================================================================== */
+
+typedef enum tvdb_source_type {
+    TVDB_SOURCE_NONE = 0,
+    TVDB_SOURCE_MMAP,
+    TVDB_SOURCE_BUFFER,
+    TVDB_SOURCE_EXTERNAL
+} tvdb_source_type_t;
+
+typedef struct tvdb_file_data {
+    const uint8_t     *data;
+    uint64_t           data_len;
+    tvdb_source_type_t source;
+    tvdb_mmap_t        mmap;
+    uint8_t           *buffer;
+    tvdb_allocator_t   alloc;
+} tvdb_file_data_t;
+
+/* ========================================================================== */
+/*  Top-level file context                                                    */
+/* ========================================================================== */
+
+typedef struct tvdb_file {
+    tvdb_header_t    header;
+    tvdb_metadata_t  file_metadata;
+    tvdb_grid_t     *grids;
+    size_t           num_grids;
+    tvdb_allocator_t alloc;
+    tvdb_file_data_t file_data;
+} tvdb_file_t;
+
+/* ========================================================================== */
+/*  Compression flags (public constants)                                      */
+/* ========================================================================== */
+
+#define TVDB_COMPRESS_NONE        0x0
+#define TVDB_COMPRESS_ZIP         0x1
+#define TVDB_COMPRESS_ACTIVE_MASK 0x2
+#define TVDB_COMPRESS_BLOSC       0x4
+
+/* ========================================================================== */
+/*  Public API                                                                */
+/* ========================================================================== */
+
+/* Nodemask helpers (for accessing tree data from application code) */
+int    tvdb_nodemask_is_on(const tvdb_nodemask_t *m, int32_t i);
+size_t tvdb_nodemask_count_on(const tvdb_nodemask_t *m);
+
+tvdb_status_t tvdb_file_open(tvdb_file_t *file, const char *filepath_utf8,
+                             const tvdb_allocator_t *alloc, tvdb_error_t *err);
+
+tvdb_status_t tvdb_file_open_memory(tvdb_file_t *file, const uint8_t *data,
+                                    size_t data_len,
+                                    const tvdb_allocator_t *alloc,
+                                    tvdb_error_t *err);
+
+void tvdb_file_close(tvdb_file_t *file);
+
+tvdb_status_t tvdb_read_all_grids(tvdb_file_t *file, tvdb_error_t *err);
+
+size_t        tvdb_grid_count(const tvdb_file_t *file);
+const char   *tvdb_grid_name(const tvdb_file_t *file, size_t idx);
+const char   *tvdb_grid_type_name(const tvdb_file_t *file, size_t idx);
+
+const char   *tvdb_status_string(tvdb_status_t status);
+int           tvdb_is_big_endian(void);
+
+size_t        tvdb_value_type_size(tvdb_value_type_t type);
+
+/* ---- Writing API ---- */
+
+/* Write VDB data to a memory buffer.
+   Caller must free *out_data with the file's allocator (or free() if default).
+   compression_flags: combination of TVDB_COMPRESS_* flags. */
+tvdb_status_t tvdb_write_to_memory(const tvdb_file_t *file,
+                                   uint32_t compression_flags,
+                                   uint8_t **out_data, size_t *out_size,
+                                   tvdb_error_t *err);
+
+/* Write VDB data to a file.
+   use_mmap: if nonzero, use mmap for file I/O (ignored if TVDB_NO_MMAP). */
+tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
+                             const char *filepath_utf8,
+                             uint32_t compression_flags,
+                             int use_mmap,
+                             tvdb_error_t *err);
+
+#ifdef __cplusplus
+} /* extern "C" */
 #endif
 
-#if 0
-  template <typename T, typename... Args,
-            typename =
-                typename std::enable_if<is_one_of<T, Ts...>::value, void>::type>
-  const nonstd::optional<T> get() {
-    // It is a dynamic_cast-like behaviour
-    if (variant_id == TypeTrait<T>::type_id) {
-      return *reinterpret_cast<T*>(&data);
-    }
-
-    return nonstd::nullopt;
-  }
-
-  template <typename T, typename... Args,
-            typename =
-                typename std::enable_if<is_one_of<T, Ts...>::value, void>::type>
-  const nonstd::optional<T> get() const {
-    // It is a dynamic_cast-like behaviour
-    if (variant_id == TypeTrait<T>::type_id) {
-      return *reinterpret_cast<const T*>(&data);
-    }
-
-    return nonstd::nullopt;
-  }
-#endif
-
-  template <typename T, typename... Args,
-            typename =
-                typename std::enable_if<is_one_of<T, Ts...>::value, void>::type>
-  T* get_if() {
-    // It is a dynamic_cast-like behaviour
-    if (variant_id == TypeTrait<T>::type_id) {
-      return reinterpret_cast<T*>(&data);
-    }
-
-    return nullptr;
-  }
-
-  ~variant() { helper_t::destroy(variant_id, &data); }
-};
-
-struct monostate {};
-
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
-
-// --------------------------------------------------------------------
-
-// forward decl.
-class StreamReader;
-class StreamWriter;
-struct DeserializeParams;
-
-////////////////////////////////////////
-
-/// internal Per-node indicator byte that specifies what additional metadata
-/// is stored to permit reconstruction of inactive values
-enum {
-  /*0*/ NO_MASK_OR_INACTIVE_VALS,  // no inactive vals, or all inactive vals are
-                                   // +background
-  /*1*/ NO_MASK_AND_MINUS_BG,      // all inactive vals are -background
-  /*2*/ NO_MASK_AND_ONE_INACTIVE_VAL,  // all inactive vals have the same
-                                       // non-background val
-  /*3*/ MASK_AND_NO_INACTIVE_VALS,     // mask selects between -background and
-                                       // +background
-  /*4*/ MASK_AND_ONE_INACTIVE_VAL,  // mask selects between backgd and one other
-                                    // inactive val
-  /*5*/ MASK_AND_TWO_INACTIVE_VALS,  // mask selects between two non-background
-                                     // inactive vals
-  /*6*/ NO_MASK_AND_ALL_VALS  // > 2 inactive vals, so no mask compression at
-                              // all
-};
-
-// TODO(syoyo): remove
-
-/// @brief Bit mask for the internal and leaf nodes of VDB. This
-/// is a 64-bit implementation.
-///
-/// @note A template specialization for Log2Dim=1 and Log2Dim=2 are
-/// given below.
-// template <int Log2Dim>
-class NodeMask {
- public:
-  // static_assert(Log2Dim > 2, "expected NodeMask template specialization, got
-  // base template");
-  int32_t LOG2DIM;
-  int32_t DIM;
-  int32_t BITSIZE;
-  // int32_t WORD_COUNT;
-
-  // static const int32_t LOG2DIM = Log2Dim;
-  // static const int32_t DIM = 1 << Log2Dim;
-  // static const int32_t SIZE = 1 << 3 * Log2Dim;
-  // static const int32_t WORD_COUNT = SIZE >> 6;  // 2^6=64
-  // using Word = int64;
-  // typedef int64 Word;
-
- private:
-  // The bits are represented as a linear array of Words, and the
-  // size of a Word is 32 or 64 bits depending on the platform.
-  // The BIT_MASK is defined as the number of bits in a Word - 1
-  // static const int32_t BIT_MASK   = sizeof(void*) == 8 ? 63 : 31;
-  // static const int32_t LOG2WORD   = BIT_MASK == 63 ? 6 : 5;
-  // static const int32_t WORD_COUNT = SIZE >> LOG2WORD;
-  // using Word = boost::mpl::if_c<BIT_MASK == 63, int64, int32>::type;
-
-  // std::vector<Word> mWords;  // only member data!
-  // std::vector<bool> bits;
-  dynamic_bitset bits;
-
- public:
-  NodeMask() {
-    LOG2DIM = 0;
-    DIM = 0;
-    BITSIZE = 0;
-    // WORD_COUNT = 0;
-  }
-
-  void Alloc(int32_t log2dim) {
-    LOG2DIM = log2dim;
-    DIM = 1 << log2dim;
-    BITSIZE = 1 << 3 * log2dim;
-    // WORD_COUNT = SIZE >> 6;  // 2^6=64
-
-    // mWords.resize(WORD_COUNT);
-
-    bits.resize(size_t(BITSIZE));
-    bits.reset();
-  }
-
-  /// Default constructor sets all bits off
-  NodeMask(int32_t log2dim) {
-    LOG2DIM = log2dim;
-    DIM = 1 << log2dim;
-    BITSIZE = 1 << 3 * log2dim;
-    // WORD_COUNT = SIZE >> 6;  // 2^6=64
-
-    bits.resize(size_t(BITSIZE));
-    bits.reset();
-  }
-
-  /// All bits are set to the specified state
-  NodeMask(int32_t log2dim, bool on) {
-    LOG2DIM = log2dim;
-    DIM = 1 << log2dim;
-    BITSIZE = 1 << 3 * log2dim;
-    // WORD_COUNT = SIZE >> 6;  // 2^6=64
-
-    bits.resize(size_t(BITSIZE));
-    bits.setall(on);
-  }
-  /// Copy constructor
-  NodeMask(const NodeMask &other) { *this = other; }
-  /// Destructor
-  ~NodeMask() {}
-  /// Assignment operator
-  NodeMask &operator=(const NodeMask &other) {
-    LOG2DIM = other.LOG2DIM;
-    DIM = other.DIM;
-    BITSIZE = other.BITSIZE;
-    // WORD_COUNT = other.WORD_COUNT;
-
-    bits = other.bits;
-    // mWords = other.mWords;
-    return *this;
-    // int32_t n = WORD_COUNT;
-    // const Word* w2 = other.mWords;
-    // for (Word *w1 = mWords; n--; ++w1, ++w2) *w1 = *w2;
-  }
-
-#if 0
-    using OnIterator = OnMaskIterator<NodeMask>;
-    using OffIterator = OffMaskIterator<NodeMask>;
-    using DenseIterator = DenseMaskIterator<NodeMask>;
-
-    OnIterator beginOn() const       { return OnIterator(this->findFirstOn(),this); }
-    OnIterator endOn() const         { return OnIterator(SIZE,this); }
-    OffIterator beginOff() const     { return OffIterator(this->findFirstOff(),this); }
-    OffIterator endOff() const       { return OffIterator(SIZE,this); }
-    DenseIterator beginDense() const { return DenseIterator(0,this); }
-    DenseIterator endDense() const   { return DenseIterator(SIZE,this); }
-
-  bool operator==(const NodeMask &other) const {
-    int n = int(WORD_COUNT);
-    for (const Word *w1 = mWords.data(), *w2 = other.mWords.data();
-         n-- && *w1++ == *w2++;)
-      ;
-    return n == -1;
-  }
-
-  bool operator!=(const NodeMask &other) const { return !(*this == other); }
-#endif
-
-#if 0  // remove
-  //
-  // Bitwise logical operations
-  //
-
-  /// @brief Apply a functor to the words of the this and the other mask.
-  ///
-  /// @details An example that implements the "operator&=" method:
-  /// @code
-  /// struct Op { inline void operator()(W &w1, const W& w2) const { w1 &= w2; }
-  /// };
-  /// @endcode
-  template <typename WordOp>
-  const NodeMask &foreach (const NodeMask &other, const WordOp &op) {
-    Word *w1 = mWords.data();
-    const Word *w2 = other.mWords.data();
-    for (int32_t n = WORD_COUNT; n--; ++w1, ++w2) op(*w1, *w2);
-    return *this;
-  }
-  template <typename WordOp>
-  const NodeMask &foreach (const NodeMask &other1, const NodeMask &other2,
-                           const WordOp &op) {
-    Word *w1 = mWords.data();
-    const Word *w2 = other1.mWords.data(), *w3 = other2.mWords.data();
-    for (int32_t n = WORD_COUNT; n--; ++w1, ++w2, ++w3) op(*w1, *w2, *w3);
-    return *this;
-  }
-  template <typename WordOp>
-  const NodeMask &foreach (const NodeMask &other1, const NodeMask &other2,
-                           const NodeMask &other3, const WordOp &op) {
-    Word *w1 = mWords.data();
-    const Word *w2 = other1.mWords.data(), *w3 = other2.mWords.data(),
-               *w4 = other3.mWords.data();
-    for (int32_t n = WORD_COUNT; n--; ++w1, ++w2, ++w3, ++w4)
-      op(*w1, *w2, *w3, *w4);
-    return *this;
-  }
-  /// @brief Bitwise intersection
-  const NodeMask &operator&=(const NodeMask &other) {
-    Word *w1 = mWords.data();
-    const Word *w2 = other.mWords.data();
-    for (int32_t n = WORD_COUNT; n--; ++w1, ++w2) *w1 &= *w2;
-    return *this;
-  }
-  /// @brief Bitwise union
-  const NodeMask &operator|=(const NodeMask &other) {
-    Word *w1 = mWords.data();
-    const Word *w2 = other.mWords.data();
-    for (int32_t n = WORD_COUNT; n--; ++w1, ++w2) *w1 |= *w2;
-    return *this;
-  }
-  /// @brief Bitwise difference
-  const NodeMask &operator-=(const NodeMask &other) {
-    Word *w1 = mWords.data();
-    const Word *w2 = other.mWords.data();
-    for (int32_t n = WORD_COUNT; n--; ++w1, ++w2) *w1 &= ~*w2;
-    return *this;
-  }
-  /// @brief Bitwise XOR
-  const NodeMask &operator^=(const NodeMask &other) {
-    Word *w1 = mWords.data();
-    const Word *w2 = other.mWords.data();
-    for (int32_t n = WORD_COUNT; n--; ++w1, ++w2) *w1 ^= *w2;
-    return *this;
-  }
-  NodeMask operator!() const {
-    NodeMask m(*this);
-    m.toggle();
-    return m;
-  }
-  NodeMask operator&(const NodeMask &other) const {
-    NodeMask m(*this);
-
-    m &= other;
-    return m;
-  }
-  NodeMask operator|(const NodeMask &other) const {
-    NodeMask m(*this);
-    m |= other;
-    return m;
-  }
-  NodeMask operator^(const NodeMask &other) const {
-    NodeMask m(*this);
-    m ^= other;
-    return m;
-  }
-#endif
-
-  /// Return the byte size of this NodeMask
-  size_t memUsage() const { return bits.size(); }
-
-#if 0
-  /// Return the total number of on bits
-  int32_t countOn() const {
-    int32_t sum = 0, n = WORD_COUNT;
-    std::cout << "cnt = " << n << ", sz = " << mWords.size() << std::endl;
-    for (const Word *w = mWords.data(); n--; ++w) sum += CountOn(*w);
-    return sum;
-  }
-
-  /// Return the total number of on bits
-  int32_t countOff() const { return SIZE - this->countOn(); }
-  /// Set the <i>n</i>th  bit on
-  void setOn(int32_t n) {
-    TINYVDBIO_ASSERT((n >> 6) < WORD_COUNT);
-    mWords[n >> 6] |= Word(1) << (n & 63);
-  }
-  /// Set the <i>n</i>th bit off
-  void setOff(int32_t n) {
-    TINYVDBIO_ASSERT((n >> 6) < WORD_COUNT);
-    mWords[n >> 6] &= ~(Word(1) << (n & 63));
-  }
-  /// Set the <i>n</i>th bit to the specified state
-  void set(int32_t n, bool On) { On ? this->setOn(n) : this->setOff(n); }
-  /// Set all bits to the specified state
-  void set(bool on) {
-    const Word state = on ? ~Word(0) : Word(0);
-    int32_t n = WORD_COUNT;
-    for (Word *w = mWords.data(); n--; ++w) *w = state;
-  }
-  /// Set all bits on
-  void setOn() {
-    int32_t n = WORD_COUNT;
-    for (Word *w = mWords.data(); n--; ++w) *w = ~Word(0);
-  }
-  /// Set all bits off
-  void setOff() {
-    int32_t n = WORD_COUNT;
-    for (Word *w = mWords.data(); n--; ++w) *w = Word(0);
-  }
-  /// Toggle the state of the <i>n</i>th bit
-  void toggle(int32_t n) {
-    TINYVDBIO_ASSERT((n >> 6) < WORD_COUNT);
-    mWords[n >> 6] ^= Word(1) << (n & 63);
-  }
-  /// Toggle the state of all bits in the mask
-  void toggle() {
-    int32_t n = WORD_COUNT;
-    for (Word *w = mWords.data(); n--; ++w) *w = ~*w;
-  }
-  /// Set the first bit on
-  void setFirstOn() { this->setOn(0); }
-  /// Set the last bit on
-  void setLastOn() { this->setOn(SIZE - 1); }
-  /// Set the first bit off
-  void setFirstOff() { this->setOff(0); }
-  /// Set the last bit off
-  void setLastOff() { this->setOff(SIZE - 1); }
-  /// Return @c true if the <i>n</i>th bit is on
-#endif
-
-  uint32_t nbits() const { return uint32_t(bits.nbits()); }
-
-  uint32_t count_on() const { return uint32_t(bits.count()); }
-
-  bool is_on(int32_t n) const {
-    TINYVDBIO_ASSERT(n < int32_t(bits.nbits()));
-    return bits.test(size_t(n));
-  }
-
-  bool is_off(int32_t n) const { return !this->is_on(n); }
-
-#if 0
-  /// Return @c true if all the bits are on
-  bool isOn() const {
-    int n = int(WORD_COUNT);
-    for (const Word *w = mWords.data(); n-- && *w++ == ~Word(0);)
-      ;
-    return n == -1;
-  }
-  /// Return @c true if all the bits are off
-  bool isOff() const {
-    int n = int(WORD_COUNT);
-    for (const Word *w = mWords.data(); n-- && *w++ == Word(0);)
-      ;
-    return n == -1;
-  }
-  /// Return @c true if bits are either all off OR all on.
-  /// @param isOn Takes on the values of all bits if the method
-  /// returns true - else it is undefined.
-  bool isConstant(bool &isOn) const {
-    isOn = (mWords[0] == ~Word(0));  // first word has all bits on
-    if (!isOn && mWords[0] != Word(0)) return false;  // early out
-    const Word *w = mWords.data() + 1, *n = mWords.data() + WORD_COUNT;
-    while (w < n && *w == mWords[0]) ++w;
-    return w == n;
-  }
-  int32_t findFirstOn() const {
-    int32_t n = 0;
-    const Word *w = mWords.data();
-    for (; n < WORD_COUNT && !*w; ++w, ++n)
-      ;
-    return n == WORD_COUNT ? SIZE : (n << 6) + FindLowestOn(*w);
-  }
-  int32_t findFirstOff() const {
-    int32_t n = 0;
-    const Word *w = mWords.data();
-    for (; n < WORD_COUNT && !~*w; ++w, ++n)
-      ;
-    return n == WORD_COUNT ? SIZE : (n << 6) + FindLowestOn(~*w);
-  }
-
-  //@{
-  /// Return the <i>n</i>th word of the bit mask, for a word of arbitrary size.
-  template <typename WordT>
-  WordT getWord(int n) const {
-    TINYVDBIO_ASSERT(n * 8 * sizeof(WordT) < SIZE);
-    return reinterpret_cast<const WordT *>(mWords)[n];
-  }
-  template <typename WordT>
-  WordT &getWord(int n) {
-    TINYVDBIO_ASSERT(n * 8 * sizeof(WordT) < SIZE);
-    return reinterpret_cast<WordT *>(mWords)[n];
-  }
-  //@}
-#endif
-
-  // void save(std::ostream &os) const {
-  //  os.write(reinterpret_cast<const char *>(bits.data()), this->size());
-  //}
-  bool load(StreamReader *sr);
-
-  void seek(std::istream &is) const {
-    is.seekg(int64_t(bits.size()), std::ios_base::cur);
-  }
-
-  /// @brief simple print method for debugging
-  void printInfo(std::ostream &os = std::cout) const {
-    os << "NodeMask: Dim=" << DIM << " Log2Dim=" << LOG2DIM
-       << " Bit count=" << BITSIZE << std::endl;
-  }
-
-  std::string bitString() const { return bits.to_string(); }
-
-#if 0
-  void printBits(std::ostream &os = std::cout, int32_t max_out = 80u) const {
-    const int32_t n = (SIZE > max_out ? max_out : SIZE);
-    for (int32_t i = 0; i < n; ++i) {
-      if (!(i & 63))
-        os << "||";
-      else if (!(i % 8))
-        os << "|";
-      os << this->isOn(i);
-    }
-    os << "|" << std::endl;
-  }
-  void printAll(std::ostream &os = std::cout, int32_t max_out = 80u) const {
-    this->printInfo(os);
-    this->printBits(os, max_out);
-  }
-
-  int32_t findNextOn(int32_t start) const {
-    int32_t n = start >> 6;              // initiate
-    if (n >= WORD_COUNT) return SIZE;  // check for out of bounds
-    int32_t m = start & 63;
-    Word b = mWords[n];
-    if (b & (Word(1) << m)) return start;          // simpel case: start is on
-    b &= ~Word(0) << m;                            // mask out lower bits
-    while (!b && ++n < WORD_COUNT) b = mWords[n];  // find next none-zero word
-    return (!b ? SIZE : (n << 6) + FindLowestOn(b));  // catch last word=0
-  }
-
-  int32_t findNextOff(int32_t start) const {
-    int32_t n = start >> 6;              // initiate
-    if (n >= WORD_COUNT) return SIZE;  // check for out of bounds
-    int32_t m = start & 63;
-    Word b = ~mWords[n];
-    if (b & (Word(1) << m)) return start;           // simpel case: start is on
-    b &= ~Word(0) << m;                             // mask out lower bits
-    while (!b && ++n < WORD_COUNT) b = ~mWords[n];  // find next none-zero word
-    return (!b ? SIZE : (n << 6) + FindLowestOn(b));  // catch last word=0
-  }
-#endif
-};  // NodeMask
-
-class GridDescriptor {
- public:
-  GridDescriptor();
-  GridDescriptor(const std::string &name, const std::string &grid_type,
-                 bool save_float_as_half = false);
-  // GridDescriptor(const GridDescriptor &rhs);
-  // GridDescriptor& operator=(const GridDescriptor &rhs);
-  //~GridDescriptor();
-
-  const std::string &GridName() const { return grid_name_; }
-
-  bool IsInstance() const { return !instance_parent_name_.empty(); }
-
-  bool SaveFloatAsHalf() const { return save_float_as_half_; }
-
-  uint64_t GridByteOffset() const { return grid_byte_offset_; }
-
-  uint64_t BlockByteOffset() const { return block_byte_offset_; }
-
-  uint64_t EndByteOffset() const { return end_byte_offset_; }
-
-  // "\x1e" = ASCII "record separator"
-  static std::string AddSuffix(const std::string &name, int n,
-                               const std::string &seperator = "\x1e");
-  static std::string StripSuffix(const std::string &name,
-                                 const std::string &separator = "\x1e");
-
-  ///
-  /// Read GridDescriptor from a stream.
-  ///
-  bool Read(StreamReader *sr, const uint32_t file_version, std::string *err);
-
- private:
-  std::string grid_name_;
-  std::string unique_name_;
-  std::string instance_parent_name_;
-  std::string grid_type_;
-
-  bool save_float_as_half_{false};  // use fp16?
-  uint64_t grid_byte_offset_{0};
-  uint64_t block_byte_offset_{0};
-  uint64_t end_byte_offset_{0};
-};
-
-typedef enum {
-  NODE_TYPE_ROOT = 0,
-  NODE_TYPE_INTERNAL = 1,
-  NODE_TYPE_LEAF = 2,
-  NODE_TYPE_INVALID = 3
-} NodeType;
-
-typedef enum {
-  VALUE_TYPE_NULL = 0,
-  VALUE_TYPE_FLOAT = 1,
-  VALUE_TYPE_HALF = 2,
-  VALUE_TYPE_BOOL = 3,
-  VALUE_TYPE_DOUBLE = 4,
-  VALUE_TYPE_INT = 5,
-  VALUE_TYPE_STRING = 6
-} ValueType;
-
-static size_t GetValueTypeSize(const ValueType type) {
-  if (type == VALUE_TYPE_FLOAT) {
-    return sizeof(float);
-  } else if (type == VALUE_TYPE_HALF) {
-    return sizeof(short);
-  } else if (type == VALUE_TYPE_BOOL) {
-    return 1;
-  } else if (type == VALUE_TYPE_DOUBLE) {
-    return sizeof(double);
-  } else if (type == VALUE_TYPE_STRING) {
-    // string is not supported in this function.
-    // Use Value::Size() instead.
-    return 0;
-  }
-  return 0;
-}
-
-// Simple class to represent value object
-class Value {
- public:
-  Value() : type_(VALUE_TYPE_NULL) {}
-
-  explicit Value(bool b) : type_(VALUE_TYPE_BOOL) { boolean_value_ = b; }
-  explicit Value(float f) : type_(VALUE_TYPE_FLOAT) { float_value_ = f; }
-  explicit Value(double d) : type_(VALUE_TYPE_DOUBLE) { double_value_ = d; }
-  explicit Value(int n) : type_(VALUE_TYPE_INT) { int_value_ = n; }
-  explicit Value(const std::string &str) : type_(VALUE_TYPE_STRING) {
-    string_value_ = str;
-  }
-
-  ValueType Type() const { return type_; }
-
-  bool IsBool() const { return (type_ == VALUE_TYPE_BOOL); }
-  bool IsFloat() const { return (type_ == VALUE_TYPE_FLOAT); }
-  bool IsDouble() const { return (type_ == VALUE_TYPE_DOUBLE); }
-  bool IsInt() const { return (type_ == VALUE_TYPE_INT); }
-  bool IsString() const { return (type_ == VALUE_TYPE_STRING); }
-
-  // Accessor
-  template <typename T>
-  const T &Get() const;
-  template <typename T>
-  T &Get();
-
-  size_t Size() const {
-    size_t len = 0;
-    switch (type_) {
-      case VALUE_TYPE_BOOL:
-        len = 1;
-        break;
-      case VALUE_TYPE_HALF:
-        len = sizeof(short);
-        break;
-      case VALUE_TYPE_INT:
-        len = sizeof(int);
-        break;
-      case VALUE_TYPE_FLOAT:
-        len = sizeof(float);
-        break;
-      case VALUE_TYPE_DOUBLE:
-        len = sizeof(double);
-        break;
-      case VALUE_TYPE_STRING:
-        len = string_value_.size();
-        break;
-      case VALUE_TYPE_NULL:
-        len = 0;
-        break;
-    }
-
-    return len;
-  }
-
- protected:
-  ValueType type_;
-
-  int int_value_;
-  float float_value_;
-  double double_value_;
-  bool boolean_value_;
-  std::string string_value_;
-};
-
-#define TINYVDB_VALUE_GET(ctype, var)             \
-  template <>                                     \
-  inline const ctype &Value::Get<ctype>() const { \
-    return var;                                   \
-  }                                               \
-  template <>                                     \
-  inline ctype &Value::Get<ctype>() {             \
-    return var;                                   \
-  }
-TINYVDB_VALUE_GET(bool, boolean_value_)
-TINYVDB_VALUE_GET(double, double_value_)
-TINYVDB_VALUE_GET(int, int_value_)
-TINYVDB_VALUE_GET(float, float_value_)
-TINYVDB_VALUE_GET(std::string, string_value_)
-#undef TINYVDB_VALUE_GET
-
-static std::ostream &operator<<(std::ostream &os, const Value &value) {
-  if (value.Type() == VALUE_TYPE_NULL) {
-    os << "NULL";
-  } else if (value.Type() == VALUE_TYPE_BOOL) {
-    os << value.Get<bool>();
-  } else if (value.Type() == VALUE_TYPE_FLOAT) {
-    os << value.Get<float>();
-  } else if (value.Type() == VALUE_TYPE_INT) {
-    os << value.Get<int>();
-  } else if (value.Type() == VALUE_TYPE_DOUBLE) {
-    os << value.Get<double>();
-  }
-
-  return os;
-}
-
-static Value Negate(const Value &value) {
-  if (value.Type() == VALUE_TYPE_NULL) {
-    return value;
-  } else if (value.Type() == VALUE_TYPE_BOOL) {
-    return Value(value.Get<bool>() ? false : true);
-  } else if (value.Type() == VALUE_TYPE_FLOAT) {
-    return Value(-value.Get<float>());
-  } else if (value.Type() == VALUE_TYPE_INT) {
-    return Value(-value.Get<int>());
-  } else if (value.Type() == VALUE_TYPE_DOUBLE) {
-    return Value(-value.Get<double>());
-  }
-
-  // ???
-  return value;
-}
-
-class TreeDesc;
-
-class TreeDesc {
- public:
-  TreeDesc();
-  ~TreeDesc();
-
- private:
-  TreeDesc *child_tree_desc_;
-};
-
-class NodeInfo {
- public:
-  NodeInfo(NodeType node_type, ValueType value_type, int32_t log2dim)
-      : node_type_(node_type), value_type_(value_type), log2dim_(log2dim) {}
-
-  NodeType node_type() const { return node_type_; }
-
-  ValueType value_type() const { return value_type_; }
-
-  int32_t log2dim() const { return log2dim_; }
-
- private:
-  NodeType node_type_;
-  ValueType value_type_;
-  int32_t log2dim_;
-};
-
-///
-/// Stores layout of grid hierarchy.
-///
-class GridLayoutInfo {
- public:
-  GridLayoutInfo() {}
-  //~GridLayoutInfo() {}
-
-  void Add(const NodeInfo &node_info) { node_infos_.push_back(node_info); }
-
-  const NodeInfo &GetNodeInfo(int level) const {
-    TINYVDBIO_ASSERT(level <= int(node_infos_.size()));
-    return node_infos_[size_t(level)];
-  }
-
-  int NumLevels() const { return int(node_infos_.size()); }
-
-  // Compute global voxel size for a given level.
-  uint32_t ComputeGlobalVoxelSize(int level) {
-    if (level >= NumLevels()) {
-      // Invalid input
-      return 0;
-    }
-
-    uint32_t voxel_size = 1 << node_infos_[size_t(level)].log2dim();
-    for (int l = level + 1; l < NumLevels(); l++) {
-      uint32_t sz = 1 << node_infos_[size_t(l)].log2dim();
-
-      voxel_size *= sz;
-    }
-
-    return voxel_size;
-  }
-
-  std::vector<NodeInfo> node_infos_;
-};
-
-class InternalOrLeafNode;
-
-class Node {
- public:
-  ///
-  /// Requires GridLayoutInfo, which contains whole hierarcical grid
-  /// layout information.
-  ///
-  Node(const GridLayoutInfo &layout_info) : grid_layout_info_(layout_info) {}
-  Node &operator=(const Node &rhs) {
-    grid_layout_info_ = rhs.grid_layout_info_;
-    return (*this);
-  }
-  Node(const Node &rhs) : grid_layout_info_(rhs.grid_layout_info_) {}
-
-  virtual ~Node();
-
-  virtual bool ReadTopology(StreamReader *sr, int level,
-                            const DeserializeParams &params, std::string *warn,
-                            std::string *err) = 0;
-
-  virtual bool ReadBuffer(StreamReader *sr, int level,
-                          const DeserializeParams &params, std::string *warn,
-                          std::string *err) = 0;
-
-  const GridLayoutInfo &GetGridLayoutInfo() const { return grid_layout_info_; }
-
- protected:
-  GridLayoutInfo grid_layout_info_;
-};
-
-Node::~Node() {}
-
-///
-/// InternalOrLeaf node represents bifurcation or leaf node.
-///
-class InternalOrLeafNode : public Node {
- public:
-  // static const int LOG2DIM = Log2Dim,  // log2 of tile count in one
-  // dimension
-  //    TOTAL = Log2Dim +
-  //            ChildNodeType::TOTAL,  // log2 of voxel count in one dimension
-  //    DIM = 1 << TOTAL,              // total voxel count in one dimension
-  //    NUM_VALUES =
-  //        1 << (3 * Log2Dim),  // total voxel count represented by this node
-  //    LEVEL = 1 + ChildNodeType::LEVEL;  // level 0 = leaf
-  // static const int64 NUM_VOXELS =
-  //    uint64_t(1) << (3 * TOTAL);  // total voxel count represented by this
-  //    node
-  // static const int NUM_VALUES = 1 << (3 * Log2Dim); // total voxel count
-  // represented by this node
-
-  InternalOrLeafNode(const GridLayoutInfo &grid_layout_info)
-      : Node(grid_layout_info) {
-    origin_[0] = 0;
-    origin_[1] = 0;
-    origin_[2] = 0;
-    // node_values_.resize(child_mask_.size());
-
-    num_voxels_ = 0;
-  }
-
-  InternalOrLeafNode(const InternalOrLeafNode &rhs)
-      : Node(rhs.grid_layout_info_) {
-    origin_[0] = rhs.origin_[0];
-    origin_[1] = rhs.origin_[1];
-    origin_[2] = rhs.origin_[2];
-
-    child_nodes_ = rhs.child_nodes_;
-    child_mask_ = rhs.child_mask_;
-
-    num_voxels_ = rhs.num_voxels_;
-
-    node_values_ = rhs.node_values_;
-
-    value_mask_ = rhs.value_mask_;
-
-    data_ = rhs.data_;
-  }
-
-  InternalOrLeafNode &operator=(const InternalOrLeafNode &rhs) {
-    origin_[0] = rhs.origin_[0];
-    origin_[1] = rhs.origin_[1];
-    origin_[2] = rhs.origin_[2];
-
-    child_nodes_ = rhs.child_nodes_;
-    child_mask_ = rhs.child_mask_;
-
-    num_voxels_ = rhs.num_voxels_;
-
-    node_values_ = rhs.node_values_;
-
-    value_mask_ = rhs.value_mask_;
-
-    data_ = rhs.data_;
-
-    return (*this);
-  }
-
-  //~InternalOrLeafNode();
-
-  /// Deep copy function
-  InternalOrLeafNode &Copy(const InternalOrLeafNode &rhs);
-
-  ///
-  /// @param[in] level Depth of this node(0: root, 1: first intermediate, ...)
-  ///
-  bool ReadTopology(StreamReader *sr, int level, const DeserializeParams &parms,
-                    std::string *warn, std::string *err) override;
-
-  bool ReadBuffer(StreamReader *sr, int level, const DeserializeParams &params,
-                  std::string *warn, std::string *err) override;
-
-  const std::vector<InternalOrLeafNode> &GetChildNodes() const {
-    return child_nodes_;
-  }
-
-  std::vector<InternalOrLeafNode> &GetChildNodes() { return child_nodes_; }
-
-  uint32_t GetVoxelSize() const { return uint32_t(value_mask_.DIM); }
-
- private:
-  NodeMask value_mask_;
-
-  // For internal node
-  // child nodes are internal or leaf depending on
-  // grid_layout_info_[level+1].node_type().
-  std::vector<InternalOrLeafNode> child_nodes_;
-
-  NodeMask child_mask_;
-  std::array<int, 3> origin_;
-
-  std::vector<ValueType> node_values_;
-
-  // For leaf node
-
-  std::vector<uint8_t> data_;  // Leaf's voxel data.
-  uint32_t num_voxels_;
-};
-
-class RootNode : public Node {
- public:
-  RootNode(const GridLayoutInfo &layout_info)
-      : Node(layout_info), num_tiles_(0), num_children_(0) {}
-  ~RootNode() override {}
-
-  /// Deep copy function
-  RootNode &Copy(const RootNode &rhs);
-
-  bool ReadTopology(StreamReader *sr, int level, const DeserializeParams &parms,
-                    std::string *warn, std::string *err) override;
-
-  bool ReadBuffer(StreamReader *sr, int level, const DeserializeParams &params,
-                  std::string *warn, std::string *err) override;
-
-  const std::vector<InternalOrLeafNode> &GetChildNodes() const {
-    return child_nodes_;
-  }
-
-  std::vector<InternalOrLeafNode> &GetChildNodes() { return child_nodes_; }
-
-  const std::vector<Boundsi> &GetChildBounds() const { return child_bounds_; }
-
-  std::string GetError() const { return error_; }
-
- private:
-  // store voxel bounds of child node in global coordinate.
-  std::vector<Boundsi> child_bounds_;
-  std::vector<InternalOrLeafNode> child_nodes_;
-
-  Value background_;  // Background(region of un-interested area) value
-  uint32_t num_tiles_;
-  uint32_t num_children_;
-
-  std::string error_;
-};
-
-///
-/// Simple Voxel node.
-/// (integer grid)
-///
-template <typename T>
-struct VoxelNode {
-  // local bbox
-  // must be dividable by each element of `num_divs` for intermediate node.
-  std::array<uint32_t, 3> bmin;
-  std::array<uint32_t, 3> bmax;
-
-  bool is_leaf;
-
-  std::array<uint32_t, 3> num_divs;  // The number of voxel divisions
-
-  //
-  // intermediate(branch)
-  //
-  double background;  // background value(for empty leaf)
-
-  // offset to child VoxelNode
-  // 0 = empty leaf
-  std::vector<size_t>
-      child_offsets;  // len = num_divs[0] * num_divs[1] * num_divs[2]
-
-  //
-  // leaf
-  //
-
-  // TODO(syoyo): Support various voxel data type.
-  uint32_t num_channels;
-  std::vector<T>
-      voxels;  // len = num_divs[0] * num_divs[1] * num_divs[2] * num_channels
-};
-
-class VoxelTree {
- public:
-  ///
-  /// Returns tree is valid(got success to build tree?)
-  ///
-  bool Valid();
-
-  ///
-  /// Builds Voxel tree from RootNode class
-  /// Returns false when failed to build tree(e.g. input `root` is invalid) and
-  /// store error message to `err`.
-  ///
-  bool Build(const RootNode &root, std::string *err);
-
-  ///
-  /// Sample voxel value for a given coordinate.
-  /// Returns voxel value or background value when `loc` coordinate is empty.
-  ///
-  /// @param[in] loc Sample coordinate.
-  /// @param[in] req_channels Required channels of voxel data.
-  /// @param[out] out Sampled voxel value(length = req_channels)
-  ///
-  void Sample(const uint32_t loc[3], const uint8_t req_channels, float *out);
-
- private:
-  // Build tree recursively.
-  void BuildTree(const InternalOrLeafNode &root, int depth);
-
-  bool valid_;
-
-  std::array<double, 3>
-      bmin_;  // bounding min of root voxel node(in world coordinate).
-  std::array<double, 3>
-      bmax_;  // bounding max of root voxel node(in world coordinate).
-  std::array<double, 3> pitch_;  // voxel pitch at leaf level. Assume all voxel
-                                 // has same pitch size.
-
-  std::vector<VoxelNode<float>> nodes_;  // [0] = root node
-};
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
-
-///
-/// Parse VDB header from a file.
-/// Returns TINYVDBIO_SUCCESS upon success and `header` will be filled.
-/// Returns false when failed to parse VDB header and store error message to
-/// `err`.
-///
-VDBStatus ParseVDBHeader(const std::string &filename, VDBHeader *header,
-                         std::string *err);
-
-///
-/// Parse VDB header from memory.
-/// Returns TINYVDBIO_SUCCESS upon success and `header` will be filled.
-/// Returns false when failed to parse VDB header and store error message to
-/// `err`.
-///
-VDBStatus ParseVDBHeader(const uint8_t *data, const size_t len,
-                         VDBHeader *header, std::string *err);
-
-///
-/// Load Grid descriptors from file
-///
-/// Returns TINYVDBIO_SUCCESS upon success.
-/// Returns false when failed to read VDB data and store error message to
-/// `err`.
-///
-VDBStatus ReadGridDescriptors(const std::string &filename,
-                              const VDBHeader &header,
-                              std::map<std::string, GridDescriptor> *gd_map,
-                              std::string *err);
-
-///
-/// Load Grid descriptors from memory
-///
-/// Returns TINYVDBIO_SUCCESS upon success.
-/// Returns false when failed to read VDB data and store error message to
-/// `err`.
-///
-VDBStatus ReadGridDescriptors(const uint8_t *data, const size_t data_len,
-                              const VDBHeader &header,
-                              std::map<std::string, GridDescriptor> *gd_map,
-                              std::string *err);
-
-///
-/// Load Grid data from file
-/// TODO(syoyo): Deprecate
-///
-/// Returns TINYVDBIO_SUCCESS upon success.
-/// Returns false when failed to read VDB data and store error message to
-/// `err`.
-///
-VDBStatus ReadGrids(const std::string &filename, const VDBHeader &header,
-                    const std::map<std::string, GridDescriptor> &gd_map,
-                    std::string *warn, std::string *err);
-
-///
-/// Load Grid data from memory
-///
-/// Returns TINYVDBIO_SUCCESS upon success.
-/// Returns false when failed to read VDB data and store error message to
-/// `err`.
-/// Returns warning message tot `warn`.
-///
-VDBStatus ReadGrids(const uint8_t *data, const size_t data_len,
-                    const VDBHeader &header,
-                    const std::map<std::string, GridDescriptor> &gd_map,
-                    std::string *warn, std::string *err);
-
-///
-/// Write VDB data to a file.
-///
-bool SaveVDB(const std::string &filename, std::string *err);
-
-}  // namespace tinyvdb
-
-#endif  // TINY_VDB_IO_H_
+/* ========================================================================== */
+/* ========================================================================== */
+/*  IMPLEMENTATION                                                            */
+/* ========================================================================== */
+/* ========================================================================== */
 
 #ifdef TINYVDBIO_IMPLEMENTATION
 
-#if !defined(TINYVDBIO_USE_SYSTEM_ZLIB)
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <assert.h>
 
-#define MINIZ_NO_STDIO
-extern "C" {
-#include "miniz.h"
-}
-#else
-// Include your zlib.h before including this tinyvdbio.h
+#ifndef TVDB_ASSERT
+#define TVDB_ASSERT(x) assert(x)
 #endif
 
-#if defined(TINYVDBIO_USE_BLOSC)
-#include <blosc.h>
-#endif
-
-#include <iostream>  // HACK
-#include <sstream>
-#include <vector>
-
-#ifdef __clang__
-#pragma clang diagnostic push
-#if __has_warning("-Wzero-as-null-pointer-constant")
-#pragma clang diagnostic ignored "-Wzero-as-null-pointer-constant"
-#endif
-#endif
+/* -------------------------------------------------------------------------- */
+/*  Platform detection                                                        */
+/* -------------------------------------------------------------------------- */
 
 #if defined(_WIN32)
+#  if defined(__MINGW32__)
+#    include <windows.h>
+#  else
+#    include <Windows.h>
+#  endif
+#  include <io.h>
+#  include <fcntl.h>
+#endif
 
-// for MultiByteToWideChar and other UTF8 things.
-#if defined(__MINGW32__)
-#include <windows.h>
+#if !defined(TVDB_NO_MMAP)
+#  if defined(_WIN32)
+     /* Windows file mapping already available from <Windows.h> */
+#  else
+#    include <sys/mman.h>
+#    include <sys/stat.h>
+#    include <fcntl.h>
+#    include <unistd.h>
+#    include <errno.h>
+#  endif
+#endif
+
+/* Compression headers */
+#if !defined(TVDB_USE_SYSTEM_ZLIB)
+#  define MINIZ_NO_STDIO
+#  include "miniz.h"
 #else
-#include <Windows.h>
+#  include <zlib.h>
 #endif
 
-#if defined(__GLIBCXX__)  // mingw
-
-#include <fcntl.h>  // _O_RDONLY
-
-#include <ext/stdio_filebuf.h>  // fstream (all sorts of IO stuff) + stdio_filebuf (=streambuf)
-
+#if defined(TVDB_USE_BLOSC)
+#  include <blosc2.h>
 #endif
 
-#endif
+/* ========================================================================== */
+/*  VDB file format constants                                                 */
+/* ========================================================================== */
 
-namespace tinyvdb {
-
-namespace {
-
-#if defined(_WIN32)
-
-static inline std::wstring utf8_to_wchar(const std::string &str) {
-  int wstr_size =
-      MultiByteToWideChar(CP_UTF8, 0, str.data(), int(str.size()), nullptr, 0);
-  std::wstring wstr(size_t(wstr_size), 0);
-  MultiByteToWideChar(CP_UTF8, 0, str.data(), int(str.size()), &wstr[0],
-                      int(wstr.size()));
-  return wstr;
-}
-
-#endif
-
-// TODO(syoyo): Use mmap
-std::vector<uint8_t> read_file_binary(const std::string &filename,
-                                      std::string *err) {
-  std::vector<uint8_t> buf;
-
-#if defined(_WIN32)
-
-#if defined(__GLIBCXX__)  // mingw gcc
-  // Assume system have native UTF-8 suport
-  int file_descriptor =
-      _wopen(utf8_to_wchar(filename).c_str(), _O_RDONLY | _O_BINARY);
-  __gnu_cxx::stdio_filebuf<char> wfile_buf(file_descriptor, std::ios_base::in);
-  std::istream f(&wfile_buf);
-
-#elif defined(_MSC_VER)  // MSC
-  // MSVC extension accepts std::wstring for input filename
-  std::ifstream ifs(utf8_to_wchar(filename), std::ifstream::binary);
-#else
-  // TODO(syoyo): Support UTF-8
-  std::ifstream ifs(filename, std::ifstream::binary);
-#endif
-
-#else  // !WIN32
-
-  // Assume system have native UTF-8 suport
-  std::ifstream ifs(filename, std::ifstream::binary);
-
-#endif
-
-  // TODO(syoyo): Use wstring for error message on Win32?
-  if (!ifs) {
-    if (err) {
-      (*err) = "File not found or cannot open file : " + filename;
-    }
-    return buf;
-  }
-
-  ifs.seekg(0, ifs.end);
-  size_t sz = static_cast<size_t>(ifs.tellg());
-  if (int64_t(sz) < 0) {
-    // Looks reading directory, not a file.
-    if (err) {
-      (*err) += "Looks like filename is a directory : \"" + filename + "\"\n";
-    }
-    return buf;
-  }
-
-  if (sz < 16) {
-    // ???
-    if (err) {
-      (*err) += "File size too short. Looks like this file is not a VDB : \"" +
-                filename + "\"\n";
-    }
-    return buf;
-  }
-
-  buf.resize(sz);
-
-  ifs.seekg(0, ifs.beg);
-  ifs.read(reinterpret_cast<char *>(&buf.at(0)),
-           static_cast<std::streamsize>(sz));
-
-  return buf;
-}
-
-}  // namespace local
-
-template <typename T>
-std::ostream &operator<<(std::ostream &os, const Bounds<T> &bound) {
-  os << "Boundsi bmin(" << bound.bmin.x << ", " << bound.bmin.y << ", "
-     << bound.bmin.z << "), bmax(" << bound.bmax.x << ", " << bound.bmax.y
-     << ", " << bound.bmax.z << ")";
-  return os;
-}
-
-const int kOPENVDB_MAGIC = 0x56444220;
-
-///
-/// TinyVDBIO's default file version.
-///
-const uint32_t kTINYVDB_FILE_VERSION = 220;
-
-// File format versions(identical to OPENVDB_FILE_VERSION_***).
-// This should be same with OpenVDB's implementation.
-// We don't support version less than 220
-enum {
-  TINYVDB_FILE_VERSION_SELECTIVE_COMPRESSION = 220,
-  TINYVDB_FILE_VERSION_FLOAT_FRUSTUM_BBOX = 221,
-  TINYVDB_FILE_VERSION_NODE_MASK_COMPRESSION = 222,
-  TINYVDB_FILE_VERSION_BLOSC_COMPRESSION = 223,
-  TINYVDB_FILE_VERSION_POINT_INDEX_GRID = 223,
-  TINYVDB_FILE_VERSION_MULTIPASS_IO = 224
-};
+#define TVDB_MAGIC 0x56444220 /* "VDB " */
 
 enum {
-  TINYVDB_COMPRESS_NONE = 0,
-  TINYVDB_COMPRESS_ZIP = 0x1,
-  TINYVDB_COMPRESS_ACTIVE_MASK = 0x2,
-  TINYVDB_COMPRESS_BLOSC = 0x4
+    TVDB_FILE_VERSION_SELECTIVE_COMPRESSION = 220,
+    TVDB_FILE_VERSION_FLOAT_FRUSTUM_BBOX   = 221,
+    TVDB_FILE_VERSION_NODE_MASK_COMPRESSION = 222,
+    TVDB_FILE_VERSION_BLOSC_COMPRESSION    = 223,
+    TVDB_FILE_VERSION_POINT_INDEX_GRID     = 223,
+    TVDB_FILE_VERSION_MULTIPASS_IO         = 224,
+    TVDB_FILE_VERSION_HALF_GRID            = 225
 };
 
-// https://gist.github.com/rygorous/2156668
-union FP32LE {
-  uint32_t u;
-  float f;
-  struct {
-    uint32_t Mantissa : 23;
-    uint32_t Exponent : 8;
-    uint32_t Sign : 1;
-  } s;
+/* Compression flags are defined as macros in the public header section above */
+
+/* Active-mask compression per-node flags */
+enum {
+    TVDB_NO_MASK_OR_INACTIVE_VALS    = 0,
+    TVDB_NO_MASK_AND_MINUS_BG        = 1,
+    TVDB_NO_MASK_AND_ONE_INACTIVE_VAL = 2,
+    TVDB_MASK_AND_NO_INACTIVE_VALS   = 3,
+    TVDB_MASK_AND_ONE_INACTIVE_VAL   = 4,
+    TVDB_MASK_AND_TWO_INACTIVE_VALS  = 5,
+    TVDB_NO_MASK_AND_ALL_VALS        = 6
 };
 
-union FP32BE {
-  uint32_t u;
-  float f;
-  struct {
-    uint32_t Sign : 1;
-    uint32_t Exponent : 8;
-    uint32_t Mantissa : 23;
-  } s;
-};
+/* ========================================================================== */
+/*  Internal helper: error formatting                                         */
+/* ========================================================================== */
 
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wpadded"
-#endif
-
-union FP16LE {
-  unsigned short u;
-  struct {
-    uint32_t Mantissa : 10;
-    uint32_t Exponent : 5;
-    uint32_t Sign : 1;
-  } s;
-};
-
-union FP16BE {
-  unsigned short u;
-  struct {
-    uint32_t Sign : 1;
-    uint32_t Exponent : 5;
-    uint32_t Mantissa : 10;
-  } s;
-};
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#endif
-
-static inline FP32LE half_to_float_le(FP16LE h) {
-  static const FP32LE magic = {113 << 23};
-  static const uint32_t shifted_exp = 0x7c00
-                                      << 13;  // exponent mask after shift
-  FP32LE o;
-
-  o.u = (h.u & 0x7fffU) << 13U;       // exponent/mantissa bits
-  uint32_t exp_ = shifted_exp & o.u;  // just the exponent
-  o.u += (127 - 15) << 23;            // exponent adjust
-
-  // handle exponent special cases
-  if (exp_ == shifted_exp)    // Inf/NaN?
-    o.u += (128 - 16) << 23;  // extra exp adjust
-  else if (exp_ == 0)         // Zero/Denormal?
-  {
-    o.u += 1 << 23;  // extra exp adjust
-    o.f -= magic.f;  // renormalize
-  }
-
-  o.u |= (h.u & 0x8000U) << 16U;  // sign bit
-  return o;
-}
-
-static inline FP16LE float_to_half_full_le(FP32LE f) {
-  FP16LE o = {0};
-
-  // Based on ISPC reference code (with minor modifications)
-  if (f.s.Exponent == 0)  // Signed zero/denormal (which will underflow)
-    o.s.Exponent = 0;
-  else if (f.s.Exponent == 255)  // Inf or NaN (all exponent bits set)
-  {
-    o.s.Exponent = 31;
-    o.s.Mantissa = f.s.Mantissa ? 0x200 : 0;  // NaN->qNaN and Inf->Inf
-  } else                                      // Normalized number
-  {
-    // Exponent unbias the single, then bias the halfp
-    int newexp = f.s.Exponent - 127 + 15;
-    if (newexp >= 31)  // Overflow, return signed infinity
-      o.s.Exponent = 31;
-    else if (newexp <= 0)  // Underflow
-    {
-      if ((14 - newexp) <= 24)  // Mantissa might be non-zero
-      {
-        uint32_t mant = f.s.Mantissa | 0x800000;  // Hidden 1 bit
-        o.s.Mantissa = mant >> (14 - newexp);
-        if ((mant >> (13 - newexp)) & 1)  // Check for rounding
-          o.u++;  // Round, might overflow into exp bit, but this is OK
-      }
+static void tvdb__set_error(tvdb_error_t *err, tvdb_status_t status,
+                            const char *msg) {
+    if (!err) return;
+    err->status = status;
+    if (msg) {
+        size_t len = strlen(msg);
+        if (len >= TVDB_MAX_ERROR_MSG) len = TVDB_MAX_ERROR_MSG - 1;
+        memcpy(err->message, msg, len);
+        err->message[len] = '\0';
     } else {
-      o.s.Exponent = static_cast<uint32_t>(newexp);
-      o.s.Mantissa = f.s.Mantissa >> 13;
-      if (f.s.Mantissa & 0x1000)  // Check for rounding
-        o.u++;                    // Round, might overflow to inf, this is OK
+        err->message[0] = '\0';
     }
-  }
-
-  o.s.Sign = f.s.Sign;
-  return o;
 }
 
-static inline FP32BE half_to_float_be(FP16BE h) {
-  static const FP32BE magic = {113 << 23};
-  static const uint32_t shifted_exp = 0x7c00
-                                      << 13;  // exponent mask after shift
-  FP32BE o;
+/* ========================================================================== */
+/*  Default allocator                                                         */
+/* ========================================================================== */
 
-  o.u = (h.u & 0x7fffU) << 13U;       // exponent/mantissa bits
-  uint32_t exp_ = shifted_exp & o.u;  // just the exponent
-  o.u += (127 - 15) << 23;            // exponent adjust
-
-  // handle exponent special cases
-  if (exp_ == shifted_exp)    // Inf/NaN?
-    o.u += (128 - 16) << 23;  // extra exp adjust
-  else if (exp_ == 0)         // Zero/Denormal?
-  {
-    o.u += 1 << 23;  // extra exp adjust
-    o.f -= magic.f;  // renormalize
-  }
-
-  o.u |= (h.u & 0x8000U) << 16U;  // sign bit
-  return o;
+static void *tvdb__default_malloc(size_t size, void *ctx) {
+    (void)ctx;
+    return malloc(size);
 }
 
-static inline FP16BE float_to_half_full_le(FP32BE f) {
-  FP16BE o = {0};
-
-  // Based on ISPC reference code (with minor modifications)
-  if (f.s.Exponent == 0)  // Signed zero/denormal (which will underflow)
-    o.s.Exponent = 0;
-  else if (f.s.Exponent == 255)  // Inf or NaN (all exponent bits set)
-  {
-    o.s.Exponent = 31;
-    o.s.Mantissa = f.s.Mantissa ? 0x200 : 0;  // NaN->qNaN and Inf->Inf
-  } else                                      // Normalized number
-  {
-    // Exponent unbias the single, then bias the halfp
-    int newexp = f.s.Exponent - 127 + 15;
-    if (newexp >= 31)  // Overflow, return signed infinity
-      o.s.Exponent = 31;
-    else if (newexp <= 0)  // Underflow
-    {
-      if ((14 - newexp) <= 24)  // Mantissa might be non-zero
-      {
-        uint32_t mant = f.s.Mantissa | 0x800000;  // Hidden 1 bit
-        o.s.Mantissa = mant >> (14 - newexp);
-        if ((mant >> (13 - newexp)) & 1)  // Check for rounding
-          o.u++;  // Round, might overflow into exp bit, but this is OK
-      }
-    } else {
-      o.s.Exponent = static_cast<uint32_t>(newexp);
-      o.s.Mantissa = f.s.Mantissa >> 13;
-      if (f.s.Mantissa & 0x1000)  // Check for rounding
-        o.u++;                    // Round, might overflow to inf, this is OK
-    }
-  }
-
-  o.s.Sign = f.s.Sign;
-  return o;
+static void *tvdb__default_realloc(void *ptr, size_t old_size, size_t new_size,
+                                   void *ctx) {
+    (void)ctx;
+    (void)old_size;
+    return realloc(ptr, new_size);
 }
 
-static inline void swap2(unsigned short *val) {
-  unsigned short tmp = *val;
-  uint8_t *dst = reinterpret_cast<uint8_t *>(val);
-  uint8_t *src = reinterpret_cast<uint8_t *>(&tmp);
-
-  dst[0] = src[1];
-  dst[1] = src[0];
+static void tvdb__default_free(void *ptr, size_t size, void *ctx) {
+    (void)ctx;
+    (void)size;
+    free(ptr);
 }
 
-static inline void swap4(uint32_t *val) {
-  uint32_t tmp = *val;
-  uint8_t *dst = reinterpret_cast<uint8_t *>(val);
-  uint8_t *src = reinterpret_cast<uint8_t *>(&tmp);
-
-  dst[0] = src[3];
-  dst[1] = src[2];
-  dst[2] = src[1];
-  dst[3] = src[0];
+static tvdb_allocator_t tvdb__default_allocator(void) {
+    tvdb_allocator_t a;
+    a.malloc_fn  = tvdb__default_malloc;
+    a.realloc_fn = tvdb__default_realloc;
+    a.free_fn    = tvdb__default_free;
+    a.user_ctx   = NULL;
+    return a;
 }
 
-static inline void swap4(int *val) {
-  int tmp = *val;
-  uint8_t *dst = reinterpret_cast<uint8_t *>(val);
-  uint8_t *src = reinterpret_cast<uint8_t *>(&tmp);
-
-  dst[0] = src[3];
-  dst[1] = src[2];
-  dst[2] = src[1];
-  dst[3] = src[0];
+/* Allocator wrappers */
+static void *tvdb__alloc(tvdb_allocator_t *a, size_t size) {
+    return a->malloc_fn(size, a->user_ctx);
 }
 
-static inline void swap8(uint64_t *val) {
-  uint64_t tmp = (*val);
-  uint8_t *dst = reinterpret_cast<uint8_t *>(val);
-  uint8_t *src = reinterpret_cast<uint8_t *>(&tmp);
-
-  dst[0] = src[7];
-  dst[1] = src[6];
-  dst[2] = src[5];
-  dst[3] = src[4];
-  dst[4] = src[3];
-  dst[5] = src[2];
-  dst[6] = src[1];
-  dst[7] = src[0];
+static void *tvdb__realloc(tvdb_allocator_t *a, void *ptr,
+                           size_t old_size, size_t new_size) {
+    return a->realloc_fn(ptr, old_size, new_size, a->user_ctx);
 }
 
-static inline void swap8(int64_t *val) {
-  int64_t tmp = (*val);
-  uint8_t *dst = reinterpret_cast<uint8_t *>(val);
-  uint8_t *src = reinterpret_cast<uint8_t *>(&tmp);
-
-  dst[0] = src[7];
-  dst[1] = src[6];
-  dst[2] = src[5];
-  dst[3] = src[4];
-  dst[4] = src[3];
-  dst[5] = src[2];
-  dst[6] = src[1];
-  dst[7] = src[0];
+static void tvdb__free(tvdb_allocator_t *a, void *ptr, size_t size) {
+    if (ptr) a->free_fn(ptr, size, a->user_ctx);
 }
 
-///
-/// Simple stream reader
-///
-class StreamReader {
- public:
-  explicit StreamReader(const uint8_t *binary, const size_t length,
-                        const bool swap_endian)
-      : binary_(binary), length_(length), swap_endian_(swap_endian), idx_(0) {
-    (void)pad_;
-  }
-
-  bool seek_set(const uint64_t offset) {
-    if (offset > length_) {
-      return false;
-    }
-
-    idx_ = offset;
-    return true;
-  }
-
-  bool seek_from_currect(const int64_t offset) {
-    if ((int64_t(idx_) + offset) < 0) {
-      return false;
-    }
-
-    if (size_t((int64_t(idx_) + offset)) > length_) {
-      return false;
-    }
-
-    idx_ = size_t(int64_t(idx_) + offset);
-    return true;
-  }
-
-  size_t read(const size_t n, const uint64_t dst_len, uint8_t *dst) {
-    size_t len = n;
-    if ((idx_ + len) > length_) {
-      len = length_ - idx_;
-    }
-
-    if (len > 0) {
-      if (dst_len < len) {
-        // dst does not have enough space. return 0 for a while.
-        return 0;
-      }
-
-      memcpy(dst, &binary_[idx_], len);
-      idx_ += len;
-      return len;
-
-    } else {
-      return 0;
-    }
-  }
-
-  bool read1(uint8_t *ret) {
-    if ((idx_ + 1) > length_) {
-      return false;
-    }
-
-    const uint8_t val = binary_[idx_];
-
-    (*ret) = val;
-    idx_ += 1;
-
-    return true;
-  }
-
-  bool read_bool(bool *ret) {
-    if ((idx_ + 1) > length_) {
-      return false;
-    }
-
-    const char val = static_cast<const char>(binary_[idx_]);
-
-    (*ret) = bool(val);
-    idx_ += 1;
-
-    return true;
-  }
-
-  bool read1(char *ret) {
-    if ((idx_ + 1) > length_) {
-      return false;
-    }
-
-    const char val = static_cast<const char>(binary_[idx_]);
-
-    (*ret) = val;
-    idx_ += 1;
-
-    return true;
-  }
-
-  bool read2(unsigned short *ret) {
-    if ((idx_ + 2) > length_) {
-      return false;
-    }
-
-    unsigned short val =
-        *(reinterpret_cast<const unsigned short *>(&binary_[idx_]));
-
-    if (swap_endian_) {
-      swap2(&val);
-    }
-
-    (*ret) = val;
-    idx_ += 2;
-
-    return true;
-  }
-
-  bool read4(uint32_t *ret) {
-    if ((idx_ + 4) > length_) {
-      return false;
-    }
-
-    uint32_t val = *(reinterpret_cast<const uint32_t *>(&binary_[idx_]));
-
-    if (swap_endian_) {
-      swap4(&val);
-    }
-
-    (*ret) = val;
-    idx_ += 4;
-
-    return true;
-  }
-
-  bool read4(int *ret) {
-    if ((idx_ + 4) > length_) {
-      return false;
-    }
-
-    int val = *(reinterpret_cast<const int *>(&binary_[idx_]));
-
-    if (swap_endian_) {
-      swap4(&val);
-    }
-
-    (*ret) = val;
-    idx_ += 4;
-
-    return true;
-  }
-
-  bool read8(uint64_t *ret) {
-    if ((idx_ + 8) > length_) {
-      return false;
-    }
-
-    uint64_t val = *(reinterpret_cast<const uint64_t *>(&binary_[idx_]));
-
-    if (swap_endian_) {
-      swap8(&val);
-    }
-
-    (*ret) = val;
-    idx_ += 8;
-
-    return true;
-  }
-
-  bool read8(int64_t *ret) {
-    if ((idx_ + 8) > length_) {
-      return false;
-    }
-
-    int64_t val = *(reinterpret_cast<const int64_t *>(&binary_[idx_]));
-
-    if (swap_endian_) {
-      swap8(&val);
-    }
-
-    (*ret) = val;
-    idx_ += 8;
-
-    return true;
-  }
-
-  bool read_float(float *ret) {
-    if (!ret) {
-      return false;
-    }
-
-    float value;
-    if (!read4(reinterpret_cast<int *>(&value))) {
-      return false;
-    }
-
-    (*ret) = value;
-
-    return true;
-  }
-
-  bool read_double(double *ret) {
-    if (!ret) {
-      return false;
-    }
-
-    double value;
-    if (!read8(reinterpret_cast<uint64_t *>(&value))) {
-      return false;
-    }
-
-    (*ret) = value;
-
-    return true;
-  }
-
-  bool read_value(Value *inout) {
-    if (!inout) {
-      return false;
-    }
-
-    if (inout->Type() == VALUE_TYPE_FLOAT) {
-      float value;
-      if (!read_float(&value)) {
-        return false;
-      }
-
-      (*inout) = Value(value);
-    } else if (inout->Type() == VALUE_TYPE_INT) {
-      int value;
-      if (!read4(&value)) {
-        return false;
-      }
-
-      (*inout) = Value(value);
-    } else {
-      TINYVDBIO_ASSERT(0);
-      return false;
-    }
-
-    return true;
-  }
-
-  size_t tell() const { return idx_; }
-
-  const uint8_t *data() const { return binary_; }
-
-  bool swap_endian() const { return swap_endian_; }
-
-  size_t size() const { return length_; }
-
- private:
-  const uint8_t *binary_;
-  const size_t length_;
-  bool swap_endian_;
-  char pad_[7];
-  uint64_t idx_;
-};
-
-static bool ReadValue(StreamReader *sr, const ValueType type, Value *out) {
-  if (type == VALUE_TYPE_NULL) {
-    (*out) = Value();
-  } else if (type == VALUE_TYPE_BOOL) {
-    char value;
-    if (!sr->read1(&value)) {
-      return false;
-    }
-    (*out) = Value(value);
-  } else if (type == VALUE_TYPE_FLOAT) {
-    float value;
-    if (!sr->read_float(&value)) {
-      return false;
-    }
-    (*out) = Value(value);
-  } else if (type == VALUE_TYPE_INT) {
-    int value;
-    if (!sr->read4(&value)) {
-      return false;
-    }
-
-    (*out) = Value(value);
-  } else if (type == VALUE_TYPE_DOUBLE) {
-    double value;
-    if (!sr->read_double(&value)) {
-      return false;
-    }
-    (*out) = Value(value);
-  } else {
-    return false;
-  }
-
-  return true;
+/* Duplicate a null-terminated string using the allocator */
+static char *tvdb__strdup(tvdb_allocator_t *a, const char *s) {
+    if (!s) return NULL;
+    size_t len = strlen(s);
+    char *d = (char *)tvdb__alloc(a, len + 1);
+    if (d) { memcpy(d, s, len); d[len] = '\0'; }
+    return d;
 }
 
-struct DeserializeParams {
-  uint32_t file_version;
-  uint32_t compression_flags;
-  bool half_precision;
-  char _byte_pad_[7];
-  Value background;
-};
-
-static inline std::string ReadString(StreamReader *sr) {
-  uint32_t size = 0;
-  sr->read4(&size);
-  if (size > 0) {
-    std::string buffer(size, ' ');
-    sr->read(size, size, reinterpret_cast<uint8_t *>(&buffer[0]));
-    return buffer;
-  }
-  return std::string();
+static char *tvdb__strndup(tvdb_allocator_t *a, const char *s, size_t n) {
+    if (!s) return NULL;
+    char *d = (char *)tvdb__alloc(a, n + 1);
+    if (d) { memcpy(d, s, n); d[n] = '\0'; }
+    return d;
 }
 
-static inline void WriteString(std::ostream &os, const std::string &name) {
-  uint32_t size = static_cast<uint32_t>(name.size());
-  os.write(reinterpret_cast<char *>(&size), sizeof(uint32_t));
-  os.write(&name[0], size);
+/* ========================================================================== */
+/*  Bitset                                                                    */
+/* ========================================================================== */
+
+static void tvdb__bitset_init(tvdb_bitset_t *bs) {
+    memset(bs, 0, sizeof(*bs));
 }
 
-static inline bool ReadMetaBool(StreamReader *sr) {
-  char c = 0;
-  uint32_t size;
-  sr->read4(&size);
-  if (size == 1) {
-    sr->read(1, 1, reinterpret_cast<uint8_t *>(&c));
-  }
-  return bool(c);
+static int tvdb__bitset_alloc(tvdb_bitset_t *bs, size_t num_bits,
+                              tvdb_allocator_t *a) {
+    bs->num_bits  = num_bits;
+    bs->num_bytes = (num_bits + 7) / 8;
+    bs->alloc     = a;
+    bs->data      = (uint8_t *)tvdb__alloc(a, bs->num_bytes);
+    if (!bs->data) return 0;
+    memset(bs->data, 0, bs->num_bytes);
+    return 1;
 }
 
-static inline float ReadMetaFloat(StreamReader *sr) {
-  float f = 0.0f;
-  uint32_t size;
-  sr->read4(&size);
-  if (size == sizeof(float)) {
-    sr->read4(reinterpret_cast<uint32_t *>(&f));
-  }
-  return f;
+static void tvdb__bitset_destroy(tvdb_bitset_t *bs) {
+    if (bs->data && bs->alloc) {
+        tvdb__free(bs->alloc, bs->data, bs->num_bytes);
+    }
+    memset(bs, 0, sizeof(*bs));
 }
 
-static inline void ReadMetaVec3i(StreamReader *sr, int v[3]) {
-  uint32_t size;
-  sr->read4(&size);
-  if (size == 3 * sizeof(int)) {
-    sr->read4(&v[0]);
-    sr->read4(&v[1]);
-    sr->read4(&v[2]);
-  }
+static int tvdb__bitset_test(const tvdb_bitset_t *bs, size_t bit) {
+    if (bit >= bs->num_bits) return 0;
+    return (bs->data[bit / 8] >> (bit % 8)) & 1;
 }
 
-static inline void ReadMetaVec3d(StreamReader *sr, double v[3]) {
-  uint32_t size;
-  sr->read4(&size);
-  if (size == 3 * sizeof(double)) {
-    sr->read_double(&v[0]);
-    sr->read_double(&v[1]);
-    sr->read_double(&v[2]);
-  }
-}
-
-static inline int64_t ReadMetaInt64(StreamReader *sr) {
-  uint32_t size;
-  int64_t i64 = 0;
-  sr->read4(&size);
-  if (size == sizeof(int64_t)) {
-    sr->read8(reinterpret_cast<uint64_t *>(&i64));
-  }
-  return i64;
-}
-
-static inline void ReadVec3d(StreamReader *sr, double v[3]) {
-  sr->read_double(&v[0]);
-  sr->read_double(&v[1]);
-  sr->read_double(&v[2]);
-}
-
-// https://stackoverflow.com/questions/874134/find-if-string-ends-with-another-string-in-c
-static inline bool EndsWidth(std::string const &value,
-                             std::string const &ending) {
-  if (ending.size() > value.size()) return false;
-  return std::equal(ending.rbegin(), ending.rend(), value.rbegin());
-}
-
-#if 0
-template <std::size_t N>
-bool BitMask<N>::load(StreamReader *sr) {
-  std::vector<uint8_t> buf(mask_.size() / 8);
-
-  sr->read(mask_.size(), mask_.size(), buf.data());
-
-  // Reconstruct bit mask
-  // TODO(syoyo): endian
-  for (size_t j = 0; j < mask_.size() / 8; j++) {
-    for (size_t i = 0; i < 8; i++) {
-      uint8_t bit = (buf[j] >> i) & 0x1;
-      mask_.set(j * 8 + i, bit);
-    }
-  }
-
-  return true;
-}
-#endif
-
-static bool DecompressZip(uint8_t *dst, size_t *uncompressed_size /* inout */,
-                          const uint8_t *src, size_t src_size) {
-  if ((*uncompressed_size) == src_size) {
-    // Data is not compressed.
-    memcpy(dst, src, src_size);
-    return true;
-  }
-  std::vector<uint8_t> tmpBuf(*uncompressed_size);
-
-#if defined(TINYVDBIO_USE_SYSTEM_ZLIB)
-  int ret = uncompress(&tmpBuf.at(0), uncompressed_size, src, src_size);
-  if (Z_OK != ret) {
-    return false;
-  }
-#else
-  mz_ulong sz = static_cast<mz_ulong>(
-      *uncompressed_size);  // 32bit in Win64 llvm-mingw(clang)
-  int ret =
-      mz_uncompress(&tmpBuf.at(0), &sz, src, static_cast<mz_ulong>(src_size));
-  if (MZ_OK != ret) {
-    return false;
-  }
-  (*uncompressed_size) = size_t(sz);
-#endif
-
-  memcpy(dst, tmpBuf.data(), (*uncompressed_size));
-
-  return true;
-}
-
-#if defined(TINYVDBIO_USE_BLOSC)
-static bool DecompressBlosc(uint8_t *dst, size_t uncompressed_size,
-                            const uint8_t *src, size_t src_size) {
-  if (uncompressed_size == src_size) {
-    // Data is not compressed.
-    memcpy(dst, src, src_size);
-    return true;
-  }
-
-  std::cout << "DBG: uncompressed_size = " << uncompressed_size
-            << ", src_size = " << src_size << std::endl;
-  const int numUncompressedBytes = blosc_decompress_ctx(
-      /*src=*/src, /*dest=*/dst, src_size, /*numthreads=*/1);
-
-  std::cout << "DBG: numUncompressedBytes = " << numUncompressedBytes
-            << ", src_size = " << src_size << std::endl;
-
-  if (numUncompressedBytes < 1) {
-    // TODO(syoyo): print warning.
-    //
-    // numUncompressedBytes may be 0 for small dataset(e.g. <= 16bytes), so 0 or
-    // negative may be accepted.
-  }
-
-  if (numUncompressedBytes != int(uncompressed_size)) {
-    std::cout << "aaa" << std::endl;
-    return false;
-  }
-
-  return true;
-}
-#endif
-
-static bool ReadAndDecompressData(StreamReader *sr, uint8_t *dst_data,
-                                  size_t element_size, size_t count,
-                                  uint32_t compression_mask, std::string *warn,
-                                  std::string *err) {
-  (void)warn;
-
-  if (compression_mask & TINYVDB_COMPRESS_BLOSC) {
-    std::cout << "HACK: BLOSLC" << std::endl;
-
-#if defined(TINYVDBIO_USE_BLOSC)
-    // Read the size of the compressed data.
-    // A negative size indicates uncompressed data.
-    int64_t numCompressedBytes;
-    sr->read8(&numCompressedBytes);
-
-    std::cout << "numCompressedBytes " << numCompressedBytes << std::endl;
-    if (numCompressedBytes <= 0) {
-      if (dst_data == NULL) {
-        // seek over this data.
-        sr->seek_set(sr->tell() + element_size * count);
-      } else {
-        sr->read(element_size * count, element_size * count, dst_data);
-      }
-    } else {
-      size_t uncompressed_size = element_size * count;
-      std::vector<uint8_t> buf;
-      buf.resize(size_t(numCompressedBytes));
-
-      if (!sr->read(size_t(numCompressedBytes), size_t(numCompressedBytes),
-                    buf.data())) {
-        if (err) {
-          (*err) +=
-              "Failed to read num compressed bytes in ReadAndDecompressData.\n";
-        }
-        return false;
-      }
-
-      if (!DecompressBlosc(dst_data, uncompressed_size, buf.data(),
-                           size_t(numCompressedBytes))) {
-        if (err) {
-          (*err) += "Failed to decode BLOSC data.\n";
-        }
-        return false;
-      }
-    }
-
-    std::cout << "blosc decode ok" << std::endl;
-
-#else
-    std::cout << "HACK: BLOSLC is TODO" << std::endl;
-    // TODO(syoyo):
-    if (err) {
-      (*err) += "Decoding BLOSC is not supported in this build.\n";
-    }
-    return false;
-#endif
-  } else if (compression_mask & TINYVDB_COMPRESS_ZIP) {
-    // Read the size of the compressed data.
-    // A negative size indicates uncompressed data.
-    int64_t numZippedBytes;
-    sr->read8(&numZippedBytes);
-    std::cout << "numZippedBytes = " << numZippedBytes << std::endl;
-
-    if (numZippedBytes <= 0) {
-      if (dst_data == NULL) {
-        // seek over this data.
-        sr->seek_set(sr->tell() + element_size * count);
-      } else {
-        sr->read(element_size * count, element_size * count, dst_data);
-      }
-    } else {
-      size_t uncompressed_size = element_size * count;
-      std::vector<uint8_t> buf;
-      buf.resize(size_t(numZippedBytes));
-
-      if (!sr->read(size_t(numZippedBytes), size_t(numZippedBytes),
-                    buf.data())) {
-        if (err) {
-          (*err) +=
-              "Failed to read num zipped bytes in ReadAndDecompressData.\n";
-        }
-        return false;
-      }
-
-      if (!DecompressZip(dst_data, &uncompressed_size, buf.data(),
-                         size_t(numZippedBytes))) {
-        if (err) {
-          (*err) += "Failed to decode zip data.\n";
-        }
-        return false;
-      }
-    }
-  } else {
-    std::cout << "HACK: uncompressed" << std::endl;
-    std::cout << "  elem_size = " << element_size << ", count = " << count
-              << std::endl;
-    if (dst_data == NULL) {
-      // seek over this data.
-      sr->seek_set(sr->tell() + element_size * count);
-    } else {
-      sr->read(element_size * count, element_size * count, dst_data);
-    }
-  }
-
-  if (sr->swap_endian()) {
-    if (element_size == 2) {
-      unsigned short *ptr = reinterpret_cast<unsigned short *>(dst_data);
-      for (size_t i = 0; i < count; i++) {
-        swap2(ptr + i);
-      }
-    } else if (element_size == 4) {
-      uint32_t *ptr = reinterpret_cast<uint32_t *>(dst_data);
-      for (size_t i = 0; i < count; i++) {
-        swap4(ptr + i);
-      }
-    } else if (element_size == 8) {
-      uint64_t *ptr = reinterpret_cast<uint64_t *>(dst_data);
-      for (size_t i = 0; i < count; i++) {
-        swap8(ptr + i);
-      }
-    }
-  }
-
-  return true;
-}
-
-static bool ReadValues(StreamReader *sr, const uint32_t compression_flags,
-                       size_t num_values, ValueType value_type,
-                       std::vector<uint8_t> *values, std::string *warn,
-                       std::string *err) {
-  // usually fp16 or fp32
-  TINYVDBIO_ASSERT((value_type == VALUE_TYPE_FLOAT) ||
-                   (value_type == VALUE_TYPE_HALF));
-
-  // Advance stream position when destination buffer is null.
-  const bool seek = (values == NULL);
-
-  // read data.
-  if (seek) {
-    // should not be 'seek' at the monent.
-    TINYVDBIO_ASSERT(0);
-  } else {
-    if (!ReadAndDecompressData(sr, values->data(), GetValueTypeSize(value_type),
-                               num_values, compression_flags, warn, err)) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-static bool ReadMaskValues(StreamReader *sr, const uint32_t compression_flags,
-                           const uint32_t file_version, const Value background,
-                           size_t num_values, ValueType value_type,
-                           NodeMask value_mask, std::vector<uint8_t> *values,
-                           std::string *warn, std::string *err) {
-  // Advance stream position when destination buffer is null.
-  const bool seek = (values == NULL);
-
-  const bool mask_compressed = compression_flags & TINYVDB_COMPRESS_ACTIVE_MASK;
-
-  char per_node_flag = NO_MASK_AND_ALL_VALS;
-  if (file_version >= TINYVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
-    if (seek && !mask_compressed) {
-      // selection mask and/or inactive value is saved.
-      sr->seek_set(sr->tell() + 1);  // advance 1 byte.
-    } else {
-      sr->read1(&per_node_flag);
-    }
-  }
-
-  Value inactiveVal1 = background;
-  Value inactiveVal0 =
-      ((per_node_flag == NO_MASK_OR_INACTIVE_VALS) ? background
-                                                   : Negate(background));
-
-  if (per_node_flag == NO_MASK_AND_ONE_INACTIVE_VAL ||
-      per_node_flag == MASK_AND_ONE_INACTIVE_VAL ||
-      per_node_flag == MASK_AND_TWO_INACTIVE_VALS) {
-    // inactive val
-    if (seek) {
-      sr->seek_set(sr->tell() + sizeof(inactiveVal0));
-    } else {
-      sr->read_value(&inactiveVal0);
-    }
-
-    if (per_node_flag == MASK_AND_TWO_INACTIVE_VALS) {
-      // Read the second of two distinct inactive values.
-      if (seek) {
-        sr->seek_set(sr->tell() + inactiveVal1.Size());
-      } else {
-        sr->read_value(&inactiveVal1);
-      }
-    }
-  }
-
-  NodeMask selection_mask(value_mask.LOG2DIM);
-  if (per_node_flag == MASK_AND_NO_INACTIVE_VALS ||
-      per_node_flag == MASK_AND_ONE_INACTIVE_VAL ||
-      per_node_flag == MASK_AND_TWO_INACTIVE_VALS) {
-    // For use in mask compression (only), read the bitmask that selects
-    // between two distinct inactive values.
-    if (seek) {
-      sr->seek_set(sr->tell() + uint32_t(selection_mask.memUsage()));
-    } else {
-      selection_mask.load(sr);
-    }
-  }
-
-  size_t read_count = num_values;
-
-  if (mask_compressed && per_node_flag != NO_MASK_AND_ALL_VALS &&
-      file_version >= TINYVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
-    read_count = size_t(value_mask.count_on());
-    std::cout << "3 metadata. read count = " << read_count << std::endl;
-  }
-
-  std::cout << "read num = " << read_count << std::endl;
-
-  std::vector<uint8_t> tmp_buf(read_count * GetValueTypeSize(value_type));
-
-  // Read mask data.
-  if (!ReadAndDecompressData(sr, tmp_buf.data(), GetValueTypeSize(value_type),
-                             size_t(read_count), compression_flags, warn,
-                             err)) {
-    return false;
-  }
-
-  // If mask compression is enabled and the number of active values read into
-  // the temp buffer is smaller than the size of the destination buffer,
-  // then there are missing (inactive) values.
-  if (!seek && mask_compressed && read_count != num_values) {
-    // Restore inactive values, using the background value and, if available,
-    // the inside/outside mask.  (For fog volumes, the destination buffer is
-    // assumed to be initialized to background value zero, so inactive values
-    // can be ignored.)
-    size_t sz = GetValueTypeSize(value_type);
-    for (size_t destIdx = 0, tempIdx = 0;
-         destIdx < size_t(selection_mask.BITSIZE); ++destIdx) {
-      if (value_mask.is_on(int32_t(destIdx))) {
-        // Copy a saved active value into this node's buffer.
-        memcpy(&values->at(destIdx * sz), &tmp_buf.at(tempIdx * sz), sz);
-        ++tempIdx;
-      } else {
-        // Reconstruct an unsaved inactive value and copy it into this node's
-        // buffer.
-        if (selection_mask.is_on(int32_t(destIdx))) {
-          memcpy(&values->at(destIdx * sz), &inactiveVal1, sz);
-        } else {
-          memcpy(&values->at(destIdx * sz), &inactiveVal0, sz);
-        }
-      }
-    }
-  } else {
-    memcpy(values->data(), tmp_buf.data(),
-           num_values * GetValueTypeSize(value_type));
-  }
-
-  return true;
-}
-
-bool NodeMask::load(StreamReader *sr) {
-  bool ret = sr->read(this->memUsage(), this->memUsage(), bits.data());
-  if (!ret) {
-    std::cout << "DBG: mWords size = " << this->memUsage() << ", ret = " << ret
-              << std::endl;
-  }
-
-  return ret;
-}
-
-bool RootNode::ReadTopology(StreamReader *sr, int level,
-                            const DeserializeParams &params, std::string *warn,
-                            std::string *err) {
-  std::cout << "Root background loc " << sr->tell() << std::endl;
-
-  // Read background value;
-  if (!ReadValue(sr, grid_layout_info_.GetNodeInfo(level).value_type(),
-                 &background_)) {
-    return false;
-  }
-
-  std::cout << "background : " << background_ << ", size = "
-            << GetValueTypeSize(
-                   grid_layout_info_.GetNodeInfo(level).value_type())
-            << std::endl;
-
-  if (!sr->read4(&num_tiles_)) {
-    return false;
-  }
-
-  if (!sr->read4(&num_children_)) {
-    return false;
-  }
-
-  if ((num_tiles_ == 0) && (num_children_ == 0)) {
-    return false;
-  }
-
-  std::cout << "num_tiles " << num_tiles_ << std::endl;
-  std::cout << "num_children " << num_children_ << std::endl;
-
-  // Read tiles.
-  for (uint32_t n = 0; n < num_tiles_; n++) {
-    int vec[3];
-    Value value;
-    bool active;
-
-    sr->read4(&vec[0]);
-    sr->read4(&vec[1]);
-    sr->read4(&vec[2]);
-    if (!ReadValue(sr, grid_layout_info_.GetNodeInfo(level).value_type(),
-                   &value)) {
-      return false;
-    }
-
-    sr->read_bool(&active);
-
-    std::cout << "[" << n << "] vec = (" << vec[0] << ", " << vec[1] << ", "
-              << vec[2] << "), value = " << value << ", active = " << active
-              << std::endl;
-  }
-
-  // Read child nodes.
-  for (uint32_t n = 0; n < num_children_; n++) {
-    Vec3i coord;
-    sr->read4(&coord.x);
-    sr->read4(&coord.y);
-    sr->read4(&coord.z);
-
-    // Child should be InternalOrLeafNode type
-    TINYVDBIO_ASSERT((level + 1) < grid_layout_info_.NumLevels());
-    TINYVDBIO_ASSERT(grid_layout_info_.GetNodeInfo(level + 1).node_type() ==
-                     NODE_TYPE_INTERNAL);
-
-    InternalOrLeafNode child_node(grid_layout_info_);
-    if (!child_node.ReadTopology(sr, /* level */ level + 1, params, warn,
-                                 err)) {
-      return false;
-    }
-
-    child_nodes_.push_back(child_node);
-
-    std::cout << "root.child[" << n << "] vec = (" << coord.x << ", " << coord.y
-              << ", " << coord.z << std::endl;
-
-    uint32_t global_voxel_size = grid_layout_info_.ComputeGlobalVoxelSize(0);
-    Boundsi bounds;
-    bounds.bmin = coord;
-    bounds.bmax.x = coord.x + int(global_voxel_size);
-    bounds.bmax.y = coord.y + int(global_voxel_size);
-    bounds.bmax.z = coord.y + int(global_voxel_size);
-    child_bounds_.push_back(bounds);
-  }
-
-  // HACK
-  {
-    VoxelTree tree;
-    std::string _err;
-
-    bool ret = tree.Build(*this, &_err);
-    if (!_err.empty()) {
-      std::cerr << _err << std::endl;
-    }
-    if (!ret) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-bool RootNode::ReadBuffer(StreamReader *sr, int level,
-                          const DeserializeParams &params, std::string *warn,
-                          std::string *err) {
-  std::cout << "root readbuffer pos " << sr->tell() << std::endl;
-
-  // Recursive call
-  for (size_t i = 0; i < num_children_; i++) {
-    if (!child_nodes_[i].ReadBuffer(sr, level + 1, params, warn, err)) {
-      if (err) {
-        (*err) += "Failed to read buffer.\n";
-      }
-      return false;
-    }
-    std::cout << "ReadBuffer done. child_node[" << i << "]" << std::endl;
-  }
-
-  return true;
-}
-
-bool InternalOrLeafNode::ReadTopology(StreamReader *sr, const int level,
-                                      const DeserializeParams &params,
-                                      std::string *warn, std::string *err) {
-  (void)params;
-
-  int node_type = grid_layout_info_.GetNodeInfo(level).node_type();
-
-  if (node_type == NODE_TYPE_INTERNAL) {
-#if 0  // API3
-    {
-
-      int buffer_count;
-      sr->read4(&buffer_count);
-      if (buffer_count != 1) {
-        // OPENVDB_LOG_WARN("multi-buffer trees are no longer supported");
-      }
-    }
-#endif
-
-    std::cout << "topo: buffer count offt = " << sr->tell() << std::endl;
-    std::cout << "readtopo: level = " << level << std::endl;
-
-    child_mask_.Alloc(grid_layout_info_.GetNodeInfo(level).log2dim());
-    child_mask_.load(sr);
-    std::cout << "topo: child mask buffer count offt = " << sr->tell()
-              << std::endl;
-
-    value_mask_.Alloc(grid_layout_info_.GetNodeInfo(level).log2dim());
-    value_mask_.load(sr);
-    std::cout << "topo: value mask buffer count offt = " << sr->tell()
-              << std::endl;
-
-    const bool old_version =
-        params.file_version < TINYVDB_FILE_VERSION_NODE_MASK_COMPRESSION;
-
-    int NUM_VALUES =
-        1 << (3 *
-              grid_layout_info_.GetNodeInfo(level)
-                  .log2dim());  // total voxel count represented by this node
-
-    std::cout << "num value_mask = " << value_mask_.BITSIZE << std::endl;
-    std::cout << "NUM_VALUES = " << NUM_VALUES << std::endl;
-
-    // Older version will have less values
-    const int num_values =
-        (old_version ? int(child_mask_.nbits() - child_mask_.count_on())
-                     : NUM_VALUES);
-
-    {
-      std::vector<uint8_t> values;
-      values.resize(
-          GetValueTypeSize(grid_layout_info_.GetNodeInfo(level).value_type()) *
-          size_t(num_values));
-
-      if (!ReadMaskValues(sr, params.compression_flags, params.file_version,
-                          params.background, size_t(num_values),
-                          grid_layout_info_.GetNodeInfo(level).value_type(),
-                          value_mask_, &values, warn, err)) {
-        if (err) {
-          std::stringstream ss;
-          ss << "Failed to read mask values in ReadTopology. level = " << level
-             << std::endl;
-          (*err) += ss.str();
-        }
-
-        return false;
-      }
-
-      // Copy values from the array into this node's table.
-      if (old_version) {
-        TINYVDBIO_ASSERT(size_t(num_values) <= node_values_.size());
-
-        // loop over child flags is off.
-        int n = 0;
-        for (int32_t i = 0; i < int32_t(NUM_VALUES); i++) {
-          if (child_mask_.is_off(i)) {
-            // mNodes[iter.pos()].setValue(values[n++]);
-            n++;
-          }
-        }
-        TINYVDBIO_ASSERT(n == num_values);
-      } else {
-        // loop over child flags is off.
-        for (int32_t i = 0; i < int32_t(NUM_VALUES); i++) {
-          if (child_mask_.is_off(i)) {
-            // mNodes[iter.pos()].setValue(values[iter.pos());
-          }
-        }
-      }
-    }
-
-    std::cout << "SIZE = " << child_mask_.BITSIZE << std::endl;
-    child_nodes_.resize(size_t(child_mask_.BITSIZE), grid_layout_info_);
-
-    // loop over child node
-    for (int32_t i = 0; i < child_mask_.BITSIZE; i++) {
-      if (child_mask_.is_on(i)) {
-        // if (node_desc_.child_node_desc_) {
-        if (1) {  // HACK
-          TINYVDBIO_ASSERT(i < int32_t(child_nodes_.size()));
-          // child_nodes_[i] = new InternalOrLeafNode
-          if (!child_nodes_[size_t(i)].ReadTopology(sr, level + 1, params, warn,
-                                                    err)) {
-            return false;
-          }
-        } else {  // leaf
-          // TODO: add to child.
-          TINYVDBIO_ASSERT(0);
-        }
-      }
-    }
-
-    return true;
-
-  } else {  // leaf
-
-    value_mask_.Alloc(grid_layout_info_.GetNodeInfo(level).log2dim());
-    bool ret = value_mask_.load(sr);
-
-    if (!ret) {
-      if (err) {
-        (*err) += "Failed to load value mask in leaf node.\n";
-      }
-      return false;
-    }
-
-    num_voxels_ = 1 << (3 * grid_layout_info_.GetNodeInfo(level).log2dim());
-
-    return true;
-  }
-}
-
-bool InternalOrLeafNode::ReadBuffer(StreamReader *sr, int level,
-                                    const DeserializeParams &params,
-                                    std::string *warn, std::string *err) {
-  int node_type = grid_layout_info_.GetNodeInfo(level).node_type();
-  std::cout << "internalOrLeaf : read buffer" << std::endl;
-
-  if (node_type == NODE_TYPE_INTERNAL) {
+static size_t tvdb__bitset_count_on(const tvdb_bitset_t *bs) {
     size_t count = 0;
-    for (int32_t i = 0; i < child_mask_.BITSIZE; i++) {
-      if (child_mask_.is_on(i)) {
-        std::cout << "InternalOrLeafNode.ReadBuffer[" << count << "]"
-                  << std::endl;
-        // TODO: FIXME
-        if (!child_nodes_[size_t(i)].ReadBuffer(sr, level + 1, params, warn,
-                                                err)) {
-          return false;
+    for (size_t i = 0; i < bs->num_bytes; i++) {
+        uint8_t v = bs->data[i];
+        while (v) { v &= (uint8_t)(v - 1); count++; }
+    }
+    return count;
+}
+
+/* ========================================================================== */
+/*  Node mask                                                                 */
+/* ========================================================================== */
+
+static void tvdb__nodemask_init(tvdb_nodemask_t *m) {
+    memset(m, 0, sizeof(*m));
+}
+
+static int tvdb__nodemask_alloc(tvdb_nodemask_t *m, int32_t log2dim,
+                                tvdb_allocator_t *a) {
+    m->log2dim = log2dim;
+    m->bitsize = 1 << (3 * log2dim);
+    return tvdb__bitset_alloc(&m->bits, (size_t)m->bitsize, a);
+}
+
+static void tvdb__nodemask_destroy(tvdb_nodemask_t *m) {
+    tvdb__bitset_destroy(&m->bits);
+    m->log2dim = 0;
+    m->bitsize = 0;
+}
+
+static int tvdb__nodemask_is_on(const tvdb_nodemask_t *m, int32_t i) {
+    return tvdb__bitset_test(&m->bits, (size_t)i);
+}
+
+static size_t tvdb__nodemask_count_on(const tvdb_nodemask_t *m) {
+    return tvdb__bitset_count_on(&m->bits);
+}
+
+static size_t tvdb__nodemask_mem_usage(const tvdb_nodemask_t *m) {
+    return m->bits.num_bytes;
+}
+
+/* ========================================================================== */
+/*  Endian detection & byte swap                                              */
+/* ========================================================================== */
+
+int tvdb_is_big_endian(void) {
+    union { uint32_t i; char c[4]; } u;
+    u.i = 0x01020304;
+    return u.c[0] == 1;
+}
+
+static void tvdb__swap2(void *val) {
+    uint8_t *p = (uint8_t *)val;
+    uint8_t t = p[0]; p[0] = p[1]; p[1] = t;
+}
+
+static void tvdb__swap4(void *val) {
+    uint8_t *p = (uint8_t *)val;
+    uint8_t t;
+    t = p[0]; p[0] = p[3]; p[3] = t;
+    t = p[1]; p[1] = p[2]; p[2] = t;
+}
+
+static void tvdb__swap8(void *val) {
+    uint8_t *p = (uint8_t *)val;
+    uint8_t t;
+    t = p[0]; p[0] = p[7]; p[7] = t;
+    t = p[1]; p[1] = p[6]; p[6] = t;
+    t = p[2]; p[2] = p[5]; p[5] = t;
+    t = p[3]; p[3] = p[4]; p[4] = t;
+}
+
+/* ========================================================================== */
+/*  Half-float conversion (LE)                                                */
+/* ========================================================================== */
+
+static float tvdb__half_to_float(uint16_t h) {
+    uint32_t sign = (uint32_t)(h >> 15) & 1u;
+    uint32_t exp  = (uint32_t)(h >> 10) & 0x1fu;
+    uint32_t mant = (uint32_t)(h & 0x3ffu);
+    uint32_t f;
+    if (exp == 0) {
+        if (mant == 0) {
+            f = sign << 31;
+        } else {
+            /* denormalized */
+            exp = 1;
+            while (!(mant & 0x400u)) { mant <<= 1; exp++; }
+            mant &= 0x3ffu;
+            f = (sign << 31) | ((127 - 15 + 1 - exp) << 23) | (mant << 13);
         }
-        count++;
-      }
-    }
-
-    return true;
-
-  } else {  // leaf
-    TINYVDBIO_ASSERT(node_type == NODE_TYPE_LEAF);
-    char num_buffers = 1;
-
-    std::cout << "LeafNode.ReadBuffer pos = " << sr->tell() << std::endl;
-    std::cout << " value_mask_.size = " << value_mask_.memUsage() << std::endl;
-
-    std::cout << " value_mask.bits = " << value_mask_.bitString() << "\n";
-
-    // Seek over the value mask.
-    sr->seek_from_currect(int64_t(value_mask_.memUsage()));
-
-    std::cout << "is pos = " << sr->tell() << std::endl;
-
-    if (params.file_version < TINYVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
-      int coord[3];
-
-      // Read coordinate origin and num buffers.
-      sr->read4(&coord[0]);
-      sr->read4(&coord[1]);
-      sr->read4(&coord[2]);
-
-      sr->read1(&num_buffers);
-      TINYVDBIO_ASSERT(num_buffers == 1);
-    }
-
-    const bool mask_compressed =
-        params.compression_flags & TINYVDB_COMPRESS_ACTIVE_MASK;
-
-    const bool seek = false;
-
-    char per_node_flag = NO_MASK_AND_ALL_VALS;
-    if (params.file_version >= TINYVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
-      if (seek && !mask_compressed) {
-        // selection mask and/or inactive value is saved.
-        sr->seek_set(sr->tell() + 1);  // advance 1 byte.
-      } else {
-        sr->read1(&per_node_flag);
-      }
-    }
-
-    // TODO(syoyo): clipBBox check.
-
-    TINYVDBIO_ASSERT(num_voxels_ > 0);
-
-    size_t read_count = num_voxels_;
-
-    if (mask_compressed && per_node_flag != NO_MASK_AND_ALL_VALS &&
-        (params.file_version >= TINYVDB_FILE_VERSION_NODE_MASK_COMPRESSION)) {
-      read_count = size_t(value_mask_.count_on());
-      std::cout << "value_mask_.count_on = " << read_count << std::endl;
-    }
-
-    std::cout << "read_count = " << read_count << std::endl;
-
-    data_.resize(
-        read_count *
-        GetValueTypeSize(grid_layout_info_.GetNodeInfo(level).value_type()));
-
-    std::cout << "data.size = " << data_.size() << "\n";
-
-    // Data is tightly packed and compressed.
-    bool ret = ReadValues(sr, params.compression_flags, read_count,
-                          grid_layout_info_.GetNodeInfo(level).value_type(),
-                          &data_, warn, err);
-
-    // HACK
-    if (4 ==
-        GetValueTypeSize(grid_layout_info_.GetNodeInfo(level).value_type())) {
-      const float *ptr = reinterpret_cast<const float *>(data_.data());
-      for (size_t i = 0; i < read_count; i++) {
-        std::cout << "[" << i << "] = " << ptr[i] << "\n";
-      }
-    }
-
-    return ret;
-  }
-}
-
-GridDescriptor::GridDescriptor()
-    : save_float_as_half_(false),
-      grid_byte_offset_(0),
-      block_byte_offset_(0),
-      end_byte_offset_(0) {}
-
-GridDescriptor::GridDescriptor(const std::string &name,
-                               const std::string &grid_type,
-                               bool save_float_as_half)
-    : grid_name_(StripSuffix(name)),
-      unique_name_(name),
-      grid_type_(grid_type),
-      save_float_as_half_(save_float_as_half),
-      grid_byte_offset_(0),
-      block_byte_offset_(0),
-      end_byte_offset_(0) {}
-
-// GridDescriptor::GridDescriptor(const GridDescriptor &rhs) {
-//}
-
-// GridDescriptor::~GridDescriptor() {}
-
-std::string GridDescriptor::AddSuffix(const std::string &name, int n,
-                                      const std::string &separator) {
-  std::ostringstream ss;
-  ss << name << separator << n;
-  return ss.str();
-}
-
-std::string GridDescriptor::StripSuffix(const std::string &name,
-                                        const std::string &separator) {
-  return name.substr(0, name.find(separator));
-}
-
-bool GridDescriptor::Read(StreamReader *sr, const uint32_t file_version,
-                          std::string *err) {
-  (void)file_version;
-
-  unique_name_ = ReadString(sr);
-  grid_name_ = StripSuffix(unique_name_);
-
-  grid_type_ = ReadString(sr);
-
-  // In order not to break backward compatibility with existing VDB files,
-  // grids stored using 16-bit half floats are flagged by adding the following
-  // suffix to the grid's type name on output.  The suffix is removed on input
-  // and the grid's "save float as half" flag set accordingly.
-  const char *HALF_FLOAT_TYPENAME_SUFFIX = "_HalfFloat";
-
-  if (EndsWidth(grid_type_, HALF_FLOAT_TYPENAME_SUFFIX)) {
-    save_float_as_half_ = true;
-    // strip suffix
-    std::string tmp =
-        grid_type_.substr(0, grid_type_.find(HALF_FLOAT_TYPENAME_SUFFIX));
-    grid_type_ = tmp;
-  }
-
-  // FIXME(syoyo): Currently only `Tree_float_5_4_3` type is supported.
-  if (grid_type_.compare("Tree_float_5_4_3") != 0) {
-    if (err) {
-      (*err) = "Unsupported grid type: " + grid_type_;
-    }
-    return false;
-  }
-
-  std::cout << "grid_type = " << grid_type_ << std::endl;
-  std::cout << "half = " << save_float_as_half_ << std::endl;
-
-  {
-    instance_parent_name_ = ReadString(sr);
-    std::cout << "instance_parent_name = " << instance_parent_name_
-              << std::endl;
-  }
-
-  // Create the grid of the type if it has been registered.
-  // if (!GridBase::isRegistered(mGridType)) {
-  //    OPENVDB_THROW(LookupError, "Cannot read grid." <<
-  //        " Grid type " << mGridType << " is not registered.");
-  //}
-  // else
-  // GridBase::Ptr grid = GridBase::createGrid(mGridType);
-  // if (grid) grid->setSaveFloatAsHalf(mSaveFloatAsHalf);
-
-  // Read in the offsets.
-  sr->read8(&grid_byte_offset_);
-  sr->read8(&block_byte_offset_);
-  sr->read8(&end_byte_offset_);
-
-  std::cout << "grid_byte_offset = " << grid_byte_offset_ << std::endl;
-  std::cout << "block_byte_offset = " << block_byte_offset_ << std::endl;
-  std::cout << "end_byte_offset = " << end_byte_offset_ << std::endl;
-
-  return true;
-}
-
-static bool ReadMeta(StreamReader *sr) {
-  // Read the number of metadata items.
-  int count = 0;
-  sr->read4(&count);
-
-  if (count > 1024) {
-    // Too many meta values.
-    return false;
-  }
-
-  std::cout << "meta_count = " << count << std::endl;
-
-  for (int i = 0; i < count; i++) {
-    std::string name = ReadString(sr);
-
-    // read typename string
-    std::string type_name = ReadString(sr);
-
-    std::cout << "meta[" << i << "] name = " << name
-              << ", type_name = " << type_name << std::endl;
-
-    if (type_name.compare("string") == 0) {
-      std::string value = ReadString(sr);
-
-      std::cout << "  value = " << value << std::endl;
-
-    } else if (type_name.compare("vec3i") == 0) {
-      int v[3];
-      ReadMetaVec3i(sr, v);
-
-      std::cout << "  value = " << v[0] << ", " << v[1] << ", " << v[2]
-                << std::endl;
-
-    } else if (type_name.compare("vec3d") == 0) {
-      double v[3];
-      ReadMetaVec3d(sr, v);
-
-      std::cout << "  value = " << v[0] << ", " << v[1] << ", " << v[2]
-                << std::endl;
-
-    } else if (type_name.compare("bool") == 0) {
-      bool b = ReadMetaBool(sr);
-
-      std::cout << "  value = " << b << std::endl;
-
-    } else if (type_name.compare("float") == 0) {
-      float f = ReadMetaFloat(sr);
-
-      std::cout << "  value = " << f << std::endl;
-
-    } else if (type_name.compare("int64") == 0) {
-      int64_t i64 = ReadMetaInt64(sr);
-
-      std::cout << "  value = " << i64 << std::endl;
-
+    } else if (exp == 31) {
+        f = (sign << 31) | 0x7f800000u | (mant << 13);
     } else {
-      // Unknown metadata
-      int num_bytes;
-      sr->read4(&num_bytes);
-
-      std::cout << "  unknown value. size = " << num_bytes << std::endl;
-
-      std::vector<char> data;
-      data.resize(size_t(num_bytes));
-      sr->read(size_t(num_bytes), uint64_t(num_bytes),
-               reinterpret_cast<uint8_t *>(data.data()));
+        f = (sign << 31) | ((exp + 127 - 15) << 23) | (mant << 13);
     }
-  }
-
-  return true;
+    float result;
+    memcpy(&result, &f, 4);
+    return result;
 }
 
-static bool ReadGridDescriptors(StreamReader *sr, const uint32_t file_version,
-                                std::map<std::string, GridDescriptor> *gd_map) {
-  // Read the number of grid descriptors.
-  int count = 0;
-  sr->read4(&count);
+/* ========================================================================== */
+/*  Value type size                                                           */
+/* ========================================================================== */
 
-  std::cout << "grid descriptor counts = " << count << std::endl;
-
-  for (int i = 0; i < count; ++i) {
-    // Read the grid descriptor.
-    GridDescriptor gd;
-    std::string err;
-    bool ret = gd.Read(sr, file_version, &err);
-    if (!ret) {
-      return false;
+size_t tvdb_value_type_size(tvdb_value_type_t type) {
+    switch (type) {
+        case TVDB_VALUE_NULL:   return 0;
+        case TVDB_VALUE_BOOL:   return 1;
+        case TVDB_VALUE_INT32:  return 4;
+        case TVDB_VALUE_INT64:  return 8;
+        case TVDB_VALUE_FLOAT:  return 4;
+        case TVDB_VALUE_DOUBLE: return 8;
+        case TVDB_VALUE_HALF:   return 2;
+        case TVDB_VALUE_VEC3I:  return 12;
+        case TVDB_VALUE_VEC3F:  return 12;
+        case TVDB_VALUE_VEC3D:  return 24;
+        case TVDB_VALUE_STRING: return 0;
+        default:                return 0;
     }
-
-    //  // Add the descriptor to the dictionary.
-    (*gd_map)[gd.GridName()] = gd;
-
-    // Move to the next descriptor.
-    sr->seek_set(gd.EndByteOffset());
-  }
-
-  return true;
 }
 
-static bool ReadTransform(StreamReader *sr, std::string *err) {
-  // Read the type name.
-  std::string type = ReadString(sr);
+/* ========================================================================== */
+/*  Stream reader                                                             */
+/* ========================================================================== */
 
-  std::cout << "transform type = " << type << std::endl;
+typedef struct tvdb__sr {
+    const uint8_t *data;
+    uint64_t       length;
+    uint64_t       pos;
+    int            swap_endian;
+} tvdb__sr_t;
 
-  double scale_values[3];
-  double voxel_size[3];
-  double scale_values_inverse[3];
-  double inv_scale_squared[3];
-  double inv_twice_scale[3];
-
-  if ((type.compare("UniformScaleMap") == 0) ||
-      (type.compare("UniformScaleTranslateMap") == 0)) {
-    std::cout << "offt = " << sr->tell() << std::endl;
-
-    scale_values[0] = scale_values[1] = scale_values[2] = 0.0;
-    voxel_size[0] = voxel_size[1] = voxel_size[2] = 0.0;
-    scale_values_inverse[0] = scale_values_inverse[1] =
-        scale_values_inverse[2] = 0.0;
-    inv_scale_squared[0] = inv_scale_squared[1] = inv_scale_squared[2] = 0.0;
-    inv_twice_scale[0] = inv_twice_scale[1] = inv_twice_scale[2] = 0.0;
-
-    ReadVec3d(sr, scale_values);
-    ReadVec3d(sr, voxel_size);
-    ReadVec3d(sr, scale_values_inverse);
-    ReadVec3d(sr, inv_scale_squared);
-    ReadVec3d(sr, inv_twice_scale);
-
-    std::cout << "scale_values " << scale_values[0] << ", " << scale_values[1]
-              << ", " << scale_values[2] << std::endl;
-    std::cout << "voxel_size " << voxel_size[0] << ", " << voxel_size[1] << ", "
-              << voxel_size[2] << std::endl;
-    std::cout << "scale_value_sinverse " << scale_values_inverse[0] << ", "
-              << scale_values_inverse[1] << ", " << scale_values_inverse[2]
-              << std::endl;
-    std::cout << "inv_scale_squared " << inv_scale_squared[0] << ", "
-              << inv_scale_squared[1] << ", " << inv_scale_squared[2]
-              << std::endl;
-    std::cout << "inv_twice_scale " << inv_twice_scale[0] << ", "
-              << inv_twice_scale[1] << ", " << inv_twice_scale[2] << std::endl;
-  } else {
-    if (err) {
-      (*err) = "Transform type `" + type + "' is not supported.\n";
-    }
-    return false;
-  }
-
-  return true;
+static void tvdb__sr_init(tvdb__sr_t *sr, const uint8_t *data, uint64_t length,
+                          int swap_endian) {
+    sr->data = data;
+    sr->length = length;
+    sr->pos = 0;
+    sr->swap_endian = swap_endian;
 }
 
-static uint32_t ReadGridCompression(StreamReader *sr, uint32_t file_version) {
-  uint32_t compression = TINYVDB_COMPRESS_NONE;
-  if (file_version >= TINYVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
-    sr->read4(&compression);
-  }
-  return compression;
+static int tvdb__sr_seek_set(tvdb__sr_t *sr, uint64_t offset) {
+    if (offset > sr->length) return 0;
+    sr->pos = offset;
+    return 1;
 }
 
-static bool ReadGrid(StreamReader *sr, const uint32_t file_version,
-                     const bool half_precision, const GridDescriptor &gd,
-                     std::string *warn, std::string *err) {
-  // read compression per grid(optional)
-  uint32_t grid_compression = ReadGridCompression(sr, file_version);
+static int tvdb__sr_seek_cur(tvdb__sr_t *sr, int64_t offset) {
+    int64_t new_pos = (int64_t)sr->pos + offset;
+    if (new_pos < 0 || (uint64_t)new_pos > sr->length) return 0;
+    sr->pos = (uint64_t)new_pos;
+    return 1;
+}
 
-  DeserializeParams params;
-  params.file_version = file_version;
-  params.compression_flags = grid_compression;
-  params.half_precision = half_precision;
+static int tvdb__sr_read(tvdb__sr_t *sr, size_t n, uint8_t *dst) {
+    if (sr->pos + n > sr->length) return 0;
+    memcpy(dst, sr->data + sr->pos, n);
+    sr->pos += n;
+    return 1;
+}
 
-  // read meta
-  if (!ReadMeta(sr)) {
-    return false;
-  }
+static int tvdb__sr_read_u8(tvdb__sr_t *sr, uint8_t *out) {
+    if (sr->pos + 1 > sr->length) return 0;
+    *out = sr->data[sr->pos++];
+    return 1;
+}
 
-  // read transform
-  if (!ReadTransform(sr, err)) {
-    return false;
-  }
+static int tvdb__sr_read_i8(tvdb__sr_t *sr, int8_t *out) {
+    return tvdb__sr_read_u8(sr, (uint8_t *)out);
+}
 
-  // read topology
-  if (!gd.IsInstance()) {
-    GridLayoutInfo layout_info;
+static int tvdb__sr_read_u16(tvdb__sr_t *sr, uint16_t *out) {
+    if (sr->pos + 2 > sr->length) return 0;
+    memcpy(out, sr->data + sr->pos, 2);
+    if (sr->swap_endian) tvdb__swap2(out);
+    sr->pos += 2;
+    return 1;
+}
 
-    // TODO(syoyo): Construct node hierarchy based on header description.
-    NodeInfo root(NODE_TYPE_ROOT, VALUE_TYPE_FLOAT, 0);
-    NodeInfo intermediate1(NODE_TYPE_INTERNAL, VALUE_TYPE_FLOAT, 5);
-    NodeInfo intermediate2(NODE_TYPE_INTERNAL, VALUE_TYPE_FLOAT, 4);
-    NodeInfo leaf(NODE_TYPE_LEAF, VALUE_TYPE_FLOAT, 3);
+static int tvdb__sr_read_u32(tvdb__sr_t *sr, uint32_t *out) {
+    if (sr->pos + 4 > sr->length) return 0;
+    memcpy(out, sr->data + sr->pos, 4);
+    if (sr->swap_endian) tvdb__swap4(out);
+    sr->pos += 4;
+    return 1;
+}
 
-    layout_info.Add(root);
-    layout_info.Add(intermediate1);
-    layout_info.Add(intermediate2);
-    layout_info.Add(leaf);
+static int tvdb__sr_read_i32(tvdb__sr_t *sr, int32_t *out) {
+    return tvdb__sr_read_u32(sr, (uint32_t *)out);
+}
 
-    RootNode root_node(layout_info);
+static int tvdb__sr_read_u64(tvdb__sr_t *sr, uint64_t *out) {
+    if (sr->pos + 8 > sr->length) return 0;
+    memcpy(out, sr->data + sr->pos, 8);
+    if (sr->swap_endian) tvdb__swap8(out);
+    sr->pos += 8;
+    return 1;
+}
 
-    // TreeBase
-    {
-      int buffer_count;
-      sr->read4(&buffer_count);
-      if (buffer_count != 1) {
-        if (warn) {
-          (*warn) += "multi-buffer trees are no longer supported.";
+static int tvdb__sr_read_i64(tvdb__sr_t *sr, int64_t *out) {
+    return tvdb__sr_read_u64(sr, (uint64_t *)out);
+}
+
+static int tvdb__sr_read_f32(tvdb__sr_t *sr, float *out) {
+    uint32_t v;
+    if (!tvdb__sr_read_u32(sr, &v)) return 0;
+    memcpy(out, &v, 4);
+    return 1;
+}
+
+static int tvdb__sr_read_f64(tvdb__sr_t *sr, double *out) {
+    uint64_t v;
+    if (!tvdb__sr_read_u64(sr, &v)) return 0;
+    memcpy(out, &v, 8);
+    return 1;
+}
+
+static int tvdb__sr_read_vec3d(tvdb__sr_t *sr, double out[3]) {
+    return tvdb__sr_read_f64(sr, &out[0])
+        && tvdb__sr_read_f64(sr, &out[1])
+        && tvdb__sr_read_f64(sr, &out[2]);
+}
+
+/* Read a length-prefixed string (uint32_t length + chars, not null-terminated
+   in file). Returns allocated null-terminated string. */
+static char *tvdb__sr_read_string(tvdb__sr_t *sr, tvdb_allocator_t *a) {
+    uint32_t len = 0;
+    if (!tvdb__sr_read_u32(sr, &len)) return NULL;
+    if (len == 0) return tvdb__strndup(a, "", 0);
+    if (sr->pos + len > sr->length) return NULL;
+    char *s = tvdb__strndup(a, (const char *)(sr->data + sr->pos), len);
+    sr->pos += len;
+    return s;
+}
+
+/* Read a typed value from the stream. The type must be set in out->type. */
+static int tvdb__sr_read_value(tvdb__sr_t *sr, tvdb_value_type_t type,
+                               tvdb_value_t *out) {
+    out->type = type;
+    switch (type) {
+        case TVDB_VALUE_BOOL: {
+            uint8_t v;
+            if (!tvdb__sr_read_u8(sr, &v)) return 0;
+            out->u.b = v ? 1 : 0;
+            return 1;
         }
-      }
+        case TVDB_VALUE_INT32:
+            return tvdb__sr_read_i32(sr, &out->u.i32);
+        case TVDB_VALUE_INT64:
+            return tvdb__sr_read_i64(sr, &out->u.i64);
+        case TVDB_VALUE_FLOAT:
+            return tvdb__sr_read_f32(sr, &out->u.f);
+        case TVDB_VALUE_DOUBLE:
+            return tvdb__sr_read_f64(sr, &out->u.d);
+        case TVDB_VALUE_HALF: {
+            uint16_t h;
+            if (!tvdb__sr_read_u16(sr, &h)) return 0;
+            out->u.f = tvdb__half_to_float(h);
+            out->type = TVDB_VALUE_FLOAT; /* promote to float */
+            return 1;
+        }
+        default:
+            return 0;
     }
-
-    if (!root_node.ReadTopology(sr, /* level */ 0, params, warn, err)) {
-      return false;
-    }
-
-    // TODO(syoyo): Consider bbox(ROI)
-    if (!root_node.ReadBuffer(sr, /* level */ 0, params, warn, err)) {
-      return false;
-    }
-
-    std::cout << "end = " << sr->tell() << std::endl;
-
-  } else {
-    // TODO
-    TINYVDBIO_ASSERT(0);
-  }
-
-  // Move to grid position
-  sr->seek_set(uint64_t(gd.GridByteOffset()));
-
-  return true;
 }
 
-VDBStatus ParseVDBHeader(const std::string &filename, VDBHeader *header,
-                         std::string *err) {
-  if (header == NULL) {
-    if (err) {
-      (*err) = "Invalid function arguments";
-    }
-    return TINYVDBIO_ERROR_INVALID_ARGUMENT;
-  }
+/* ========================================================================== */
+/*  mmap                                                                      */
+/* ========================================================================== */
 
-  // TODO(Syoyo): Load only header region.
-  std::vector<uint8_t> data = read_file_binary(filename, err);
-  if (data.empty()) {
-    return TINYVDBIO_ERROR_INVALID_FILE;
-  }
-
-  VDBStatus status = ParseVDBHeader(data.data(), data.size(), header, err);
-  return status;
+static void tvdb__mmap_init(tvdb_mmap_t *m) {
+    memset(m, 0, sizeof(*m));
+#if !defined(_WIN32)
+    m->fd_ = -1;
+#endif
 }
 
-static bool IsBigEndian(void) {
-  union {
-    uint32_t i;
-    char c[4];
-  } bint = {0x01020304};
+#if !defined(TVDB_NO_MMAP)
 
-  return bint.c[0] == 1;
+#if defined(_WIN32)
+
+static tvdb_status_t tvdb__mmap_open(tvdb_mmap_t *m,
+                                     const char *filepath_utf8,
+                                     tvdb_error_t *err) {
+    tvdb__mmap_init(m);
+
+    /* Convert UTF-8 to wide chars */
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, filepath_utf8, -1, NULL, 0);
+    if (wlen <= 0) {
+        tvdb__set_error(err, TVDB_ERROR_PATH_CONVERSION,
+                        "UTF-8 to wchar conversion failed");
+        return TVDB_ERROR_PATH_CONVERSION;
+    }
+    wchar_t *wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)wlen);
+    if (!wpath) {
+        tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "Out of memory");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    MultiByteToWideChar(CP_UTF8, 0, filepath_utf8, -1, wpath, wlen);
+
+    /* Prepend \\?\ for long path support if path > MAX_PATH */
+    wchar_t *final_path = wpath;
+    wchar_t *long_path = NULL;
+    if (wlen > MAX_PATH && wcsncmp(wpath, L"\\\\?\\", 4) != 0) {
+        size_t plen = (size_t)wlen + 4;
+        long_path = (wchar_t *)malloc(sizeof(wchar_t) * plen);
+        if (long_path) {
+            wcscpy(long_path, L"\\\\?\\");
+            wcscat(long_path, wpath);
+            final_path = long_path;
+        }
+    }
+
+    HANDLE hFile = CreateFileW(final_path, GENERIC_READ, FILE_SHARE_READ,
+                               NULL, OPEN_EXISTING,
+                               FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                               NULL);
+    free(long_path);
+    free(wpath);
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        tvdb__set_error(err, TVDB_ERROR_IO, "Failed to open file");
+        return TVDB_ERROR_IO;
+    }
+
+    LARGE_INTEGER fsize;
+    if (!GetFileSizeEx(hFile, &fsize)) {
+        CloseHandle(hFile);
+        tvdb__set_error(err, TVDB_ERROR_IO, "Failed to get file size");
+        return TVDB_ERROR_IO;
+    }
+
+    HANDLE hMap = CreateFileMappingW(hFile, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!hMap) {
+        CloseHandle(hFile);
+        tvdb__set_error(err, TVDB_ERROR_MMAP_FAILED,
+                        "CreateFileMapping failed");
+        return TVDB_ERROR_MMAP_FAILED;
+    }
+
+    void *addr = MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+    if (!addr) {
+        CloseHandle(hMap);
+        CloseHandle(hFile);
+        tvdb__set_error(err, TVDB_ERROR_MMAP_FAILED, "MapViewOfFile failed");
+        return TVDB_ERROR_MMAP_FAILED;
+    }
+
+    m->data         = (const uint8_t *)addr;
+    m->mapped_len   = (uint64_t)fsize.QuadPart;
+    m->file_size    = (uint64_t)fsize.QuadPart;
+    m->file_handle_ = hFile;
+    m->map_handle_  = hMap;
+    m->base_addr_   = addr;
+    return TVDB_OK;
 }
 
-VDBStatus ParseVDBHeader(const uint8_t *data, const size_t len,
-                         VDBHeader *header, std::string *err) {
-  int64_t magic;
-
-  // OpenVDB stores data in little endian manner(e.g. x86).
-  // Swap bytes for big endian architecture(e.g. Power, SPARC)
-  bool swap_endian = IsBigEndian();
-
-  StreamReader sr(data, len, swap_endian);
-
-  // [0:7] magic number
-  if (!sr.read8(&magic)) {
-    if (err) {
-      (*err) += "Failed to read magic number.\n";
-    }
-    return TINYVDBIO_ERROR_INVALID_HEADER;
-  }
-
-  if (magic == kOPENVDB_MAGIC) {
-    std::cout << "bingo!" << std::endl;
-  } else {
-    if (err) {
-      (*err) += "Invalid magic number for VDB.\n";
-    }
-    return TINYVDBIO_ERROR_INVALID_HEADER;
-  }
-
-  // [8:11] version
-  uint32_t file_version = 0;
-  if (!sr.read4(&file_version)) {
-    if (err) {
-      (*err) += "Failed to read file version.\n";
-    }
-    return TINYVDBIO_ERROR_INVALID_HEADER;
-  }
-
-  std::cout << "File version: " << file_version << std::endl;
-
-  if (file_version < TINYVDB_FILE_VERSION_SELECTIVE_COMPRESSION) {
-    if (err) {
-      (*err) =
-          "VDB file version earlier than "
-          "TINYVDB_FILE_VERSION_SELECTIVE_COMPRESSION(220) is not supported.";
-    }
-    return TINYVDBIO_ERROR_UNIMPLEMENTED;
-  }
-
-  // Read the library version numbers (not stored prior to file format version
-  // 211).
-  uint32_t major_version = 0;
-  uint32_t minor_version = 0;
-  if (file_version >= 211) {
-    sr.read4(&major_version);
-    std::cout << "major version : " << major_version << std::endl;
-    sr.read4(&minor_version);
-    std::cout << "minor version : " << minor_version << std::endl;
-  }
-
-  // Read the flag indicating whether the stream supports partial reading.
-  // (Versions prior to 212 have no flag because they always supported partial
-  // reading.)
-  char has_grid_offsets = 0;
-  if (file_version >= 212) {
-    sr.read1(&has_grid_offsets);
-    std::cout << "InputHasGridOffsets = "
-              << (has_grid_offsets ? " yes " : " no ") << std::endl;
-  }
-
-  if (!has_grid_offsets) {
-    // Unimplemened.
-    if (err) {
-      (*err) = "VDB withoput grid offset is not supported in TinyVDBIO.";
-    }
-    return TINYVDBIO_ERROR_UNIMPLEMENTED;
-  }
-
-  // 5) Read the flag that indicates whether data is compressed.
-  //    (From version 222 on, compression information is stored per grid.)
-  // mCompression = DEFAULT_COMPRESSION_FLAGS;
-  // if (file_version < TINYVDB_FILE_VERSION_BLOSC_COMPRESSION) {
-  //    // Prior to the introduction of Blosc, ZLIB was the default compression
-  //    scheme. mCompression = (COMPRESS_ZIP | COMPRESS_ACTIVE_MASK);
-  //}
-  char is_compressed = 0;
-  if (file_version >= TINYVDB_FILE_VERSION_SELECTIVE_COMPRESSION &&
-      file_version < TINYVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
-    sr.read1(&is_compressed);
-    std::cout << "Global Compression : "
-              << (is_compressed != 0 ? "zip" : "none") << std::endl;
-  }
-
-  // 6) Read uuid.
-  {
-    // ASCII UUID = 32 chars + 4 hyphens('-') = 36 bytes.
-    char uuid[36];
-    sr.read(36, 36, reinterpret_cast<uint8_t *>(uuid));
-    std::string uuid_string = std::string(uuid, 36);
-    // TODO(syoyo): Store UUID somewhere.
-    std::cout << "uuid ASCII: " << uuid_string << std::endl;
-    header->uuid = std::string(uuid, 36);
-  }
-
-  header->file_version = file_version;
-  header->major_version = major_version;
-  header->minor_version = minor_version;
-  // header->has_grid_offsets = has_grid_offsets;
-  header->is_compressed = is_compressed;
-  header->offset_to_data = sr.tell();
-
-  return TINYVDBIO_SUCCESS;
+static void tvdb__mmap_close(tvdb_mmap_t *m) {
+    if (m->base_addr_) UnmapViewOfFile(m->base_addr_);
+    if (m->map_handle_) CloseHandle(m->map_handle_);
+    if (m->file_handle_) CloseHandle(m->file_handle_);
+    tvdb__mmap_init(m);
 }
 
-VDBStatus ReadGridDescriptors(const std::string &filename,
-                              const VDBHeader &header,
-                              std::map<std::string, GridDescriptor> *gd_map,
-                              std::string *err) {
-  std::vector<uint8_t> data = read_file_binary(filename, err);
-  if (data.empty()) {
-    return TINYVDBIO_ERROR_INVALID_FILE;
-  }
+#else /* Unix */
 
-  VDBStatus status =
-      ReadGridDescriptors(data.data(), data.size(), header, gd_map, err);
-  return status;
-}
+static tvdb_status_t tvdb__mmap_open(tvdb_mmap_t *m,
+                                     const char *filepath_utf8,
+                                     tvdb_error_t *err) {
+    tvdb__mmap_init(m);
 
-VDBStatus ReadGridDescriptors(const uint8_t *data, const size_t data_len,
-                              const VDBHeader &header,
-                              std::map<std::string, GridDescriptor> *gd_map,
-                              std::string *err) {
-  bool swap_endian = IsBigEndian();
-  StreamReader sr(data, data_len, swap_endian);
-
-  if (!sr.seek_set(header.offset_to_data)) {
-    if (err) {
-      (*err) += "Failed to seek into data.\n";
+    int fd = open(filepath_utf8, O_RDONLY);
+    if (fd < 0) {
+        tvdb__set_error(err, TVDB_ERROR_IO, "Failed to open file");
+        return TVDB_ERROR_IO;
     }
-    return TINYVDBIO_ERROR_INVALID_DATA;
-  }
 
-  // Read meta data.
-  {
-    bool ret = ReadMeta(&sr);
-    std::cout << "meta: " << ret << std::endl;
-  }
-
-  if (!ReadGridDescriptors(&sr, header.file_version, gd_map)) {
-    if (err) {
-      (*err) += "Failed to read grid descriptors.\n";
+    struct stat st;
+    if (fstat(fd, &st) < 0) {
+        close(fd);
+        tvdb__set_error(err, TVDB_ERROR_IO, "fstat failed");
+        return TVDB_ERROR_IO;
     }
-    return TINYVDBIO_ERROR_INVALID_DATA;
-  }
 
-  return TINYVDBIO_SUCCESS;
-}
-
-VDBStatus ReadGrids(const std::string &filename, const VDBHeader &header,
-                    const std::map<std::string, GridDescriptor> &gd_map,
-                    std::string *warn, std::string *err) {
-  std::vector<uint8_t> data = read_file_binary(filename, err);
-  if (data.empty()) {
-    return TINYVDBIO_ERROR_INVALID_FILE;
-  }
-
-  VDBStatus status =
-      ReadGrids(data.data(), data.size(), header, gd_map, warn, err);
-  return status;
-}
-
-VDBStatus ReadGrids(const uint8_t *data, const size_t data_len,
-                    const VDBHeader &header,
-                    const std::map<std::string, GridDescriptor> &gd_map,
-                    std::string *warn, std::string *err) {
-  bool swap_endian = IsBigEndian();
-  StreamReader sr(data, data_len, swap_endian);
-
-  std::cout << "AAA: num_grids = " << gd_map.size() << "\n";
-  for (const auto &it : gd_map) {
-    const GridDescriptor &gd = it.second;
-
-    sr.seek_set(gd.GridByteOffset());
-
-    if (!ReadGrid(&sr, header.file_version, header.half_precision, gd, warn,
-                  err)) {
-      if (err) {
-        (*err) += "Failed to read Grid data.\n";
-      }
-      return TINYVDBIO_ERROR_INVALID_DATA;
+    if (st.st_size == 0) {
+        close(fd);
+        tvdb__set_error(err, TVDB_ERROR_INVALID_FILE, "File is empty");
+        return TVDB_ERROR_INVALID_FILE;
     }
-  }
 
-  return TINYVDBIO_SUCCESS;
-}
+    void *addr = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (addr == MAP_FAILED) {
+        close(fd);
+        tvdb__set_error(err, TVDB_ERROR_MMAP_FAILED, "mmap failed");
+        return TVDB_ERROR_MMAP_FAILED;
+    }
 
-static bool WriteVDBHeader(std::ostream &os) {
-  // [0:7] magic number
-  int64_t magic = kOPENVDB_MAGIC;
-  os.write(reinterpret_cast<char *>(&magic), 8);
-
-  // [8:11] version
-  uint32_t file_version = kTINYVDB_FILE_VERSION;
-  os.write(reinterpret_cast<char *>(&file_version), sizeof(uint32_t));
-
-#if 0  // TODO(syoyo): Implement
-
-  std::cout << "File version: " << file_version << std::endl;
-
-  // Read the library version numbers (not stored prior to file format version
-  // 211).
-  if (file_version >= 211) {
-    uint32_t version;
-    ifs.read(reinterpret_cast<char *>(&version), sizeof(uint32_t));
-    std::cout << "major version : " << version << std::endl;
-    ifs.read(reinterpret_cast<char *>(&version), sizeof(uint32_t));
-    std::cout << "minor version : " << version << std::endl;
-  }
-
-  // Read the flag indicating whether the stream supports partial reading.
-  // (Versions prior to 212 have no flag because they always supported partial
-  // reading.)
-  char has_grid_offsets = 0;
-  if (file_version >= 212) {
-    ifs.read(&has_grid_offsets, sizeof(char));
-    std::cout << "InputHasGridOffsets = " << (has_grid_offsets ? " yes " : " no ")
-              << std::endl;
-  }
-
-  // 5) Read the flag that indicates whether data is compressed.
-  //    (From version 222 on, compression information is stored per grid.)
-  // mCompression = DEFAULT_COMPRESSION_FLAGS;
-  // if (file_version < TINYVDB_FILE_VERSION_BLOSC_COMPRESSION) {
-  //    // Prior to the introduction of Blosc, ZLIB was the default compression
-  //    scheme. mCompression = (COMPRESS_ZIP | COMPRESS_ACTIVE_MASK);
-  //}
-  char isCompressed = 0;
-  if (file_version >= TINYVDB_FILE_VERSION_SELECTIVE_COMPRESSION &&
-      file_version < TINYVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
-    ifs.read(&isCompressed, sizeof(char));
-    std::cout << "Compression : " << (isCompressed != 0 ? "zip" : "none")
-              << std::endl;
-  }
-
-  // 6) Read the 16-byte(128-bit) uuid.
-  if (file_version >= TINYVDB_FILE_VERSION_BOOST_UUID) {
-    // ASCII UUID = 32 chars + 4 '-''s = 36 bytes.
-    char uuid[36];
-    ifs.read(uuid, 36);
-    // TODO(syoyo): Store UUID somewhere.
-    std::cout << "uuid: " << uuid << std::endl;
-  } else {
-    char uuid[16];
-    ifs.read(uuid, 16);
-    // TODO(syoyo): Store UUID somewhere.
-    std::cout << "uuid: " << uuid << std::endl;
-  }
-
-  {
-    bool ret = ReadMeta(ifs);
-    std::cout << "meta: " << ret << std::endl;
-  }
-
-  if (has_grid_offsets) {
-    ReadGridDescriptors(ifs);
-  } else {
-  }
+#ifdef MADV_SEQUENTIAL
+    madvise(addr, (size_t)st.st_size, MADV_SEQUENTIAL);
 #endif
 
-  return true;
+    m->data       = (const uint8_t *)addr;
+    m->mapped_len = (uint64_t)st.st_size;
+    m->file_size  = (uint64_t)st.st_size;
+    m->fd_        = fd;
+    m->base_addr_ = addr;
+    m->base_len_  = (uint64_t)st.st_size;
+    return TVDB_OK;
 }
 
-bool SaveVDB(const std::string &filename, std::string *err) {
-  std::ofstream os(filename.c_str(), std::ifstream::binary);
-
-  if (!os) {
-    if (err) {
-      (*err) = "Failed to open a file to write: " + filename;
-    }
-    return false;
-  }
-
-  WriteVDBHeader(os);
-  // if filemane
-
-  return true;
+static void tvdb__mmap_close(tvdb_mmap_t *m) {
+    if (m->base_addr_) munmap(m->base_addr_, (size_t)m->base_len_);
+    if (m->fd_ >= 0) close(m->fd_);
+    tvdb__mmap_init(m);
 }
 
-void VoxelTree::BuildTree(const InternalOrLeafNode &root, int depth) {
-  (void)root;
-  (void)depth;
+#endif /* _WIN32 */
+
+#else /* TVDB_NO_MMAP */
+
+static tvdb_status_t tvdb__mmap_open(tvdb_mmap_t *m, const char *filepath_utf8,
+                                     tvdb_error_t *err) {
+    (void)m; (void)filepath_utf8;
+    tvdb__set_error(err, TVDB_ERROR_MMAP_FAILED, "mmap disabled at compile time");
+    return TVDB_ERROR_MMAP_FAILED;
 }
 
-bool VoxelTree::Build(const RootNode &root, std::string *err) {
-  nodes_.clear();
+static void tvdb__mmap_close(tvdb_mmap_t *m) { (void)m; }
 
-  const GridLayoutInfo &grid_layout_info = root.GetGridLayoutInfo();
-  (void)grid_layout_info;
+#endif /* TVDB_NO_MMAP */
 
-  // toplevel.
-  // Usually divided into 2*2*2 region for 5_4_3 tree configuration
-  // (each region has 4096^3 voxel size)
-  if (root.GetChildBounds().size() != root.GetChildNodes().size()) {
-    if (err) {
-      (*err) = "Invalid RootNode.\n";
+/* ========================================================================== */
+/*  File data open/close (mmap with heap-buffer fallback)                     */
+/* ========================================================================== */
+
+static tvdb_status_t tvdb__file_data_open(tvdb_file_data_t *fd,
+                                          const char *filepath_utf8,
+                                          tvdb_allocator_t *alloc,
+                                          tvdb_error_t *err) {
+    memset(fd, 0, sizeof(*fd));
+    fd->alloc = *alloc;
+
+    /* Try mmap first */
+    tvdb_status_t st = tvdb__mmap_open(&fd->mmap, filepath_utf8, NULL);
+    if (st == TVDB_OK) {
+        fd->data     = fd->mmap.data;
+        fd->data_len = fd->mmap.mapped_len;
+        fd->source   = TVDB_SOURCE_MMAP;
+        return TVDB_OK;
     }
-    return false;
-  }
 
-  // root node
-  VoxelNode<float> node;
-
-  nodes_.push_back(node);
-
-  Boundsi root_bounds;
-  for (size_t i = 0; i < root.GetChildNodes().size(); i++) {
-    // TODO(syoyo): Check overlap
-    root_bounds = Boundsi::Union(root_bounds, root.GetChildBounds()[i]);
-    BuildTree(root.GetChildNodes()[i], 0);
-  }
-
-  std::cout << root_bounds << std::endl;
-
-  // Test ---
-  {
-    uint64_t v = VoxelIndexHash<>::hash(1, 2, 3);
-    std::cout << v << "\n";
-  }
-
-  valid_ = true;
-  return true;
-}
-
-std::string GetStatusString(VDBStatus status) {
-  std::string str;
-  switch (status) {
-    case TINYVDBIO_SUCCESS: {
-      str = "SUCCESS";
-      break;
+    /* Fallback: read entire file into buffer */
+#if defined(_WIN32)
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, filepath_utf8, -1, NULL, 0);
+    if (wlen <= 0) {
+        tvdb__set_error(err, TVDB_ERROR_PATH_CONVERSION,
+                        "UTF-8 to wchar conversion failed");
+        return TVDB_ERROR_PATH_CONVERSION;
     }
-    case TINYVDBIO_ERROR_INVALID_FILE: {
-      str = "ERROR_INVALID_FILE";
-      break;
-    }
-    case TINYVDBIO_ERROR_INVALID_HEADER: {
-      str = "ERROR_INVALID_HEADER";
-      break;
-    }
-    case TINYVDBIO_ERROR_INVALID_DATA: {
-      str = "ERROR_INVALID_DATA";
-      break;
-    }
-    case TINYVDBIO_ERROR_INVALID_ARGUMENT: {
-      str = "ERROR_INVALID_ARGUMENT";
-      break;
-    }
-    case TINYVDBIO_ERROR_UNIMPLEMENTED: {
-      str = "ERROR_INVALID_UNIMPLEMENTED";
-      break;
-    }
-  }
+    wchar_t *wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)wlen);
+    MultiByteToWideChar(CP_UTF8, 0, filepath_utf8, -1, wpath, wlen);
 
-  return str;
-}
-
-}  // namespace tinyvdb
-
-#ifdef __clang__
-#pragma clang diagnostic pop
+    HANDLE hFile = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ,
+                               NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    free(wpath);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        tvdb__set_error(err, TVDB_ERROR_IO, "Failed to open file");
+        return TVDB_ERROR_IO;
+    }
+    LARGE_INTEGER fsize;
+    GetFileSizeEx(hFile, &fsize);
+    uint64_t sz = (uint64_t)fsize.QuadPart;
+#else
+    FILE *fp = fopen(filepath_utf8, "rb");
+    if (!fp) {
+        tvdb__set_error(err, TVDB_ERROR_IO, "Failed to open file");
+        return TVDB_ERROR_IO;
+    }
+    fseek(fp, 0, SEEK_END);
+    long sz_l = ftell(fp);
+    if (sz_l < 0) {
+        fclose(fp);
+        tvdb__set_error(err, TVDB_ERROR_IO, "ftell failed");
+        return TVDB_ERROR_IO;
+    }
+    uint64_t sz = (uint64_t)sz_l;
+    fseek(fp, 0, SEEK_SET);
 #endif
 
-#endif  // TINYVDBIO_IMPLEMENTATION
+    if (sz < 16) {
+#if defined(_WIN32)
+        CloseHandle(hFile);
+#else
+        fclose(fp);
+#endif
+        tvdb__set_error(err, TVDB_ERROR_INVALID_FILE, "File too small");
+        return TVDB_ERROR_INVALID_FILE;
+    }
+
+    fd->buffer = (uint8_t *)tvdb__alloc(alloc, (size_t)sz);
+    if (!fd->buffer) {
+#if defined(_WIN32)
+        CloseHandle(hFile);
+#else
+        fclose(fp);
+#endif
+        tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "Out of memory");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+
+#if defined(_WIN32)
+    DWORD bytes_read = 0;
+    ReadFile(hFile, fd->buffer, (DWORD)sz, &bytes_read, NULL);
+    CloseHandle(hFile);
+#else
+    size_t nread = fread(fd->buffer, 1, (size_t)sz, fp);
+    fclose(fp);
+    (void)nread;
+#endif
+
+    fd->data     = fd->buffer;
+    fd->data_len = sz;
+    fd->source   = TVDB_SOURCE_BUFFER;
+    return TVDB_OK;
+}
+
+static void tvdb__file_data_close(tvdb_file_data_t *fd) {
+    if (fd->source == TVDB_SOURCE_MMAP) {
+        tvdb__mmap_close(&fd->mmap);
+    } else if (fd->source == TVDB_SOURCE_BUFFER && fd->buffer) {
+        tvdb__free(&fd->alloc, fd->buffer, (size_t)fd->data_len);
+    }
+    memset(fd, 0, sizeof(*fd));
+}
+
+/* ========================================================================== */
+/*  Metadata reading                                                          */
+/* ========================================================================== */
+
+static void tvdb__metadata_init(tvdb_metadata_t *m, tvdb_allocator_t *a) {
+    memset(m, 0, sizeof(*m));
+    m->alloc = a;
+}
+
+static void tvdb__metadata_destroy(tvdb_metadata_t *m) {
+    if (!m->alloc) return;
+    for (size_t i = 0; i < m->count; i++) {
+        tvdb_meta_entry_t *e = &m->entries[i];
+        if (e->name)      tvdb__free(m->alloc, e->name, strlen(e->name) + 1);
+        if (e->type_name) tvdb__free(m->alloc, e->type_name,
+                                     strlen(e->type_name) + 1);
+        if (e->value.type == TVDB_VALUE_STRING && e->value.u.s.str)
+            tvdb__free(m->alloc, e->value.u.s.str, e->value.u.s.len + 1);
+        if (e->raw_data)
+            tvdb__free(m->alloc, e->raw_data, e->raw_data_len);
+    }
+    if (m->entries) {
+        tvdb__free(m->alloc, m->entries,
+                   m->capacity * sizeof(tvdb_meta_entry_t));
+    }
+    memset(m, 0, sizeof(*m));
+}
+
+static int tvdb__metadata_push(tvdb_metadata_t *m, tvdb_meta_entry_t *e) {
+    if (m->count >= m->capacity) {
+        size_t new_cap = m->capacity ? m->capacity * 2 : 8;
+        tvdb_meta_entry_t *new_entries = (tvdb_meta_entry_t *)tvdb__realloc(
+            m->alloc, m->entries,
+            m->capacity * sizeof(tvdb_meta_entry_t),
+            new_cap * sizeof(tvdb_meta_entry_t));
+        if (!new_entries) return 0;
+        m->entries  = new_entries;
+        m->capacity = new_cap;
+    }
+    m->entries[m->count++] = *e;
+    return 1;
+}
+
+static tvdb_status_t tvdb__read_meta(tvdb__sr_t *sr, tvdb_metadata_t *meta,
+                                     tvdb_allocator_t *alloc,
+                                     tvdb_error_t *err) {
+    int32_t count = 0;
+    if (!tvdb__sr_read_i32(sr, &count)) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Failed to read metadata count");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+    if (count < 0 || count > 4096) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Invalid metadata count");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    for (int32_t i = 0; i < count; i++) {
+        tvdb_meta_entry_t entry;
+        memset(&entry, 0, sizeof(entry));
+
+        entry.name = tvdb__sr_read_string(sr, alloc);
+        entry.type_name = tvdb__sr_read_string(sr, alloc);
+        if (!entry.name || !entry.type_name) {
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                            "Failed to read metadata entry");
+            return TVDB_ERROR_INVALID_DATA;
+        }
+
+        if (strcmp(entry.type_name, "string") == 0) {
+            char *val = tvdb__sr_read_string(sr, alloc);
+            entry.value.type = TVDB_VALUE_STRING;
+            entry.value.u.s.str = val;
+            entry.value.u.s.len = val ? strlen(val) : 0;
+        } else if (strcmp(entry.type_name, "bool") == 0) {
+            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
+            uint8_t v = 0;
+            if (sz == 1) tvdb__sr_read_u8(sr, &v);
+            entry.value.type = TVDB_VALUE_BOOL;
+            entry.value.u.b = v ? 1 : 0;
+        } else if (strcmp(entry.type_name, "float") == 0) {
+            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
+            float v = 0.0f;
+            if (sz == sizeof(float)) tvdb__sr_read_f32(sr, &v);
+            entry.value.type = TVDB_VALUE_FLOAT;
+            entry.value.u.f = v;
+        } else if (strcmp(entry.type_name, "double") == 0) {
+            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
+            double v = 0.0;
+            if (sz == sizeof(double)) tvdb__sr_read_f64(sr, &v);
+            entry.value.type = TVDB_VALUE_DOUBLE;
+            entry.value.u.d = v;
+        } else if (strcmp(entry.type_name, "int32") == 0) {
+            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
+            int32_t v = 0;
+            if (sz == sizeof(int32_t)) tvdb__sr_read_i32(sr, &v);
+            entry.value.type = TVDB_VALUE_INT32;
+            entry.value.u.i32 = v;
+        } else if (strcmp(entry.type_name, "int64") == 0) {
+            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
+            int64_t v = 0;
+            if (sz == sizeof(int64_t)) tvdb__sr_read_i64(sr, &v);
+            entry.value.type = TVDB_VALUE_INT64;
+            entry.value.u.i64 = v;
+        } else if (strcmp(entry.type_name, "vec3i") == 0) {
+            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
+            entry.value.type = TVDB_VALUE_VEC3I;
+            if (sz == 3 * sizeof(int32_t)) {
+                tvdb__sr_read_i32(sr, &entry.value.u.vec3i[0]);
+                tvdb__sr_read_i32(sr, &entry.value.u.vec3i[1]);
+                tvdb__sr_read_i32(sr, &entry.value.u.vec3i[2]);
+            }
+        } else if (strcmp(entry.type_name, "vec3d") == 0) {
+            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
+            entry.value.type = TVDB_VALUE_VEC3D;
+            if (sz == 3 * sizeof(double)) {
+                tvdb__sr_read_f64(sr, &entry.value.u.vec3d[0]);
+                tvdb__sr_read_f64(sr, &entry.value.u.vec3d[1]);
+                tvdb__sr_read_f64(sr, &entry.value.u.vec3d[2]);
+            }
+        } else {
+            /* Unknown type: read raw bytes */
+            int32_t num_bytes = 0;
+            tvdb__sr_read_i32(sr, &num_bytes);
+            if (num_bytes > 0) {
+                entry.raw_data = (uint8_t *)tvdb__alloc(alloc,
+                                                        (size_t)num_bytes);
+                if (entry.raw_data) {
+                    entry.raw_data_len = (size_t)num_bytes;
+                    tvdb__sr_read(sr, (size_t)num_bytes, entry.raw_data);
+                } else {
+                    tvdb__sr_seek_cur(sr, num_bytes);
+                }
+            }
+        }
+
+        if (meta) tvdb__metadata_push(meta, &entry);
+    }
+
+    return TVDB_OK;
+}
+
+/* ========================================================================== */
+/*  Grid descriptor reading                                                   */
+/* ========================================================================== */
+
+static int tvdb__ends_with(const char *str, const char *suffix) {
+    size_t slen = strlen(str);
+    size_t xlen = strlen(suffix);
+    if (xlen > slen) return 0;
+    return memcmp(str + slen - xlen, suffix, xlen) == 0;
+}
+
+static char *tvdb__strip_suffix(const char *name, char sep,
+                                tvdb_allocator_t *a) {
+    const char *p = strchr(name, sep);
+    if (p) return tvdb__strndup(a, name, (size_t)(p - name));
+    return tvdb__strdup(a, name);
+}
+
+static tvdb_status_t tvdb__read_grid_descriptor(
+    tvdb__sr_t *sr, uint32_t file_version, tvdb_grid_descriptor_t *gd,
+    tvdb_allocator_t *alloc, tvdb_error_t *err) {
+    (void)file_version;
+    memset(gd, 0, sizeof(*gd));
+
+    gd->unique_name = tvdb__sr_read_string(sr, alloc);
+    if (!gd->unique_name) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Failed to read grid unique name");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+    gd->grid_name = tvdb__strip_suffix(gd->unique_name, '\x1e', alloc);
+
+    gd->grid_type = tvdb__sr_read_string(sr, alloc);
+    if (!gd->grid_type) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Failed to read grid type");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    /* Strip _HalfFloat suffix */
+    static const char *HALF_SUFFIX = "_HalfFloat";
+    if (tvdb__ends_with(gd->grid_type, HALF_SUFFIX)) {
+        gd->save_float_as_half = 1;
+        size_t new_len = strlen(gd->grid_type) - strlen(HALF_SUFFIX);
+        char *stripped = tvdb__strndup(alloc, gd->grid_type, new_len);
+        tvdb__free(alloc, gd->grid_type, strlen(gd->grid_type) + 1);
+        gd->grid_type = stripped;
+    }
+
+    gd->instance_parent_name = tvdb__sr_read_string(sr, alloc);
+
+    /* Read byte offsets */
+    tvdb__sr_read_u64(sr, &gd->grid_byte_offset);
+    tvdb__sr_read_u64(sr, &gd->block_byte_offset);
+    tvdb__sr_read_u64(sr, &gd->end_byte_offset);
+
+    return TVDB_OK;
+}
+
+static void tvdb__grid_descriptor_destroy(tvdb_grid_descriptor_t *gd,
+                                          tvdb_allocator_t *a) {
+    if (gd->grid_name) tvdb__free(a, gd->grid_name,
+                                  strlen(gd->grid_name) + 1);
+    if (gd->unique_name) tvdb__free(a, gd->unique_name,
+                                    strlen(gd->unique_name) + 1);
+    if (gd->grid_type) tvdb__free(a, gd->grid_type,
+                                  strlen(gd->grid_type) + 1);
+    if (gd->instance_parent_name)
+        tvdb__free(a, gd->instance_parent_name,
+                   strlen(gd->instance_parent_name) + 1);
+    memset(gd, 0, sizeof(*gd));
+}
+
+/* ========================================================================== */
+/*  Grid type string parsing → layout                                         */
+/* ========================================================================== */
+
+static tvdb_status_t tvdb__parse_grid_type(const char *grid_type,
+                                           tvdb_grid_layout_t *layout,
+                                           tvdb_error_t *err) {
+    memset(layout, 0, sizeof(*layout));
+
+    /* Expected format: "Tree_<valuetype>_<dim1>_<dim2>_<dim3>"
+       e.g., "Tree_float_5_4_3" */
+    if (strncmp(grid_type, "Tree_", 5) != 0) {
+        tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
+                        "Unsupported grid type (no Tree_ prefix)");
+        return TVDB_ERROR_UNSUPPORTED_GRID_TYPE;
+    }
+
+    const char *p = grid_type + 5;
+
+    /* Parse value type */
+    tvdb_value_type_t vtype = TVDB_VALUE_FLOAT;
+    if (strncmp(p, "float_", 6) == 0) {
+        vtype = TVDB_VALUE_FLOAT; p += 6;
+    } else if (strncmp(p, "double_", 7) == 0) {
+        vtype = TVDB_VALUE_DOUBLE; p += 7;
+    } else if (strncmp(p, "int32_", 6) == 0) {
+        vtype = TVDB_VALUE_INT32; p += 6;
+    } else if (strncmp(p, "bool_", 5) == 0) {
+        vtype = TVDB_VALUE_BOOL; p += 5;
+    } else if (strncmp(p, "vec3s_", 6) == 0) {
+        vtype = TVDB_VALUE_VEC3F; p += 6;
+    } else if (strncmp(p, "vec3d_", 6) == 0) {
+        vtype = TVDB_VALUE_VEC3D; p += 6;
+    } else if (strncmp(p, "vec3i_", 6) == 0) {
+        vtype = TVDB_VALUE_VEC3I; p += 6;
+    } else {
+        tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
+                        "Unsupported value type in grid type string");
+        return TVDB_ERROR_UNSUPPORTED_GRID_TYPE;
+    }
+
+    /* Root node (level 0) */
+    layout->levels[0].node_type  = TVDB_NODE_ROOT;
+    layout->levels[0].value_type = vtype;
+    layout->levels[0].log2dim    = 0;
+    layout->num_levels = 1;
+
+    /* Parse dimensions (e.g. "5_4_3") */
+    while (*p && layout->num_levels < TVDB_MAX_TREE_DEPTH) {
+        int dim = 0;
+        while (*p >= '0' && *p <= '9') {
+            dim = dim * 10 + (*p - '0');
+            p++;
+        }
+        if (*p == '_') p++;
+
+        int level = layout->num_levels;
+        layout->levels[level].value_type = vtype;
+        layout->levels[level].log2dim    = (int32_t)dim;
+
+        /* Last dimension is leaf, others are internal */
+        if (*p == '\0') {
+            layout->levels[level].node_type = TVDB_NODE_LEAF;
+        } else {
+            layout->levels[level].node_type = TVDB_NODE_INTERNAL;
+        }
+        layout->num_levels++;
+    }
+
+    if (layout->num_levels < 3) {
+        tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
+                        "Grid type has too few levels");
+        return TVDB_ERROR_UNSUPPORTED_GRID_TYPE;
+    }
+
+    return TVDB_OK;
+}
+
+/* ========================================================================== */
+/*  Transform reading                                                         */
+/* ========================================================================== */
+
+static tvdb_status_t tvdb__read_transform(tvdb__sr_t *sr,
+                                          tvdb_transform_t *xform,
+                                          tvdb_allocator_t *alloc,
+                                          tvdb_error_t *err) {
+    memset(xform, 0, sizeof(*xform));
+    /* Identity matrix */
+    for (int i = 0; i < 4; i++) xform->matrix[i][i] = 1.0;
+
+    char *type = tvdb__sr_read_string(sr, alloc);
+    if (!type) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Failed to read transform type");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    double dummy[3]; /* for fields we read but don't store */
+
+    if (strcmp(type, "UniformScaleMap") == 0 ||
+        strcmp(type, "ScaleMap") == 0) {
+        xform->type = (strcmp(type, "UniformScaleMap") == 0)
+                        ? TVDB_TRANSFORM_UNIFORM_SCALE
+                        : TVDB_TRANSFORM_SCALE;
+        /* ScaleMap::read: scale, voxelSize, scaleInv, invScaleSqr,
+           invTwiceScale */
+        tvdb__sr_read_vec3d(sr, xform->scale_values);
+        tvdb__sr_read_vec3d(sr, xform->voxel_size);
+        tvdb__sr_read_vec3d(sr, dummy); /* scaleValuesInverse */
+        tvdb__sr_read_vec3d(sr, dummy); /* invScaleSqr */
+        tvdb__sr_read_vec3d(sr, dummy); /* invTwiceScale */
+    } else if (strcmp(type, "UniformScaleTranslateMap") == 0 ||
+               strcmp(type, "ScaleTranslateMap") == 0) {
+        xform->type = (strcmp(type, "UniformScaleTranslateMap") == 0)
+                        ? TVDB_TRANSFORM_UNIFORM_SCALE_TRANSLATE
+                        : TVDB_TRANSFORM_SCALE_TRANSLATE;
+        /* ScaleTranslateMap::read: translation, scale, voxelSize, scaleInv,
+           invScaleSqr, invTwiceScale */
+        tvdb__sr_read_vec3d(sr, xform->translation);
+        tvdb__sr_read_vec3d(sr, xform->scale_values);
+        tvdb__sr_read_vec3d(sr, xform->voxel_size);
+        tvdb__sr_read_vec3d(sr, dummy); /* scaleValuesInverse */
+        tvdb__sr_read_vec3d(sr, dummy); /* invScaleSqr */
+        tvdb__sr_read_vec3d(sr, dummy); /* invTwiceScale */
+    } else if (strcmp(type, "TranslationMap") == 0) {
+        xform->type = TVDB_TRANSFORM_TRANSLATION;
+        tvdb__sr_read_vec3d(sr, xform->translation);
+        xform->scale_values[0] = xform->scale_values[1] =
+            xform->scale_values[2] = 1.0;
+        xform->voxel_size[0] = xform->voxel_size[1] =
+            xform->voxel_size[2] = 1.0;
+    } else if (strcmp(type, "AffineMap") == 0) {
+        xform->type = TVDB_TRANSFORM_AFFINE;
+        /* AffineMap::read: 4x4 matrix (16 doubles, row-major) */
+        for (int r = 0; r < 4; r++)
+            for (int c = 0; c < 4; c++)
+                tvdb__sr_read_f64(sr, &xform->matrix[r][c]);
+        /* Extract scale and translation from matrix */
+        xform->translation[0] = xform->matrix[0][3];
+        xform->translation[1] = xform->matrix[1][3];
+        xform->translation[2] = xform->matrix[2][3];
+    } else {
+        /* Unknown transform: try to skip by reading an AffineMap-sized block */
+        xform->type = TVDB_TRANSFORM_UNKNOWN;
+        tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_TRANSFORM, type);
+        tvdb__free(alloc, type, strlen(type) + 1);
+        return TVDB_ERROR_UNSUPPORTED_TRANSFORM;
+    }
+
+    tvdb__free(alloc, type, strlen(type) + 1);
+    return TVDB_OK;
+}
+
+/* ========================================================================== */
+/*  Decompression                                                             */
+/* ========================================================================== */
+
+static int tvdb__decompress_zip(uint8_t *dst, size_t *uncompressed_size,
+                                const uint8_t *src, size_t src_size) {
+    if (*uncompressed_size == src_size) {
+        memcpy(dst, src, src_size);
+        return 1;
+    }
+#if defined(TVDB_USE_SYSTEM_ZLIB)
+    uLongf sz = (uLongf)*uncompressed_size;
+    if (uncompress(dst, &sz, src, (uLong)src_size) != Z_OK) return 0;
+    *uncompressed_size = (size_t)sz;
+#else
+    mz_ulong sz = (mz_ulong)*uncompressed_size;
+    if (mz_uncompress(dst, &sz, src, (mz_ulong)src_size) != MZ_OK) return 0;
+    *uncompressed_size = (size_t)sz;
+#endif
+    return 1;
+}
+
+#if defined(TVDB_USE_BLOSC)
+static int tvdb__decompress_blosc(uint8_t *dst, size_t uncompressed_size,
+                                  const uint8_t *src, size_t src_size) {
+    if (uncompressed_size == src_size) {
+        memcpy(dst, src, src_size);
+        return 1;
+    }
+    /* blosc2's blosc1-compat API: reads blosc1-format frames used by OpenVDB */
+    int n = blosc1_decompress(src, dst, uncompressed_size);
+    if (n < 0) return 0;
+    return (size_t)n == uncompressed_size;
+}
+#endif
+
+/* Read compressed data from stream, decompress into dst_data.
+   dst_data must be pre-allocated to element_size * count bytes.
+   If dst_data is NULL, just seek over the data. */
+static tvdb_status_t tvdb__read_and_decompress(
+    tvdb__sr_t *sr, uint8_t *dst_data, size_t element_size, size_t count,
+    uint32_t compression_mask, tvdb_allocator_t *alloc, tvdb_error_t *err) {
+
+    size_t total_size = element_size * count;
+
+    if (compression_mask & TVDB_COMPRESS_BLOSC) {
+#if defined(TVDB_USE_BLOSC)
+        int64_t num_compressed;
+        if (!tvdb__sr_read_i64(sr, &num_compressed)) {
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                            "Failed to read BLOSC compressed size");
+            return TVDB_ERROR_INVALID_DATA;
+        }
+        if (num_compressed <= 0) {
+            /* Uncompressed data */
+            if (dst_data)
+                tvdb__sr_read(sr, total_size, dst_data);
+            else
+                tvdb__sr_seek_cur(sr, (int64_t)total_size);
+        } else {
+            uint8_t *tmp = (uint8_t *)tvdb__alloc(alloc,
+                                                   (size_t)num_compressed);
+            if (!tmp) {
+                tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+                return TVDB_ERROR_OUT_OF_MEMORY;
+            }
+            if (!tvdb__sr_read(sr, (size_t)num_compressed, tmp)) {
+                tvdb__free(alloc, tmp, (size_t)num_compressed);
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "Failed to read BLOSC data");
+                return TVDB_ERROR_INVALID_DATA;
+            }
+            if (dst_data) {
+                if (!tvdb__decompress_blosc(dst_data, total_size, tmp,
+                                            (size_t)num_compressed)) {
+                    tvdb__free(alloc, tmp, (size_t)num_compressed);
+                    tvdb__set_error(err, TVDB_ERROR_DECOMPRESSION_FAILED,
+                                    "BLOSC decompression failed");
+                    return TVDB_ERROR_DECOMPRESSION_FAILED;
+                }
+            }
+            tvdb__free(alloc, tmp, (size_t)num_compressed);
+        }
+#else
+        tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_COMPRESSION,
+                        "BLOSC not enabled (compile with TVDB_USE_BLOSC)");
+        return TVDB_ERROR_UNSUPPORTED_COMPRESSION;
+#endif
+    } else if (compression_mask & TVDB_COMPRESS_ZIP) {
+        int64_t num_zipped;
+        if (!tvdb__sr_read_i64(sr, &num_zipped)) {
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                            "Failed to read ZIP compressed size");
+            return TVDB_ERROR_INVALID_DATA;
+        }
+        if (num_zipped <= 0) {
+            if (dst_data)
+                tvdb__sr_read(sr, total_size, dst_data);
+            else
+                tvdb__sr_seek_cur(sr, (int64_t)total_size);
+        } else {
+            uint8_t *tmp = (uint8_t *)tvdb__alloc(alloc, (size_t)num_zipped);
+            if (!tmp) {
+                tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+                return TVDB_ERROR_OUT_OF_MEMORY;
+            }
+            if (!tvdb__sr_read(sr, (size_t)num_zipped, tmp)) {
+                tvdb__free(alloc, tmp, (size_t)num_zipped);
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "Failed to read ZIP data");
+                return TVDB_ERROR_INVALID_DATA;
+            }
+            if (dst_data) {
+                size_t usz = total_size;
+                if (!tvdb__decompress_zip(dst_data, &usz, tmp,
+                                          (size_t)num_zipped)) {
+                    tvdb__free(alloc, tmp, (size_t)num_zipped);
+                    tvdb__set_error(err, TVDB_ERROR_DECOMPRESSION_FAILED,
+                                    "ZIP decompression failed");
+                    return TVDB_ERROR_DECOMPRESSION_FAILED;
+                }
+            }
+            tvdb__free(alloc, tmp, (size_t)num_zipped);
+        }
+    } else {
+        /* No compression */
+        if (dst_data)
+            tvdb__sr_read(sr, total_size, dst_data);
+        else
+            tvdb__sr_seek_cur(sr, (int64_t)total_size);
+    }
+
+    /* Endian swap */
+    if (dst_data && sr->swap_endian) {
+        if (element_size == 2) {
+            for (size_t i = 0; i < count; i++)
+                tvdb__swap2(dst_data + i * 2);
+        } else if (element_size == 4) {
+            for (size_t i = 0; i < count; i++)
+                tvdb__swap4(dst_data + i * 4);
+        } else if (element_size == 8) {
+            for (size_t i = 0; i < count; i++)
+                tvdb__swap8(dst_data + i * 8);
+        }
+    }
+
+    return TVDB_OK;
+}
+
+/* ========================================================================== */
+/*  Mask-compressed value reading                                             */
+/* ========================================================================== */
+
+static tvdb_value_t tvdb__negate_value(tvdb_value_t v) {
+    tvdb_value_t r = v;
+    switch (v.type) {
+        case TVDB_VALUE_FLOAT:  r.u.f = -v.u.f; break;
+        case TVDB_VALUE_DOUBLE: r.u.d = -v.u.d; break;
+        case TVDB_VALUE_INT32:  r.u.i32 = -v.u.i32; break;
+        case TVDB_VALUE_INT64:  r.u.i64 = -v.u.i64; break;
+        default: break;
+    }
+    return r;
+}
+
+static tvdb_status_t tvdb__read_mask_values(
+    tvdb__sr_t *sr, uint32_t compression_flags, uint32_t file_version,
+    tvdb_value_t background, size_t num_values, tvdb_value_type_t value_type,
+    const tvdb_nodemask_t *value_mask, uint8_t *values,
+    tvdb_allocator_t *alloc, tvdb_error_t *err) {
+
+    int mask_compressed = (compression_flags & TVDB_COMPRESS_ACTIVE_MASK) != 0;
+    int8_t per_node_flag = TVDB_NO_MASK_AND_ALL_VALS;
+
+    if (file_version >= TVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
+        tvdb__sr_read_i8(sr, &per_node_flag);
+    }
+
+    tvdb_value_t inactive_val1;
+    tvdb_value_t inactive_val0;
+    memset(&inactive_val1, 0, sizeof(inactive_val1));
+    memset(&inactive_val0, 0, sizeof(inactive_val0));
+    inactive_val1 = background;
+    inactive_val0 = (per_node_flag == TVDB_NO_MASK_OR_INACTIVE_VALS)
+                        ? background : tvdb__negate_value(background);
+
+    if (per_node_flag == TVDB_NO_MASK_AND_ONE_INACTIVE_VAL ||
+        per_node_flag == TVDB_MASK_AND_ONE_INACTIVE_VAL ||
+        per_node_flag == TVDB_MASK_AND_TWO_INACTIVE_VALS) {
+        tvdb__sr_read_value(sr, background.type, &inactive_val0);
+        if (per_node_flag == TVDB_MASK_AND_TWO_INACTIVE_VALS) {
+            tvdb__sr_read_value(sr, background.type, &inactive_val1);
+        }
+    }
+
+    tvdb_nodemask_t selection_mask;
+    tvdb__nodemask_init(&selection_mask);
+    if (per_node_flag == TVDB_MASK_AND_NO_INACTIVE_VALS ||
+        per_node_flag == TVDB_MASK_AND_ONE_INACTIVE_VAL ||
+        per_node_flag == TVDB_MASK_AND_TWO_INACTIVE_VALS) {
+        tvdb__nodemask_alloc(&selection_mask, value_mask->log2dim,
+                             alloc);
+        tvdb__sr_read(sr, tvdb__nodemask_mem_usage(&selection_mask),
+                      selection_mask.bits.data);
+    }
+
+    size_t read_count = num_values;
+    if (mask_compressed && per_node_flag != TVDB_NO_MASK_AND_ALL_VALS &&
+        file_version >= TVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
+        read_count = tvdb__nodemask_count_on(value_mask);
+    }
+
+    size_t vsize = tvdb_value_type_size(value_type);
+    size_t tmp_size = read_count * vsize;
+    uint8_t *tmp_buf = (uint8_t *)tvdb__alloc(alloc,
+                                               tmp_size > 0 ? tmp_size : 1);
+    if (!tmp_buf) {
+        tvdb__nodemask_destroy(&selection_mask);
+        tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM in read_mask_values");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    memset(tmp_buf, 0, tmp_size > 0 ? tmp_size : 1);
+
+    tvdb_status_t st = tvdb__read_and_decompress(
+        sr, tmp_buf, vsize, read_count, compression_flags, alloc, err);
+    if (st != TVDB_OK) {
+        tvdb__free(alloc, tmp_buf, tmp_size > 0 ? tmp_size : 1);
+        tvdb__nodemask_destroy(&selection_mask);
+        return st;
+    }
+
+    /* Reconstruct full value buffer if mask compressed */
+    if (values && mask_compressed && read_count != num_values) {
+        size_t temp_idx = 0;
+        for (size_t dest_idx = 0; dest_idx < num_values; dest_idx++) {
+            if (tvdb__nodemask_is_on(value_mask, (int32_t)dest_idx)) {
+                memcpy(values + dest_idx * vsize,
+                       tmp_buf + temp_idx * vsize, vsize);
+                temp_idx++;
+            } else {
+                /* Copy from the union's value data, not the whole struct */
+                if (tvdb__nodemask_is_on(&selection_mask, (int32_t)dest_idx))
+                    memcpy(values + dest_idx * vsize, &inactive_val1.u, vsize);
+                else
+                    memcpy(values + dest_idx * vsize, &inactive_val0.u, vsize);
+            }
+        }
+    } else if (values) {
+        memcpy(values, tmp_buf, num_values * vsize);
+    }
+
+    tvdb__free(alloc, tmp_buf, tmp_size > 0 ? tmp_size : 1);
+    tvdb__nodemask_destroy(&selection_mask);
+    return TVDB_OK;
+}
+
+/* ========================================================================== */
+/*  Tree node management                                                      */
+/* ========================================================================== */
+
+static size_t tvdb__tree_alloc_node(tvdb_tree_t *tree) {
+    if (tree->num_nodes >= tree->nodes_capacity) {
+        size_t new_cap = tree->nodes_capacity ? tree->nodes_capacity * 2 : 64;
+        tvdb_tree_node_t *new_nodes = (tvdb_tree_node_t *)tvdb__realloc(
+            tree->alloc, tree->nodes,
+            tree->nodes_capacity * sizeof(tvdb_tree_node_t),
+            new_cap * sizeof(tvdb_tree_node_t));
+        if (!new_nodes) return (size_t)-1;
+        /* Zero new entries */
+        memset(new_nodes + tree->nodes_capacity, 0,
+               (new_cap - tree->nodes_capacity) * sizeof(tvdb_tree_node_t));
+        tree->nodes          = new_nodes;
+        tree->nodes_capacity = new_cap;
+    }
+    size_t idx = tree->num_nodes++;
+    memset(&tree->nodes[idx], 0, sizeof(tvdb_tree_node_t));
+    return idx;
+}
+
+/* ========================================================================== */
+/*  Tree topology reading                                                     */
+/* ========================================================================== */
+
+typedef struct tvdb__deser_params {
+    uint32_t file_version;
+    uint32_t compression_flags;
+    int      half_precision;
+    tvdb_value_t background;
+} tvdb__deser_params_t;
+
+/* Forward declaration for recursive calls */
+static tvdb_status_t tvdb__read_node_topology(
+    tvdb_tree_t *tree, tvdb__sr_t *sr, size_t node_idx, int level,
+    const tvdb__deser_params_t *params, tvdb_error_t *err);
+
+static tvdb_status_t tvdb__read_root_topology(
+    tvdb_tree_t *tree, tvdb__sr_t *sr, size_t node_idx, int level,
+    const tvdb__deser_params_t *params, tvdb_error_t *err) {
+
+    tvdb_tree_node_t *node = &tree->nodes[node_idx];
+    node->type  = TVDB_NODE_ROOT;
+    node->level = level;
+    tvdb_root_node_t *root = &node->u.root;
+    tvdb_allocator_t *a = tree->alloc;
+    tvdb_value_type_t vt = tree->layout.levels[level].value_type;
+
+    /* Read background value */
+    if (!tvdb__sr_read_value(sr, vt, &root->background)) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Failed to read root background value");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    if (!tvdb__sr_read_u32(sr, &root->num_tiles) ||
+        !tvdb__sr_read_u32(sr, &root->num_children)) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Failed to read root tile/child counts");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    if (root->num_tiles == 0 && root->num_children == 0) {
+        /* Empty root - this is valid for some grids */
+        return TVDB_OK;
+    }
+
+    /* Read tiles */
+    if (root->num_tiles > 0) {
+        root->tile_origins = (int32_t *)tvdb__alloc(a,
+            (size_t)root->num_tiles * 3 * sizeof(int32_t));
+        root->tile_values = (tvdb_value_t *)tvdb__alloc(a,
+            (size_t)root->num_tiles * sizeof(tvdb_value_t));
+        root->tile_active = (int *)tvdb__alloc(a,
+            (size_t)root->num_tiles * sizeof(int));
+        if (!root->tile_origins || !root->tile_values || !root->tile_active) {
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+
+        for (uint32_t i = 0; i < root->num_tiles; i++) {
+            tvdb__sr_read_i32(sr, &root->tile_origins[i * 3 + 0]);
+            tvdb__sr_read_i32(sr, &root->tile_origins[i * 3 + 1]);
+            tvdb__sr_read_i32(sr, &root->tile_origins[i * 3 + 2]);
+            tvdb__sr_read_value(sr, vt, &root->tile_values[i]);
+            uint8_t active;
+            tvdb__sr_read_u8(sr, &active);
+            root->tile_active[i] = active ? 1 : 0;
+        }
+    }
+
+    /* Read child nodes */
+    if (root->num_children > 0) {
+        root->child_origins = (int32_t *)tvdb__alloc(a,
+            (size_t)root->num_children * 3 * sizeof(int32_t));
+        root->child_indices = (size_t *)tvdb__alloc(a,
+            (size_t)root->num_children * sizeof(size_t));
+        if (!root->child_origins || !root->child_indices) {
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+
+        for (uint32_t i = 0; i < root->num_children; i++) {
+            tvdb__sr_read_i32(sr, &root->child_origins[i * 3 + 0]);
+            tvdb__sr_read_i32(sr, &root->child_origins[i * 3 + 1]);
+            tvdb__sr_read_i32(sr, &root->child_origins[i * 3 + 2]);
+
+            size_t child_idx = tvdb__tree_alloc_node(tree);
+            if (child_idx == (size_t)-1) {
+                tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+                return TVDB_ERROR_OUT_OF_MEMORY;
+            }
+            /* NOTE: tree->nodes may have been reallocated, re-read root */
+            root = &tree->nodes[node_idx].u.root;
+            root->child_indices[i] = child_idx;
+
+            tvdb_status_t st = tvdb__read_node_topology(
+                tree, sr, child_idx, level + 1, params, err);
+            if (st != TVDB_OK) return st;
+            /* Re-read root again after potential realloc */
+            root = &tree->nodes[node_idx].u.root;
+        }
+    }
+
+    return TVDB_OK;
+}
+
+static tvdb_status_t tvdb__read_internal_topology(
+    tvdb_tree_t *tree, tvdb__sr_t *sr, size_t node_idx, int level,
+    const tvdb__deser_params_t *params, tvdb_error_t *err) {
+
+    tvdb_tree_node_t *node = &tree->nodes[node_idx];
+    node->type  = TVDB_NODE_INTERNAL;
+    node->level = level;
+    tvdb_internal_node_t *inode = &node->u.internal;
+    tvdb_allocator_t *a = tree->alloc;
+    int32_t log2dim = tree->layout.levels[level].log2dim;
+    tvdb_value_type_t vt = tree->layout.levels[level].value_type;
+
+    /* Read child mask and value mask */
+    if (!tvdb__nodemask_alloc(&inode->child_mask, log2dim, a) ||
+        !tvdb__nodemask_alloc(&inode->value_mask, log2dim, a)) {
+        tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+
+    if (!tvdb__sr_read(sr, tvdb__nodemask_mem_usage(&inode->child_mask),
+                       inode->child_mask.bits.data) ||
+        !tvdb__sr_read(sr, tvdb__nodemask_mem_usage(&inode->value_mask),
+                       inode->value_mask.bits.data)) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Failed to read internal node masks");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    int32_t bitsize = inode->child_mask.bitsize;
+    int old_version = (params->file_version <
+                       TVDB_FILE_VERSION_NODE_MASK_COMPRESSION);
+
+    int32_t num_values = old_version
+        ? (bitsize - (int32_t)tvdb__nodemask_count_on(&inode->child_mask))
+        : bitsize;
+
+    /* Read tile/inactive values */
+    size_t vsize = tvdb_value_type_size(vt);
+    inode->values_size = (size_t)num_values * vsize;
+    inode->values = (uint8_t *)tvdb__alloc(a, inode->values_size);
+    if (!inode->values) {
+        tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    memset(inode->values, 0, inode->values_size);
+
+    tvdb_status_t st = tvdb__read_mask_values(
+        sr, params->compression_flags, params->file_version,
+        params->background, (size_t)num_values, vt,
+        &inode->value_mask, inode->values, a, err);
+    if (st != TVDB_OK) return st;
+
+    /* Read child nodes */
+    size_t nc = tvdb__nodemask_count_on(&inode->child_mask);
+    inode->num_children = nc;
+    if (nc > 0) {
+        inode->child_indices = (size_t *)tvdb__alloc(a, nc * sizeof(size_t));
+        if (!inode->child_indices) {
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+    }
+
+    size_t child_n = 0;
+    for (int32_t i = 0; i < bitsize; i++) {
+        if (tvdb__nodemask_is_on(&inode->child_mask, i)) {
+            size_t child_idx = tvdb__tree_alloc_node(tree);
+            if (child_idx == (size_t)-1) {
+                tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+                return TVDB_ERROR_OUT_OF_MEMORY;
+            }
+            /* Re-read after potential realloc */
+            inode = &tree->nodes[node_idx].u.internal;
+            inode->child_indices[child_n++] = child_idx;
+
+            st = tvdb__read_node_topology(tree, sr, child_idx, level + 1,
+                                          params, err);
+            if (st != TVDB_OK) return st;
+            inode = &tree->nodes[node_idx].u.internal;
+        }
+    }
+
+    return TVDB_OK;
+}
+
+static tvdb_status_t tvdb__read_leaf_topology(
+    tvdb_tree_t *tree, tvdb__sr_t *sr, size_t node_idx, int level,
+    const tvdb__deser_params_t *params, tvdb_error_t *err) {
+    (void)params;
+
+    tvdb_tree_node_t *node = &tree->nodes[node_idx];
+    node->type  = TVDB_NODE_LEAF;
+    node->level = level;
+    tvdb_leaf_node_t *leaf = &node->u.leaf;
+    int32_t log2dim = tree->layout.levels[level].log2dim;
+
+    if (!tvdb__nodemask_alloc(&leaf->value_mask, log2dim, tree->alloc)) {
+        tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+
+    if (!tvdb__sr_read(sr, tvdb__nodemask_mem_usage(&leaf->value_mask),
+                       leaf->value_mask.bits.data)) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Failed to read leaf value mask");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    leaf->num_voxels = (uint32_t)(1 << (3 * log2dim));
+    return TVDB_OK;
+}
+
+static tvdb_status_t tvdb__read_node_topology(
+    tvdb_tree_t *tree, tvdb__sr_t *sr, size_t node_idx, int level,
+    const tvdb__deser_params_t *params, tvdb_error_t *err) {
+
+    if (level >= tree->layout.num_levels) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Tree depth exceeds layout levels");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    tvdb_node_type_t nt = tree->layout.levels[level].node_type;
+    switch (nt) {
+        case TVDB_NODE_ROOT:
+            return tvdb__read_root_topology(tree, sr, node_idx, level,
+                                            params, err);
+        case TVDB_NODE_INTERNAL:
+            return tvdb__read_internal_topology(tree, sr, node_idx, level,
+                                                params, err);
+        case TVDB_NODE_LEAF:
+            return tvdb__read_leaf_topology(tree, sr, node_idx, level,
+                                            params, err);
+        default:
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                            "Unknown node type");
+            return TVDB_ERROR_INVALID_DATA;
+    }
+}
+
+/* ========================================================================== */
+/*  Tree buffer reading                                                       */
+/* ========================================================================== */
+
+static tvdb_status_t tvdb__read_node_buffer(
+    tvdb_tree_t *tree, tvdb__sr_t *sr, size_t node_idx, int level,
+    const tvdb__deser_params_t *params, tvdb_error_t *err);
+
+static tvdb_status_t tvdb__read_root_buffer(
+    tvdb_tree_t *tree, tvdb__sr_t *sr, size_t node_idx, int level,
+    const tvdb__deser_params_t *params, tvdb_error_t *err) {
+
+    tvdb_root_node_t *root = &tree->nodes[node_idx].u.root;
+
+    for (uint32_t i = 0; i < root->num_children; i++) {
+        tvdb_status_t st = tvdb__read_node_buffer(
+            tree, sr, root->child_indices[i], level + 1, params, err);
+        if (st != TVDB_OK) return st;
+        /* Re-read root after potential side effects */
+        root = &tree->nodes[node_idx].u.root;
+    }
+    return TVDB_OK;
+}
+
+static tvdb_status_t tvdb__read_internal_buffer(
+    tvdb_tree_t *tree, tvdb__sr_t *sr, size_t node_idx, int level,
+    const tvdb__deser_params_t *params, tvdb_error_t *err) {
+
+    tvdb_internal_node_t *inode = &tree->nodes[node_idx].u.internal;
+
+    size_t child_n = 0;
+    for (int32_t i = 0; i < inode->child_mask.bitsize; i++) {
+        if (tvdb__nodemask_is_on(&inode->child_mask, i)) {
+            TVDB_ASSERT(child_n < inode->num_children);
+            tvdb_status_t st = tvdb__read_node_buffer(
+                tree, sr, inode->child_indices[child_n], level + 1,
+                params, err);
+            if (st != TVDB_OK) return st;
+            inode = &tree->nodes[node_idx].u.internal;
+            child_n++;
+        }
+    }
+    return TVDB_OK;
+}
+
+static tvdb_status_t tvdb__read_leaf_buffer(
+    tvdb_tree_t *tree, tvdb__sr_t *sr, size_t node_idx, int level,
+    const tvdb__deser_params_t *params, tvdb_error_t *err) {
+
+    tvdb_leaf_node_t *leaf = &tree->nodes[node_idx].u.leaf;
+    tvdb_allocator_t *a = tree->alloc;
+    tvdb_value_type_t vt = tree->layout.levels[level].value_type;
+    size_t vsize = tvdb_value_type_size(vt);
+
+    /* Seek over the value mask (already loaded in topology phase) */
+    tvdb__sr_seek_cur(sr, (int64_t)tvdb__nodemask_mem_usage(&leaf->value_mask));
+
+    /* Handle old version coordinate + buffer count */
+    if (params->file_version < TVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
+        int32_t coord[3];
+        tvdb__sr_read_i32(sr, &coord[0]);
+        tvdb__sr_read_i32(sr, &coord[1]);
+        tvdb__sr_read_i32(sr, &coord[2]);
+        int8_t num_buffers;
+        tvdb__sr_read_i8(sr, &num_buffers);
+    }
+
+    /* Use tvdb__read_mask_values which correctly handles per-node flags,
+       inactive values, and selection masks in the compressed value stream.
+       This is the same format used by both internal and leaf nodes. */
+    size_t num_values = leaf->num_voxels;
+    leaf->data_size = num_values * vsize;
+    leaf->data = (uint8_t *)tvdb__alloc(a, leaf->data_size > 0 ? leaf->data_size : 1);
+    if (!leaf->data) {
+        tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    memset(leaf->data, 0, leaf->data_size > 0 ? leaf->data_size : 1);
+
+    tvdb_status_t st = tvdb__read_mask_values(
+        sr, params->compression_flags, params->file_version,
+        params->background, num_values, vt,
+        &leaf->value_mask, leaf->data, a, err);
+    return st;
+}
+
+static tvdb_status_t tvdb__read_node_buffer(
+    tvdb_tree_t *tree, tvdb__sr_t *sr, size_t node_idx, int level,
+    const tvdb__deser_params_t *params, tvdb_error_t *err) {
+
+    tvdb_node_type_t nt = tree->nodes[node_idx].type;
+    switch (nt) {
+        case TVDB_NODE_ROOT:
+            return tvdb__read_root_buffer(tree, sr, node_idx, level,
+                                          params, err);
+        case TVDB_NODE_INTERNAL:
+            return tvdb__read_internal_buffer(tree, sr, node_idx, level,
+                                              params, err);
+        case TVDB_NODE_LEAF:
+            return tvdb__read_leaf_buffer(tree, sr, node_idx, level,
+                                          params, err);
+        default:
+            return TVDB_ERROR_INVALID_DATA;
+    }
+}
+
+/* ========================================================================== */
+/*  Tree cleanup                                                              */
+/* ========================================================================== */
+
+static void tvdb__tree_destroy(tvdb_tree_t *tree) {
+    if (!tree->alloc) return;
+    tvdb_allocator_t *a = tree->alloc;
+
+    for (size_t i = 0; i < tree->num_nodes; i++) {
+        tvdb_tree_node_t *n = &tree->nodes[i];
+        switch (n->type) {
+            case TVDB_NODE_ROOT: {
+                tvdb_root_node_t *r = &n->u.root;
+                if (r->tile_origins)
+                    tvdb__free(a, r->tile_origins,
+                               (size_t)r->num_tiles * 3 * sizeof(int32_t));
+                if (r->tile_values)
+                    tvdb__free(a, r->tile_values,
+                               (size_t)r->num_tiles * sizeof(tvdb_value_t));
+                if (r->tile_active)
+                    tvdb__free(a, r->tile_active,
+                               (size_t)r->num_tiles * sizeof(int));
+                if (r->child_origins)
+                    tvdb__free(a, r->child_origins,
+                               (size_t)r->num_children * 3 * sizeof(int32_t));
+                if (r->child_indices)
+                    tvdb__free(a, r->child_indices,
+                               (size_t)r->num_children * sizeof(size_t));
+                break;
+            }
+            case TVDB_NODE_INTERNAL: {
+                tvdb_internal_node_t *in = &n->u.internal;
+                tvdb__nodemask_destroy(&in->child_mask);
+                tvdb__nodemask_destroy(&in->value_mask);
+                if (in->values)
+                    tvdb__free(a, in->values, in->values_size);
+                if (in->child_indices)
+                    tvdb__free(a, in->child_indices,
+                               in->num_children * sizeof(size_t));
+                break;
+            }
+            case TVDB_NODE_LEAF: {
+                tvdb_leaf_node_t *lf = &n->u.leaf;
+                tvdb__nodemask_destroy(&lf->value_mask);
+                if (lf->data)
+                    tvdb__free(a, lf->data, lf->data_size);
+                break;
+            }
+        }
+    }
+
+    if (tree->nodes)
+        tvdb__free(a, tree->nodes,
+                   tree->nodes_capacity * sizeof(tvdb_tree_node_t));
+    memset(tree, 0, sizeof(*tree));
+}
+
+/* ========================================================================== */
+/*  Grid cleanup                                                              */
+/* ========================================================================== */
+
+static void tvdb__grid_destroy(tvdb_grid_t *grid, tvdb_allocator_t *a) {
+    tvdb__grid_descriptor_destroy(&grid->descriptor, a);
+    tvdb__metadata_destroy(&grid->metadata);
+    tvdb__tree_destroy(&grid->tree);
+    memset(grid, 0, sizeof(*grid));
+}
+
+/* ========================================================================== */
+/*  Read a single grid                                                        */
+/* ========================================================================== */
+
+static tvdb_status_t tvdb__read_grid(tvdb__sr_t *sr, tvdb_grid_t *grid,
+                                     const tvdb_header_t *header,
+                                     tvdb_allocator_t *alloc,
+                                     tvdb_error_t *err) {
+    uint32_t file_version = header->file_version;
+
+    /* Read per-grid compression (v222+) */
+    grid->compression_flags = TVDB_COMPRESS_NONE;
+    if (file_version >= TVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
+        tvdb__sr_read_u32(sr, &grid->compression_flags);
+    } else if (header->compression_flags) {
+        grid->compression_flags = header->compression_flags;
+    }
+
+    /* Read grid metadata */
+    tvdb__metadata_init(&grid->metadata, alloc);
+    tvdb_status_t st = tvdb__read_meta(sr, &grid->metadata, alloc, err);
+    if (st != TVDB_OK) return st;
+
+    /* Read transform */
+    st = tvdb__read_transform(sr, &grid->transform, alloc, err);
+    if (st != TVDB_OK) return st;
+
+    /* Parse grid type into layout */
+    st = tvdb__parse_grid_type(grid->descriptor.grid_type,
+                               &grid->tree.layout, err);
+    if (st != TVDB_OK) return st;
+
+    /* Check for grid instances */
+    if (grid->descriptor.instance_parent_name &&
+        grid->descriptor.instance_parent_name[0] != '\0') {
+        /* Instance grid — skip tree data */
+        return TVDB_OK;
+    }
+
+    /* Set up tree */
+    grid->tree.alloc = alloc;
+    grid->tree.nodes = NULL;
+    grid->tree.num_nodes = 0;
+    grid->tree.nodes_capacity = 0;
+
+    /* Determine value type (half-float promotion) */
+    tvdb_value_type_t vtype = grid->tree.layout.levels[0].value_type;
+    if (grid->descriptor.save_float_as_half && vtype == TVDB_VALUE_FLOAT) {
+        /* Values are stored as half but we'll read them as half and promote
+           later if needed. For now, keep the layout as FLOAT since the tree
+           values are stored at the size indicated in the type string. */
+    }
+
+    tvdb__deser_params_t params;
+    params.file_version      = file_version;
+    params.compression_flags = grid->compression_flags;
+    params.half_precision    = grid->descriptor.save_float_as_half;
+    params.background.type   = vtype;
+    memset(&params.background.u, 0, sizeof(params.background.u));
+
+    /* TreeBase: read buffer count */
+    {
+        int32_t buffer_count;
+        tvdb__sr_read_i32(sr, &buffer_count);
+        /* multi-buffer trees are no longer supported; ignore value */
+    }
+
+    /* Allocate root node */
+    size_t root_idx = tvdb__tree_alloc_node(&grid->tree);
+    if (root_idx == (size_t)-1) {
+        tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+
+    /* Read topology */
+    st = tvdb__read_node_topology(&grid->tree, sr, root_idx, 0, &params, err);
+    if (st != TVDB_OK) return st;
+
+    /* Update background from root */
+    params.background = grid->tree.nodes[root_idx].u.root.background;
+
+    /* Read buffers */
+    st = tvdb__read_node_buffer(&grid->tree, sr, root_idx, 0, &params, err);
+    return st;
+}
+
+/* ========================================================================== */
+/*  Header parsing                                                            */
+/* ========================================================================== */
+
+static tvdb_status_t tvdb__read_header(tvdb__sr_t *sr, tvdb_header_t *header,
+                                       tvdb_error_t *err) {
+    memset(header, 0, sizeof(*header));
+
+    /* Magic number */
+    int64_t magic;
+    if (!tvdb__sr_read_i64(sr, &magic)) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_HEADER,
+                        "Failed to read magic number");
+        return TVDB_ERROR_INVALID_HEADER;
+    }
+    if (magic != TVDB_MAGIC) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_HEADER,
+                        "Invalid VDB magic number");
+        return TVDB_ERROR_INVALID_HEADER;
+    }
+
+    /* File version */
+    if (!tvdb__sr_read_u32(sr, &header->file_version)) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_HEADER,
+                        "Failed to read file version");
+        return TVDB_ERROR_INVALID_HEADER;
+    }
+
+    if (header->file_version < TVDB_FILE_VERSION_SELECTIVE_COMPRESSION) {
+        tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_VERSION,
+                        "VDB file version < 220 not supported");
+        return TVDB_ERROR_UNSUPPORTED_VERSION;
+    }
+
+    /* Library version (v211+) */
+    if (header->file_version >= 211) {
+        tvdb__sr_read_u32(sr, &header->major_version);
+        tvdb__sr_read_u32(sr, &header->minor_version);
+    }
+
+    /* Grid offsets flag (v212+) */
+    header->has_grid_offsets = 0;
+    if (header->file_version >= 212) {
+        uint8_t flag;
+        tvdb__sr_read_u8(sr, &flag);
+        header->has_grid_offsets = flag ? 1 : 0;
+    }
+
+    if (!header->has_grid_offsets) {
+        tvdb__set_error(err, TVDB_ERROR_UNIMPLEMENTED,
+                        "VDB without grid offsets not supported");
+        return TVDB_ERROR_UNIMPLEMENTED;
+    }
+
+    /* Global compression flag (v220 to v221) */
+    header->compression_flags = TVDB_COMPRESS_NONE;
+    if (header->file_version >= TVDB_FILE_VERSION_SELECTIVE_COMPRESSION &&
+        header->file_version < TVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
+        uint8_t is_compressed;
+        tvdb__sr_read_u8(sr, &is_compressed);
+        if (is_compressed) {
+            header->compression_flags =
+                TVDB_COMPRESS_ZIP | TVDB_COMPRESS_ACTIVE_MASK;
+        }
+    }
+
+    /* UUID (36 bytes ASCII) */
+    uint8_t uuid_bytes[36];
+    if (!tvdb__sr_read(sr, 36, uuid_bytes)) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_HEADER,
+                        "Failed to read UUID");
+        return TVDB_ERROR_INVALID_HEADER;
+    }
+    memcpy(header->uuid, uuid_bytes, 36);
+    header->uuid[36] = '\0';
+
+    header->offset_to_data = sr->pos;
+    return TVDB_OK;
+}
+
+/* ========================================================================== */
+/*  Public API implementation                                                 */
+/* ========================================================================== */
+
+const char *tvdb_status_string(tvdb_status_t status) {
+    switch (status) {
+        case TVDB_OK:                          return "OK";
+        case TVDB_ERROR_INVALID_FILE:          return "Invalid file";
+        case TVDB_ERROR_INVALID_HEADER:        return "Invalid header";
+        case TVDB_ERROR_INVALID_DATA:          return "Invalid data";
+        case TVDB_ERROR_INVALID_ARGUMENT:      return "Invalid argument";
+        case TVDB_ERROR_UNSUPPORTED_VERSION:   return "Unsupported version";
+        case TVDB_ERROR_UNSUPPORTED_GRID_TYPE: return "Unsupported grid type";
+        case TVDB_ERROR_UNSUPPORTED_COMPRESSION:
+            return "Unsupported compression";
+        case TVDB_ERROR_UNSUPPORTED_TRANSFORM: return "Unsupported transform";
+        case TVDB_ERROR_DECOMPRESSION_FAILED:  return "Decompression failed";
+        case TVDB_ERROR_OUT_OF_MEMORY:         return "Out of memory";
+        case TVDB_ERROR_IO:                    return "I/O error";
+        case TVDB_ERROR_MMAP_FAILED:           return "mmap failed";
+        case TVDB_ERROR_PATH_CONVERSION:       return "Path conversion failed";
+        case TVDB_ERROR_UNIMPLEMENTED:         return "Unimplemented";
+        default:                               return "Unknown error";
+    }
+}
+
+int tvdb_nodemask_is_on(const tvdb_nodemask_t *m, int32_t i) {
+    return tvdb__nodemask_is_on(m, i);
+}
+
+size_t tvdb_nodemask_count_on(const tvdb_nodemask_t *m) {
+    return tvdb__nodemask_count_on(m);
+}
+
+tvdb_status_t tvdb_file_open(tvdb_file_t *file, const char *filepath_utf8,
+                             const tvdb_allocator_t *alloc,
+                             tvdb_error_t *err) {
+    if (!file || !filepath_utf8) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                        "NULL file or filepath");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+
+    memset(file, 0, sizeof(*file));
+    file->alloc = alloc ? *alloc : tvdb__default_allocator();
+
+    /* Open file data (mmap or buffer) */
+    tvdb_status_t st = tvdb__file_data_open(&file->file_data, filepath_utf8,
+                                            &file->alloc, err);
+    if (st != TVDB_OK) return st;
+
+    /* Parse header */
+    int swap_endian = tvdb_is_big_endian();
+    tvdb__sr_t sr;
+    tvdb__sr_init(&sr, file->file_data.data, file->file_data.data_len,
+                  swap_endian);
+
+    st = tvdb__read_header(&sr, &file->header, err);
+    if (st != TVDB_OK) {
+        tvdb__file_data_close(&file->file_data);
+        return st;
+    }
+
+    /* Read file-level metadata */
+    tvdb__metadata_init(&file->file_metadata, &file->alloc);
+    st = tvdb__read_meta(&sr, &file->file_metadata, &file->alloc, err);
+    if (st != TVDB_OK) {
+        tvdb__file_data_close(&file->file_data);
+        return st;
+    }
+
+    /* Read grid descriptors */
+    int32_t grid_count = 0;
+    if (!tvdb__sr_read_i32(&sr, &grid_count) || grid_count < 0) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Failed to read grid count");
+        tvdb__file_data_close(&file->file_data);
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    file->num_grids = (size_t)grid_count;
+    if (file->num_grids > 0) {
+        file->grids = (tvdb_grid_t *)tvdb__alloc(
+            &file->alloc, file->num_grids * sizeof(tvdb_grid_t));
+        if (!file->grids) {
+            tvdb__file_data_close(&file->file_data);
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        memset(file->grids, 0, file->num_grids * sizeof(tvdb_grid_t));
+
+        for (size_t i = 0; i < file->num_grids; i++) {
+            st = tvdb__read_grid_descriptor(&sr, file->header.file_version,
+                                            &file->grids[i].descriptor,
+                                            &file->alloc, err);
+            if (st != TVDB_OK) {
+                tvdb_file_close(file);
+                return st;
+            }
+            /* Seek to end of this grid's data */
+            tvdb__sr_seek_set(&sr, file->grids[i].descriptor.end_byte_offset);
+        }
+    }
+
+    return TVDB_OK;
+}
+
+tvdb_status_t tvdb_file_open_memory(tvdb_file_t *file, const uint8_t *data,
+                                    size_t data_len,
+                                    const tvdb_allocator_t *alloc,
+                                    tvdb_error_t *err) {
+    if (!file || !data) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL argument");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+
+    memset(file, 0, sizeof(*file));
+    file->alloc = alloc ? *alloc : tvdb__default_allocator();
+
+    file->file_data.data     = data;
+    file->file_data.data_len = (uint64_t)data_len;
+    file->file_data.source   = TVDB_SOURCE_EXTERNAL;
+
+    int swap_endian = tvdb_is_big_endian();
+    tvdb__sr_t sr;
+    tvdb__sr_init(&sr, data, (uint64_t)data_len, swap_endian);
+
+    tvdb_status_t st = tvdb__read_header(&sr, &file->header, err);
+    if (st != TVDB_OK) return st;
+
+    tvdb__metadata_init(&file->file_metadata, &file->alloc);
+    st = tvdb__read_meta(&sr, &file->file_metadata, &file->alloc, err);
+    if (st != TVDB_OK) return st;
+
+    int32_t grid_count = 0;
+    if (!tvdb__sr_read_i32(&sr, &grid_count) || grid_count < 0) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "Failed to read grid count");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    file->num_grids = (size_t)grid_count;
+    if (file->num_grids > 0) {
+        file->grids = (tvdb_grid_t *)tvdb__alloc(
+            &file->alloc, file->num_grids * sizeof(tvdb_grid_t));
+        if (!file->grids) {
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        memset(file->grids, 0, file->num_grids * sizeof(tvdb_grid_t));
+
+        for (size_t i = 0; i < file->num_grids; i++) {
+            st = tvdb__read_grid_descriptor(&sr, file->header.file_version,
+                                            &file->grids[i].descriptor,
+                                            &file->alloc, err);
+            if (st != TVDB_OK) return st;
+            tvdb__sr_seek_set(&sr, file->grids[i].descriptor.end_byte_offset);
+        }
+    }
+
+    return TVDB_OK;
+}
+
+void tvdb_file_close(tvdb_file_t *file) {
+    if (!file) return;
+
+    for (size_t i = 0; i < file->num_grids; i++) {
+        tvdb__grid_destroy(&file->grids[i], &file->alloc);
+    }
+    if (file->grids) {
+        tvdb__free(&file->alloc, file->grids,
+                   file->num_grids * sizeof(tvdb_grid_t));
+    }
+
+    tvdb__metadata_destroy(&file->file_metadata);
+    tvdb__file_data_close(&file->file_data);
+
+    memset(file, 0, sizeof(*file));
+}
+
+tvdb_status_t tvdb_read_all_grids(tvdb_file_t *file, tvdb_error_t *err) {
+    if (!file) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL file");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+
+    int swap_endian = tvdb_is_big_endian();
+    tvdb__sr_t sr;
+    tvdb__sr_init(&sr, file->file_data.data, file->file_data.data_len,
+                  swap_endian);
+
+    for (size_t i = 0; i < file->num_grids; i++) {
+        if (err) err->grid_index = (int32_t)i;
+
+        tvdb__sr_seek_set(&sr, file->grids[i].descriptor.grid_byte_offset);
+
+        tvdb_status_t st = tvdb__read_grid(&sr, &file->grids[i],
+                                           &file->header, &file->alloc, err);
+        if (st != TVDB_OK) return st;
+    }
+
+    if (err) err->grid_index = -1;
+    return TVDB_OK;
+}
+
+size_t tvdb_grid_count(const tvdb_file_t *file) {
+    return file ? file->num_grids : 0;
+}
+
+const char *tvdb_grid_name(const tvdb_file_t *file, size_t idx) {
+    if (!file || idx >= file->num_grids) return NULL;
+    return file->grids[idx].descriptor.grid_name;
+}
+
+const char *tvdb_grid_type_name(const tvdb_file_t *file, size_t idx) {
+    if (!file || idx >= file->num_grids) return NULL;
+    return file->grids[idx].descriptor.grid_type;
+}
+
+/* ========================================================================== */
+/* ========================================================================== */
+/*  WRITING IMPLEMENTATION                                                    */
+/* ========================================================================== */
+/* ========================================================================== */
+
+/* ========================================================================== */
+/*  Stream writer (growing buffer)                                            */
+/* ========================================================================== */
+
+typedef struct tvdb__sw {
+    uint8_t          *data;
+    size_t            len;
+    size_t            cap;
+    tvdb_allocator_t *alloc;
+    int               swap_endian;
+} tvdb__sw_t;
+
+static void tvdb__sw_init(tvdb__sw_t *sw, tvdb_allocator_t *alloc) {
+    memset(sw, 0, sizeof(*sw));
+    sw->alloc = alloc;
+    sw->swap_endian = tvdb_is_big_endian();
+}
+
+static void tvdb__sw_destroy(tvdb__sw_t *sw) {
+    if (sw->data && sw->alloc)
+        tvdb__free(sw->alloc, sw->data, sw->cap);
+    memset(sw, 0, sizeof(*sw));
+}
+
+static int tvdb__sw_ensure(tvdb__sw_t *sw, size_t additional) {
+    size_t needed = sw->len + additional;
+    if (needed <= sw->cap) return 1;
+    size_t new_cap = sw->cap ? sw->cap : 4096;
+    while (new_cap < needed) new_cap *= 2;
+    uint8_t *nd = (uint8_t *)tvdb__realloc(sw->alloc, sw->data,
+                                            sw->cap, new_cap);
+    if (!nd) return 0;
+    sw->data = nd;
+    sw->cap = new_cap;
+    return 1;
+}
+
+static int tvdb__sw_write(tvdb__sw_t *sw, const void *src, size_t n) {
+    if (!tvdb__sw_ensure(sw, n)) return 0;
+    memcpy(sw->data + sw->len, src, n);
+    sw->len += n;
+    return 1;
+}
+
+static int tvdb__sw_write_u8(tvdb__sw_t *sw, uint8_t v) {
+    return tvdb__sw_write(sw, &v, 1);
+}
+
+static int tvdb__sw_write_i8(tvdb__sw_t *sw, int8_t v) {
+    return tvdb__sw_write(sw, &v, 1);
+}
+
+static int tvdb__sw_write_u32(tvdb__sw_t *sw, uint32_t v) {
+    if (sw->swap_endian) tvdb__swap4(&v);
+    return tvdb__sw_write(sw, &v, 4);
+}
+
+static int tvdb__sw_write_i32(tvdb__sw_t *sw, int32_t v) {
+    return tvdb__sw_write_u32(sw, (uint32_t)v);
+}
+
+static int tvdb__sw_write_u64(tvdb__sw_t *sw, uint64_t v) {
+    if (sw->swap_endian) tvdb__swap8(&v);
+    return tvdb__sw_write(sw, &v, 8);
+}
+
+static int tvdb__sw_write_i64(tvdb__sw_t *sw, int64_t v) {
+    return tvdb__sw_write_u64(sw, (uint64_t)v);
+}
+
+static int tvdb__sw_write_f32(tvdb__sw_t *sw, float v) {
+    uint32_t u; memcpy(&u, &v, 4);
+    return tvdb__sw_write_u32(sw, u);
+}
+
+static int tvdb__sw_write_f64(tvdb__sw_t *sw, double v) {
+    uint64_t u; memcpy(&u, &v, 8);
+    return tvdb__sw_write_u64(sw, u);
+}
+
+static int tvdb__sw_write_vec3d(tvdb__sw_t *sw, const double v[3]) {
+    return tvdb__sw_write_f64(sw, v[0])
+        && tvdb__sw_write_f64(sw, v[1])
+        && tvdb__sw_write_f64(sw, v[2]);
+}
+
+/* Write a length-prefixed string (uint32 length + chars). */
+static int tvdb__sw_write_string(tvdb__sw_t *sw, const char *s) {
+    uint32_t len = s ? (uint32_t)strlen(s) : 0;
+    if (!tvdb__sw_write_u32(sw, len)) return 0;
+    if (len > 0) return tvdb__sw_write(sw, s, len);
+    return 1;
+}
+
+/* Write at a specific offset (for backpatching), without moving write pos. */
+static void tvdb__sw_patch_u64(tvdb__sw_t *sw, size_t offset, uint64_t v) {
+    if (offset + 8 > sw->len) return;
+    if (sw->swap_endian) tvdb__swap8(&v);
+    memcpy(sw->data + offset, &v, 8);
+}
+
+static int tvdb__sw_write_value(tvdb__sw_t *sw, const tvdb_value_t *v) {
+    switch (v->type) {
+        case TVDB_VALUE_BOOL:   return tvdb__sw_write_u8(sw, (uint8_t)v->u.b);
+        case TVDB_VALUE_INT32:  return tvdb__sw_write_i32(sw, v->u.i32);
+        case TVDB_VALUE_INT64:  return tvdb__sw_write_i64(sw, v->u.i64);
+        case TVDB_VALUE_FLOAT:  return tvdb__sw_write_f32(sw, v->u.f);
+        case TVDB_VALUE_DOUBLE: return tvdb__sw_write_f64(sw, v->u.d);
+        default: return 0;
+    }
+}
+
+/* ========================================================================== */
+/*  Compression for writing                                                   */
+/* ========================================================================== */
+
+static tvdb_status_t tvdb__compress_and_write(
+    tvdb__sw_t *sw, const uint8_t *src_data, size_t element_size, size_t count,
+    uint32_t compression_mask, tvdb_allocator_t *alloc, tvdb_error_t *err) {
+
+    size_t total_size = element_size * count;
+
+    /* Endian-swap a copy if needed */
+    uint8_t *swapped = NULL;
+    if (sw->swap_endian && element_size > 1) {
+        swapped = (uint8_t *)tvdb__alloc(alloc, total_size);
+        if (!swapped) {
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        memcpy(swapped, src_data, total_size);
+        for (size_t i = 0; i < count; i++) {
+            if (element_size == 2) tvdb__swap2(swapped + i * 2);
+            else if (element_size == 4) tvdb__swap4(swapped + i * 4);
+            else if (element_size == 8) tvdb__swap8(swapped + i * 8);
+        }
+        src_data = swapped;
+    }
+
+    if (compression_mask & TVDB_COMPRESS_BLOSC) {
+#if defined(TVDB_USE_BLOSC)
+        if (total_size == 0) {
+            tvdb__sw_write_i64(sw, -1); /* signal: no data */
+            if (swapped) tvdb__free(alloc, swapped, total_size);
+            return TVDB_OK;
+        }
+        /* blosc needs dest buffer; worst case is slightly larger than src */
+        size_t dest_cap = total_size + BLOSC2_MAX_OVERHEAD;
+        uint8_t *dest = (uint8_t *)tvdb__alloc(alloc, dest_cap);
+        if (!dest) {
+            if (swapped) tvdb__free(alloc, swapped, total_size);
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        int csize = blosc1_compress(
+            /*clevel=*/5, /*doshuffle=*/1, element_size,
+            total_size, src_data, dest, dest_cap);
+        if (csize <= 0 || (size_t)csize >= total_size) {
+            /* Compression didn't help — store uncompressed */
+            tvdb__sw_write_i64(sw, -1);
+            tvdb__sw_write(sw, src_data, total_size);
+        } else {
+            tvdb__sw_write_i64(sw, (int64_t)csize);
+            tvdb__sw_write(sw, dest, (size_t)csize);
+        }
+        tvdb__free(alloc, dest, dest_cap);
+#else
+        if (swapped) tvdb__free(alloc, swapped, total_size);
+        tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_COMPRESSION,
+                        "BLOSC not enabled");
+        return TVDB_ERROR_UNSUPPORTED_COMPRESSION;
+#endif
+    } else if (compression_mask & TVDB_COMPRESS_ZIP) {
+        if (total_size == 0) {
+            tvdb__sw_write_i64(sw, -1);
+            if (swapped) tvdb__free(alloc, swapped, total_size);
+            return TVDB_OK;
+        }
+#if defined(TVDB_USE_SYSTEM_ZLIB)
+        uLongf dest_len = compressBound((uLong)total_size);
+        uint8_t *dest = (uint8_t *)tvdb__alloc(alloc, (size_t)dest_len);
+        if (!dest) {
+            if (swapped) tvdb__free(alloc, swapped, total_size);
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        int zret = compress(dest, &dest_len, src_data, (uLong)total_size);
+        if (zret != Z_OK || (size_t)dest_len >= total_size) {
+            tvdb__sw_write_i64(sw, -1);
+            tvdb__sw_write(sw, src_data, total_size);
+        } else {
+            tvdb__sw_write_i64(sw, (int64_t)dest_len);
+            tvdb__sw_write(sw, dest, (size_t)dest_len);
+        }
+        tvdb__free(alloc, dest, (size_t)compressBound((uLong)total_size));
+#else
+        mz_ulong dest_len = mz_compressBound((mz_ulong)total_size);
+        uint8_t *dest = (uint8_t *)tvdb__alloc(alloc, (size_t)dest_len);
+        if (!dest) {
+            if (swapped) tvdb__free(alloc, swapped, total_size);
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        int zret = mz_compress(dest, &dest_len, src_data, (mz_ulong)total_size);
+        if (zret != MZ_OK || (size_t)dest_len >= total_size) {
+            tvdb__sw_write_i64(sw, -1);
+            tvdb__sw_write(sw, src_data, total_size);
+        } else {
+            tvdb__sw_write_i64(sw, (int64_t)dest_len);
+            tvdb__sw_write(sw, dest, (size_t)dest_len);
+        }
+        tvdb__free(alloc, dest, (size_t)mz_compressBound((mz_ulong)total_size));
+#endif
+    } else {
+        /* No compression */
+        tvdb__sw_write(sw, src_data, total_size);
+    }
+
+    if (swapped) tvdb__free(alloc, swapped, total_size);
+    return TVDB_OK;
+}
+
+/* ========================================================================== */
+/*  Write mask-compressed values                                              */
+/* ========================================================================== */
+
+static int tvdb__values_equal(const uint8_t *a, const uint8_t *b, size_t sz) {
+    return memcmp(a, b, sz) == 0;
+}
+
+static tvdb_status_t tvdb__write_mask_values(
+    tvdb__sw_t *sw, uint32_t compression_flags, tvdb_value_t background,
+    size_t num_values, tvdb_value_type_t value_type,
+    const tvdb_nodemask_t *value_mask, const uint8_t *values,
+    tvdb_allocator_t *alloc, tvdb_error_t *err) {
+
+    size_t vsize = tvdb_value_type_size(value_type);
+    int mask_compressed = (compression_flags & TVDB_COMPRESS_ACTIVE_MASK) != 0;
+
+    if (!mask_compressed) {
+        tvdb__sw_write_i8(sw, (int8_t)TVDB_NO_MASK_AND_ALL_VALS);
+        return tvdb__compress_and_write(sw, values, vsize, num_values,
+                                        compression_flags, alloc, err);
+    }
+
+    /* Analyze inactive values */
+    uint8_t bg_bytes[32], neg_bg_bytes[32];
+    memset(bg_bytes, 0, sizeof(bg_bytes));
+    memset(neg_bg_bytes, 0, sizeof(neg_bg_bytes));
+    memcpy(bg_bytes, &background.u, vsize);
+    tvdb_value_t neg_bg = tvdb__negate_value(background);
+    memcpy(neg_bg_bytes, &neg_bg.u, vsize);
+
+    int all_bg = 1, all_neg_bg = 1;
+    int num_distinct = 0;
+    uint8_t inactive_val0[32], inactive_val1[32];
+    memset(inactive_val0, 0, sizeof(inactive_val0));
+    memset(inactive_val1, 0, sizeof(inactive_val1));
+
+    for (size_t i = 0; i < num_values && num_distinct <= 2; i++) {
+        if (tvdb__nodemask_is_on(value_mask, (int32_t)i)) continue;
+        const uint8_t *v = values + i * vsize;
+        if (!tvdb__values_equal(v, bg_bytes, vsize)) all_bg = 0;
+        if (!tvdb__values_equal(v, neg_bg_bytes, vsize)) all_neg_bg = 0;
+        if (num_distinct == 0) {
+            memcpy(inactive_val0, v, vsize);
+            num_distinct = 1;
+        } else if (num_distinct == 1 &&
+                   !tvdb__values_equal(v, inactive_val0, vsize)) {
+            memcpy(inactive_val1, v, vsize);
+            num_distinct = 2;
+        } else if (num_distinct == 2 &&
+                   !tvdb__values_equal(v, inactive_val0, vsize) &&
+                   !tvdb__values_equal(v, inactive_val1, vsize)) {
+            num_distinct = 3;
+        }
+    }
+
+    /* Determine flag */
+    int8_t flag;
+    if (num_distinct == 0 || all_bg) {
+        flag = TVDB_NO_MASK_OR_INACTIVE_VALS;
+    } else if (all_neg_bg) {
+        flag = TVDB_NO_MASK_AND_MINUS_BG;
+    } else if (num_distinct == 1) {
+        flag = TVDB_NO_MASK_AND_ONE_INACTIVE_VAL;
+    } else if (num_distinct <= 2) {
+        /* Ensure val0 is the non-bg value for MASK_AND variants */
+        int val0_is_bg = tvdb__values_equal(inactive_val0, bg_bytes, vsize);
+        int val0_is_neg_bg = tvdb__values_equal(inactive_val0, neg_bg_bytes, vsize);
+        int val1_is_bg = tvdb__values_equal(inactive_val1, bg_bytes, vsize);
+        int val1_is_neg_bg = tvdb__values_equal(inactive_val1, neg_bg_bytes, vsize);
+
+        /* Swap so val0 is the "special" value, val1 is bg/-bg */
+        if (val0_is_bg || val0_is_neg_bg) {
+            uint8_t tmp[32];
+            memcpy(tmp, inactive_val0, vsize);
+            memcpy(inactive_val0, inactive_val1, vsize);
+            memcpy(inactive_val1, tmp, vsize);
+            int t;
+            t = val0_is_bg; val0_is_bg = val1_is_bg; val1_is_bg = t;
+            t = val0_is_neg_bg; val0_is_neg_bg = val1_is_neg_bg;
+            val1_is_neg_bg = t;
+        }
+
+        if (val1_is_bg || val1_is_neg_bg) {
+            if (val0_is_bg || val0_is_neg_bg) {
+                flag = TVDB_MASK_AND_NO_INACTIVE_VALS;
+            } else {
+                flag = TVDB_MASK_AND_ONE_INACTIVE_VAL;
+            }
+        } else {
+            flag = TVDB_MASK_AND_TWO_INACTIVE_VALS;
+        }
+    } else {
+        flag = TVDB_NO_MASK_AND_ALL_VALS;
+    }
+
+    tvdb__sw_write_i8(sw, flag);
+
+    /* Write inactive values if needed */
+    if (flag == TVDB_NO_MASK_AND_ONE_INACTIVE_VAL ||
+        flag == TVDB_MASK_AND_ONE_INACTIVE_VAL ||
+        flag == TVDB_MASK_AND_TWO_INACTIVE_VALS) {
+        tvdb__sw_write(sw, inactive_val0, vsize);
+        if (flag == TVDB_MASK_AND_TWO_INACTIVE_VALS)
+            tvdb__sw_write(sw, inactive_val1, vsize);
+    }
+
+    /* Write selection mask if needed */
+    if (flag == TVDB_MASK_AND_NO_INACTIVE_VALS ||
+        flag == TVDB_MASK_AND_ONE_INACTIVE_VAL ||
+        flag == TVDB_MASK_AND_TWO_INACTIVE_VALS) {
+        /* Build selection mask: ON where inactive value == val1 */
+        tvdb_nodemask_t sel;
+        tvdb__nodemask_init(&sel);
+        tvdb__nodemask_alloc(&sel, value_mask->log2dim, alloc);
+        for (size_t i = 0; i < num_values; i++) {
+            if (!tvdb__nodemask_is_on(value_mask, (int32_t)i)) {
+                const uint8_t *v = values + i * vsize;
+                if (tvdb__values_equal(v, inactive_val1, vsize) ||
+                    tvdb__values_equal(v, bg_bytes, vsize)) {
+                    sel.bits.data[i / 8] |= (uint8_t)(1u << (i % 8));
+                }
+            }
+        }
+        tvdb__sw_write(sw, sel.bits.data, sel.bits.num_bytes);
+        tvdb__nodemask_destroy(&sel);
+    }
+
+    /* Write compressed values: active only (or all if flag==6) */
+    size_t write_count;
+    if (flag != TVDB_NO_MASK_AND_ALL_VALS) {
+        write_count = tvdb__nodemask_count_on(value_mask);
+    } else {
+        write_count = num_values;
+    }
+
+    if (write_count == num_values || flag == TVDB_NO_MASK_AND_ALL_VALS) {
+        return tvdb__compress_and_write(sw, values, vsize, num_values,
+                                        compression_flags, alloc, err);
+    }
+
+    /* Pack active values into temp buffer */
+    uint8_t *active_buf = (uint8_t *)tvdb__alloc(alloc, write_count * vsize);
+    if (!active_buf && write_count > 0) {
+        tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    size_t idx = 0;
+    for (size_t i = 0; i < num_values; i++) {
+        if (tvdb__nodemask_is_on(value_mask, (int32_t)i)) {
+            memcpy(active_buf + idx * vsize, values + i * vsize, vsize);
+            idx++;
+        }
+    }
+
+    tvdb_status_t st = tvdb__compress_and_write(
+        sw, active_buf, vsize, write_count, compression_flags, alloc, err);
+    tvdb__free(alloc, active_buf, write_count * vsize);
+    return st;
+}
+
+/* ========================================================================== */
+/*  Write tree topology                                                       */
+/* ========================================================================== */
+
+static tvdb_status_t tvdb__write_node_topology(
+    const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    tvdb_value_t background, uint32_t compression_flags, tvdb_error_t *err);
+
+static tvdb_status_t tvdb__write_root_topology(
+    const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    uint32_t compression_flags, tvdb_error_t *err) {
+    const tvdb_root_node_t *root = &tree->nodes[node_idx].u.root;
+
+    tvdb__sw_write_value(sw, &root->background);
+    tvdb__sw_write_u32(sw, root->num_tiles);
+    tvdb__sw_write_u32(sw, root->num_children);
+
+    for (uint32_t i = 0; i < root->num_tiles; i++) {
+        tvdb__sw_write_i32(sw, root->tile_origins[i * 3 + 0]);
+        tvdb__sw_write_i32(sw, root->tile_origins[i * 3 + 1]);
+        tvdb__sw_write_i32(sw, root->tile_origins[i * 3 + 2]);
+        tvdb__sw_write_value(sw, &root->tile_values[i]);
+        tvdb__sw_write_u8(sw, (uint8_t)(root->tile_active[i] ? 1 : 0));
+    }
+
+    for (uint32_t i = 0; i < root->num_children; i++) {
+        tvdb__sw_write_i32(sw, root->child_origins[i * 3 + 0]);
+        tvdb__sw_write_i32(sw, root->child_origins[i * 3 + 1]);
+        tvdb__sw_write_i32(sw, root->child_origins[i * 3 + 2]);
+
+        tvdb_status_t st = tvdb__write_node_topology(
+            tree, sw, root->child_indices[i], level + 1,
+            root->background, compression_flags, err);
+        if (st != TVDB_OK) return st;
+    }
+    return TVDB_OK;
+}
+
+static tvdb_status_t tvdb__write_internal_topology(
+    const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    tvdb_value_t background, uint32_t compression_flags,
+    tvdb_error_t *err) {
+    const tvdb_internal_node_t *inode = &tree->nodes[node_idx].u.internal;
+    tvdb_value_type_t vt = tree->layout.levels[level].value_type;
+
+    tvdb__sw_write(sw, inode->child_mask.bits.data,
+                   inode->child_mask.bits.num_bytes);
+    tvdb__sw_write(sw, inode->value_mask.bits.data,
+                   inode->value_mask.bits.num_bytes);
+
+    int32_t num_values = inode->child_mask.bitsize;
+    tvdb_status_t st = tvdb__write_mask_values(
+        sw, compression_flags, background, (size_t)num_values, vt,
+        &inode->value_mask, inode->values, sw->alloc, err);
+    if (st != TVDB_OK) return st;
+
+    size_t child_n = 0;
+    for (int32_t i = 0; i < inode->child_mask.bitsize; i++) {
+        if (tvdb__nodemask_is_on(&inode->child_mask, i)) {
+            st = tvdb__write_node_topology(
+                tree, sw, inode->child_indices[child_n], level + 1,
+                background, compression_flags, err);
+            if (st != TVDB_OK) return st;
+            child_n++;
+        }
+    }
+    return TVDB_OK;
+}
+
+static tvdb_status_t tvdb__write_leaf_topology(
+    const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx,
+    tvdb_error_t *err) {
+    (void)err;
+    const tvdb_leaf_node_t *leaf = &tree->nodes[node_idx].u.leaf;
+    tvdb__sw_write(sw, leaf->value_mask.bits.data,
+                   leaf->value_mask.bits.num_bytes);
+    return TVDB_OK;
+}
+
+static tvdb_status_t tvdb__write_node_topology(
+    const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    tvdb_value_t background, uint32_t compression_flags,
+    tvdb_error_t *err) {
+    tvdb_node_type_t nt = tree->nodes[node_idx].type;
+    switch (nt) {
+        case TVDB_NODE_ROOT:
+            return tvdb__write_root_topology(tree, sw, node_idx, level,
+                                             compression_flags, err);
+        case TVDB_NODE_INTERNAL:
+            return tvdb__write_internal_topology(
+                tree, sw, node_idx, level, background,
+                compression_flags, err);
+        case TVDB_NODE_LEAF:
+            return tvdb__write_leaf_topology(tree, sw, node_idx, err);
+        default:
+            return TVDB_ERROR_INVALID_DATA;
+    }
+}
+
+/* ========================================================================== */
+/*  Write tree buffers                                                        */
+/* ========================================================================== */
+
+static tvdb_status_t tvdb__write_node_buffer(
+    const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    tvdb_value_t background, uint32_t compression_flags,
+    tvdb_error_t *err);
+
+static tvdb_status_t tvdb__write_root_buffer(
+    const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    tvdb_value_t background, uint32_t compression_flags,
+    tvdb_error_t *err) {
+    const tvdb_root_node_t *root = &tree->nodes[node_idx].u.root;
+    for (uint32_t i = 0; i < root->num_children; i++) {
+        tvdb_status_t st = tvdb__write_node_buffer(
+            tree, sw, root->child_indices[i], level + 1,
+            background, compression_flags, err);
+        if (st != TVDB_OK) return st;
+    }
+    return TVDB_OK;
+}
+
+static tvdb_status_t tvdb__write_internal_buffer(
+    const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    tvdb_value_t background, uint32_t compression_flags,
+    tvdb_error_t *err) {
+    const tvdb_internal_node_t *inode = &tree->nodes[node_idx].u.internal;
+    size_t child_n = 0;
+    for (int32_t i = 0; i < inode->child_mask.bitsize; i++) {
+        if (tvdb__nodemask_is_on(&inode->child_mask, i)) {
+            tvdb_status_t st = tvdb__write_node_buffer(
+                tree, sw, inode->child_indices[child_n], level + 1,
+                background, compression_flags, err);
+            if (st != TVDB_OK) return st;
+            child_n++;
+        }
+    }
+    return TVDB_OK;
+}
+
+static tvdb_status_t tvdb__write_leaf_buffer(
+    const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    tvdb_value_t background, uint32_t compression_flags,
+    tvdb_error_t *err) {
+    const tvdb_leaf_node_t *leaf = &tree->nodes[node_idx].u.leaf;
+    tvdb_value_type_t vt = tree->layout.levels[level].value_type;
+    size_t num_values = leaf->num_voxels;
+
+    /* Write value mask (again, for buffer section) */
+    tvdb__sw_write(sw, leaf->value_mask.bits.data,
+                   leaf->value_mask.bits.num_bytes);
+
+    /* Write mask-compressed leaf data */
+    return tvdb__write_mask_values(
+        sw, compression_flags, background, num_values, vt,
+        &leaf->value_mask, leaf->data, sw->alloc, err);
+}
+
+static tvdb_status_t tvdb__write_node_buffer(
+    const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    tvdb_value_t background, uint32_t compression_flags,
+    tvdb_error_t *err) {
+    tvdb_node_type_t nt = tree->nodes[node_idx].type;
+    switch (nt) {
+        case TVDB_NODE_ROOT:
+            return tvdb__write_root_buffer(tree, sw, node_idx, level,
+                                           background, compression_flags, err);
+        case TVDB_NODE_INTERNAL:
+            return tvdb__write_internal_buffer(tree, sw, node_idx, level,
+                                               background, compression_flags,
+                                               err);
+        case TVDB_NODE_LEAF:
+            return tvdb__write_leaf_buffer(tree, sw, node_idx, level,
+                                           background, compression_flags, err);
+        default:
+            return TVDB_ERROR_INVALID_DATA;
+    }
+}
+
+/* ========================================================================== */
+/*  Write header, metadata, transform, grid                                   */
+/* ========================================================================== */
+
+static void tvdb__write_header(tvdb__sw_t *sw, const tvdb_header_t *h) {
+    int64_t magic = TVDB_MAGIC;
+    tvdb__sw_write_i64(sw, magic);
+
+    uint32_t file_version = h->file_version;
+    if (file_version < TVDB_FILE_VERSION_NODE_MASK_COMPRESSION)
+        file_version = TVDB_FILE_VERSION_MULTIPASS_IO; /* default to 224 */
+    tvdb__sw_write_u32(sw, file_version);
+
+    /* Library version */
+    tvdb__sw_write_u32(sw, h->major_version ? h->major_version : 1);
+    tvdb__sw_write_u32(sw, h->minor_version);
+
+    /* Has grid offsets: always yes */
+    tvdb__sw_write_u8(sw, 1);
+
+    /* No global compression flag for v222+ */
+
+    /* UUID */
+    char uuid[37];
+    if (h->uuid[0]) {
+        memcpy(uuid, h->uuid, 36);
+    } else {
+        /* Generate a simple placeholder UUID */
+        static const char hex[] = "0123456789abcdef";
+        /* Use address and counter for entropy */
+        static unsigned int counter = 0;
+        uintptr_t addr = (uintptr_t)sw->data;
+        counter++;
+        unsigned int seed = (unsigned int)(addr ^ (counter * 2654435761u));
+        for (int i = 0; i < 36; i++) {
+            if (i == 8 || i == 13 || i == 18 || i == 23) uuid[i] = '-';
+            else { uuid[i] = hex[seed & 0xf]; seed = seed * 1103515245 + 12345; }
+        }
+    }
+    uuid[36] = '\0';
+    tvdb__sw_write(sw, uuid, 36);
+}
+
+static void tvdb__write_meta(tvdb__sw_t *sw, const tvdb_metadata_t *meta) {
+    int32_t count = meta ? (int32_t)meta->count : 0;
+    tvdb__sw_write_i32(sw, count);
+    for (int32_t i = 0; i < count; i++) {
+        const tvdb_meta_entry_t *e = &meta->entries[i];
+        tvdb__sw_write_string(sw, e->name);
+        tvdb__sw_write_string(sw, e->type_name);
+
+        if (strcmp(e->type_name, "string") == 0) {
+            tvdb__sw_write_string(sw, e->value.u.s.str);
+        } else if (strcmp(e->type_name, "bool") == 0) {
+            tvdb__sw_write_u32(sw, 1);
+            tvdb__sw_write_u8(sw, (uint8_t)e->value.u.b);
+        } else if (strcmp(e->type_name, "float") == 0) {
+            tvdb__sw_write_u32(sw, sizeof(float));
+            tvdb__sw_write_f32(sw, e->value.u.f);
+        } else if (strcmp(e->type_name, "double") == 0) {
+            tvdb__sw_write_u32(sw, sizeof(double));
+            tvdb__sw_write_f64(sw, e->value.u.d);
+        } else if (strcmp(e->type_name, "int32") == 0) {
+            tvdb__sw_write_u32(sw, sizeof(int32_t));
+            tvdb__sw_write_i32(sw, e->value.u.i32);
+        } else if (strcmp(e->type_name, "int64") == 0) {
+            tvdb__sw_write_u32(sw, sizeof(int64_t));
+            tvdb__sw_write_i64(sw, e->value.u.i64);
+        } else if (strcmp(e->type_name, "vec3i") == 0) {
+            tvdb__sw_write_u32(sw, 3 * sizeof(int32_t));
+            tvdb__sw_write_i32(sw, e->value.u.vec3i[0]);
+            tvdb__sw_write_i32(sw, e->value.u.vec3i[1]);
+            tvdb__sw_write_i32(sw, e->value.u.vec3i[2]);
+        } else if (strcmp(e->type_name, "vec3d") == 0) {
+            tvdb__sw_write_u32(sw, 3 * sizeof(double));
+            tvdb__sw_write_f64(sw, e->value.u.vec3d[0]);
+            tvdb__sw_write_f64(sw, e->value.u.vec3d[1]);
+            tvdb__sw_write_f64(sw, e->value.u.vec3d[2]);
+        } else if (e->raw_data) {
+            tvdb__sw_write_u32(sw, (uint32_t)e->raw_data_len);
+            tvdb__sw_write(sw, e->raw_data, e->raw_data_len);
+        } else {
+            tvdb__sw_write_u32(sw, 0);
+        }
+    }
+}
+
+static void tvdb__write_transform(tvdb__sw_t *sw, const tvdb_transform_t *x) {
+    double inv[3], inv_sq[3], inv_twice[3];
+    for (int i = 0; i < 3; i++) {
+        double s = x->scale_values[i] != 0.0 ? x->scale_values[i] : 1.0;
+        inv[i] = 1.0 / s;
+        inv_sq[i] = inv[i] * inv[i];
+        inv_twice[i] = 0.5 / s;
+    }
+
+    switch (x->type) {
+        case TVDB_TRANSFORM_UNIFORM_SCALE:
+            tvdb__sw_write_string(sw, "UniformScaleMap");
+            tvdb__sw_write_vec3d(sw, x->scale_values);
+            tvdb__sw_write_vec3d(sw, x->voxel_size);
+            tvdb__sw_write_vec3d(sw, inv);
+            tvdb__sw_write_vec3d(sw, inv_sq);
+            tvdb__sw_write_vec3d(sw, inv_twice);
+            break;
+        case TVDB_TRANSFORM_SCALE:
+            tvdb__sw_write_string(sw, "ScaleMap");
+            tvdb__sw_write_vec3d(sw, x->scale_values);
+            tvdb__sw_write_vec3d(sw, x->voxel_size);
+            tvdb__sw_write_vec3d(sw, inv);
+            tvdb__sw_write_vec3d(sw, inv_sq);
+            tvdb__sw_write_vec3d(sw, inv_twice);
+            break;
+        case TVDB_TRANSFORM_UNIFORM_SCALE_TRANSLATE:
+            tvdb__sw_write_string(sw, "UniformScaleTranslateMap");
+            tvdb__sw_write_vec3d(sw, x->translation);
+            tvdb__sw_write_vec3d(sw, x->scale_values);
+            tvdb__sw_write_vec3d(sw, x->voxel_size);
+            tvdb__sw_write_vec3d(sw, inv);
+            tvdb__sw_write_vec3d(sw, inv_sq);
+            tvdb__sw_write_vec3d(sw, inv_twice);
+            break;
+        case TVDB_TRANSFORM_SCALE_TRANSLATE:
+            tvdb__sw_write_string(sw, "ScaleTranslateMap");
+            tvdb__sw_write_vec3d(sw, x->translation);
+            tvdb__sw_write_vec3d(sw, x->scale_values);
+            tvdb__sw_write_vec3d(sw, x->voxel_size);
+            tvdb__sw_write_vec3d(sw, inv);
+            tvdb__sw_write_vec3d(sw, inv_sq);
+            tvdb__sw_write_vec3d(sw, inv_twice);
+            break;
+        case TVDB_TRANSFORM_TRANSLATION:
+            tvdb__sw_write_string(sw, "TranslationMap");
+            tvdb__sw_write_vec3d(sw, x->translation);
+            break;
+        case TVDB_TRANSFORM_AFFINE:
+        default:
+            tvdb__sw_write_string(sw, "AffineMap");
+            for (int r = 0; r < 4; r++)
+                for (int c = 0; c < 4; c++)
+                    tvdb__sw_write_f64(sw, x->matrix[r][c]);
+            break;
+    }
+}
+
+static tvdb_status_t tvdb__write_grid(
+    tvdb__sw_t *sw, const tvdb_grid_t *grid, const tvdb_header_t *header,
+    uint32_t compression_flags, tvdb_error_t *err) {
+
+    /* Grid compression (v222+) */
+    tvdb__sw_write_u32(sw, compression_flags);
+
+    /* Grid metadata */
+    tvdb__write_meta(sw, &grid->metadata);
+
+    /* Transform */
+    tvdb__write_transform(sw, &grid->transform);
+
+    /* Tree */
+    if (grid->tree.num_nodes == 0) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA, "Grid has no tree nodes");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+
+    /* TreeBase: buffer count (always 1) */
+    tvdb__sw_write_i32(sw, 1);
+
+    tvdb_value_t background = grid->tree.nodes[0].u.root.background;
+
+    /* Write topology */
+    tvdb_status_t st = tvdb__write_node_topology(
+        &grid->tree, sw, 0, 0, background, compression_flags, err);
+    if (st != TVDB_OK) return st;
+
+    /* Write buffers */
+    st = tvdb__write_node_buffer(
+        &grid->tree, sw, 0, 0, background, compression_flags, err);
+    return st;
+}
+
+/* ========================================================================== */
+/*  Public write API                                                          */
+/* ========================================================================== */
+
+tvdb_status_t tvdb_write_to_memory(const tvdb_file_t *file,
+                                   uint32_t compression_flags,
+                                   uint8_t **out_data, size_t *out_size,
+                                   tvdb_error_t *err) {
+    if (!file || !out_data || !out_size) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL argument");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+
+    *out_data = NULL;
+    *out_size = 0;
+
+    tvdb_allocator_t alloc = file->alloc;
+    tvdb__sw_t sw;
+    tvdb__sw_init(&sw, &alloc);
+
+    /* Write header */
+    tvdb__write_header(&sw, &file->header);
+
+    /* File metadata */
+    tvdb__write_meta(&sw, &file->file_metadata);
+
+    /* Grid count */
+    tvdb__sw_write_i32(&sw, (int32_t)file->num_grids);
+
+    /* First pass: write grid descriptor headers with placeholder offsets */
+    size_t *gd_offset_positions = NULL;
+    if (file->num_grids > 0) {
+        gd_offset_positions = (size_t *)tvdb__alloc(
+            &alloc, file->num_grids * sizeof(size_t));
+        if (!gd_offset_positions) {
+            tvdb__sw_destroy(&sw);
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+    }
+
+    for (size_t i = 0; i < file->num_grids; i++) {
+        const tvdb_grid_descriptor_t *gd = &file->grids[i].descriptor;
+
+        tvdb__sw_write_string(&sw, gd->unique_name ? gd->unique_name
+                                                    : gd->grid_name);
+
+        /* Grid type with optional _HalfFloat suffix */
+        if (gd->save_float_as_half && gd->grid_type) {
+            size_t tlen = strlen(gd->grid_type);
+            char *full_type = (char *)tvdb__alloc(&alloc, tlen + 11);
+            if (full_type) {
+                memcpy(full_type, gd->grid_type, tlen);
+                memcpy(full_type + tlen, "_HalfFloat", 11);
+                tvdb__sw_write_string(&sw, full_type);
+                tvdb__free(&alloc, full_type, tlen + 11);
+            }
+        } else {
+            tvdb__sw_write_string(&sw, gd->grid_type);
+        }
+
+        tvdb__sw_write_string(&sw, gd->instance_parent_name
+                                     ? gd->instance_parent_name : "");
+
+        /* Record position for offset backpatching */
+        gd_offset_positions[i] = sw.len;
+        tvdb__sw_write_u64(&sw, 0); /* grid_byte_offset placeholder */
+        tvdb__sw_write_u64(&sw, 0); /* block_byte_offset placeholder */
+        tvdb__sw_write_u64(&sw, 0); /* end_byte_offset placeholder */
+    }
+
+    /* Second pass: write each grid's data and backpatch offsets */
+    for (size_t i = 0; i < file->num_grids; i++) {
+        size_t grid_pos = sw.len;
+
+        tvdb_status_t st = tvdb__write_grid(
+            &sw, &file->grids[i], &file->header, compression_flags, err);
+        if (st != TVDB_OK) {
+            tvdb__free(&alloc, gd_offset_positions,
+                       file->num_grids * sizeof(size_t));
+            tvdb__sw_destroy(&sw);
+            return st;
+        }
+
+        size_t end_pos = sw.len;
+
+        /* Backpatch offsets */
+        tvdb__sw_patch_u64(&sw, gd_offset_positions[i] + 0,
+                           (uint64_t)grid_pos);
+        tvdb__sw_patch_u64(&sw, gd_offset_positions[i] + 8,
+                           (uint64_t)grid_pos); /* block == grid for now */
+        tvdb__sw_patch_u64(&sw, gd_offset_positions[i] + 16,
+                           (uint64_t)end_pos);
+    }
+
+    tvdb__free(&alloc, gd_offset_positions,
+               file->num_grids * sizeof(size_t));
+
+    /* Transfer ownership of buffer to caller */
+    *out_data = sw.data;
+    *out_size = sw.len;
+    sw.data = NULL; /* prevent sw_destroy from freeing */
+    sw.len = sw.cap = 0;
+    tvdb__sw_destroy(&sw);
+
+    return TVDB_OK;
+}
+
+tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
+                             const char *filepath_utf8,
+                             uint32_t compression_flags,
+                             int use_mmap,
+                             tvdb_error_t *err) {
+    if (!file || !filepath_utf8) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL argument");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+
+    /* Write to memory first */
+    uint8_t *data = NULL;
+    size_t data_size = 0;
+    tvdb_status_t st = tvdb_write_to_memory(file, compression_flags,
+                                            &data, &data_size, err);
+    if (st != TVDB_OK) return st;
+
+    tvdb_allocator_t alloc = file->alloc;
+
+#if !defined(TVDB_NO_MMAP) && !defined(_WIN32)
+    if (use_mmap) {
+        int fd = open(filepath_utf8, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            tvdb__free(&alloc, data, data_size);
+            tvdb__set_error(err, TVDB_ERROR_IO, "Failed to create file");
+            return TVDB_ERROR_IO;
+        }
+        if (ftruncate(fd, (off_t)data_size) < 0) {
+            close(fd);
+            tvdb__free(&alloc, data, data_size);
+            tvdb__set_error(err, TVDB_ERROR_IO, "ftruncate failed");
+            return TVDB_ERROR_IO;
+        }
+        void *mapped = mmap(NULL, data_size, PROT_WRITE, MAP_SHARED, fd, 0);
+        if (mapped == MAP_FAILED) {
+            close(fd);
+            tvdb__free(&alloc, data, data_size);
+            tvdb__set_error(err, TVDB_ERROR_MMAP_FAILED, "mmap write failed");
+            return TVDB_ERROR_MMAP_FAILED;
+        }
+        memcpy(mapped, data, data_size);
+        munmap(mapped, data_size);
+        close(fd);
+        tvdb__free(&alloc, data, data_size);
+        return TVDB_OK;
+    }
+#endif
+
+#if !defined(TVDB_NO_MMAP) && defined(_WIN32)
+    if (use_mmap) {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, filepath_utf8, -1, NULL, 0);
+        wchar_t *wpath = NULL;
+        if (wlen > 0) {
+            wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)wlen);
+            if (wpath)
+                MultiByteToWideChar(CP_UTF8, 0, filepath_utf8, -1, wpath, wlen);
+        }
+        HANDLE hFile = CreateFileW(
+            wpath ? wpath : L"", GENERIC_READ | GENERIC_WRITE, 0,
+            NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        free(wpath);
+        if (hFile == INVALID_HANDLE_VALUE) {
+            tvdb__free(&alloc, data, data_size);
+            tvdb__set_error(err, TVDB_ERROR_IO, "Failed to create file");
+            return TVDB_ERROR_IO;
+        }
+        LARGE_INTEGER li; li.QuadPart = (LONGLONG)data_size;
+        HANDLE hMap = CreateFileMappingW(hFile, NULL, PAGE_READWRITE,
+                                         li.HighPart, li.LowPart, NULL);
+        if (!hMap) {
+            CloseHandle(hFile);
+            tvdb__free(&alloc, data, data_size);
+            tvdb__set_error(err, TVDB_ERROR_MMAP_FAILED,
+                            "CreateFileMapping write failed");
+            return TVDB_ERROR_MMAP_FAILED;
+        }
+        void *mapped = MapViewOfFile(hMap, FILE_MAP_WRITE, 0, 0, 0);
+        if (!mapped) {
+            CloseHandle(hMap);
+            CloseHandle(hFile);
+            tvdb__free(&alloc, data, data_size);
+            tvdb__set_error(err, TVDB_ERROR_MMAP_FAILED,
+                            "MapViewOfFile write failed");
+            return TVDB_ERROR_MMAP_FAILED;
+        }
+        memcpy(mapped, data, data_size);
+        UnmapViewOfFile(mapped);
+        CloseHandle(hMap);
+        CloseHandle(hFile);
+        tvdb__free(&alloc, data, data_size);
+        return TVDB_OK;
+    }
+#endif
+
+    /* Standard file I/O fallback */
+    (void)use_mmap;
+#if defined(_WIN32)
+    {
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, filepath_utf8, -1, NULL, 0);
+        wchar_t *wpath = NULL;
+        if (wlen > 0) {
+            wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)wlen);
+            if (wpath)
+                MultiByteToWideChar(CP_UTF8, 0, filepath_utf8, -1, wpath, wlen);
+        }
+        HANDLE hFile = CreateFileW(
+            wpath ? wpath : L"", GENERIC_WRITE, 0,
+            NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        free(wpath);
+        if (hFile == INVALID_HANDLE_VALUE) {
+            tvdb__free(&alloc, data, data_size);
+            tvdb__set_error(err, TVDB_ERROR_IO, "Failed to create file");
+            return TVDB_ERROR_IO;
+        }
+        DWORD written = 0;
+        WriteFile(hFile, data, (DWORD)data_size, &written, NULL);
+        CloseHandle(hFile);
+    }
+#else
+    {
+        FILE *fp = fopen(filepath_utf8, "wb");
+        if (!fp) {
+            tvdb__free(&alloc, data, data_size);
+            tvdb__set_error(err, TVDB_ERROR_IO, "Failed to create file");
+            return TVDB_ERROR_IO;
+        }
+        size_t nw = fwrite(data, 1, data_size, fp);
+        fclose(fp);
+        if (nw != data_size) {
+            tvdb__free(&alloc, data, data_size);
+            tvdb__set_error(err, TVDB_ERROR_IO, "Write incomplete");
+            return TVDB_ERROR_IO;
+        }
+    }
+#endif
+
+    tvdb__free(&alloc, data, data_size);
+    return TVDB_OK;
+}
+
+#endif /* TINYVDBIO_IMPLEMENTATION */
+
+#endif /* TINYVDBIO_H_ */

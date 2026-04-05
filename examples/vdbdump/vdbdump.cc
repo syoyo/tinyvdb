@@ -6,15 +6,7 @@
 #include <cstring>
 #include <cinttypes>
 
-#if defined(TVDB_USE_SYSTEM_ZLIB)
-#include <zlib.h>
-#endif
-
-#define TINYVDBIO_IMPLEMENTATION
-
-extern "C" {
 #include "tinyvdbio.h"
-}
 
 /* Simple RAII guard for tvdb_file_t */
 struct TvdbFileGuard {
@@ -96,7 +88,7 @@ static void count_nodes(const tvdb_tree_t *tree, size_t *n_internal,
             case TVDB_NODE_LEAF:
                 (*n_leaf)++;
                 *n_active_voxels +=
-                    tvdb__nodemask_count_on(&n->u.leaf.value_mask);
+                    tvdb_nodemask_count_on(&n->u.leaf.value_mask);
                 break;
             default:
                 break;

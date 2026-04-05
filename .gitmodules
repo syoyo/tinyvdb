@@ -4,3 +4,6 @@
 [submodule "third_party/c-blosc2"]
 	path = third_party/c-blosc2
 	url = https://github.com/Blosc/c-blosc2.git
+[submodule "third_party/tinyexr"]
+	path = third_party/tinyexr
+	url = https://github.com/syoyo/tinyexr.git
