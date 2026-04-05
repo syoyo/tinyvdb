@@ -1423,6 +1423,14 @@ static tvdb_status_t tvdb__parse_grid_type(const char *grid_type,
         }
         if (*p == '_') p++;
 
+        /* Reject log2dim >= 10 to prevent undefined behavior in
+           1 << (3 * log2dim). Standard OpenVDB uses 3, 4, 5. */
+        if (dim < 0 || dim > 10) {
+            tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
+                            "log2dim out of range (max 10)");
+            return TVDB_ERROR_UNSUPPORTED_GRID_TYPE;
+        }
+
         int level = layout->num_levels;
         layout->levels[level].value_type = vtype;
         layout->levels[level].log2dim    = (int32_t)dim;
@@ -1633,10 +1641,11 @@ static int tvdb__decompress_blosc(uint8_t *dst, size_t dst_cap,
     }
 
     int nblocks = (nbytes + blocksize - 1) / blocksize;
+    if (nblocks < 0) return 0;
     const uint8_t *bstarts = src + header_len;
 
-    /* Validate block offsets fit in src */
-    if ((size_t)(header_len + nblocks * 4) > src_size) return 0;
+    /* Validate block offsets fit in src (use size_t to avoid int overflow) */
+    if ((size_t)header_len + (size_t)nblocks * 4 > src_size) return 0;
 
     /* Temp buffer for unshuffle */
     uint8_t *tmp = NULL;
