@@ -461,7 +461,9 @@ tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
 
 /* Compression headers */
 #if !defined(TVDB_USE_SYSTEM_ZLIB)
-#  define MINIZ_NO_STDIO
+#  ifndef MINIZ_NO_STDIO
+#    define MINIZ_NO_STDIO
+#  endif
 #  include "miniz.h"
 #else
 #  include <zlib.h>

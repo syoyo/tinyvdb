@@ -48,6 +48,7 @@ python3 combine.py \
 mkdir -p "$DEPS_DIR"
 cp "$TMP_DIR/zstd/build/single_file_libs/zstd.c" "$DEPS_DIR/zstd.c"
 cp "$TMP_DIR/zstd/lib/zstd.h" "$DEPS_DIR/zstd.h"
+cp "$TMP_DIR/zstd/lib/zstd_errors.h" "$DEPS_DIR/zstd_errors.h"
 
 # Fix include path: zstd.c references "../zstd.h" but both files live in deps/
 sed -i 's|#include "../zstd.h"|#include "zstd.h"|g' "$DEPS_DIR/zstd.c"
