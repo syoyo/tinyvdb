@@ -86,22 +86,27 @@ static void compute_child_dims(const tvdb_grid_layout_t *layout,
     }
 }
 
+/* Byte popcount lookup table */
+static const uint8_t popcount_table[256] = {
+    0,1,1,2,1,2,2,3,1,2,2,3,2,3,3,4,1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,
+    1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,
+    1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,
+    2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,
+    1,2,2,3,2,3,3,4,2,3,3,4,3,4,4,5,2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,
+    2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,
+    2,3,3,4,3,4,4,5,3,4,4,5,4,5,5,6,3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,
+    3,4,4,5,4,5,5,6,4,5,5,6,5,6,6,7,4,5,5,6,5,6,6,7,5,6,6,7,6,7,7,8,
+};
+
 /* Count ON bits in a nodemask before position `pos`. */
 static size_t nodemask_count_before(const tvdb_nodemask_t *mask, int32_t pos) {
     size_t count = 0;
-    /* Process full bytes */
     int32_t full_bytes = pos / 8;
-    for (int32_t i = 0; i < full_bytes; i++) {
-        uint8_t v = mask->bits.data[i];
-        /* Brian Kernighan popcount */
-        while (v) { v &= (uint8_t)(v - 1); count++; }
-    }
-    /* Remaining bits */
+    for (int32_t i = 0; i < full_bytes; i++)
+        count += popcount_table[mask->bits.data[i]];
     int32_t rem = pos % 8;
-    if (rem > 0) {
-        uint8_t v = mask->bits.data[full_bytes] & (uint8_t)((1u << rem) - 1);
-        while (v) { v &= (uint8_t)(v - 1); count++; }
-    }
+    if (rem > 0)
+        count += popcount_table[mask->bits.data[full_bytes] & ((1u << rem) - 1)];
     return count;
 }
 
@@ -211,8 +216,32 @@ static float vdb_sample(const tvdb_grid_t *grid, float wx, float wy, float wz) {
     /* World to index space */
     float fx, fy, fz;
     if (xf->type == TVDB_TRANSFORM_AFFINE) {
-        /* TODO: invert affine matrix */
-        fx = wx; fy = wy; fz = wz;
+        /* Invert 4x4 affine matrix (Cramer's rule for 3x3 + translation) */
+        const double (*m)[4] = xf->matrix;
+        double det = m[0][0]*(m[1][1]*m[2][2]-m[1][2]*m[2][1])
+                   - m[0][1]*(m[1][0]*m[2][2]-m[1][2]*m[2][0])
+                   + m[0][2]*(m[1][0]*m[2][1]-m[1][1]*m[2][0]);
+        if (fabs(det) < 1e-30) { fx = wx; fy = wy; fz = wz; }
+        else {
+            double inv_det = 1.0 / det;
+            /* Inverse of upper-left 3x3 */
+            double i00 = (m[1][1]*m[2][2]-m[1][2]*m[2][1])*inv_det;
+            double i01 = (m[0][2]*m[2][1]-m[0][1]*m[2][2])*inv_det;
+            double i02 = (m[0][1]*m[1][2]-m[0][2]*m[1][1])*inv_det;
+            double i10 = (m[1][2]*m[2][0]-m[1][0]*m[2][2])*inv_det;
+            double i11 = (m[0][0]*m[2][2]-m[0][2]*m[2][0])*inv_det;
+            double i12 = (m[0][2]*m[1][0]-m[0][0]*m[1][2])*inv_det;
+            double i20 = (m[1][0]*m[2][1]-m[1][1]*m[2][0])*inv_det;
+            double i21 = (m[0][1]*m[2][0]-m[0][0]*m[2][1])*inv_det;
+            double i22 = (m[0][0]*m[1][1]-m[0][1]*m[1][0])*inv_det;
+            /* Apply: inv(M) * (w - translation) */
+            double dx = (double)wx - m[0][3];
+            double dy = (double)wy - m[1][3];
+            double dz = (double)wz - m[2][3];
+            fx = (float)(i00*dx + i01*dy + i02*dz);
+            fy = (float)(i10*dx + i11*dy + i12*dz);
+            fz = (float)(i20*dx + i21*dy + i22*dz);
+        }
     } else {
         float vs0 = (xf->voxel_size[0] != 0.0) ? (float)xf->voxel_size[0] : 1.0f;
         float vs1 = (xf->voxel_size[1] != 0.0) ? (float)xf->voxel_size[1] : 1.0f;
@@ -502,6 +531,16 @@ int main(int argc, char **argv) {
     const tvdb_grid_t *grid = &file.grids[gi];
     printf("Rendering grid '%s' (%s)\n",
            grid->descriptor.grid_name, grid->descriptor.grid_type);
+
+    /* Check that the grid uses a float value type */
+    if (grid->tree.layout.num_levels > 0 &&
+        grid->tree.layout.levels[0].value_type != TVDB_VALUE_FLOAT) {
+        fprintf(stderr, "Error: only float-valued grids are supported "
+                "(this grid uses %s)\n",
+                grid->descriptor.grid_type);
+        tvdb_file_close(&file);
+        return 1;
+    }
 
     /* Determine if level set or fog volume */
     bool is_levelset = false;

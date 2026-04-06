@@ -270,7 +270,8 @@ int main(int argc, char **argv) {
         printf("\nWriting to %s (compression=0x%x, mmap=%s)...\n",
                outfile, comp_flags, use_mmap_write ? "on" : "off");
 
-        st = tvdb_file_save(&file, outfile, comp_flags, use_mmap_write, &err);
+        st = tvdb_file_save(&file, outfile, comp_flags, /*clevel=*/0,
+                           use_mmap_write, &err);
         if (st != TVDB_OK) {
             fprintf(stderr, "Error writing %s: %s (%s)\n",
                     outfile, err.message, tvdb_status_string(st));

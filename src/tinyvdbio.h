@@ -398,17 +398,21 @@ size_t        tvdb_value_type_size(tvdb_value_type_t type);
 
 /* Write VDB data to a memory buffer.
    Caller must free *out_data with the file's allocator (or free() if default).
-   compression_flags: combination of TVDB_COMPRESS_* flags. */
+   compression_flags: combination of TVDB_COMPRESS_* flags.
+   compression_level: 1 (fastest) to 9 (best ratio), 0 for default (5). */
 tvdb_status_t tvdb_write_to_memory(const tvdb_file_t *file,
                                    uint32_t compression_flags,
+                                   int compression_level,
                                    uint8_t **out_data, size_t *out_size,
                                    tvdb_error_t *err);
 
 /* Write VDB data to a file.
-   use_mmap: if nonzero, use mmap for file I/O (ignored if TVDB_NO_MMAP). */
+   use_mmap: if nonzero, use mmap for file I/O (ignored if TVDB_NO_MMAP).
+   compression_level: 1 (fastest) to 9 (best ratio), 0 for default (5). */
 tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
                              const char *filepath_utf8,
                              uint32_t compression_flags,
+                             int compression_level,
                              int use_mmap,
                              tvdb_error_t *err);
 
@@ -577,6 +581,13 @@ static char *tvdb__strdup(tvdb_allocator_t *a, const char *s) {
     return d;
 }
 
+/* Overflow-safe multiply for allocation sizes. Returns 0 on overflow. */
+static size_t tvdb__safe_mul(size_t a_val, size_t b_val) {
+    if (a_val == 0 || b_val == 0) return 0;
+    if (a_val > SIZE_MAX / b_val) return 0; /* overflow */
+    return a_val * b_val;
+}
+
 static char *tvdb__strndup(tvdb_allocator_t *a, const char *s, size_t n) {
     if (!s) return NULL;
     char *d = (char *)tvdb__alloc(a, n + 1);
@@ -715,6 +726,53 @@ static float tvdb__half_to_float(uint16_t h) {
     float result;
     memcpy(&result, &f, 4);
     return result;
+}
+
+static uint16_t tvdb__float_to_half(float f) {
+    uint32_t u;
+    memcpy(&u, &f, 4);
+    uint32_t sign = (u >> 31) & 1u;
+    int32_t  exp  = (int32_t)((u >> 23) & 0xffu) - 127 + 15;
+    uint32_t mant = u & 0x7fffffu;
+    uint16_t h;
+    if (exp <= 0) {
+        if (exp < -10) { h = (uint16_t)(sign << 15); }
+        else {
+            mant |= 0x800000u;
+            uint32_t shift = (uint32_t)(1 - exp);
+            h = (uint16_t)((sign << 15) | (mant >> (13 + shift)));
+        }
+    } else if (exp >= 31) {
+        h = (uint16_t)((sign << 15) | 0x7c00u); /* Inf */
+    } else {
+        h = (uint16_t)((sign << 15) | ((uint32_t)exp << 10) | (mant >> 13));
+    }
+    return h;
+}
+
+/* Promote an array of half-float values to float in-place (expands buffer).
+   `halfs` has `count` uint16_t values; `floats` must hold `count` floats. */
+static void tvdb__promote_half_to_float(const uint8_t *halfs, uint8_t *floats,
+                                        size_t count) {
+    /* Process backwards to allow in-place if floats == halfs (overlapping) */
+    for (size_t i = count; i > 0; i--) {
+        uint16_t h;
+        memcpy(&h, halfs + (i - 1) * 2, 2);
+        float fv = tvdb__half_to_float(h);
+        memcpy(floats + (i - 1) * 4, &fv, 4);
+    }
+}
+
+/* Demote an array of float values to half-float.
+   `floats` has `count` float values; `halfs` must hold `count` uint16_t. */
+static void tvdb__demote_float_to_half(const uint8_t *floats, uint8_t *halfs,
+                                       size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        float fv;
+        memcpy(&fv, floats + i * 4, 4);
+        uint16_t h = tvdb__float_to_half(fv);
+        memcpy(halfs + i * 2, &h, 2);
+    }
 }
 
 /* ========================================================================== */
@@ -1943,9 +2001,11 @@ static tvdb_status_t tvdb__read_mask_values(
     tvdb__sr_t *sr, uint32_t compression_flags, uint32_t file_version,
     tvdb_value_t background, size_t num_values, tvdb_value_type_t value_type,
     const tvdb_nodemask_t *value_mask, uint8_t *values,
+    int half_precision,
     tvdb_allocator_t *alloc, tvdb_error_t *err) {
 
     int mask_compressed = (compression_flags & TVDB_COMPRESS_ACTIVE_MASK) != 0;
+    int is_half = (half_precision && value_type == TVDB_VALUE_FLOAT);
     int8_t per_node_flag = TVDB_NO_MASK_AND_ALL_VALS;
 
     if (file_version >= TVDB_FILE_VERSION_NODE_MASK_COMPRESSION) {
@@ -1963,9 +2023,23 @@ static tvdb_status_t tvdb__read_mask_values(
     if (per_node_flag == TVDB_NO_MASK_AND_ONE_INACTIVE_VAL ||
         per_node_flag == TVDB_MASK_AND_ONE_INACTIVE_VAL ||
         per_node_flag == TVDB_MASK_AND_TWO_INACTIVE_VALS) {
-        tvdb__sr_read_value(sr, background.type, &inactive_val0);
+        if (is_half) {
+            uint16_t h;
+            tvdb__sr_read_u16(sr, &h);
+            inactive_val0.type = TVDB_VALUE_FLOAT;
+            inactive_val0.u.f = tvdb__half_to_float(h);
+        } else {
+            tvdb__sr_read_value(sr, background.type, &inactive_val0);
+        }
         if (per_node_flag == TVDB_MASK_AND_TWO_INACTIVE_VALS) {
-            tvdb__sr_read_value(sr, background.type, &inactive_val1);
+            if (is_half) {
+                uint16_t h;
+                tvdb__sr_read_u16(sr, &h);
+                inactive_val1.type = TVDB_VALUE_FLOAT;
+                inactive_val1.u.f = tvdb__half_to_float(h);
+            } else {
+                tvdb__sr_read_value(sr, background.type, &inactive_val1);
+            }
         }
     }
 
@@ -1987,7 +2061,9 @@ static tvdb_status_t tvdb__read_mask_values(
     }
 
     size_t vsize = tvdb_value_type_size(value_type);
-    size_t tmp_size = read_count * vsize;
+    size_t file_elem_size = is_half ? 2 : vsize;
+
+    size_t tmp_size = read_count * file_elem_size;
     uint8_t *tmp_buf = (uint8_t *)tvdb__alloc(alloc,
                                                tmp_size > 0 ? tmp_size : 1);
     if (!tmp_buf) {
@@ -1998,7 +2074,7 @@ static tvdb_status_t tvdb__read_mask_values(
     memset(tmp_buf, 0, tmp_size > 0 ? tmp_size : 1);
 
     tvdb_status_t st = tvdb__read_and_decompress(
-        sr, tmp_buf, vsize, read_count, compression_flags, alloc, err);
+        sr, tmp_buf, file_elem_size, read_count, compression_flags, alloc, err);
     if (st != TVDB_OK) {
         tvdb__free(alloc, tmp_buf, tmp_size > 0 ? tmp_size : 1);
         tvdb__nodemask_destroy(&selection_mask);
@@ -2010,11 +2086,17 @@ static tvdb_status_t tvdb__read_mask_values(
         size_t temp_idx = 0;
         for (size_t dest_idx = 0; dest_idx < num_values; dest_idx++) {
             if (tvdb__nodemask_is_on(value_mask, (int32_t)dest_idx)) {
-                memcpy(values + dest_idx * vsize,
-                       tmp_buf + temp_idx * vsize, vsize);
+                if (is_half) {
+                    uint16_t h;
+                    memcpy(&h, tmp_buf + temp_idx * 2, 2);
+                    float fv = tvdb__half_to_float(h);
+                    memcpy(values + dest_idx * vsize, &fv, 4);
+                } else {
+                    memcpy(values + dest_idx * vsize,
+                           tmp_buf + temp_idx * file_elem_size, vsize);
+                }
                 temp_idx++;
             } else {
-                /* Copy from the union's value data, not the whole struct */
                 if (tvdb__nodemask_is_on(&selection_mask, (int32_t)dest_idx))
                     memcpy(values + dest_idx * vsize, &inactive_val1.u, vsize);
                 else
@@ -2022,7 +2104,11 @@ static tvdb_status_t tvdb__read_mask_values(
             }
         }
     } else if (values) {
-        memcpy(values, tmp_buf, num_values * vsize);
+        if (is_half) {
+            tvdb__promote_half_to_float(tmp_buf, values, num_values);
+        } else {
+            memcpy(values, tmp_buf, num_values * vsize);
+        }
     }
 
     tvdb__free(alloc, tmp_buf, tmp_size > 0 ? tmp_size : 1);
@@ -2101,12 +2187,19 @@ static tvdb_status_t tvdb__read_root_topology(
 
     /* Read tiles */
     if (root->num_tiles > 0) {
-        root->tile_origins = (int32_t *)tvdb__alloc(a,
-            (size_t)root->num_tiles * 3 * sizeof(int32_t));
-        root->tile_values = (tvdb_value_t *)tvdb__alloc(a,
-            (size_t)root->num_tiles * sizeof(tvdb_value_t));
-        root->tile_active = (int *)tvdb__alloc(a,
-            (size_t)root->num_tiles * sizeof(int));
+        size_t tile_origins_sz = tvdb__safe_mul(
+            (size_t)root->num_tiles * 3, sizeof(int32_t));
+        size_t tile_values_sz = tvdb__safe_mul(
+            (size_t)root->num_tiles, sizeof(tvdb_value_t));
+        size_t tile_active_sz = tvdb__safe_mul(
+            (size_t)root->num_tiles, sizeof(int));
+        if (!tile_origins_sz || !tile_values_sz || !tile_active_sz) {
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA, "Tile count overflow");
+            return TVDB_ERROR_INVALID_DATA;
+        }
+        root->tile_origins = (int32_t *)tvdb__alloc(a, tile_origins_sz);
+        root->tile_values = (tvdb_value_t *)tvdb__alloc(a, tile_values_sz);
+        root->tile_active = (int *)tvdb__alloc(a, tile_active_sz);
         if (!root->tile_origins || !root->tile_values || !root->tile_active) {
             tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
             return TVDB_ERROR_OUT_OF_MEMORY;
@@ -2125,10 +2218,17 @@ static tvdb_status_t tvdb__read_root_topology(
 
     /* Read child nodes */
     if (root->num_children > 0) {
-        root->child_origins = (int32_t *)tvdb__alloc(a,
-            (size_t)root->num_children * 3 * sizeof(int32_t));
-        root->child_indices = (size_t *)tvdb__alloc(a,
-            (size_t)root->num_children * sizeof(size_t));
+        size_t child_orig_sz = tvdb__safe_mul(
+            (size_t)root->num_children * 3, sizeof(int32_t));
+        size_t child_idx_sz = tvdb__safe_mul(
+            (size_t)root->num_children, sizeof(size_t));
+        if (!child_orig_sz || !child_idx_sz) {
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                            "Child count overflow");
+            return TVDB_ERROR_INVALID_DATA;
+        }
+        root->child_origins = (int32_t *)tvdb__alloc(a, child_orig_sz);
+        root->child_indices = (size_t *)tvdb__alloc(a, child_idx_sz);
         if (!root->child_origins || !root->child_indices) {
             tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
             return TVDB_ERROR_OUT_OF_MEMORY;
@@ -2191,9 +2291,18 @@ static tvdb_status_t tvdb__read_internal_topology(
     int old_version = (params->file_version <
                        TVDB_FILE_VERSION_NODE_MASK_COMPRESSION);
 
-    int32_t num_values = old_version
-        ? (bitsize - (int32_t)tvdb__nodemask_count_on(&inode->child_mask))
-        : bitsize;
+    int32_t num_values;
+    if (old_version) {
+        int32_t child_count = (int32_t)tvdb__nodemask_count_on(&inode->child_mask);
+        if (child_count > bitsize) {
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                            "Child mask count exceeds bitsize");
+            return TVDB_ERROR_INVALID_DATA;
+        }
+        num_values = bitsize - child_count;
+    } else {
+        num_values = bitsize;
+    }
 
     /* Read tile/inactive values */
     size_t vsize = tvdb_value_type_size(vt);
@@ -2208,7 +2317,8 @@ static tvdb_status_t tvdb__read_internal_topology(
     tvdb_status_t st = tvdb__read_mask_values(
         sr, params->compression_flags, params->file_version,
         params->background, (size_t)num_values, vt,
-        &inode->value_mask, inode->values, a, err);
+        &inode->value_mask, inode->values,
+        params->half_precision, a, err);
     if (st != TVDB_OK) return st;
 
     /* Read child nodes */
@@ -2381,7 +2491,8 @@ static tvdb_status_t tvdb__read_leaf_buffer(
     tvdb_status_t st = tvdb__read_mask_values(
         sr, params->compression_flags, params->file_version,
         params->background, num_values, vt,
-        &leaf->value_mask, leaf->data, a, err);
+        &leaf->value_mask, leaf->data,
+        params->half_precision, a, err);
     return st;
 }
 
@@ -2738,8 +2849,17 @@ tvdb_status_t tvdb_file_open(tvdb_file_t *file, const char *filepath_utf8,
                 tvdb_file_close(file);
                 return st;
             }
+            /* Validate grid offsets */
+            tvdb_grid_descriptor_t *gd = &file->grids[i].descriptor;
+            if (gd->grid_byte_offset > gd->end_byte_offset ||
+                gd->end_byte_offset > file->file_data.data_len) {
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "Grid byte offsets out of range");
+                tvdb_file_close(file);
+                return TVDB_ERROR_INVALID_DATA;
+            }
             /* Seek to end of this grid's data */
-            tvdb__sr_seek_set(&sr, file->grids[i].descriptor.end_byte_offset);
+            tvdb__sr_seek_set(&sr, gd->end_byte_offset);
         }
     }
 
@@ -2874,12 +2994,14 @@ typedef struct tvdb__sw {
     size_t            cap;
     tvdb_allocator_t *alloc;
     int               swap_endian;
+    int               compression_level; /* 1-9, default 5 */
 } tvdb__sw_t;
 
 static void tvdb__sw_init(tvdb__sw_t *sw, tvdb_allocator_t *alloc) {
     memset(sw, 0, sizeof(*sw));
     sw->alloc = alloc;
     sw->swap_endian = tvdb_is_big_endian();
+    sw->compression_level = 5;
 }
 
 static void tvdb__sw_destroy(tvdb__sw_t *sw) {
@@ -2982,7 +3104,8 @@ static int tvdb__sw_write_value(tvdb__sw_t *sw, const tvdb_value_t *v) {
 
 static tvdb_status_t tvdb__compress_and_write(
     tvdb__sw_t *sw, const uint8_t *src_data, size_t element_size, size_t count,
-    uint32_t compression_mask, tvdb_allocator_t *alloc, tvdb_error_t *err) {
+    uint32_t compression_mask, int clevel, tvdb_allocator_t *alloc,
+    tvdb_error_t *err) {
 
     size_t total_size = element_size * count;
 
@@ -3019,7 +3142,7 @@ static tvdb_status_t tvdb__compress_and_write(
         }
         int csize = tvdb__compress_blosc(
             src_data, total_size, dest, dest_cap,
-            element_size, 5, alloc);
+            element_size, clevel > 0 ? clevel : 5, alloc);
         if (csize <= 0 || (size_t)csize >= total_size) {
             tvdb__sw_write_i64(sw, -1);
             tvdb__sw_write(sw, src_data, total_size);
@@ -3090,24 +3213,51 @@ static tvdb_status_t tvdb__write_mask_values(
     tvdb__sw_t *sw, uint32_t compression_flags, tvdb_value_t background,
     size_t num_values, tvdb_value_type_t value_type,
     const tvdb_nodemask_t *value_mask, const uint8_t *values,
+    int half_precision,
     tvdb_allocator_t *alloc, tvdb_error_t *err) {
 
     size_t vsize = tvdb_value_type_size(value_type);
+    int is_half = (half_precision && value_type == TVDB_VALUE_FLOAT);
+    size_t file_elem_size = is_half ? 2 : vsize;
+
+    /* For half-float grids, demote all values to half before compression */
+    uint8_t *half_buf = NULL;
+    if (is_half && num_values > 0) {
+        half_buf = (uint8_t *)tvdb__alloc(alloc, num_values * 2);
+        if (!half_buf) {
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        tvdb__demote_float_to_half(values, half_buf, num_values);
+        values = half_buf;
+        vsize = 2;
+    }
+
     int mask_compressed = (compression_flags & TVDB_COMPRESS_ACTIVE_MASK) != 0;
 
     if (!mask_compressed) {
         tvdb__sw_write_i8(sw, (int8_t)TVDB_NO_MASK_AND_ALL_VALS);
-        return tvdb__compress_and_write(sw, values, vsize, num_values,
-                                        compression_flags, alloc, err);
+        tvdb_status_t ret = tvdb__compress_and_write(sw, values, vsize,
+                                        num_values, compression_flags,
+                                        sw->compression_level, alloc, err);
+        if (half_buf) tvdb__free(alloc, half_buf, num_values * 2);
+        return ret;
     }
 
     /* Analyze inactive values */
     uint8_t bg_bytes[32], neg_bg_bytes[32];
     memset(bg_bytes, 0, sizeof(bg_bytes));
     memset(neg_bg_bytes, 0, sizeof(neg_bg_bytes));
-    memcpy(bg_bytes, &background.u, vsize);
-    tvdb_value_t neg_bg = tvdb__negate_value(background);
-    memcpy(neg_bg_bytes, &neg_bg.u, vsize);
+    if (is_half) {
+        uint16_t hbg = tvdb__float_to_half(background.u.f);
+        memcpy(bg_bytes, &hbg, 2);
+        uint16_t hneg = tvdb__float_to_half(-background.u.f);
+        memcpy(neg_bg_bytes, &hneg, 2);
+    } else {
+        memcpy(bg_bytes, &background.u, vsize);
+        tvdb_value_t neg_bg = tvdb__negate_value(background);
+        memcpy(neg_bg_bytes, &neg_bg.u, vsize);
+    }
 
     int all_bg = 1, all_neg_bg = 1;
     int num_distinct = 0;
@@ -3215,13 +3365,17 @@ static tvdb_status_t tvdb__write_mask_values(
     }
 
     if (write_count == num_values || flag == TVDB_NO_MASK_AND_ALL_VALS) {
-        return tvdb__compress_and_write(sw, values, vsize, num_values,
-                                        compression_flags, alloc, err);
+        tvdb_status_t ret = tvdb__compress_and_write(sw, values, vsize,
+                                        num_values, compression_flags,
+                                        sw->compression_level, alloc, err);
+        if (half_buf) tvdb__free(alloc, half_buf, num_values * 2);
+        return ret;
     }
 
     /* Pack active values into temp buffer */
     uint8_t *active_buf = (uint8_t *)tvdb__alloc(alloc, write_count * vsize);
     if (!active_buf && write_count > 0) {
+        if (half_buf) tvdb__free(alloc, half_buf, num_values * 2);
         tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
         return TVDB_ERROR_OUT_OF_MEMORY;
     }
@@ -3234,8 +3388,10 @@ static tvdb_status_t tvdb__write_mask_values(
     }
 
     tvdb_status_t st = tvdb__compress_and_write(
-        sw, active_buf, vsize, write_count, compression_flags, alloc, err);
+        sw, active_buf, vsize, write_count, compression_flags,
+        sw->compression_level, alloc, err);
     tvdb__free(alloc, active_buf, write_count * vsize);
+    if (half_buf) tvdb__free(alloc, half_buf, num_values * 2);
     return st;
 }
 
@@ -3245,11 +3401,12 @@ static tvdb_status_t tvdb__write_mask_values(
 
 static tvdb_status_t tvdb__write_node_topology(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
-    tvdb_value_t background, uint32_t compression_flags, tvdb_error_t *err);
+    tvdb_value_t background, uint32_t compression_flags,
+    int half_precision, tvdb_error_t *err);
 
 static tvdb_status_t tvdb__write_root_topology(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
-    uint32_t compression_flags, tvdb_error_t *err) {
+    uint32_t compression_flags, int half_precision, tvdb_error_t *err) {
     const tvdb_root_node_t *root = &tree->nodes[node_idx].u.root;
 
     tvdb__sw_write_value(sw, &root->background);
@@ -3271,7 +3428,7 @@ static tvdb_status_t tvdb__write_root_topology(
 
         tvdb_status_t st = tvdb__write_node_topology(
             tree, sw, root->child_indices[i], level + 1,
-            root->background, compression_flags, err);
+            root->background, compression_flags, half_precision, err);
         if (st != TVDB_OK) return st;
     }
     return TVDB_OK;
@@ -3280,7 +3437,7 @@ static tvdb_status_t tvdb__write_root_topology(
 static tvdb_status_t tvdb__write_internal_topology(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
     tvdb_value_t background, uint32_t compression_flags,
-    tvdb_error_t *err) {
+    int half_precision, tvdb_error_t *err) {
     const tvdb_internal_node_t *inode = &tree->nodes[node_idx].u.internal;
     tvdb_value_type_t vt = tree->layout.levels[level].value_type;
 
@@ -3292,7 +3449,7 @@ static tvdb_status_t tvdb__write_internal_topology(
     int32_t num_values = inode->child_mask.bitsize;
     tvdb_status_t st = tvdb__write_mask_values(
         sw, compression_flags, background, (size_t)num_values, vt,
-        &inode->value_mask, inode->values, sw->alloc, err);
+        &inode->value_mask, inode->values, half_precision, sw->alloc, err);
     if (st != TVDB_OK) return st;
 
     size_t child_n = 0;
@@ -3300,7 +3457,7 @@ static tvdb_status_t tvdb__write_internal_topology(
         if (tvdb__nodemask_is_on(&inode->child_mask, i)) {
             st = tvdb__write_node_topology(
                 tree, sw, inode->child_indices[child_n], level + 1,
-                background, compression_flags, err);
+                background, compression_flags, half_precision, err);
             if (st != TVDB_OK) return st;
             child_n++;
         }
@@ -3321,16 +3478,17 @@ static tvdb_status_t tvdb__write_leaf_topology(
 static tvdb_status_t tvdb__write_node_topology(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
     tvdb_value_t background, uint32_t compression_flags,
-    tvdb_error_t *err) {
+    int half_precision, tvdb_error_t *err) {
     tvdb_node_type_t nt = tree->nodes[node_idx].type;
     switch (nt) {
         case TVDB_NODE_ROOT:
             return tvdb__write_root_topology(tree, sw, node_idx, level,
-                                             compression_flags, err);
+                                             compression_flags,
+                                             half_precision, err);
         case TVDB_NODE_INTERNAL:
             return tvdb__write_internal_topology(
                 tree, sw, node_idx, level, background,
-                compression_flags, err);
+                compression_flags, half_precision, err);
         case TVDB_NODE_LEAF:
             return tvdb__write_leaf_topology(tree, sw, node_idx, err);
         default:
@@ -3345,17 +3503,17 @@ static tvdb_status_t tvdb__write_node_topology(
 static tvdb_status_t tvdb__write_node_buffer(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
     tvdb_value_t background, uint32_t compression_flags,
-    tvdb_error_t *err);
+    int half_precision, tvdb_error_t *err);
 
 static tvdb_status_t tvdb__write_root_buffer(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
     tvdb_value_t background, uint32_t compression_flags,
-    tvdb_error_t *err) {
+    int half_precision, tvdb_error_t *err) {
     const tvdb_root_node_t *root = &tree->nodes[node_idx].u.root;
     for (uint32_t i = 0; i < root->num_children; i++) {
         tvdb_status_t st = tvdb__write_node_buffer(
             tree, sw, root->child_indices[i], level + 1,
-            background, compression_flags, err);
+            background, compression_flags, half_precision, err);
         if (st != TVDB_OK) return st;
     }
     return TVDB_OK;
@@ -3364,14 +3522,14 @@ static tvdb_status_t tvdb__write_root_buffer(
 static tvdb_status_t tvdb__write_internal_buffer(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
     tvdb_value_t background, uint32_t compression_flags,
-    tvdb_error_t *err) {
+    int half_precision, tvdb_error_t *err) {
     const tvdb_internal_node_t *inode = &tree->nodes[node_idx].u.internal;
     size_t child_n = 0;
     for (int32_t i = 0; i < inode->child_mask.bitsize; i++) {
         if (tvdb__nodemask_is_on(&inode->child_mask, i)) {
             tvdb_status_t st = tvdb__write_node_buffer(
                 tree, sw, inode->child_indices[child_n], level + 1,
-                background, compression_flags, err);
+                background, compression_flags, half_precision, err);
             if (st != TVDB_OK) return st;
             child_n++;
         }
@@ -3382,37 +3540,37 @@ static tvdb_status_t tvdb__write_internal_buffer(
 static tvdb_status_t tvdb__write_leaf_buffer(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
     tvdb_value_t background, uint32_t compression_flags,
-    tvdb_error_t *err) {
+    int half_precision, tvdb_error_t *err) {
     const tvdb_leaf_node_t *leaf = &tree->nodes[node_idx].u.leaf;
     tvdb_value_type_t vt = tree->layout.levels[level].value_type;
     size_t num_values = leaf->num_voxels;
 
-    /* Write value mask (again, for buffer section) */
     tvdb__sw_write(sw, leaf->value_mask.bits.data,
                    leaf->value_mask.bits.num_bytes);
 
-    /* Write mask-compressed leaf data */
     return tvdb__write_mask_values(
         sw, compression_flags, background, num_values, vt,
-        &leaf->value_mask, leaf->data, sw->alloc, err);
+        &leaf->value_mask, leaf->data, half_precision, sw->alloc, err);
 }
 
 static tvdb_status_t tvdb__write_node_buffer(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
     tvdb_value_t background, uint32_t compression_flags,
-    tvdb_error_t *err) {
+    int half_precision, tvdb_error_t *err) {
     tvdb_node_type_t nt = tree->nodes[node_idx].type;
     switch (nt) {
         case TVDB_NODE_ROOT:
             return tvdb__write_root_buffer(tree, sw, node_idx, level,
-                                           background, compression_flags, err);
+                                           background, compression_flags,
+                                           half_precision, err);
         case TVDB_NODE_INTERNAL:
             return tvdb__write_internal_buffer(tree, sw, node_idx, level,
                                                background, compression_flags,
-                                               err);
+                                               half_precision, err);
         case TVDB_NODE_LEAF:
             return tvdb__write_leaf_buffer(tree, sw, node_idx, level,
-                                           background, compression_flags, err);
+                                           background, compression_flags,
+                                           half_precision, err);
         default:
             return TVDB_ERROR_INVALID_DATA;
     }
@@ -3576,6 +3734,12 @@ static tvdb_status_t tvdb__write_grid(
     /* Transform */
     tvdb__write_transform(sw, &grid->transform);
 
+    /* Instance grids share another grid's tree — no tree to write */
+    if (grid->descriptor.instance_parent_name &&
+        grid->descriptor.instance_parent_name[0] != '\0') {
+        return TVDB_OK;
+    }
+
     /* Tree */
     if (grid->tree.num_nodes == 0) {
         tvdb__set_error(err, TVDB_ERROR_INVALID_DATA, "Grid has no tree nodes");
@@ -3587,14 +3751,16 @@ static tvdb_status_t tvdb__write_grid(
 
     tvdb_value_t background = grid->tree.nodes[0].u.root.background;
 
+    int half = grid->descriptor.save_float_as_half;
+
     /* Write topology */
     tvdb_status_t st = tvdb__write_node_topology(
-        &grid->tree, sw, 0, 0, background, compression_flags, err);
+        &grid->tree, sw, 0, 0, background, compression_flags, half, err);
     if (st != TVDB_OK) return st;
 
     /* Write buffers */
     st = tvdb__write_node_buffer(
-        &grid->tree, sw, 0, 0, background, compression_flags, err);
+        &grid->tree, sw, 0, 0, background, compression_flags, half, err);
     return st;
 }
 
@@ -3604,6 +3770,7 @@ static tvdb_status_t tvdb__write_grid(
 
 tvdb_status_t tvdb_write_to_memory(const tvdb_file_t *file,
                                    uint32_t compression_flags,
+                                   int compression_level,
                                    uint8_t **out_data, size_t *out_size,
                                    tvdb_error_t *err) {
     if (!file || !out_data || !out_size) {
@@ -3617,6 +3784,7 @@ tvdb_status_t tvdb_write_to_memory(const tvdb_file_t *file,
     tvdb_allocator_t alloc = file->alloc;
     tvdb__sw_t sw;
     tvdb__sw_init(&sw, &alloc);
+    sw.compression_level = (compression_level > 0) ? compression_level : 5;
 
     /* Write header */
     tvdb__write_header(&sw, &file->header);
@@ -3709,6 +3877,7 @@ tvdb_status_t tvdb_write_to_memory(const tvdb_file_t *file,
 tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
                              const char *filepath_utf8,
                              uint32_t compression_flags,
+                             int compression_level,
                              int use_mmap,
                              tvdb_error_t *err) {
     if (!file || !filepath_utf8) {
@@ -3720,6 +3889,7 @@ tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
     uint8_t *data = NULL;
     size_t data_size = 0;
     tvdb_status_t st = tvdb_write_to_memory(file, compression_flags,
+                                            compression_level,
                                             &data, &data_size, err);
     if (st != TVDB_OK) return st;
 
@@ -3821,8 +3991,13 @@ tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
             return TVDB_ERROR_IO;
         }
         DWORD written = 0;
-        WriteFile(hFile, data, (DWORD)data_size, &written, NULL);
+        BOOL ok = WriteFile(hFile, data, (DWORD)data_size, &written, NULL);
         CloseHandle(hFile);
+        if (!ok || (size_t)written != data_size) {
+            tvdb__free(&alloc, data, data_size);
+            tvdb__set_error(err, TVDB_ERROR_IO, "Write incomplete");
+            return TVDB_ERROR_IO;
+        }
     }
 #else
     {
