@@ -97,6 +97,12 @@ if(TINYVDBIO_BUILD_VDBRENDER)
   add_subdirectory(examples/vdbrender)
 endif()
 
+# Tests
+if(TINYVDBIO_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+
 # [VisualStudio]
 if(WIN32)
   set_property(DIRECTORY PROPERTY VS_STARTUP_PROJECT tinyvdbio)

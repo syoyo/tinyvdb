@@ -18,38 +18,61 @@ jobs:
         with:
           submodules: recursive
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DTINYVDBIO_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build -j$(nproc)
-      - name: Verify binaries
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Run vdbdump on data files
         run: |
-          ./build/vdbdump --help || true
-          ./build/vdbrender --help || true
+          for f in data/*.vdb; do
+            echo "--- $f ---"
+            ./build/vdbdump "$f"
+          done
 
   # ---------------------------------------------------------------------------
-  #  Linux arm64 (cross-compile)
+  #  Linux arm64
   # ---------------------------------------------------------------------------
   linux-arm64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install cross toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       - name: Configure
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
-            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
-            -DCMAKE_SYSTEM_NAME=Linux \
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DTINYVDBIO_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build -j$(nproc)
-      - name: Verify binaries exist
-        run: file build/vdbdump build/vdbrender
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Run vdbdump on data files
+        run: |
+          for f in data/*.vdb; do
+            echo "--- $f ---"
+            ./build/vdbdump "$f"
+          done
+
+  # ---------------------------------------------------------------------------
+  #  Linux RISC-V  (via RISE RISC-V runners)
+  # ---------------------------------------------------------------------------
+  linux-riscv:
+    runs-on: ubuntu-24.04-riscv64-2core-8gb
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DTINYVDBIO_BUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build -j$(nproc)
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Run vdbdump on data files
+        run: |
+          for f in data/*.vdb; do
+            echo "--- $f ---"
+            ./build/vdbdump "$f"
+          done
 
   # ---------------------------------------------------------------------------
   #  macOS arm64
@@ -61,13 +84,17 @@ jobs:
         with:
           submodules: recursive
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DTINYVDBIO_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build -j$(sysctl -n hw.ncpu)
-      - name: Verify binaries
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+      - name: Run vdbdump on data files
         run: |
-          ./build/vdbdump --help || true
-          ./build/vdbrender --help || true
+          for f in data/*.vdb; do
+            echo "--- $f ---"
+            ./build/vdbdump "$f"
+          done
 
   # ---------------------------------------------------------------------------
   #  Windows x64 (MSVC)
@@ -79,12 +106,18 @@ jobs:
         with:
           submodules: recursive
       - name: Configure
-        run: cmake -B build -A x64
+        run: cmake -B build -A x64 -DTINYVDBIO_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build --config Release
-      - name: Verify binaries
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure -C Release
+      - name: Run vdbdump on data files
+        shell: bash
         run: |
-          dir build\Release\*.exe
+          for f in data/*.vdb; do
+            echo "--- $f ---"
+            ./build/Release/vdbdump.exe "$f"
+          done
 
   # ---------------------------------------------------------------------------
   #  Windows arm64 (MSVC cross-compile)
@@ -96,9 +129,8 @@ jobs:
         with:
           submodules: recursive
       - name: Configure
-        run: cmake -B build -A ARM64
+        run: cmake -B build -A ARM64 -DTINYVDBIO_BUILD_TESTS=ON
       - name: Build
         run: cmake --build build --config Release
-      - name: Verify binaries
-        run: |
-          dir build\Release\*.exe
+      - name: Verify binaries exist
+        run: dir build\Release\*.exe

@@ -1,1 +1,0 @@
-/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/vdbrender.dir/link.d CMakeFiles/vdbrender.dir/vdbrender.cc.o -o ../../vdbrender  ../../libtinyvdbio.a /usr/lib/gcc/x86_64-linux-gnu/13/libgomp.so /usr/lib/x86_64-linux-gnu/libpthread.a
