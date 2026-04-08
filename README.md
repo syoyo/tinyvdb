@@ -179,7 +179,7 @@ There are two bit masks, `child mask` and `value mask`, for each internal node.
 TinyVDBIO is licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
 
 ```
-Copyright 2018-2026 Syoyo Fujita
+Copyright 2026 - Present Syoyo Fujita
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.

@@ -1,7 +1,7 @@
 /*
  * TinyVDBIO — Header-only C11 OpenVDB I/O library.
  *
- * Copyright (c) 2018-2026 Syoyo Fujita
+ * Copyright (c) 2026 - Present Syoyo Fujita
  * Copyright (c) 2012-2018 DreamWorks Animation LLC (original I/O logic)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
