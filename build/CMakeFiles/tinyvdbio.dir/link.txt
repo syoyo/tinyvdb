@@ -1,0 +1,2 @@
+/usr/bin/ar qc libtinyvdbio.a CMakeFiles/tinyvdbio.dir/src/tinyvdbio.c.o CMakeFiles/tinyvdbio.dir/src/lz4.c.o CMakeFiles/tinyvdbio.dir/src/miniz.c.o CMakeFiles/tinyvdbio.dir/deps/zstd.c.o
+/usr/bin/ranlib libtinyvdbio.a

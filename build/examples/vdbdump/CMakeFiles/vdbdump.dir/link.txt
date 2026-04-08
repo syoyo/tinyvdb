@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -Wl,--dependency-file=CMakeFiles/vdbdump.dir/link.d CMakeFiles/vdbdump.dir/vdbdump.cc.o -o ../../vdbdump  ../../libtinyvdbio.a
