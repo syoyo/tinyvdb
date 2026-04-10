@@ -614,22 +614,10 @@ bool MeshToSDF(const TriangleMesh& mesh,
     }
   }
 
-  // Phase 2: determine sign via ray casting (sample a subset of voxels,
-  // then flood fill).  For simplicity we do per-voxel ray casting.
-  for (int iz = 0; iz < nz; ++iz) {
-    for (int iy = 0; iy < ny; ++iy) {
-      for (int ix = 0; ix < nx; ++ix) {
-        Vec3f p = {bmin.x + (ix + 0.5f) * voxel_size,
-                   bmin.y + (iy + 0.5f) * voxel_size,
-                   bmin.z + (iz + 0.5f) * voxel_size};
-        int sign = detail::RayCastSignZ(p, mesh);
-        if (sign < 0) {
-          grid->at(ix, iy, iz) = -grid->at(ix, iy, iz);
-        }
-      }
-    }
-  }
-
+  // Unsigned distance field — no sign classification.
+  // For non-manifold meshes (like double-sided shells), sign determination
+  // is unreliable. The marching cubes extracts at a positive isovalue,
+  // creating a thickened shell around the original surface.
   return true;
 }
 
@@ -867,94 +855,12 @@ bool MeshToSDF_VDB(const TriangleMesh& mesh,
     }
   }
 
-  // Convert squared distances to actual distances
+  // Convert squared distances to actual distances.
+  // The grid stores unsigned distance (all positive). This matches OpenVDB's
+  // behavior for non-manifold meshes: no sign classification is performed,
+  // and the marching cubes extracts a thickened shell at the isovalue.
   for (float& v : grid->data) {
     v = std::sqrt(v);
-  }
-
-  // --- Phase 2: Sweep-based sign classification ---
-  // For each axis, sweep scanlines and track inside/outside by detecting
-  // surface crossings (voxels with distance < threshold).
-  // Use majority vote from 3 axes.
-
-  const float surface_threshold = 0.75f * voxel_size;
-
-  // Sign votes: +1 = outside, -1 = inside. Accumulate per voxel.
-  std::vector<int8_t> sign_votes(static_cast<size_t>(nx) * ny * nz, 0);
-
-  auto SignIdx = [&](int ix, int iy, int iz) -> size_t {
-    return static_cast<size_t>(ix) + static_cast<size_t>(nx) * (iy + ny * iz);
-  };
-
-  // Sweep along Z axis
-  for (int iy = 0; iy < ny; ++iy) {
-    for (int ix = 0; ix < nx; ++ix) {
-      int state = 1;  // start outside
-      for (int iz = 0; iz < nz; ++iz) {
-        float d = grid->at(ix, iy, iz);
-        if (d < surface_threshold) {
-          // On the surface — toggle state when leaving it
-          // Find the end of this surface region
-          while (iz < nz && grid->at(ix, iy, iz) < surface_threshold) {
-            sign_votes[SignIdx(ix, iy, iz)] += 0;  // surface: neutral
-            ++iz;
-          }
-          state = -state;  // toggle
-          --iz;  // will be incremented by for loop
-        } else {
-          sign_votes[SignIdx(ix, iy, iz)] += static_cast<int8_t>(state);
-        }
-      }
-    }
-  }
-
-  // Sweep along Y axis
-  for (int iz = 0; iz < nz; ++iz) {
-    for (int ix = 0; ix < nx; ++ix) {
-      int state = 1;
-      for (int iy = 0; iy < ny; ++iy) {
-        float d = grid->at(ix, iy, iz);
-        if (d < surface_threshold) {
-          while (iy < ny && grid->at(ix, iy, iz) < surface_threshold) {
-            ++iy;
-          }
-          state = -state;
-          --iy;
-        } else {
-          sign_votes[SignIdx(ix, iy, iz)] += static_cast<int8_t>(state);
-        }
-      }
-    }
-  }
-
-  // Sweep along X axis
-  for (int iz = 0; iz < nz; ++iz) {
-    for (int iy = 0; iy < ny; ++iy) {
-      int state = 1;
-      for (int ix = 0; ix < nx; ++ix) {
-        float d = grid->at(ix, iy, iz);
-        if (d < surface_threshold) {
-          while (ix < nx && grid->at(ix, iy, iz) < surface_threshold) {
-            ++ix;
-          }
-          state = -state;
-          --ix;
-        } else {
-          sign_votes[SignIdx(ix, iy, iz)] += static_cast<int8_t>(state);
-        }
-      }
-    }
-  }
-
-  // Apply sign: majority vote. Negative vote sum → inside (negate distance).
-  for (int iz = 0; iz < nz; ++iz) {
-    for (int iy = 0; iy < ny; ++iy) {
-      for (int ix = 0; ix < nx; ++ix) {
-        if (sign_votes[SignIdx(ix, iy, iz)] < 0) {
-          grid->at(ix, iy, iz) = -grid->at(ix, iy, iz);
-        }
-      }
-    }
   }
 
   return true;
