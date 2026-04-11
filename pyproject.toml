@@ -4,9 +4,9 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "tinyvdb"
-version = "0.1.0"
+version = "0.8.0"
 description = "Lightweight OpenVDB file I/O, mesh-to-SDF, and grid operations"
-readme = "README.md"
+readme = "python/README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{name = "Syoyo Fujita"}]
@@ -18,8 +18,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/syoyo/tinyvdbio"
-Repository = "https://github.com/syoyo/tinyvdbio"
+Homepage = "https://github.com/syoyo/tinyvdb"
+Repository = "https://github.com/syoyo/tinyvdb"
 
 [tool.scikit-build]
 cmake.args = [

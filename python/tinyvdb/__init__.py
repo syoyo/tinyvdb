@@ -58,7 +58,7 @@ from tinyvdb._tinyvdb import (
     SIGN_SWEEP,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "VDBError",
