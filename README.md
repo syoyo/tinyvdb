@@ -1,5 +1,7 @@
 # TinyVDB, header-only C/C++ VDB library
 
+[![PyPI](https://img.shields.io/pypi/v/tinyvdb)](https://pypi.org/project/tinyvdb/)
+
 TinyVDB is a collection of header-only C/C++ libraries for working with OpenVDB data. It provides lightweight VDB file I/O, mesh-to-SDF conversion, grid operations, and more — without depending on the full OpenVDB library.
 
 TinyVDB is suitable for graphics applications, HPC visualization tools, physics simulation, and any project that needs lightweight VDB functionality.
