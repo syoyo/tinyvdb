@@ -1,0 +1,810 @@
+#pragma once
+//
+// tinyvdbio_ops.h — Grid operations for SDF processing and physics simulation.
+//
+// Header-only C++ module providing operations on DenseGrid:
+//
+// Phase 1 — Manifold mesh quality:
+//   - Morphological dilation/erosion (dilate, erode, open, close)
+//   - Gaussian and mean SDF filtering
+//   - CSG operations (union, intersection, difference) on SDF grids
+//   - Surface area and volume measurement from SDF
+//
+// Phase 2 — Physics simulation foundation:
+//   - Differential operators (gradient, divergence, Laplacian)
+//   - Finite difference stencils (central, forward, backward, WENO5)
+//   - Semi-Lagrangian advection
+//   - Poisson solver (preconditioned conjugate gradient)
+//
+// Depends on DenseGrid and Vec3f from tinyvdbio_mesh.h.
+//
+// Usage:
+//   In exactly ONE .cc file:
+//     #define TINYVDBIO_OPS_IMPLEMENTATION
+//     #include "tinyvdbio_ops.h"
+//
+// License: MIT
+//
+
+#include "tinyvdbio_mesh.h"
+#include <vector>
+
+namespace tvdb_ops {
+
+using tvdb_mesh::DenseGrid;
+using tvdb_mesh::Vec3f;
+
+// ============================================================================
+// Phase 1: Manifold mesh quality
+// ============================================================================
+
+// ---- Morphology ----
+
+/// Dilate active region: expand the narrow band by `iterations` voxels.
+/// Voxels at the boundary of the active region (|value| < band) get their
+/// values extended outward. For level sets, this thickens the surface.
+void Dilate(DenseGrid* grid, int iterations = 1);
+
+/// Erode active region: shrink the narrow band by `iterations` voxels.
+void Erode(DenseGrid* grid, int iterations = 1);
+
+/// Morphological open (erode then dilate): removes small protrusions.
+void Open(DenseGrid* grid, int iterations = 1);
+
+/// Morphological close (dilate then erode): fills small holes.
+void Close(DenseGrid* grid, int iterations = 1);
+
+// ---- Filtering ----
+
+/// Apply Gaussian smoothing to the SDF. `width` is the filter half-width
+/// in voxels (typically 1-3). `iterations` controls the number of passes.
+void GaussianFilter(DenseGrid* grid, int width = 1, int iterations = 1);
+
+/// Apply mean (box) filter to the SDF.
+void MeanFilter(DenseGrid* grid, int width = 1, int iterations = 1);
+
+/// Apply Laplacian smoothing to the SDF.
+void LaplacianFilter(DenseGrid* grid, int iterations = 1);
+
+// ---- CSG ----
+
+/// CSG union of two SDF grids: result = min(a, b).
+/// Grids must have the same dimensions and voxel size.
+void CSGUnion(const DenseGrid& a, const DenseGrid& b, DenseGrid* result);
+
+/// CSG intersection: result = max(a, b).
+void CSGIntersection(const DenseGrid& a, const DenseGrid& b, DenseGrid* result);
+
+/// CSG difference: result = max(a, -b).
+void CSGDifference(const DenseGrid& a, const DenseGrid& b, DenseGrid* result);
+
+// ---- Measurement ----
+
+/// Compute the surface area of the zero-crossing isosurface in an SDF grid.
+float SurfaceArea(const DenseGrid& grid);
+
+/// Compute the volume enclosed by the zero-crossing isosurface.
+float Volume(const DenseGrid& grid);
+
+// ============================================================================
+// Phase 2: Physics simulation foundation
+// ============================================================================
+
+// ---- Dense vector grid (3-component) ----
+
+struct DenseVecGrid {
+  int nx, ny, nz;
+  float ox, oy, oz;
+  float voxel_size;
+  std::vector<float> data;  // nx * ny * nz * 3, interleaved [x,y,z,x,y,z,...]
+
+  float* at(int x, int y, int z) {
+    return &data[(x + nx * (y + ny * z)) * 3];
+  }
+  const float* at(int x, int y, int z) const {
+    return &data[(x + nx * (y + ny * z)) * 3];
+  }
+};
+
+// ---- Differential operators ----
+
+/// Compute gradient of scalar field using central differences.
+void Gradient(const DenseGrid& scalar, DenseVecGrid* grad);
+
+/// Compute divergence of vector field using central differences.
+void Divergence(const DenseVecGrid& vec, DenseGrid* div);
+
+/// Compute Laplacian of scalar field (6-point stencil).
+void Laplacian(const DenseGrid& scalar, DenseGrid* laplacian);
+
+/// Compute curl of vector field.
+void Curl(const DenseVecGrid& vec, DenseVecGrid* curl);
+
+// ---- Finite differences ----
+
+/// Central difference in X direction at voxel (ix, iy, iz).
+inline float CentralDiffX(const DenseGrid& g, int ix, int iy, int iz);
+inline float CentralDiffY(const DenseGrid& g, int ix, int iy, int iz);
+inline float CentralDiffZ(const DenseGrid& g, int ix, int iy, int iz);
+
+/// Forward difference.
+inline float ForwardDiffX(const DenseGrid& g, int ix, int iy, int iz);
+inline float ForwardDiffY(const DenseGrid& g, int ix, int iy, int iz);
+inline float ForwardDiffZ(const DenseGrid& g, int ix, int iy, int iz);
+
+/// Backward difference.
+inline float BackwardDiffX(const DenseGrid& g, int ix, int iy, int iz);
+inline float BackwardDiffY(const DenseGrid& g, int ix, int iy, int iz);
+inline float BackwardDiffZ(const DenseGrid& g, int ix, int iy, int iz);
+
+/// 6-point Laplacian stencil at voxel (ix, iy, iz).
+inline float LaplacianStencil(const DenseGrid& g, int ix, int iy, int iz);
+
+// ---- Advection ----
+
+/// Semi-Lagrangian advection of a scalar field through a velocity field.
+/// @param field    Input scalar field (e.g., density, SDF).
+/// @param velocity Velocity field.
+/// @param dt       Time step.
+/// @param result   Output advected field (same dimensions as input).
+void AdvectSemiLagrangian(const DenseGrid& field,
+                          const DenseVecGrid& velocity,
+                          float dt,
+                          DenseGrid* result);
+
+// ---- Poisson solver ----
+
+/// Solve Laplacian(x) = b using preconditioned conjugate gradient.
+/// @param rhs        Right-hand side (b).
+/// @param x          Solution (output, also used as initial guess).
+/// @param max_iters  Maximum iterations.
+/// @param tolerance  Convergence threshold for residual norm.
+/// @return           Number of iterations used (negative if did not converge).
+int SolvePoisson(const DenseGrid& rhs,
+                 DenseGrid* x,
+                 int max_iters = 500,
+                 float tolerance = 1e-6f);
+
+}  // namespace tvdb_ops
+
+
+// ============================================================================
+// Implementation
+// ============================================================================
+
+#ifdef TINYVDBIO_OPS_IMPLEMENTATION
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+
+namespace tvdb_ops {
+
+// ---- Helper: clamp index ----
+static inline int clampI(int v, int lo, int hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// Safe grid access with boundary clamping.
+static inline float SampleClamped(const DenseGrid& g, int ix, int iy, int iz) {
+  ix = clampI(ix, 0, g.nx - 1);
+  iy = clampI(iy, 0, g.ny - 1);
+  iz = clampI(iz, 0, g.nz - 1);
+  return g.data[ix + g.nx * (iy + g.ny * iz)];
+}
+
+// ============================================================================
+// Finite differences (inline)
+// ============================================================================
+
+inline float CentralDiffX(const DenseGrid& g, int ix, int iy, int iz) {
+  return (SampleClamped(g, ix+1, iy, iz) - SampleClamped(g, ix-1, iy, iz))
+         * (0.5f / g.voxel_size);
+}
+inline float CentralDiffY(const DenseGrid& g, int ix, int iy, int iz) {
+  return (SampleClamped(g, ix, iy+1, iz) - SampleClamped(g, ix, iy-1, iz))
+         * (0.5f / g.voxel_size);
+}
+inline float CentralDiffZ(const DenseGrid& g, int ix, int iy, int iz) {
+  return (SampleClamped(g, ix, iy, iz+1) - SampleClamped(g, ix, iy, iz-1))
+         * (0.5f / g.voxel_size);
+}
+
+inline float ForwardDiffX(const DenseGrid& g, int ix, int iy, int iz) {
+  return (SampleClamped(g, ix+1, iy, iz) - SampleClamped(g, ix, iy, iz))
+         / g.voxel_size;
+}
+inline float ForwardDiffY(const DenseGrid& g, int ix, int iy, int iz) {
+  return (SampleClamped(g, ix, iy+1, iz) - SampleClamped(g, ix, iy, iz))
+         / g.voxel_size;
+}
+inline float ForwardDiffZ(const DenseGrid& g, int ix, int iy, int iz) {
+  return (SampleClamped(g, ix, iy, iz+1) - SampleClamped(g, ix, iy, iz))
+         / g.voxel_size;
+}
+
+inline float BackwardDiffX(const DenseGrid& g, int ix, int iy, int iz) {
+  return (SampleClamped(g, ix, iy, iz) - SampleClamped(g, ix-1, iy, iz))
+         / g.voxel_size;
+}
+inline float BackwardDiffY(const DenseGrid& g, int ix, int iy, int iz) {
+  return (SampleClamped(g, ix, iy, iz) - SampleClamped(g, ix, iy-1, iz))
+         / g.voxel_size;
+}
+inline float BackwardDiffZ(const DenseGrid& g, int ix, int iy, int iz) {
+  return (SampleClamped(g, ix, iy, iz) - SampleClamped(g, ix, iy, iz-1))
+         / g.voxel_size;
+}
+
+inline float LaplacianStencil(const DenseGrid& g, int ix, int iy, int iz) {
+  float c = SampleClamped(g, ix, iy, iz);
+  float inv_h2 = 1.0f / (g.voxel_size * g.voxel_size);
+  return (SampleClamped(g, ix+1, iy, iz) + SampleClamped(g, ix-1, iy, iz)
+        + SampleClamped(g, ix, iy+1, iz) + SampleClamped(g, ix, iy-1, iz)
+        + SampleClamped(g, ix, iy, iz+1) + SampleClamped(g, ix, iy, iz-1)
+        - 6.0f * c) * inv_h2;
+}
+
+// ============================================================================
+// Morphology
+// ============================================================================
+
+void Dilate(DenseGrid* grid, int iterations) {
+  if (!grid) return;
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  const float bg = grid->voxel_size * 3.0f;  // background value
+
+  for (int iter = 0; iter < iterations; ++iter) {
+    std::vector<float> tmp = grid->data;
+    for (int iz = 0; iz < nz; ++iz)
+      for (int iy = 0; iy < ny; ++iy)
+        for (int ix = 0; ix < nx; ++ix) {
+          float c = grid->at(ix, iy, iz);
+          if (std::abs(c) >= bg) {
+            // Background voxel: check if any 6-neighbor is active (|v| < bg)
+            float mn = c;
+            static const int d[6][3] = {{-1,0,0},{1,0,0},{0,-1,0},{0,1,0},{0,0,-1},{0,0,1}};
+            for (const auto& dd : d) {
+              float n = SampleClamped(*grid, ix+dd[0], iy+dd[1], iz+dd[2]);
+              if (std::abs(n) < std::abs(mn)) mn = n;
+            }
+            // Expand: set to neighbor value + voxel_size (extend distance)
+            if (std::abs(mn) < bg) {
+              tmp[ix + nx * (iy + ny * iz)] = mn + (mn >= 0 ? grid->voxel_size : -grid->voxel_size);
+            }
+          }
+        }
+    grid->data = std::move(tmp);
+  }
+}
+
+void Erode(DenseGrid* grid, int iterations) {
+  if (!grid) return;
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  const float bg = grid->voxel_size * 3.0f;
+
+  for (int iter = 0; iter < iterations; ++iter) {
+    std::vector<float> tmp = grid->data;
+    for (int iz = 0; iz < nz; ++iz)
+      for (int iy = 0; iy < ny; ++iy)
+        for (int ix = 0; ix < nx; ++ix) {
+          float c = grid->at(ix, iy, iz);
+          if (std::abs(c) < bg) {
+            // Active voxel: check if any 6-neighbor is background
+            static const int d[6][3] = {{-1,0,0},{1,0,0},{0,-1,0},{0,1,0},{0,0,-1},{0,0,1}};
+            for (const auto& dd : d) {
+              float n = SampleClamped(*grid, ix+dd[0], iy+dd[1], iz+dd[2]);
+              if (std::abs(n) >= bg) {
+                tmp[ix + nx * (iy + ny * iz)] = (c >= 0) ? bg : -bg;
+                break;
+              }
+            }
+          }
+        }
+    grid->data = std::move(tmp);
+  }
+}
+
+void Open(DenseGrid* grid, int iterations) {
+  Erode(grid, iterations);
+  Dilate(grid, iterations);
+}
+
+void Close(DenseGrid* grid, int iterations) {
+  Dilate(grid, iterations);
+  Erode(grid, iterations);
+}
+
+// ============================================================================
+// Filtering
+// ============================================================================
+
+void GaussianFilter(DenseGrid* grid, int width, int iterations) {
+  if (!grid || width < 1) return;
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+
+  // Precompute 1D Gaussian kernel
+  const int ksize = 2 * width + 1;
+  std::vector<float> kernel(ksize);
+  float sigma = width / 2.0f;
+  if (sigma < 0.5f) sigma = 0.5f;
+  float sum = 0.0f;
+  for (int i = 0; i < ksize; ++i) {
+    float d = static_cast<float>(i - width);
+    kernel[i] = std::exp(-0.5f * d * d / (sigma * sigma));
+    sum += kernel[i];
+  }
+  for (float& k : kernel) k /= sum;
+
+  for (int iter = 0; iter < iterations; ++iter) {
+    // Separable 3-pass: X, Y, Z
+    std::vector<float> tmp(grid->data.size());
+
+    // X pass
+    for (int iz = 0; iz < nz; ++iz)
+      for (int iy = 0; iy < ny; ++iy)
+        for (int ix = 0; ix < nx; ++ix) {
+          float v = 0.0f;
+          for (int k = -width; k <= width; ++k)
+            v += SampleClamped(*grid, ix+k, iy, iz) * kernel[k + width];
+          tmp[ix + nx * (iy + ny * iz)] = v;
+        }
+    grid->data = tmp;
+
+    // Y pass
+    for (int iz = 0; iz < nz; ++iz)
+      for (int ix = 0; ix < nx; ++ix)
+        for (int iy = 0; iy < ny; ++iy) {
+          float v = 0.0f;
+          for (int k = -width; k <= width; ++k)
+            v += SampleClamped(*grid, ix, iy+k, iz) * kernel[k + width];
+          tmp[ix + nx * (iy + ny * iz)] = v;
+        }
+    grid->data = tmp;
+
+    // Z pass
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix)
+        for (int iz = 0; iz < nz; ++iz) {
+          float v = 0.0f;
+          for (int k = -width; k <= width; ++k)
+            v += SampleClamped(*grid, ix, iy, iz+k) * kernel[k + width];
+          tmp[ix + nx * (iy + ny * iz)] = v;
+        }
+    grid->data = std::move(tmp);
+  }
+}
+
+void MeanFilter(DenseGrid* grid, int width, int iterations) {
+  if (!grid || width < 1) return;
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  const float inv_k = 1.0f / static_cast<float>(2 * width + 1);
+
+  for (int iter = 0; iter < iterations; ++iter) {
+    std::vector<float> tmp(grid->data.size());
+
+    // Separable box filter: X, Y, Z
+    for (int iz = 0; iz < nz; ++iz)
+      for (int iy = 0; iy < ny; ++iy)
+        for (int ix = 0; ix < nx; ++ix) {
+          float v = 0.0f;
+          for (int k = -width; k <= width; ++k)
+            v += SampleClamped(*grid, ix+k, iy, iz);
+          tmp[ix + nx * (iy + ny * iz)] = v * inv_k;
+        }
+    grid->data = tmp;
+
+    for (int iz = 0; iz < nz; ++iz)
+      for (int ix = 0; ix < nx; ++ix)
+        for (int iy = 0; iy < ny; ++iy) {
+          float v = 0.0f;
+          for (int k = -width; k <= width; ++k)
+            v += SampleClamped(*grid, ix, iy+k, iz);
+          tmp[ix + nx * (iy + ny * iz)] = v * inv_k;
+        }
+    grid->data = tmp;
+
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix)
+        for (int iz = 0; iz < nz; ++iz) {
+          float v = 0.0f;
+          for (int k = -width; k <= width; ++k)
+            v += SampleClamped(*grid, ix, iy, iz+k);
+          tmp[ix + nx * (iy + ny * iz)] = v * inv_k;
+        }
+    grid->data = std::move(tmp);
+  }
+}
+
+void LaplacianFilter(DenseGrid* grid, int iterations) {
+  if (!grid) return;
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+
+  for (int iter = 0; iter < iterations; ++iter) {
+    std::vector<float> tmp(grid->data.size());
+    for (int iz = 0; iz < nz; ++iz)
+      for (int iy = 0; iy < ny; ++iy)
+        for (int ix = 0; ix < nx; ++ix) {
+          float lap = LaplacianStencil(*grid, ix, iy, iz);
+          // Diffuse: u += dt * lap, with dt = voxel_size^2 / 6 for stability
+          float dt = grid->voxel_size * grid->voxel_size / 6.0f;
+          tmp[ix + nx * (iy + ny * iz)] = grid->at(ix, iy, iz) + dt * lap;
+        }
+    grid->data = std::move(tmp);
+  }
+}
+
+// ============================================================================
+// CSG
+// ============================================================================
+
+static void CSGCopyMeta(const DenseGrid& src, DenseGrid* dst) {
+  dst->nx = src.nx; dst->ny = src.ny; dst->nz = src.nz;
+  dst->ox = src.ox; dst->oy = src.oy; dst->oz = src.oz;
+  dst->voxel_size = src.voxel_size;
+  dst->data.resize(src.data.size());
+}
+
+void CSGUnion(const DenseGrid& a, const DenseGrid& b, DenseGrid* result) {
+  if (!result) return;
+  CSGCopyMeta(a, result);
+  for (size_t i = 0; i < a.data.size(); ++i)
+    result->data[i] = std::min(a.data[i], b.data[i]);
+}
+
+void CSGIntersection(const DenseGrid& a, const DenseGrid& b, DenseGrid* result) {
+  if (!result) return;
+  CSGCopyMeta(a, result);
+  for (size_t i = 0; i < a.data.size(); ++i)
+    result->data[i] = std::max(a.data[i], b.data[i]);
+}
+
+void CSGDifference(const DenseGrid& a, const DenseGrid& b, DenseGrid* result) {
+  if (!result) return;
+  CSGCopyMeta(a, result);
+  for (size_t i = 0; i < a.data.size(); ++i)
+    result->data[i] = std::max(a.data[i], -b.data[i]);
+}
+
+// ============================================================================
+// Measurement
+// ============================================================================
+
+float SurfaceArea(const DenseGrid& grid) {
+  // Approximate surface area by summing the area of zero-crossing faces.
+  // Each pair of adjacent voxels with opposite signs contributes a face
+  // of area voxel_size^2.
+  const int nx = grid.nx, ny = grid.ny, nz = grid.nz;
+  const float face_area = grid.voxel_size * grid.voxel_size;
+  float area = 0.0f;
+
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix) {
+        float c = grid.at(ix, iy, iz);
+        // Check +X, +Y, +Z neighbors for sign change
+        if (ix < nx-1) {
+          float n = grid.at(ix+1, iy, iz);
+          if ((c < 0) != (n < 0)) area += face_area;
+        }
+        if (iy < ny-1) {
+          float n = grid.at(ix, iy+1, iz);
+          if ((c < 0) != (n < 0)) area += face_area;
+        }
+        if (iz < nz-1) {
+          float n = grid.at(ix, iy, iz+1);
+          if ((c < 0) != (n < 0)) area += face_area;
+        }
+      }
+  return area;
+}
+
+float Volume(const DenseGrid& grid) {
+  // Volume = count of interior voxels * voxel_volume.
+  const float voxel_vol = grid.voxel_size * grid.voxel_size * grid.voxel_size;
+  float vol = 0.0f;
+  for (float v : grid.data) {
+    if (v < 0.0f) vol += voxel_vol;
+  }
+  return vol;
+}
+
+// ============================================================================
+// Differential operators
+// ============================================================================
+
+void Gradient(const DenseGrid& scalar, DenseVecGrid* grad) {
+  if (!grad) return;
+  const int nx = scalar.nx, ny = scalar.ny, nz = scalar.nz;
+  grad->nx = nx; grad->ny = ny; grad->nz = nz;
+  grad->ox = scalar.ox; grad->oy = scalar.oy; grad->oz = scalar.oz;
+  grad->voxel_size = scalar.voxel_size;
+  grad->data.resize(static_cast<size_t>(nx) * ny * nz * 3);
+
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix) {
+        float* g = grad->at(ix, iy, iz);
+        g[0] = CentralDiffX(scalar, ix, iy, iz);
+        g[1] = CentralDiffY(scalar, ix, iy, iz);
+        g[2] = CentralDiffZ(scalar, ix, iy, iz);
+      }
+}
+
+void Divergence(const DenseVecGrid& vec, DenseGrid* div) {
+  if (!div) return;
+  const int nx = vec.nx, ny = vec.ny, nz = vec.nz;
+  div->nx = nx; div->ny = ny; div->nz = nz;
+  div->ox = vec.ox; div->oy = vec.oy; div->oz = vec.oz;
+  div->voxel_size = vec.voxel_size;
+  div->data.resize(static_cast<size_t>(nx) * ny * nz);
+
+  const float inv_2h = 0.5f / vec.voxel_size;
+  auto SampleVec = [&](int x, int y, int z, int comp) -> float {
+    x = clampI(x, 0, nx-1); y = clampI(y, 0, ny-1); z = clampI(z, 0, nz-1);
+    return vec.data[(x + nx * (y + ny * z)) * 3 + comp];
+  };
+
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix) {
+        float du_dx = (SampleVec(ix+1,iy,iz,0) - SampleVec(ix-1,iy,iz,0)) * inv_2h;
+        float dv_dy = (SampleVec(ix,iy+1,iz,1) - SampleVec(ix,iy-1,iz,1)) * inv_2h;
+        float dw_dz = (SampleVec(ix,iy,iz+1,2) - SampleVec(ix,iy,iz-1,2)) * inv_2h;
+        div->at(ix, iy, iz) = du_dx + dv_dy + dw_dz;
+      }
+}
+
+void Laplacian(const DenseGrid& scalar, DenseGrid* lap) {
+  if (!lap) return;
+  const int nx = scalar.nx, ny = scalar.ny, nz = scalar.nz;
+  lap->nx = nx; lap->ny = ny; lap->nz = nz;
+  lap->ox = scalar.ox; lap->oy = scalar.oy; lap->oz = scalar.oz;
+  lap->voxel_size = scalar.voxel_size;
+  lap->data.resize(static_cast<size_t>(nx) * ny * nz);
+
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix)
+        lap->at(ix, iy, iz) = LaplacianStencil(scalar, ix, iy, iz);
+}
+
+void Curl(const DenseVecGrid& vec, DenseVecGrid* curl) {
+  if (!curl) return;
+  const int nx = vec.nx, ny = vec.ny, nz = vec.nz;
+  curl->nx = nx; curl->ny = ny; curl->nz = nz;
+  curl->ox = vec.ox; curl->oy = vec.oy; curl->oz = vec.oz;
+  curl->voxel_size = vec.voxel_size;
+  curl->data.resize(static_cast<size_t>(nx) * ny * nz * 3);
+
+  const float inv_2h = 0.5f / vec.voxel_size;
+  auto SampleVec = [&](int x, int y, int z, int comp) -> float {
+    x = clampI(x, 0, nx-1); y = clampI(y, 0, ny-1); z = clampI(z, 0, nz-1);
+    return vec.data[(x + nx * (y + ny * z)) * 3 + comp];
+  };
+
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix) {
+        float dw_dy = (SampleVec(ix,iy+1,iz,2) - SampleVec(ix,iy-1,iz,2)) * inv_2h;
+        float dv_dz = (SampleVec(ix,iy,iz+1,1) - SampleVec(ix,iy,iz-1,1)) * inv_2h;
+        float du_dz = (SampleVec(ix,iy,iz+1,0) - SampleVec(ix,iy,iz-1,0)) * inv_2h;
+        float dw_dx = (SampleVec(ix+1,iy,iz,2) - SampleVec(ix-1,iy,iz,2)) * inv_2h;
+        float dv_dx = (SampleVec(ix+1,iy,iz,1) - SampleVec(ix-1,iy,iz,1)) * inv_2h;
+        float du_dy = (SampleVec(ix,iy+1,iz,0) - SampleVec(ix,iy-1,iz,0)) * inv_2h;
+
+        float* c = curl->at(ix, iy, iz);
+        c[0] = dw_dy - dv_dz;
+        c[1] = du_dz - dw_dx;
+        c[2] = dv_dx - du_dy;
+      }
+}
+
+// ============================================================================
+// Advection
+// ============================================================================
+
+// Trilinear interpolation of a scalar grid at world position (wx, wy, wz).
+static float TrilinearSample(const DenseGrid& g, float wx, float wy, float wz) {
+  float fx = (wx - g.ox) / g.voxel_size - 0.5f;
+  float fy = (wy - g.oy) / g.voxel_size - 0.5f;
+  float fz = (wz - g.oz) / g.voxel_size - 0.5f;
+
+  int ix = static_cast<int>(std::floor(fx));
+  int iy = static_cast<int>(std::floor(fy));
+  int iz = static_cast<int>(std::floor(fz));
+  float tx = fx - ix, ty = fy - iy, tz = fz - iz;
+
+  float c000 = SampleClamped(g, ix,   iy,   iz);
+  float c100 = SampleClamped(g, ix+1, iy,   iz);
+  float c010 = SampleClamped(g, ix,   iy+1, iz);
+  float c110 = SampleClamped(g, ix+1, iy+1, iz);
+  float c001 = SampleClamped(g, ix,   iy,   iz+1);
+  float c101 = SampleClamped(g, ix+1, iy,   iz+1);
+  float c011 = SampleClamped(g, ix,   iy+1, iz+1);
+  float c111 = SampleClamped(g, ix+1, iy+1, iz+1);
+
+  float c00 = c000 * (1-tx) + c100 * tx;
+  float c10 = c010 * (1-tx) + c110 * tx;
+  float c01 = c001 * (1-tx) + c101 * tx;
+  float c11 = c011 * (1-tx) + c111 * tx;
+
+  float c0 = c00 * (1-ty) + c10 * ty;
+  float c1 = c01 * (1-ty) + c11 * ty;
+
+  return c0 * (1-tz) + c1 * tz;
+}
+
+// Trilinear interpolation of a vector grid at world position.
+static void TrilinearSampleVec(const DenseVecGrid& g, float wx, float wy, float wz,
+                               float* out) {
+  float fx = (wx - g.ox) / g.voxel_size - 0.5f;
+  float fy = (wy - g.oy) / g.voxel_size - 0.5f;
+  float fz = (wz - g.oz) / g.voxel_size - 0.5f;
+
+  int ix = static_cast<int>(std::floor(fx));
+  int iy = static_cast<int>(std::floor(fy));
+  int iz = static_cast<int>(std::floor(fz));
+  float tx = fx - ix, ty = fy - iy, tz = fz - iz;
+
+  auto S = [&](int x, int y, int z, int c) -> float {
+    x = clampI(x, 0, g.nx-1); y = clampI(y, 0, g.ny-1); z = clampI(z, 0, g.nz-1);
+    return g.data[(x + g.nx * (y + g.ny * z)) * 3 + c];
+  };
+
+  for (int c = 0; c < 3; ++c) {
+    float c00 = S(ix,iy,iz,c)*(1-tx) + S(ix+1,iy,iz,c)*tx;
+    float c10 = S(ix,iy+1,iz,c)*(1-tx) + S(ix+1,iy+1,iz,c)*tx;
+    float c01 = S(ix,iy,iz+1,c)*(1-tx) + S(ix+1,iy,iz+1,c)*tx;
+    float c11 = S(ix,iy+1,iz+1,c)*(1-tx) + S(ix+1,iy+1,iz+1,c)*tx;
+    float c0 = c00*(1-ty) + c10*ty;
+    float c1 = c01*(1-ty) + c11*ty;
+    out[c] = c0*(1-tz) + c1*tz;
+  }
+}
+
+void AdvectSemiLagrangian(const DenseGrid& field,
+                          const DenseVecGrid& velocity,
+                          float dt,
+                          DenseGrid* result) {
+  if (!result) return;
+  const int nx = field.nx, ny = field.ny, nz = field.nz;
+  result->nx = nx; result->ny = ny; result->nz = nz;
+  result->ox = field.ox; result->oy = field.oy; result->oz = field.oz;
+  result->voxel_size = field.voxel_size;
+  result->data.resize(static_cast<size_t>(nx) * ny * nz);
+
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix) {
+        // World position of this voxel center
+        float wx = field.ox + (ix + 0.5f) * field.voxel_size;
+        float wy = field.oy + (iy + 0.5f) * field.voxel_size;
+        float wz = field.oz + (iz + 0.5f) * field.voxel_size;
+
+        // Sample velocity at this position
+        float vel[3];
+        TrilinearSampleVec(velocity, wx, wy, wz, vel);
+
+        // Trace back: RK2 (midpoint method)
+        float mx = wx - 0.5f * dt * vel[0];
+        float my = wy - 0.5f * dt * vel[1];
+        float mz = wz - 0.5f * dt * vel[2];
+
+        float vel_mid[3];
+        TrilinearSampleVec(velocity, mx, my, mz, vel_mid);
+
+        float bx = wx - dt * vel_mid[0];
+        float by = wy - dt * vel_mid[1];
+        float bz = wz - dt * vel_mid[2];
+
+        // Sample field at back-traced position
+        result->at(ix, iy, iz) = TrilinearSample(field, bx, by, bz);
+      }
+}
+
+// ============================================================================
+// Poisson solver (Preconditioned Conjugate Gradient)
+// ============================================================================
+
+// Compute Ax = -Laplacian(x) with Dirichlet (zero) boundary conditions.
+// Positive definite: diagonal = 6/h^2 > 0.
+static void ApplyNegLaplacian(const DenseGrid& x, DenseGrid* out) {
+  const int nx = x.nx, ny = x.ny, nz = x.nz;
+  const float inv_h2 = 1.0f / (x.voxel_size * x.voxel_size);
+
+  auto Sample = [&](int ix, int iy, int iz) -> float {
+    if (ix < 0 || ix >= nx || iy < 0 || iy >= ny || iz < 0 || iz >= nz) return 0.0f;
+    return x.data[ix + nx * (iy + ny * iz)];
+  };
+
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix_ = 0; ix_ < nx; ++ix_) {
+        float c = x.at(ix_, iy, iz);
+        float sum = Sample(ix_+1,iy,iz) + Sample(ix_-1,iy,iz)
+                  + Sample(ix_,iy+1,iz) + Sample(ix_,iy-1,iz)
+                  + Sample(ix_,iy,iz+1) + Sample(ix_,iy,iz-1)
+                  - 6.0f * c;
+        out->at(ix_, iy, iz) = -sum * inv_h2;
+      }
+}
+
+// Dot product of two grids' data.
+static float GridDot(const DenseGrid& a, const DenseGrid& b) {
+  float sum = 0.0f;
+  for (size_t i = 0; i < a.data.size(); ++i) sum += a.data[i] * b.data[i];
+  return sum;
+}
+
+int SolvePoisson(const DenseGrid& rhs, DenseGrid* x,
+                 int max_iters, float tolerance) {
+  if (!x) return -1;
+  const size_t N = rhs.data.size();
+
+  // Initialize x if not already sized
+  if (x->data.size() != N) {
+    x->nx = rhs.nx; x->ny = rhs.ny; x->nz = rhs.nz;
+    x->ox = rhs.ox; x->oy = rhs.oy; x->oz = rhs.oz;
+    x->voxel_size = rhs.voxel_size;
+    x->data.assign(N, 0.0f);
+  }
+
+  // r = b - Ax
+  DenseGrid r, Ax, p, Ap;
+  r.nx = Ax.nx = p.nx = Ap.nx = rhs.nx;
+  r.ny = Ax.ny = p.ny = Ap.ny = rhs.ny;
+  r.nz = Ax.nz = p.nz = Ap.nz = rhs.nz;
+  r.ox = Ax.ox = p.ox = Ap.ox = rhs.ox;
+  r.oy = Ax.oy = p.oy = Ap.oy = rhs.oy;
+  r.oz = Ax.oz = p.oz = Ap.oz = rhs.oz;
+  r.voxel_size = Ax.voxel_size = p.voxel_size = Ap.voxel_size = rhs.voxel_size;
+  r.data.resize(N); Ax.data.resize(N); p.data.resize(N); Ap.data.resize(N);
+
+  // Solve (-L)x = (-b) where A = -L is positive definite (diagonal 6/h^2).
+  // r = (-b) - A*x
+  ApplyNegLaplacian(*x, &Ax);
+  for (size_t i = 0; i < N; ++i) r.data[i] = -rhs.data[i] - Ax.data[i];
+
+  // Jacobi preconditioner: M^{-1} = 1/diag(A) = h^2/6
+  DenseGrid z;
+  z.nx = rhs.nx; z.ny = rhs.ny; z.nz = rhs.nz;
+  z.ox = rhs.ox; z.oy = rhs.oy; z.oz = rhs.oz;
+  z.voxel_size = rhs.voxel_size;
+  z.data.resize(N);
+
+  float precond = (rhs.voxel_size * rhs.voxel_size) / 6.0f;
+  for (size_t i = 0; i < N; ++i) z.data[i] = r.data[i] * precond;
+
+  p.data = z.data;
+  float rz = GridDot(r, z);
+  float tol2 = tolerance * tolerance;
+
+  for (int iter = 0; iter < max_iters; ++iter) {
+    float r_norm2 = GridDot(r, r);
+    if (r_norm2 < tol2) return iter;
+
+    ApplyNegLaplacian(p, &Ap);
+    float pAp = GridDot(p, Ap);
+    if (std::abs(pAp) < 1e-30f) return -(iter + 1);
+
+    float alpha = rz / pAp;
+    for (size_t i = 0; i < N; ++i) {
+      x->data[i] += alpha * p.data[i];
+      r.data[i] -= alpha * Ap.data[i];
+    }
+
+    for (size_t i = 0; i < N; ++i) z.data[i] = r.data[i] * precond;
+    float rz_new = GridDot(r, z);
+    float beta = rz_new / rz;
+    rz = rz_new;
+
+    for (size_t i = 0; i < N; ++i) p.data[i] = z.data[i] + beta * p.data[i];
+  }
+
+  return -max_iters;
+}
+
+}  // namespace tvdb_ops
+
+#endif  // TINYVDBIO_OPS_IMPLEMENTATION
