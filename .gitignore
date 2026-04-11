@@ -1,0 +1,36 @@
+# Build artifacts
+build*/
+*.o
+*.obj
+*.a
+*.lib
+
+# Shared libraries
+*.so
+*.dylib
+*.dll
+*.pyd
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+wheelhouse/
+.eggs/
+*.whl
+
+# Test data
+*.vdb
+
+# Profiling
+gmon.out
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

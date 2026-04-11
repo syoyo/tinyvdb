@@ -1,0 +1,49 @@
+[build-system]
+requires = ["scikit-build-core>=0.10"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "tinyvdb"
+version = "0.1.0"
+description = "Lightweight OpenVDB file I/O, mesh-to-SDF, and grid operations"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{name = "Syoyo Fujita"}]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+Homepage = "https://github.com/syoyo/tinyvdbio"
+Repository = "https://github.com/syoyo/tinyvdbio"
+
+[tool.scikit-build]
+cmake.args = [
+    "-DTINYVDB_BUILD_PYTHON=ON",
+    "-DTINYVDB_BUILD_EXAMPLES=OFF",
+    "-DTINYVDB_BUILD_VDBRENDER=OFF",
+    "-DTINYVDB_BUILD_TESTS=OFF",
+]
+wheel.py-api = "cp311"
+wheel.packages = ["python/tinyvdb"]
+cmake.source-dir = "."
+cmake.version = ">=3.26"
+
+[tool.cibuildwheel]
+build = "cp311-*"
+skip = "*-musllinux_i686"
+test-requires = "pytest"
+test-command = "pytest {project}/python/tests -x"
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64", "aarch64"]
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
