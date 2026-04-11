@@ -1,6 +1,6 @@
 #pragma once
 //
-// tinyvdbio_ops.h — Grid operations for SDF processing and physics simulation.
+// tinyvdb_ops.h — Grid operations for SDF processing and physics simulation.
 //
 // Header-only C++ module providing operations on DenseGrid:
 //
@@ -22,17 +22,17 @@
 //   - Particles to SDF (sphere stamping)
 //   - Level set fracture (cutter-based volume splitting)
 //
-// Depends on DenseGrid and Vec3f from tinyvdbio_mesh.h.
+// Depends on DenseGrid and Vec3f from tinyvdb_mesh.h.
 //
 // Usage:
 //   In exactly ONE .cc file:
-//     #define TINYVDBIO_OPS_IMPLEMENTATION
-//     #include "tinyvdbio_ops.h"
+//     #define TINYVDB_OPS_IMPLEMENTATION
+//     #include "tinyvdb_ops.h"
 //
 // License: MIT
 //
 
-#include "tinyvdbio_mesh.h"
+#include "tinyvdb_mesh.h"
 #include <vector>
 
 namespace tvdb_ops {
@@ -252,7 +252,7 @@ void Fracture(const DenseGrid& volume,
 // Implementation
 // ============================================================================
 
-#ifdef TINYVDBIO_OPS_IMPLEMENTATION
+#ifdef TINYVDB_OPS_IMPLEMENTATION
 
 #include <algorithm>
 #include <cmath>
@@ -1106,4 +1106,4 @@ void Fracture(const DenseGrid& volume,
 
 }  // namespace tvdb_ops
 
-#endif  // TINYVDBIO_OPS_IMPLEMENTATION
+#endif  // TINYVDB_OPS_IMPLEMENTATION

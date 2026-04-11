@@ -3,8 +3,8 @@
 
 #include "simple_vtk.hpp"
 
-#define TINYVDBIO_IMPLEMENTATION
-#include "tinyvdbio.h"
+#define TINYVDB_IO_IMPLEMENTATION
+#include "tinyvdb_io.h"
 
 struct Extent
 {

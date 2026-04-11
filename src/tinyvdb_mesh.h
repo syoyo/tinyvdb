@@ -1,19 +1,19 @@
 #pragma once
 //
-// tinyvdbio_mesh.h — Mesh-to-SDF and SDF-to-Mesh (marching cubes) utilities.
+// tinyvdb_mesh.h — Mesh-to-SDF and SDF-to-Mesh (marching cubes) utilities.
 //
 // This is a self-contained, header-only C++ module that provides:
 //   - Triangle mesh → signed distance field (dense 3D grid)
 //   - Signed distance field → triangle mesh (marching cubes)
 //   - Manifold preprocessing (mesh → SDF → mesh round-trip)
 //
-// Designed to be compatible with tinyvdbio data structures but does not
-// depend on the tinyvdbio I/O library itself.
+// Part of TinyVDB. Compatible with TinyVDB data structures but does not
+// depend on the TinyVDB I/O library itself.
 //
 // Usage:
 //   In exactly ONE .cc file:
-//     #define TINYVDBIO_MESH_IMPLEMENTATION
-//     #include "tinyvdbio_mesh.h"
+//     #define TINYVDB_MESH_IMPLEMENTATION
+//     #include "tinyvdb_mesh.h"
 //
 // License: MIT
 //
@@ -115,7 +115,7 @@ bool MakeManifold_VDB(const TriangleMesh& input,
 // Implementation
 // ============================================================================
 
-#ifdef TINYVDBIO_MESH_IMPLEMENTATION
+#ifdef TINYVDB_MESH_IMPLEMENTATION
 
 #include <algorithm>
 #include <array>
@@ -993,4 +993,4 @@ bool MakeManifold_VDB(const TriangleMesh& input,
 
 }  // namespace tvdb_mesh
 
-#endif  // TINYVDBIO_MESH_IMPLEMENTATION
+#endif  // TINYVDB_MESH_IMPLEMENTATION

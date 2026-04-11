@@ -62,13 +62,13 @@ set(OPENVDB2NANOVDB_DEP_SOURCES
 add_executable(${BUILD_TARGET} ${OPENVDB2NANOVDB_SOURCES} ${OPENVDB2NANOVDB_DEP_SOURCES} ${OPENVDB2NANOVDB_GUI_SOURCES})
 add_sanitizers(${BUILD_TARGET})
 
-# [tinyvdbio]
+# [tinyvdb]
 target_include_directories(${BUILD_TARGET} PRIVATE ${PROJECT_SOURCE_DIR}/../../)
 
 target_include_directories(${BUILD_TARGET} PRIVATE ${PROJECT_SOURCE_DIR})
 
 if (OPENVDB2NANOVDB_WITH_SYSTEM_ZLIB)
-  target_compile_definitions(${BUILD_TARGET} PRIVATE TINYVDBIO_USE_SYSTEM_ZLIB=1)
+  target_compile_definitions(${BUILD_TARGET} PRIVATE TINYVDB_IO_USE_SYSTEM_ZLIB=1)
   target_link_libraries(${BUILD_TARGET} ${ZLIB_LIBRARIES})
 else (OPENVDB2NANOVDB_WITH_SYSTEM_ZLIB)
   # Assume miniz is available at ../../

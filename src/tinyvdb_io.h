@@ -1,8 +1,8 @@
 /*
- * TinyVDBIO — Header-only C11 OpenVDB I/O library.
+ * TinyVDB I/O — Header-only C11 OpenVDB I/O library (part of TinyVDB).
  *
  * Copyright (c) 2026 - Present Syoyo Fujita
- * Copyright (c) 2012-2018 DreamWorks Animation LLC (original I/O logic)
+ * Copyright Contributors to the OpenVDB Project (original I/O logic)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,8 @@
  * limitations under the License.
  *
  * Usage:
- *   #define TINYVDBIO_IMPLEMENTATION
- *   #include "tinyvdbio.h"
+ *   #define TINYVDB_IO_IMPLEMENTATION
+ *   #include "tinyvdb_io.h"
  *
  * Compile flags:
  *   TVDB_USE_SYSTEM_ZLIB  — Use system zlib instead of bundled miniz
@@ -26,8 +26,8 @@
  *
  * BLOSC compression (LZ4) is always available — no external dependency needed.
  */
-#ifndef TINYVDBIO_H_
-#define TINYVDBIO_H_
+#ifndef TINYVDB_IO_H_
+#define TINYVDB_IO_H_
 
 #include <stdint.h>
 #include <stddef.h>
@@ -426,7 +426,7 @@ tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
 /* ========================================================================== */
 /* ========================================================================== */
 
-#ifdef TINYVDBIO_IMPLEMENTATION
+#ifdef TINYVDB_IO_IMPLEMENTATION
 
 #include <string.h>
 #include <stdlib.h>
@@ -4021,6 +4021,6 @@ tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
     return TVDB_OK;
 }
 
-#endif /* TINYVDBIO_IMPLEMENTATION */
+#endif /* TINYVDB_IO_IMPLEMENTATION */
 
-#endif /* TINYVDBIO_H_ */
+#endif /* TINYVDB_IO_H_ */

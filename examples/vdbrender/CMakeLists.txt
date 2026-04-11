@@ -2,7 +2,7 @@ set(EXAMPLE_TARGET "vdbrender")
 
 add_executable(${EXAMPLE_TARGET} vdbrender.cc)
 
-target_link_libraries(${EXAMPLE_TARGET} PRIVATE tinyvdbio)
+target_link_libraries(${EXAMPLE_TARGET} PRIVATE tinyvdb)
 
 # tinyexr (header-only)
 target_include_directories(${EXAMPLE_TARGET} PRIVATE

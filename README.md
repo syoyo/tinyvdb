@@ -1,12 +1,22 @@
-# TinyVDBIO, header-only C11 OpenVDB I/O library
+# TinyVDB, header-only C/C++ VDB library
 
-TinyVDBIO is a header-only C11 OpenVDB I/O library with custom memory allocator support. It reads and writes OpenVDB files without depending on the full OpenVDB library. TinyVDBIO does not provide non-I/O features (e.g., volume operations, iso-surface generation).
+TinyVDB is a collection of header-only C/C++ libraries for working with OpenVDB data. It provides lightweight VDB file I/O, mesh-to-SDF conversion, grid operations, and more — without depending on the full OpenVDB library.
 
-TinyVDBIO is suitable for graphics applications, HPC visualization tools, and any project that needs lightweight VDB file access.
+TinyVDB is suitable for graphics applications, HPC visualization tools, physics simulation, and any project that needs lightweight VDB functionality.
+
+## Modules
+
+| Header | Language | Description |
+|--------|----------|-------------|
+| `tinyvdb_io.h` | C11 | OpenVDB file I/O with custom memory allocator support |
+| `tinyvdb_mesh.h` | C++11 | Mesh-to-SDF, marching cubes, manifold preprocessing |
+| `tinyvdb_ops.h` | C++11 | Grid operations: morphology, filtering, CSG, differential operators, advection, ray tracing, fracture |
 
 ## Features
 
-* [x] Dependency-free C11 code (header-only, single file `tinyvdbio.h`)
+### I/O (`tinyvdb_io.h`)
+
+* [x] Dependency-free C11 code (header-only, single file)
 * [x] Custom memory allocator interface (arena/pool allocator friendly)
 * [x] mmap-based file access with heap-buffer fallback
 * [x] UTF-8 path support on all platforms (Windows WideChar + long path `\\?\` prefix)
@@ -18,6 +28,28 @@ TinyVDBIO is suitable for graphics applications, HPC visualization tools, and an
 * [x] BLOSC compression (built-in, using bundled LZ4 — no external blosc dependency)
 * [x] Active mask compression (per-node flags 0-6)
 * [x] Half-float (FP16) grid support
+
+### Mesh (`tinyvdb_mesh.h`)
+
+* [x] Triangle mesh to signed distance field (dense 3D grid)
+* [x] SDF to triangle mesh (marching cubes)
+* [x] Manifold preprocessing (mesh to SDF to mesh round-trip)
+* [x] Configurable sign determination (flood fill or sweep)
+
+### Grid operations (`tinyvdb_ops.h`)
+
+* [x] Morphological dilation/erosion, open/close
+* [x] Gaussian, mean, and Laplacian SDF filtering
+* [x] CSG operations (union, intersection, difference)
+* [x] Surface area and volume measurement
+* [x] Differential operators (gradient, divergence, Laplacian, curl)
+* [x] Finite difference stencils (central, forward, backward)
+* [x] Semi-Lagrangian advection (RK2)
+* [x] Poisson solver (preconditioned conjugate gradient)
+* [x] Ray-SDF intersection (sphere tracing)
+* [x] Volume to spheres (greedy adaptive sphere packing)
+* [x] Particles to SDF (sphere stamping)
+* [x] Level set fracture (cutter-based volume splitting)
 
 ## Supported VDB versions
 
@@ -32,15 +64,17 @@ TinyVDBIO is suitable for graphics applications, HPC visualization tools, and an
 
 ## How to use
 
-Copy `src/tinyvdbio.h`, `src/miniz.c`, `src/miniz.h`, `src/lz4.c`, and `src/lz4.h` to your project. BLOSC compression (LZ4) is built-in — no external dependency needed.
+### I/O library
+
+Copy `src/tinyvdb_io.h`, `src/miniz.c`, `src/miniz.h`, `src/lz4.c`, and `src/lz4.h` to your project. BLOSC compression (LZ4) is built-in — no external dependency needed.
 
 ```c
 /* In exactly one .c or .cc file: */
-#define TINYVDBIO_IMPLEMENTATION
-#include "tinyvdbio.h"
+#define TINYVDB_IO_IMPLEMENTATION
+#include "tinyvdb_io.h"
 ```
 
-### Reading a VDB file
+#### Reading a VDB file
 
 ```c
 tvdb_file_t file;
@@ -61,7 +95,7 @@ for (size_t i = 0; i < tvdb_grid_count(&file); i++) {
 tvdb_file_close(&file);
 ```
 
-### Writing a VDB file
+#### Writing a VDB file
 
 ```c
 /* After reading/modifying a file, write it back: */
@@ -82,7 +116,7 @@ tvdb_status_t st = tvdb_write_to_memory(&file,
 free(data);
 ```
 
-### Custom allocator
+#### Custom allocator
 
 ```c
 tvdb_allocator_t alloc = {
@@ -96,6 +130,49 @@ tvdb_file_open(&file, "input.vdb", &alloc, &err);
 ```
 
 The allocator passes `old_size` to `realloc_fn` and `size` to `free_fn`, enabling arena/pool allocators that don't track allocation sizes internally.
+
+### Mesh library
+
+```cpp
+// In exactly one .cc file:
+#define TINYVDB_MESH_IMPLEMENTATION
+#include "tinyvdb_mesh.h"
+```
+
+```cpp
+// Mesh to SDF
+tvdb_mesh::DenseGrid grid;
+tvdb_mesh::MeshToSDF(mesh, voxel_size, band_width, &grid);
+
+// SDF to mesh (marching cubes)
+tvdb_mesh::TriangleMesh output;
+tvdb_mesh::SDFToMesh(grid, 0.0f, &output);
+
+// Manifold preprocessing (mesh -> SDF -> mesh round-trip)
+tvdb_mesh::MakeManifold(input, resolution, isovalue, &output);
+```
+
+### Grid operations
+
+```cpp
+// In exactly one .cc file:
+#define TINYVDB_OPS_IMPLEMENTATION
+#include "tinyvdb_ops.h"
+```
+
+```cpp
+// CSG union of two SDF grids
+tvdb_ops::CSGUnion(grid_a, grid_b, &result);
+
+// Gaussian smoothing
+tvdb_ops::GaussianFilter(&grid, /*width=*/1, /*iterations=*/3);
+
+// Ray-SDF intersection
+tvdb_ops::RayHit hit;
+if (tvdb_ops::RayCastSDF(grid, origin, dir, max_t, &hit)) {
+    // hit.position, hit.normal, hit.t
+}
+```
 
 ## Compile flags
 
@@ -127,9 +204,9 @@ $ make
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `TINYVDBIO_USE_SYSTEM_ZLIB` | `OFF` | Use system zlib instead of bundled miniz |
-| `TINYVDBIO_BUILD_EXAMPLES` | `ON` | Build the vdbdump example |
-| `TINYVDBIO_BUILD_VDBRENDER` | `ON` | Build the vdbrender volume path tracer |
+| `TINYVDB_USE_SYSTEM_ZLIB` | `OFF` | Use system zlib instead of bundled miniz |
+| `TINYVDB_BUILD_EXAMPLES` | `ON` | Build the vdbdump example |
+| `TINYVDB_BUILD_VDBRENDER` | `ON` | Build the vdbrender volume path tracer |
 
 ## vdbdump example
 
@@ -176,7 +253,7 @@ There are two bit masks, `child mask` and `value mask`, for each internal node.
 
 ## License
 
-TinyVDBIO is licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
+TinyVDB is licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0).
 
 ```
 Copyright 2026 - Present Syoyo Fujita

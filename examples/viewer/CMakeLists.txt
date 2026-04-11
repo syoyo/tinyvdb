@@ -81,7 +81,7 @@ set(TVDB_VIEWER_GUI_SOURCES
 add_executable(${BUILD_TARGET} ${TVDB_VIEWER_SOURCES} ${TVDB_VIEWER_DEP_SOURCES} ${TVDB_VIEWER_GUI_SOURCES})
 add_sanitizers(${BUILD_TARGET})
 
-# [tinyvdbio]
+# [tinyvdb]
 target_include_directories(${BUILD_TARGET} PRIVATE ${PROJECT_SOURCE_DIR}/../../)
 
 target_include_directories(${BUILD_TARGET} PRIVATE ${PROJECT_SOURCE_DIR})
@@ -97,7 +97,7 @@ target_include_directories(${BUILD_TARGET} PRIVATE ${glfw_INCLUDE_DIRS} ${BLOSC_
 target_link_libraries(${BUILD_TARGET} ${TVDB_VIEWER_EXT_LIBRARIES} ${BLOSC_LIBRARY} glfw ${OPENGL_LIBRARIES} ${CMAKE_DL_LIBS})
 
 if (TVDB_VIEWER_WITH_SYSTEM_ZLIB)
-  target_compile_definitions(${BUILD_TARGET} PRIVATE TINYVDBIO_USE_SYSTEM_ZLIB=1)
+  target_compile_definitions(${BUILD_TARGET} PRIVATE TINYVDB_IO_USE_SYSTEM_ZLIB=1)
   target_link_libraries(${BUILD_TARGET} ${ZLIB_LIBRARIES})
 else (TVDB_VIEWER_WITH_SYSTEM_ZLIB)
   # Assume miniz is available at ../../

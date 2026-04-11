@@ -1,7 +1,7 @@
 /*
  * vdbrender — Simple CPU volume path tracer for VDB files.
  *
- * Uses TinyVDBIO for VDB I/O and TinyEXR for EXR image output.
+ * Uses TinyVDB for VDB I/O and TinyEXR for EXR image output.
  * Supports density (fog) volumes and level-set surfaces.
  *
  * Licensed under the Apache License, Version 2.0.
@@ -13,7 +13,7 @@
 #include <cfloat>
 #include <algorithm>
 
-#include "tinyvdbio.h"
+#include "tinyvdb_io.h"
 
 #define TINYEXR_IMPLEMENTATION
 #include "tinyexr.h"

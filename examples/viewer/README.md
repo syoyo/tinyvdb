@@ -1,4 +1,4 @@
-# TinyVDBIO viewer
+# TinyVDB viewer
 
 Simple .vdb viewer
 

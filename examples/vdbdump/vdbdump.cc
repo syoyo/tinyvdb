@@ -1,12 +1,12 @@
 /*
- * vdbdump — Dump VDB file info using TinyVDBIO (C11 library, C++11 example).
+ * vdbdump — Dump VDB file info using TinyVDB (C11 library, C++11 example).
  */
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cinttypes>
 
-#include "tinyvdbio.h"
+#include "tinyvdb_io.h"
 
 /* Simple RAII guard for tvdb_file_t */
 struct TvdbFileGuard {

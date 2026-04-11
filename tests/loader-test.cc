@@ -1,10 +1,10 @@
-#if defined(TINYVDBIO_USE_SYSTEM_ZLIB)
+#if defined(TINYVDB_IO_USE_SYSTEM_ZLIB)
 // or inclur your own zlib header here.
 #include <zlib.h>
 #endif
 
-#define TINYVDBIO_IMPLEMENTATION
-#include "tinyvdbio.h"
+#define TINYVDB_IO_IMPLEMENTATION
+#include "tinyvdb_io.h"
 
 #include <cstdio>
 #include <cstdlib>
