@@ -265,12 +265,16 @@ static inline int clampI(int v, int lo, int hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
-// Safe grid access with boundary clamping.
 static inline float SampleClamped(const DenseGrid& g, int ix, int iy, int iz) {
   ix = clampI(ix, 0, g.nx - 1);
   iy = clampI(iy, 0, g.ny - 1);
   iz = clampI(iz, 0, g.nz - 1);
   return g.data[ix + g.nx * (iy + g.ny * iz)];
+}
+
+static inline float SampleVecClamped(const DenseVecGrid& g, int x, int y, int z, int comp) {
+  x = clampI(x, 0, g.nx-1); y = clampI(y, 0, g.ny-1); z = clampI(z, 0, g.nz-1);
+  return g.data[(x + g.nx * (y + g.ny * z)) * 3 + comp];
 }
 
 // ============================================================================
@@ -416,42 +420,42 @@ void GaussianFilter(DenseGrid* grid, int width, int iterations) {
   }
   for (float& k : kernel) k /= sum;
 
-  for (int iter = 0; iter < iterations; ++iter) {
-    // Separable 3-pass: X, Y, Z
-    std::vector<float> tmp(grid->data.size());
+  // Ping-pong between grid->data and tmp to avoid extra copies.
+  std::vector<float> tmp(grid->data.size());
+  auto SampleFrom = [&](const std::vector<float>& src, int x, int y, int z) -> float {
+    x = clampI(x, 0, nx-1); y = clampI(y, 0, ny-1); z = clampI(z, 0, nz-1);
+    return src[x + nx * (y + ny * z)];
+  };
 
-    // X pass
+  for (int iter = 0; iter < iterations; ++iter) {
+    // X pass: grid->data → tmp
     for (int iz = 0; iz < nz; ++iz)
       for (int iy = 0; iy < ny; ++iy)
         for (int ix = 0; ix < nx; ++ix) {
           float v = 0.0f;
           for (int k = -width; k <= width; ++k)
-            v += SampleClamped(*grid, ix+k, iy, iz) * kernel[k + width];
+            v += SampleFrom(grid->data, ix+k, iy, iz) * kernel[k + width];
           tmp[ix + nx * (iy + ny * iz)] = v;
         }
-    grid->data = tmp;
-
-    // Y pass
+    // Y pass: tmp → grid->data
     for (int iz = 0; iz < nz; ++iz)
       for (int ix = 0; ix < nx; ++ix)
         for (int iy = 0; iy < ny; ++iy) {
           float v = 0.0f;
           for (int k = -width; k <= width; ++k)
-            v += SampleClamped(*grid, ix, iy+k, iz) * kernel[k + width];
-          tmp[ix + nx * (iy + ny * iz)] = v;
+            v += SampleFrom(tmp, ix, iy+k, iz) * kernel[k + width];
+          grid->data[ix + nx * (iy + ny * iz)] = v;
         }
-    grid->data = tmp;
-
-    // Z pass
+    // Z pass: grid->data → tmp
     for (int iy = 0; iy < ny; ++iy)
       for (int ix = 0; ix < nx; ++ix)
         for (int iz = 0; iz < nz; ++iz) {
           float v = 0.0f;
           for (int k = -width; k <= width; ++k)
-            v += SampleClamped(*grid, ix, iy, iz+k) * kernel[k + width];
+            v += SampleFrom(grid->data, ix, iy, iz+k) * kernel[k + width];
           tmp[ix + nx * (iy + ny * iz)] = v;
         }
-    grid->data = std::move(tmp);
+    grid->data.swap(tmp);
   }
 }
 
@@ -460,39 +464,38 @@ void MeanFilter(DenseGrid* grid, int width, int iterations) {
   const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
   const float inv_k = 1.0f / static_cast<float>(2 * width + 1);
 
-  for (int iter = 0; iter < iterations; ++iter) {
-    std::vector<float> tmp(grid->data.size());
+  std::vector<float> tmp(grid->data.size());
+  auto SampleFrom = [&](const std::vector<float>& src, int x, int y, int z) -> float {
+    x = clampI(x, 0, nx-1); y = clampI(y, 0, ny-1); z = clampI(z, 0, nz-1);
+    return src[x + nx * (y + ny * z)];
+  };
 
-    // Separable box filter: X, Y, Z
+  for (int iter = 0; iter < iterations; ++iter) {
     for (int iz = 0; iz < nz; ++iz)
       for (int iy = 0; iy < ny; ++iy)
         for (int ix = 0; ix < nx; ++ix) {
           float v = 0.0f;
           for (int k = -width; k <= width; ++k)
-            v += SampleClamped(*grid, ix+k, iy, iz);
+            v += SampleFrom(grid->data, ix+k, iy, iz);
           tmp[ix + nx * (iy + ny * iz)] = v * inv_k;
         }
-    grid->data = tmp;
-
     for (int iz = 0; iz < nz; ++iz)
       for (int ix = 0; ix < nx; ++ix)
         for (int iy = 0; iy < ny; ++iy) {
           float v = 0.0f;
           for (int k = -width; k <= width; ++k)
-            v += SampleClamped(*grid, ix, iy+k, iz);
-          tmp[ix + nx * (iy + ny * iz)] = v * inv_k;
+            v += SampleFrom(tmp, ix, iy+k, iz);
+          grid->data[ix + nx * (iy + ny * iz)] = v * inv_k;
         }
-    grid->data = tmp;
-
     for (int iy = 0; iy < ny; ++iy)
       for (int ix = 0; ix < nx; ++ix)
         for (int iz = 0; iz < nz; ++iz) {
           float v = 0.0f;
           for (int k = -width; k <= width; ++k)
-            v += SampleClamped(*grid, ix, iy, iz+k);
+            v += SampleFrom(grid->data, ix, iy, iz+k);
           tmp[ix + nx * (iy + ny * iz)] = v * inv_k;
         }
-    grid->data = std::move(tmp);
+    grid->data.swap(tmp);
   }
 }
 
@@ -500,14 +503,13 @@ void LaplacianFilter(DenseGrid* grid, int iterations) {
   if (!grid) return;
   const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
 
+  const float dt = grid->voxel_size * grid->voxel_size / 6.0f;
   for (int iter = 0; iter < iterations; ++iter) {
     std::vector<float> tmp(grid->data.size());
     for (int iz = 0; iz < nz; ++iz)
       for (int iy = 0; iy < ny; ++iy)
         for (int ix = 0; ix < nx; ++ix) {
           float lap = LaplacianStencil(*grid, ix, iy, iz);
-          // Diffuse: u += dt * lap, with dt = voxel_size^2 / 6 for stability
-          float dt = grid->voxel_size * grid->voxel_size / 6.0f;
           tmp[ix + nx * (iy + ny * iz)] = grid->at(ix, iy, iz) + dt * lap;
         }
     grid->data = std::move(tmp);
@@ -526,21 +528,21 @@ static void CSGCopyMeta(const DenseGrid& src, DenseGrid* dst) {
 }
 
 void CSGUnion(const DenseGrid& a, const DenseGrid& b, DenseGrid* result) {
-  if (!result) return;
+  if (!result || a.data.size() != b.data.size()) return;
   CSGCopyMeta(a, result);
   for (size_t i = 0; i < a.data.size(); ++i)
     result->data[i] = std::min(a.data[i], b.data[i]);
 }
 
 void CSGIntersection(const DenseGrid& a, const DenseGrid& b, DenseGrid* result) {
-  if (!result) return;
+  if (!result || a.data.size() != b.data.size()) return;
   CSGCopyMeta(a, result);
   for (size_t i = 0; i < a.data.size(); ++i)
     result->data[i] = std::max(a.data[i], b.data[i]);
 }
 
 void CSGDifference(const DenseGrid& a, const DenseGrid& b, DenseGrid* result) {
-  if (!result) return;
+  if (!result || a.data.size() != b.data.size()) return;
   CSGCopyMeta(a, result);
   for (size_t i = 0; i < a.data.size(); ++i)
     result->data[i] = std::max(a.data[i], -b.data[i]);
@@ -620,17 +622,14 @@ void Divergence(const DenseVecGrid& vec, DenseGrid* div) {
   div->data.resize(static_cast<size_t>(nx) * ny * nz);
 
   const float inv_2h = 0.5f / vec.voxel_size;
-  auto SampleVec = [&](int x, int y, int z, int comp) -> float {
-    x = clampI(x, 0, nx-1); y = clampI(y, 0, ny-1); z = clampI(z, 0, nz-1);
-    return vec.data[(x + nx * (y + ny * z)) * 3 + comp];
-  };
+  auto SV = [&](int x, int y, int z, int c) { return SampleVecClamped(vec, x, y, z, c); };
 
   for (int iz = 0; iz < nz; ++iz)
     for (int iy = 0; iy < ny; ++iy)
       for (int ix = 0; ix < nx; ++ix) {
-        float du_dx = (SampleVec(ix+1,iy,iz,0) - SampleVec(ix-1,iy,iz,0)) * inv_2h;
-        float dv_dy = (SampleVec(ix,iy+1,iz,1) - SampleVec(ix,iy-1,iz,1)) * inv_2h;
-        float dw_dz = (SampleVec(ix,iy,iz+1,2) - SampleVec(ix,iy,iz-1,2)) * inv_2h;
+        float du_dx = (SV(ix+1,iy,iz,0) - SV(ix-1,iy,iz,0)) * inv_2h;
+        float dv_dy = (SV(ix,iy+1,iz,1) - SV(ix,iy-1,iz,1)) * inv_2h;
+        float dw_dz = (SV(ix,iy,iz+1,2) - SV(ix,iy,iz-1,2)) * inv_2h;
         div->at(ix, iy, iz) = du_dx + dv_dy + dw_dz;
       }
 }
@@ -658,20 +657,17 @@ void Curl(const DenseVecGrid& vec, DenseVecGrid* curl) {
   curl->data.resize(static_cast<size_t>(nx) * ny * nz * 3);
 
   const float inv_2h = 0.5f / vec.voxel_size;
-  auto SampleVec = [&](int x, int y, int z, int comp) -> float {
-    x = clampI(x, 0, nx-1); y = clampI(y, 0, ny-1); z = clampI(z, 0, nz-1);
-    return vec.data[(x + nx * (y + ny * z)) * 3 + comp];
-  };
+  auto SV = [&](int x, int y, int z, int c) { return SampleVecClamped(vec, x, y, z, c); };
 
   for (int iz = 0; iz < nz; ++iz)
     for (int iy = 0; iy < ny; ++iy)
       for (int ix = 0; ix < nx; ++ix) {
-        float dw_dy = (SampleVec(ix,iy+1,iz,2) - SampleVec(ix,iy-1,iz,2)) * inv_2h;
-        float dv_dz = (SampleVec(ix,iy,iz+1,1) - SampleVec(ix,iy,iz-1,1)) * inv_2h;
-        float du_dz = (SampleVec(ix,iy,iz+1,0) - SampleVec(ix,iy,iz-1,0)) * inv_2h;
-        float dw_dx = (SampleVec(ix+1,iy,iz,2) - SampleVec(ix-1,iy,iz,2)) * inv_2h;
-        float dv_dx = (SampleVec(ix+1,iy,iz,1) - SampleVec(ix-1,iy,iz,1)) * inv_2h;
-        float du_dy = (SampleVec(ix,iy+1,iz,0) - SampleVec(ix,iy-1,iz,0)) * inv_2h;
+        float dw_dy = (SV(ix,iy+1,iz,2) - SV(ix,iy-1,iz,2)) * inv_2h;
+        float dv_dz = (SV(ix,iy,iz+1,1) - SV(ix,iy,iz-1,1)) * inv_2h;
+        float du_dz = (SV(ix,iy,iz+1,0) - SV(ix,iy,iz-1,0)) * inv_2h;
+        float dw_dx = (SV(ix+1,iy,iz,2) - SV(ix-1,iy,iz,2)) * inv_2h;
+        float dv_dx = (SV(ix+1,iy,iz,1) - SV(ix-1,iy,iz,1)) * inv_2h;
+        float du_dy = (SV(ix,iy+1,iz,0) - SV(ix,iy-1,iz,0)) * inv_2h;
 
         float* c = curl->at(ix, iy, iz);
         c[0] = dw_dy - dv_dz;
@@ -716,7 +712,7 @@ static float TrilinearSample(const DenseGrid& g, float wx, float wy, float wz) {
 }
 
 // Trilinear interpolation of a vector grid at world position.
-static void TrilinearSampleVec(const DenseVecGrid& g, float wx, float wy, float wz,
+static void TrilinearSV(const DenseVecGrid& g, float wx, float wy, float wz,
                                float* out) {
   float fx = (wx - g.ox) / g.voxel_size - 0.5f;
   float fy = (wy - g.oy) / g.voxel_size - 0.5f;
@@ -764,7 +760,7 @@ void AdvectSemiLagrangian(const DenseGrid& field,
 
         // Sample velocity at this position
         float vel[3];
-        TrilinearSampleVec(velocity, wx, wy, wz, vel);
+        TrilinearSV(velocity, wx, wy, wz, vel);
 
         // Trace back: RK2 (midpoint method)
         float mx = wx - 0.5f * dt * vel[0];
@@ -772,7 +768,7 @@ void AdvectSemiLagrangian(const DenseGrid& field,
         float mz = wz - 0.5f * dt * vel[2];
 
         float vel_mid[3];
-        TrilinearSampleVec(velocity, mx, my, mz, vel_mid);
+        TrilinearSV(velocity, mx, my, mz, vel_mid);
 
         float bx = wx - dt * vel_mid[0];
         float by = wy - dt * vel_mid[1];
@@ -964,9 +960,13 @@ void VolumeToSpheres(const DenseGrid& grid,
         }
       }
 
-  // Sort by distance descending: place largest spheres first.
-  std::sort(candidates.begin(), candidates.end(),
-            [](const Candidate& a, const Candidate& b) { return a.dist > b.dist; });
+  // Partial sort: only need the top max_spheres candidates (O(V) vs O(V log V)).
+  auto cmp = [](const Candidate& a, const Candidate& b) { return a.dist > b.dist; };
+  size_t sort_n = std::min(candidates.size(), static_cast<size_t>(max_spheres) * 4);
+  if (sort_n < candidates.size())
+    std::partial_sort(candidates.begin(), candidates.begin() + sort_n, candidates.end(), cmp);
+  else
+    std::sort(candidates.begin(), candidates.end(), cmp);
 
   // Greedily place spheres, skipping candidates too close to existing spheres.
   for (const auto& c : candidates) {
@@ -1077,34 +1077,30 @@ void Fracture(const DenseGrid& volume,
   // all cutter positive/negative halves.
 
   const int num_cutters = static_cast<int>(cutters.size());
-  const int num_combos = 1 << num_cutters;  // 2^N combinations
+  if (num_cutters > 20) return;  // guard against combinatorial explosion
+  for (const auto& c : cutters)
+    if (c.data.size() != volume.data.size()) return;
+
+  const int num_combos = 1 << num_cutters;
+  const size_t N = volume.data.size();
 
   for (int combo = 0; combo < num_combos; ++combo) {
     DenseGrid piece;
-    piece.nx = volume.nx; piece.ny = volume.ny; piece.nz = volume.nz;
-    piece.ox = volume.ox; piece.oy = volume.oy; piece.oz = volume.oz;
-    piece.voxel_size = volume.voxel_size;
-    piece.data = volume.data;
+    CSGCopyMeta(volume, &piece);
 
-    // Intersect with each cutter (positive or negative side)
-    for (int c = 0; c < num_cutters; ++c) {
-      const DenseGrid& cutter = cutters[c];
-      bool use_positive = (combo >> c) & 1;
-      for (size_t i = 0; i < piece.data.size(); ++i) {
-        float cv = use_positive ? cutter.data[i] : -cutter.data[i];
-        piece.data[i] = std::max(piece.data[i], cv);  // CSG intersection
-      }
-    }
-
-    // Check if this piece has any interior volume
+    // Single-pass: compute volume ∩ cutter_0^± ∩ cutter_1^± ∩ ...
     bool has_interior = false;
-    for (float v : piece.data) {
-      if (v < 0.0f) { has_interior = true; break; }
+    for (size_t i = 0; i < N; ++i) {
+      float val = volume.data[i];
+      for (int c = 0; c < num_cutters; ++c) {
+        float cv = ((combo >> c) & 1) ? cutters[c].data[i] : -cutters[c].data[i];
+        val = std::max(val, cv);
+      }
+      piece.data[i] = val;
+      if (val < 0.0f) has_interior = true;
     }
 
-    if (has_interior) {
-      pieces->push_back(std::move(piece));
-    }
+    if (has_interior) pieces->push_back(std::move(piece));
   }
 }
 
