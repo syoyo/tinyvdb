@@ -18,9 +18,7 @@
 // License: MIT
 //
 
-#include <cstddef>
 #include <cstdint>
-#include <string>
 #include <vector>
 
 namespace tvdb_mesh {
@@ -214,42 +212,6 @@ float PointTriangleDistSq(const Vec3f& p, const Vec3f& a, const Vec3f& b, const 
   Vec3f closest = a + ab * v + ac * w;
   Vec3f d = p - closest;
   return dot(d, d);
-}
-
-// ---- Sign determination via pseudo-normal / ray casting ----
-// Count axis-aligned ray crossings (+Z direction) to determine inside/outside.
-// Odd = inside, even = outside.
-
-int RayCastSignZ(const Vec3f& p, const TriangleMesh& mesh) {
-  int crossings = 0;
-  for (const auto& tri : mesh.faces) {
-    const Vec3f& a = mesh.vertices[tri.v0];
-    const Vec3f& b = mesh.vertices[tri.v1];
-    const Vec3f& c = mesh.vertices[tri.v2];
-
-    // Check if p.xy is inside the triangle's XY projection
-    float ax = a.x - p.x, ay = a.y - p.y;
-    float bx = b.x - p.x, by = b.y - p.y;
-    float cx = c.x - p.x, cy = c.y - p.y;
-
-    float ab = ax * by - ay * bx;
-    float bc = bx * cy - by * cx;
-    float ca = cx * ay - cy * ax;
-
-    // All same sign or zero → point is inside triangle projection
-    bool pos = (ab >= 0 && bc >= 0 && ca >= 0);
-    bool neg = (ab <= 0 && bc <= 0 && ca <= 0);
-    if (!pos && !neg) continue;
-
-    // Compute z-intersection
-    Vec3f e1 = b - a, e2 = c - a;
-    Vec3f n = cross(e1, e2);
-    if (std::abs(n.z) < 1e-12f) continue;  // degenerate / parallel
-
-    float t = (n.x * (a.x - p.x) + n.y * (a.y - p.y) + n.z * (a.z - p.z)) / n.z;
-    if (t > 0.0f) crossings++;
-  }
-  return (crossings & 1) ? -1 : 1;  // -1 = inside, 1 = outside
 }
 
 // ---- Marching cubes tables ----
@@ -558,6 +520,41 @@ inline Vec3f VertexInterp(float iso, const Vec3f& p1, const Vec3f& p2, float v1,
           p1.z + mu * (p2.z - p1.z)};
 }
 
+// Exterior flood fill: negate interior voxels.
+// Seed from grid boundary, propagate through voxels with dist > 0.75*vs.
+inline void FloodFillSign(DenseGrid* grid) {
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  const float thresh = 0.75f * grid->voxel_size;
+  std::vector<uint8_t> exterior(grid->data.size(), 0);
+  std::vector<int32_t> queue;
+  auto Idx = [&](int x, int y, int z) -> size_t {
+    return static_cast<size_t>(x) + nx * (static_cast<size_t>(y) + ny * static_cast<size_t>(z));
+  };
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix)
+        if (ix==0||ix==nx-1||iy==0||iy==ny-1||iz==0||iz==nz-1) {
+          exterior[Idx(ix,iy,iz)] = 1;
+          queue.push_back(static_cast<int32_t>(Idx(ix,iy,iz)));
+        }
+  size_t head = 0;
+  while (head < queue.size()) {
+    int32_t ci = queue[head++];
+    int iz = ci / (nx * ny), iy = (ci / nx) % ny, ix = ci % nx;
+    static const int dirs[6][3] = {{-1,0,0},{1,0,0},{0,-1,0},{0,1,0},{0,0,-1},{0,0,1}};
+    for (const auto& d : dirs) {
+      int x2=ix+d[0], y2=iy+d[1], z2=iz+d[2];
+      if (x2<0||x2>=nx||y2<0||y2>=ny||z2<0||z2>=nz) continue;
+      size_t ni = Idx(x2, y2, z2);
+      if (exterior[ni] || grid->data[ni] <= thresh) continue;
+      exterior[ni] = 1;
+      queue.push_back(static_cast<int32_t>(ni));
+    }
+  }
+  for (size_t i = 0; i < grid->data.size(); ++i)
+    if (!exterior[i]) grid->data[i] = -grid->data[i];
+}
+
 }  // namespace detail
 
 // ============================================================================
@@ -621,39 +618,7 @@ bool MeshToSDF(const TriangleMesh& mesh,
     }
   }
 
-  // --- Phase 2: Exterior flood fill (same threshold as MeshToSDF_VDB) ---
-  {
-    const float surface_thresh = 0.75f * voxel_size;
-    std::vector<uint8_t> exterior(grid->data.size(), 0);
-    std::vector<int32_t> queue;
-    auto FlatIdx = [&](int x, int y, int z) -> size_t {
-      return static_cast<size_t>(x) + nx * (static_cast<size_t>(y) + ny * static_cast<size_t>(z));
-    };
-    for (int iz = 0; iz < nz; ++iz)
-      for (int iy = 0; iy < ny; ++iy)
-        for (int ix = 0; ix < nx; ++ix)
-          if (ix==0||ix==nx-1||iy==0||iy==ny-1||iz==0||iz==nz-1) {
-            exterior[FlatIdx(ix,iy,iz)] = 1;
-            queue.push_back(static_cast<int32_t>(FlatIdx(ix,iy,iz)));
-          }
-    size_t head = 0;
-    while (head < queue.size()) {
-      int32_t ci = queue[head++];
-      int iz = ci / (nx * ny), iy = (ci / nx) % ny, ix = ci % nx;
-      static const int dirs[6][3] = {{-1,0,0},{1,0,0},{0,-1,0},{0,1,0},{0,0,-1},{0,0,1}};
-      for (const auto& d : dirs) {
-        int x2=ix+d[0], y2=iy+d[1], z2=iz+d[2];
-        if (x2<0||x2>=nx||y2<0||y2>=ny||z2<0||z2>=nz) continue;
-        size_t ni = FlatIdx(x2, y2, z2);
-        if (exterior[ni] || grid->data[ni] <= surface_thresh) continue;
-        exterior[ni] = 1;
-        queue.push_back(static_cast<int32_t>(ni));
-      }
-    }
-    for (size_t i = 0; i < grid->data.size(); ++i)
-      if (!exterior[i]) grid->data[i] = -grid->data[i];
-  }
-
+  detail::FloodFillSign(grid);
   return true;
 }
 
@@ -779,13 +744,20 @@ bool SDFToMesh(const DenseGrid& grid,
 // MakeManifold
 // ============================================================================
 
+// Forward declaration — MakeManifold delegates to MakeManifold_VDB.
+bool MakeManifold_VDB(const TriangleMesh& input,
+                      double resolution,
+                      double isovalue,
+                      TriangleMesh* output,
+                      SignMethod sign_method);
+
 bool MakeManifold(const TriangleMesh& input,
                   double resolution,
                   double isovalue,
                   TriangleMesh* output) {
+  // Simple path uses brute-force MeshToSDF; still uses flood fill for sign.
   if (!output || input.vertices.empty() || input.faces.empty()) return false;
 
-  // Compute AABB to determine voxel size
   Vec3f bmin = input.vertices[0], bmax = input.vertices[0];
   for (const auto& v : input.vertices) {
     bmin = detail::vmin(bmin, v);
@@ -794,12 +766,8 @@ bool MakeManifold(const TriangleMesh& input,
   float extent = std::max({bmax.x - bmin.x, bmax.y - bmin.y, bmax.z - bmin.z});
   if (extent < 1e-12f) return false;
 
-  // Scale mesh so that longest axis spans 'resolution' voxels.
-  // (Equivalent to CoACD's approach: scale vertices by resolution, voxel_size=1)
-  float scale = static_cast<float>(resolution);
-  float voxel_size = extent / scale;
+  float voxel_size = extent / static_cast<float>(resolution);
 
-  // Compute SDF
   DenseGrid sdf;
   if (!MeshToSDF(input, voxel_size, 3.0f, &sdf)) return false;
 
@@ -953,29 +921,29 @@ bool MeshToSDF_VDB(const TriangleMesh& mesh,
       for (int iy = 0; iy < ny; ++iy)
         sweepLine(FlatIdx(0, iy, iz), 1, nx);
 
-    // Phase 2b: Iterative local propagation.
-    // Voxels with distance > 0.75*vs that have a negative 6-neighbor
-    // should also be negated. Repeat until no changes.
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      for (int iz = 0; iz < nz; ++iz)
-        for (int iy = 0; iy < ny; ++iy)
-          for (int ix = 0; ix < nx; ++ix) {
-            size_t idx = FlatIdx(ix, iy, iz);
-            float& d = data[idx];
-            if (d >= 0.0f && d > surface_thresh) {
-              // Check 6-neighbors for negative
-              bool has_neg = false;
-              if (ix > 0    && data[FlatIdx(ix-1,iy,iz)] < 0) has_neg = true;
-              if (ix < nx-1 && data[FlatIdx(ix+1,iy,iz)] < 0) has_neg = true;
-              if (iy > 0    && data[FlatIdx(ix,iy-1,iz)] < 0) has_neg = true;
-              if (iy < ny-1 && data[FlatIdx(ix,iy+1,iz)] < 0) has_neg = true;
-              if (iz > 0    && data[FlatIdx(ix,iy,iz-1)] < 0) has_neg = true;
-              if (iz < nz-1 && data[FlatIdx(ix,iy,iz+1)] < 0) has_neg = true;
-              if (has_neg) { d = -d; changed = true; }
-            }
+    // Phase 2b: BFS propagation from negated voxels.
+    // Collect all voxels negated by the sweep, then propagate to
+    // positive neighbors with distance > threshold. O(V) total.
+    {
+      std::vector<int32_t> prop_queue;
+      for (size_t i = 0; i < grid->data.size(); ++i)
+        if (data[i] < 0.0f) prop_queue.push_back(static_cast<int32_t>(i));
+
+      size_t head = 0;
+      static const int dirs[6][3] = {{-1,0,0},{1,0,0},{0,-1,0},{0,1,0},{0,0,-1},{0,0,1}};
+      while (head < prop_queue.size()) {
+        int32_t ci = prop_queue[head++];
+        int iz = ci / (nx * ny), iy = (ci / nx) % ny, ix = ci % nx;
+        for (const auto& d : dirs) {
+          int x2=ix+d[0], y2=iy+d[1], z2=iz+d[2];
+          if (x2<0||x2>=nx||y2<0||y2>=ny||z2<0||z2>=nz) continue;
+          size_t ni = FlatIdx(x2, y2, z2);
+          if (data[ni] > surface_thresh) {  // positive & far from surface
+            data[ni] = -data[ni];
+            prop_queue.push_back(static_cast<int32_t>(ni));
           }
+        }
+      }
     }
 
     // Phase 2c: Flip convention. OpenVDB uses negative=exterior for
@@ -986,39 +954,7 @@ bool MeshToSDF_VDB(const TriangleMesh& mesh,
       v = -v;
     }
   } else {
-    // --- Flood fill from exterior (simpler, robust) ---
-    // BFS from grid boundaries. Threshold 0.75*vs matches OpenVDB.
-    std::vector<uint8_t> exterior(grid->data.size(), 0);
-    std::vector<int32_t> queue;
-
-    // Seed: all boundary voxels
-    for (int iz = 0; iz < nz; ++iz)
-      for (int iy = 0; iy < ny; ++iy)
-        for (int ix = 0; ix < nx; ++ix)
-          if (ix == 0 || ix == nx-1 || iy == 0 || iy == ny-1 || iz == 0 || iz == nz-1) {
-            exterior[FlatIdx(ix, iy, iz)] = 1;
-            queue.push_back(static_cast<int32_t>(FlatIdx(ix, iy, iz)));
-          }
-
-    size_t head = 0;
-    while (head < queue.size()) {
-      int32_t ci = queue[head++];
-      int iz = ci / (nx * ny), iy = (ci / nx) % ny, ix = ci % nx;
-      static const int dirs[6][3] = {{-1,0,0},{1,0,0},{0,-1,0},{0,1,0},{0,0,-1},{0,0,1}};
-      for (const auto& d : dirs) {
-        int x2 = ix+d[0], y2 = iy+d[1], z2 = iz+d[2];
-        if (x2<0||x2>=nx||y2<0||y2>=ny||z2<0||z2>=nz) continue;
-        size_t ni = FlatIdx(x2, y2, z2);
-        if (exterior[ni]) continue;
-        if (grid->data[ni] <= surface_thresh) continue;  // blocked by surface
-        exterior[ni] = 1;
-        queue.push_back(static_cast<int32_t>(ni));
-      }
-    }
-
-    // Negate interior voxels
-    for (size_t i = 0; i < grid->data.size(); ++i)
-      if (!exterior[i]) grid->data[i] = -grid->data[i];
+    detail::FloodFillSign(grid);
   }
 
   return true;
