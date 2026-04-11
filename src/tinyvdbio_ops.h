@@ -11,10 +11,16 @@
 //   - Surface area and volume measurement from SDF
 //
 // Phase 2 — Physics simulation foundation:
-//   - Differential operators (gradient, divergence, Laplacian)
-//   - Finite difference stencils (central, forward, backward, WENO5)
-//   - Semi-Lagrangian advection
+//   - Differential operators (gradient, divergence, Laplacian, curl)
+//   - Finite difference stencils (central, forward, backward)
+//   - Semi-Lagrangian advection (RK2)
 //   - Poisson solver (preconditioned conjugate gradient)
+//
+// Phase 3 — Advanced geometry:
+//   - Ray-SDF intersection (sphere tracing)
+//   - Volume to spheres (greedy adaptive sphere packing)
+//   - Particles to SDF (sphere stamping)
+//   - Level set fracture (cutter-based volume splitting)
 //
 // Depends on DenseGrid and Vec3f from tinyvdbio_mesh.h.
 //
@@ -164,6 +170,80 @@ int SolvePoisson(const DenseGrid& rhs,
                  DenseGrid* x,
                  int max_iters = 500,
                  float tolerance = 1e-6f);
+
+// ============================================================================
+// Phase 3: Advanced geometry
+// ============================================================================
+
+// ---- Ray-SDF intersection ----
+
+struct RayHit {
+  float t;              // distance along ray (< 0 if no hit)
+  Vec3f position;       // world-space hit point
+  Vec3f normal;         // surface normal at hit (gradient of SDF)
+};
+
+/// Cast a ray against an SDF grid. Uses sphere tracing (ray marching).
+/// @param grid     SDF grid.
+/// @param origin   Ray origin in world space.
+/// @param dir      Ray direction (must be normalized).
+/// @param max_t    Maximum ray distance.
+/// @param hit      Output hit result (t < 0 if no hit).
+/// @return true if the ray hits the surface (SDF zero-crossing).
+bool RayCastSDF(const DenseGrid& grid,
+                const Vec3f& origin,
+                const Vec3f& dir,
+                float max_t,
+                RayHit* hit);
+
+// ---- Volume to spheres ----
+
+struct Sphere {
+  Vec3f center;
+  float radius;
+};
+
+/// Fill the interior of an SDF grid with adaptively-sized spheres.
+/// Larger spheres are placed first in regions far from the surface.
+/// @param grid         SDF grid (negative = interior).
+/// @param spheres      Output sphere list.
+/// @param min_radius   Minimum sphere radius in world units.
+/// @param max_spheres  Maximum number of spheres to generate.
+/// @param overlap      Allowed overlap factor (0 = no overlap, 0.5 = 50%).
+void VolumeToSpheres(const DenseGrid& grid,
+                     std::vector<Sphere>* spheres,
+                     float min_radius = 0.0f,
+                     int max_spheres = 1000,
+                     float overlap = 0.25f);
+
+// ---- Particles to level set ----
+
+struct Particle {
+  Vec3f position;
+  float radius;
+};
+
+/// Rasterize particles (with position and radius) into an SDF grid.
+/// Each particle stamps a sphere SDF: min(grid, |p - center| - radius).
+/// @param particles    Input particles.
+/// @param voxel_size   Grid voxel size.
+/// @param band_width   Narrow band half-width in voxels.
+/// @param grid         Output SDF grid.
+void ParticlesToSDF(const std::vector<Particle>& particles,
+                    float voxel_size,
+                    float band_width,
+                    DenseGrid* grid);
+
+// ---- Level set fracture ----
+
+/// Fracture an SDF volume into pieces by intersecting with cutter SDFs.
+/// Each cutter divides the volume into positive/negative halves.
+/// @param volume       Input SDF grid.
+/// @param cutters      Cutter SDF grids (same dimensions as volume).
+/// @param pieces       Output: one SDF grid per piece.
+void Fracture(const DenseGrid& volume,
+              const std::vector<DenseGrid>& cutters,
+              std::vector<DenseGrid>* pieces);
 
 }  // namespace tvdb_ops
 
@@ -803,6 +883,229 @@ int SolvePoisson(const DenseGrid& rhs, DenseGrid* x,
   }
 
   return -max_iters;
+}
+
+// ============================================================================
+// Ray-SDF intersection (sphere tracing)
+// ============================================================================
+
+bool RayCastSDF(const DenseGrid& grid,
+                const Vec3f& origin,
+                const Vec3f& dir,
+                float max_t,
+                RayHit* hit) {
+  if (!hit) return false;
+  hit->t = -1.0f;
+
+  const float eps = 0.5f * grid.voxel_size;  // surface threshold
+  const int max_steps = 512;
+  float t = 0.0f;
+
+  for (int step = 0; step < max_steps && t < max_t; ++step) {
+    float wx = origin.x + t * dir.x;
+    float wy = origin.y + t * dir.y;
+    float wz = origin.z + t * dir.z;
+
+    float dist = TrilinearSample(grid, wx, wy, wz);
+
+    if (dist < eps) {
+      hit->t = t;
+      hit->position = {wx, wy, wz};
+      // Normal = gradient of SDF at hit point
+      float gx = (TrilinearSample(grid, wx + eps, wy, wz) -
+                   TrilinearSample(grid, wx - eps, wy, wz));
+      float gy = (TrilinearSample(grid, wx, wy + eps, wz) -
+                   TrilinearSample(grid, wx, wy - eps, wz));
+      float gz = (TrilinearSample(grid, wx, wy, wz + eps) -
+                   TrilinearSample(grid, wx, wy, wz - eps));
+      float len = std::sqrt(gx*gx + gy*gy + gz*gz);
+      if (len > 1e-8f) {
+        float inv = 1.0f / len;
+        hit->normal = {gx * inv, gy * inv, gz * inv};
+      } else {
+        hit->normal = {0.0f, 1.0f, 0.0f};
+      }
+      return true;
+    }
+
+    // Advance by the distance to the surface (sphere tracing).
+    // Clamp minimum step to avoid getting stuck near the surface.
+    t += std::max(std::abs(dist), 0.1f * grid.voxel_size);
+  }
+
+  return false;
+}
+
+// ============================================================================
+// Volume to spheres
+// ============================================================================
+
+void VolumeToSpheres(const DenseGrid& grid,
+                     std::vector<Sphere>* spheres,
+                     float min_radius,
+                     int max_spheres,
+                     float overlap) {
+  if (!spheres) return;
+  spheres->clear();
+  const int nx = grid.nx, ny = grid.ny, nz = grid.nz;
+
+  // Collect interior voxels with their distance to surface (negative SDF = inside).
+  struct Candidate {
+    int ix, iy, iz;
+    float dist;  // absolute distance to surface (larger = deeper inside)
+  };
+  std::vector<Candidate> candidates;
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix) {
+        float d = grid.at(ix, iy, iz);
+        if (d < 0.0f && std::abs(d) >= min_radius) {
+          candidates.push_back({ix, iy, iz, std::abs(d)});
+        }
+      }
+
+  // Sort by distance descending: place largest spheres first.
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate& a, const Candidate& b) { return a.dist > b.dist; });
+
+  // Greedily place spheres, skipping candidates too close to existing spheres.
+  for (const auto& c : candidates) {
+    if (static_cast<int>(spheres->size()) >= max_spheres) break;
+
+    float wx = grid.ox + (c.ix + 0.5f) * grid.voxel_size;
+    float wy = grid.oy + (c.iy + 0.5f) * grid.voxel_size;
+    float wz = grid.oz + (c.iz + 0.5f) * grid.voxel_size;
+    float radius = c.dist;
+
+    // Check overlap with existing spheres.
+    bool too_close = false;
+    for (const auto& s : *spheres) {
+      float dx = wx - s.center.x, dy = wy - s.center.y, dz = wz - s.center.z;
+      float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+      if (dist < (s.radius + radius) * (1.0f - overlap)) {
+        too_close = true;
+        break;
+      }
+    }
+
+    if (!too_close) {
+      spheres->push_back({{wx, wy, wz}, radius});
+    }
+  }
+}
+
+// ============================================================================
+// Particles to SDF
+// ============================================================================
+
+void ParticlesToSDF(const std::vector<Particle>& particles,
+                    float voxel_size,
+                    float band_width,
+                    DenseGrid* grid) {
+  if (!grid || particles.empty()) return;
+
+  // Compute AABB of all particles
+  float bmin_x = 1e30f, bmin_y = 1e30f, bmin_z = 1e30f;
+  float bmax_x = -1e30f, bmax_y = -1e30f, bmax_z = -1e30f;
+  float max_radius = 0.0f;
+  for (const auto& p : particles) {
+    bmin_x = std::min(bmin_x, p.position.x - p.radius);
+    bmin_y = std::min(bmin_y, p.position.y - p.radius);
+    bmin_z = std::min(bmin_z, p.position.z - p.radius);
+    bmax_x = std::max(bmax_x, p.position.x + p.radius);
+    bmax_y = std::max(bmax_y, p.position.y + p.radius);
+    bmax_z = std::max(bmax_z, p.position.z + p.radius);
+    max_radius = std::max(max_radius, p.radius);
+  }
+
+  float pad = (band_width + 2.0f) * voxel_size;
+  bmin_x -= pad; bmin_y -= pad; bmin_z -= pad;
+  bmax_x += pad; bmax_y += pad; bmax_z += pad;
+
+  int nx = static_cast<int>(std::ceil((bmax_x - bmin_x) / voxel_size)) + 1;
+  int ny = static_cast<int>(std::ceil((bmax_y - bmin_y) / voxel_size)) + 1;
+  int nz = static_cast<int>(std::ceil((bmax_z - bmin_z) / voxel_size)) + 1;
+
+  grid->nx = nx; grid->ny = ny; grid->nz = nz;
+  grid->ox = bmin_x; grid->oy = bmin_y; grid->oz = bmin_z;
+  grid->voxel_size = voxel_size;
+
+  float bg = band_width * voxel_size;
+  grid->data.assign(static_cast<size_t>(nx) * ny * nz, bg);
+
+  float inv_vs = 1.0f / voxel_size;
+  float band_dist = band_width * voxel_size;
+
+  // Stamp each particle as a sphere SDF
+  for (const auto& p : particles) {
+    float expand = p.radius + band_dist;
+    int ix0 = std::max(0, static_cast<int>(std::floor((p.position.x - expand - bmin_x) * inv_vs)));
+    int iy0 = std::max(0, static_cast<int>(std::floor((p.position.y - expand - bmin_y) * inv_vs)));
+    int iz0 = std::max(0, static_cast<int>(std::floor((p.position.z - expand - bmin_z) * inv_vs)));
+    int ix1 = std::min(nx-1, static_cast<int>(std::floor((p.position.x + expand - bmin_x) * inv_vs)));
+    int iy1 = std::min(ny-1, static_cast<int>(std::floor((p.position.y + expand - bmin_y) * inv_vs)));
+    int iz1 = std::min(nz-1, static_cast<int>(std::floor((p.position.z + expand - bmin_z) * inv_vs)));
+
+    for (int iz = iz0; iz <= iz1; ++iz) {
+      float dz = bmin_z + (iz + 0.5f) * voxel_size - p.position.z;
+      for (int iy = iy0; iy <= iy1; ++iy) {
+        float dy = bmin_y + (iy + 0.5f) * voxel_size - p.position.y;
+        for (int ix = ix0; ix <= ix1; ++ix) {
+          float dx = bmin_x + (ix + 0.5f) * voxel_size - p.position.x;
+          float dist = std::sqrt(dx*dx + dy*dy + dz*dz) - p.radius;
+          float& cell = grid->at(ix, iy, iz);
+          if (dist < cell) cell = dist;
+        }
+      }
+    }
+  }
+}
+
+// ============================================================================
+// Fracture
+// ============================================================================
+
+void Fracture(const DenseGrid& volume,
+              const std::vector<DenseGrid>& cutters,
+              std::vector<DenseGrid>* pieces) {
+  if (!pieces || cutters.empty()) return;
+  pieces->clear();
+
+  // Each cutter plane divides the volume into 2 halves.
+  // With N cutters, we get up to 2^N pieces.
+  // For each combination of cutter signs, intersect volume with
+  // all cutter positive/negative halves.
+
+  const int num_cutters = static_cast<int>(cutters.size());
+  const int num_combos = 1 << num_cutters;  // 2^N combinations
+
+  for (int combo = 0; combo < num_combos; ++combo) {
+    DenseGrid piece;
+    piece.nx = volume.nx; piece.ny = volume.ny; piece.nz = volume.nz;
+    piece.ox = volume.ox; piece.oy = volume.oy; piece.oz = volume.oz;
+    piece.voxel_size = volume.voxel_size;
+    piece.data = volume.data;
+
+    // Intersect with each cutter (positive or negative side)
+    for (int c = 0; c < num_cutters; ++c) {
+      const DenseGrid& cutter = cutters[c];
+      bool use_positive = (combo >> c) & 1;
+      for (size_t i = 0; i < piece.data.size(); ++i) {
+        float cv = use_positive ? cutter.data[i] : -cutter.data[i];
+        piece.data[i] = std::max(piece.data[i], cv);  // CSG intersection
+      }
+    }
+
+    // Check if this piece has any interior volume
+    bool has_interior = false;
+    for (float v : piece.data) {
+      if (v < 0.0f) { has_interior = true; break; }
+    }
+
+    if (has_interior) {
+      pieces->push_back(std::move(piece));
+    }
+  }
 }
 
 }  // namespace tvdb_ops
