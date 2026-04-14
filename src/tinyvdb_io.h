@@ -935,6 +935,18 @@ static int tvdb__sr_read_value(tvdb__sr_t *sr, tvdb_value_type_t type,
             out->type = TVDB_VALUE_FLOAT; /* promote to float */
             return 1;
         }
+        case TVDB_VALUE_VEC3I:
+            return tvdb__sr_read_i32(sr, &out->u.vec3i[0]) &&
+                   tvdb__sr_read_i32(sr, &out->u.vec3i[1]) &&
+                   tvdb__sr_read_i32(sr, &out->u.vec3i[2]);
+        case TVDB_VALUE_VEC3F:
+            return tvdb__sr_read_f32(sr, &out->u.vec3f[0]) &&
+                   tvdb__sr_read_f32(sr, &out->u.vec3f[1]) &&
+                   tvdb__sr_read_f32(sr, &out->u.vec3f[2]);
+        case TVDB_VALUE_VEC3D:
+            return tvdb__sr_read_f64(sr, &out->u.vec3d[0]) &&
+                   tvdb__sr_read_f64(sr, &out->u.vec3d[1]) &&
+                   tvdb__sr_read_f64(sr, &out->u.vec3d[2]);
         default:
             return 0;
     }
@@ -1460,6 +1472,12 @@ static tvdb_status_t tvdb__parse_grid_type(const char *grid_type,
         vtype = TVDB_VALUE_VEC3D; p += 6;
     } else if (strncmp(p, "vec3i_", 6) == 0) {
         vtype = TVDB_VALUE_VEC3I; p += 6;
+    } else if (strncmp(p, "ptdataidx32_", 12) == 0) {
+        /* OpenVDB PointDataGrid: per-voxel storage is uint32 index
+           offsets into per-leaf attribute arrays. tinyvdb only uses this
+           to parse the topology; the attribute payload is skipped at the
+           grid level (see tvdb__read_grid). */
+        vtype = TVDB_VALUE_INT32; p += 12;
     } else {
         tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
                         "Unsupported value type in grid type string");
@@ -1992,6 +2010,21 @@ static tvdb_value_t tvdb__negate_value(tvdb_value_t v) {
         case TVDB_VALUE_DOUBLE: r.u.d = -v.u.d; break;
         case TVDB_VALUE_INT32:  r.u.i32 = -v.u.i32; break;
         case TVDB_VALUE_INT64:  r.u.i64 = -v.u.i64; break;
+        case TVDB_VALUE_VEC3I:
+            r.u.vec3i[0] = -v.u.vec3i[0];
+            r.u.vec3i[1] = -v.u.vec3i[1];
+            r.u.vec3i[2] = -v.u.vec3i[2];
+            break;
+        case TVDB_VALUE_VEC3F:
+            r.u.vec3f[0] = -v.u.vec3f[0];
+            r.u.vec3f[1] = -v.u.vec3f[1];
+            r.u.vec3f[2] = -v.u.vec3f[2];
+            break;
+        case TVDB_VALUE_VEC3D:
+            r.u.vec3d[0] = -v.u.vec3d[0];
+            r.u.vec3d[1] = -v.u.vec3d[1];
+            r.u.vec3d[2] = -v.u.vec3d[2];
+            break;
         default: break;
     }
     return r;
@@ -2073,8 +2106,18 @@ static tvdb_status_t tvdb__read_mask_values(
     }
     memset(tmp_buf, 0, tmp_size > 0 ? tmp_size : 1);
 
-    tvdb_status_t st = tvdb__read_and_decompress(
-        sr, tmp_buf, file_elem_size, read_count, compression_flags, alloc, err);
+    /* OpenVDB's HalfReader::read has an `if (count < 1) return;` guard at the
+       top, so half-precision writes/reads emit NOTHING at all when the active
+       count is zero (e.g. an internal node whose tiles are all inactive in a
+       signed-flood-filled level set). The non-half path still runs through
+       readData → bloscFromStream, which does read/write the 8-byte blosc size
+       header even for count=0. Match that asymmetry here, or we drift 8 bytes
+       on every all-inactive half-precision node. */
+    tvdb_status_t st = TVDB_OK;
+    if (!(is_half && read_count == 0)) {
+        st = tvdb__read_and_decompress(
+            sr, tmp_buf, file_elem_size, read_count, compression_flags, alloc, err);
+    }
     if (st != TVDB_OK) {
         tvdb__free(alloc, tmp_buf, tmp_size > 0 ? tmp_size : 1);
         tvdb__nodemask_destroy(&selection_mask);
@@ -2234,6 +2277,13 @@ static tvdb_status_t tvdb__read_root_topology(
             return TVDB_ERROR_OUT_OF_MEMORY;
         }
 
+        /* Propagate the just-read root background to descendant topology
+           reads. tvdb__read_mask_values uses params->background to derive
+           inactive-tile fill values (±background for signed-flood-filled
+           level sets); without this, every internal tile reads back as 0. */
+        tvdb__deser_params_t child_params = *params;
+        child_params.background = root->background;
+
         for (uint32_t i = 0; i < root->num_children; i++) {
             tvdb__sr_read_i32(sr, &root->child_origins[i * 3 + 0]);
             tvdb__sr_read_i32(sr, &root->child_origins[i * 3 + 1]);
@@ -2249,7 +2299,7 @@ static tvdb_status_t tvdb__read_root_topology(
             root->child_indices[i] = child_idx;
 
             tvdb_status_t st = tvdb__read_node_topology(
-                tree, sr, child_idx, level + 1, params, err);
+                tree, sr, child_idx, level + 1, &child_params, err);
             if (st != TVDB_OK) return st;
             /* Re-read root again after potential realloc */
             root = &tree->nodes[node_idx].u.root;
@@ -2664,6 +2714,18 @@ static tvdb_status_t tvdb__read_grid(tvdb__sr_t *sr, tvdb_grid_t *grid,
 
     /* Update background from root */
     params.background = grid->tree.nodes[root_idx].u.root.background;
+
+    /* PointDataGrid: leaf buffers contain serialized AttributeSet blobs that
+       tinyvdb does not parse. Topology is already loaded; skip the buffer
+       phase and jump to the grid's end marker so subsequent grids still
+       read correctly. */
+    if (grid->descriptor.grid_type &&
+        strstr(grid->descriptor.grid_type, "ptdataidx") != NULL) {
+        if (grid->descriptor.end_byte_offset > 0) {
+            tvdb__sr_seek_set(sr, grid->descriptor.end_byte_offset);
+        }
+        return TVDB_OK;
+    }
 
     /* Read buffers */
     st = tvdb__read_node_buffer(&grid->tree, sr, root_idx, 0, &params, err);
