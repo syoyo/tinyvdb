@@ -4,7 +4,7 @@
 
 TinyVDB is a collection of header-only C/C++ libraries for working with OpenVDB data. It provides lightweight VDB file I/O, mesh-to-SDF conversion, grid operations, and more — without depending on the full OpenVDB library.
 
-TinyVDB is suitable for graphics applications, HPC visualization tools, physics simulation, and any project that needs lightweight VDB functionality.
+TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, physics simulation, and any project that needs lightweight VDB functionality.
 
 ## Modules
 
