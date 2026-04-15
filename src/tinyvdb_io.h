@@ -271,6 +271,11 @@ typedef struct tvdb_leaf_node {
     uint8_t        *data;
     size_t          data_size;
     uint32_t        num_voxels;
+    /* PointIndexGrid leaf payload (OpenVDB tools::PointIndexLeafNode). */
+    int32_t        *point_indices;
+    uint64_t        num_point_indices;
+    uint8_t        *point_aux_data;
+    uint64_t        point_aux_data_size;
 } tvdb_leaf_node_t;
 
 typedef struct tvdb_tree_node {
@@ -289,6 +294,8 @@ typedef struct tvdb_tree {
     size_t            num_nodes;
     size_t            nodes_capacity;
     tvdb_grid_layout_t layout;
+    int               is_point_data_grid;
+    int               is_point_index_grid;
     tvdb_allocator_t  *alloc;
 } tvdb_tree_t;
 
@@ -302,6 +309,10 @@ typedef struct tvdb_grid {
     tvdb_transform_t       transform;
     tvdb_tree_t            tree;
     uint32_t               compression_flags;
+    /* Raw PointDataGrid payload (treebase+topology+buffers), preserved
+       opaquely for round-trip serialization. */
+    uint8_t               *point_data_blob;
+    size_t                 point_data_blob_size;
 } tvdb_grid_t;
 
 /* ========================================================================== */
@@ -415,6 +426,15 @@ tvdb_status_t tvdb_file_save(const tvdb_file_t *file,
                              int compression_level,
                              int use_mmap,
                              tvdb_error_t *err);
+
+/* ---- Point grid helpers ---- */
+int            tvdb_grid_is_point_data(const tvdb_file_t *file, size_t idx);
+int            tvdb_grid_is_point_index(const tvdb_file_t *file, size_t idx);
+const uint8_t *tvdb_grid_point_data_blob(const tvdb_file_t *file, size_t idx);
+size_t         tvdb_grid_point_data_blob_size(const tvdb_file_t *file, size_t idx);
+tvdb_status_t  tvdb_grid_set_point_data_blob(tvdb_file_t *file, size_t idx,
+                                             const uint8_t *data, size_t size,
+                                             tvdb_error_t *err);
 
 #ifdef __cplusplus
 } /* extern "C" */
@@ -1472,6 +1492,10 @@ static tvdb_status_t tvdb__parse_grid_type(const char *grid_type,
         vtype = TVDB_VALUE_VEC3D; p += 6;
     } else if (strncmp(p, "vec3i_", 6) == 0) {
         vtype = TVDB_VALUE_VEC3I; p += 6;
+    } else if (strncmp(p, "ptidx32_", 8) == 0) {
+        /* OpenVDB PointIndexGrid: voxel values are prefix offsets into
+           per-leaf point index arrays. */
+        vtype = TVDB_VALUE_INT32; p += 8;
     } else if (strncmp(p, "ptdataidx32_", 12) == 0) {
         /* OpenVDB PointDataGrid: per-voxel storage is uint32 index
            offsets into per-leaf attribute arrays. tinyvdb only uses this
@@ -2543,7 +2567,64 @@ static tvdb_status_t tvdb__read_leaf_buffer(
         params->background, num_values, vt,
         &leaf->value_mask, leaf->data,
         params->half_precision, a, err);
-    return st;
+    if (st != TVDB_OK) return st;
+
+    if (tree->is_point_index_grid) {
+        int64_t num_indices_i64 = 0;
+        if (!tvdb__sr_read_i64(sr, &num_indices_i64) || num_indices_i64 < 0) {
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                            "Failed to read PointIndex leaf index count");
+            return TVDB_ERROR_INVALID_DATA;
+        }
+        leaf->num_point_indices = (uint64_t)num_indices_i64;
+
+        if (leaf->num_point_indices > 0) {
+            if (leaf->num_point_indices > (uint64_t)(SIZE_MAX / sizeof(int32_t))) {
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "PointIndex leaf index count too large");
+                return TVDB_ERROR_INVALID_DATA;
+            }
+            size_t bytes = (size_t)leaf->num_point_indices * sizeof(int32_t);
+            leaf->point_indices = (int32_t *)tvdb__alloc(a, bytes);
+            if (!leaf->point_indices) {
+                tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+                return TVDB_ERROR_OUT_OF_MEMORY;
+            }
+            if (!tvdb__sr_read(sr, bytes, (uint8_t *)leaf->point_indices)) {
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "Failed to read PointIndex leaf indices");
+                return TVDB_ERROR_INVALID_DATA;
+            }
+        }
+
+        int64_t aux_bytes_i64 = 0;
+        if (!tvdb__sr_read_i64(sr, &aux_bytes_i64) || aux_bytes_i64 < 0) {
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                            "Failed to read PointIndex leaf aux size");
+            return TVDB_ERROR_INVALID_DATA;
+        }
+        leaf->point_aux_data_size = (uint64_t)aux_bytes_i64;
+        if (leaf->point_aux_data_size > 0) {
+            if (leaf->point_aux_data_size > (uint64_t)SIZE_MAX) {
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "PointIndex leaf aux payload too large");
+                return TVDB_ERROR_INVALID_DATA;
+            }
+            size_t aux_size = (size_t)leaf->point_aux_data_size;
+            leaf->point_aux_data = (uint8_t *)tvdb__alloc(a, aux_size);
+            if (!leaf->point_aux_data) {
+                tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+                return TVDB_ERROR_OUT_OF_MEMORY;
+            }
+            if (!tvdb__sr_read(sr, aux_size, leaf->point_aux_data)) {
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "Failed to read PointIndex aux payload");
+                return TVDB_ERROR_INVALID_DATA;
+            }
+        }
+    }
+
+    return TVDB_OK;
 }
 
 static tvdb_status_t tvdb__read_node_buffer(
@@ -2612,6 +2693,12 @@ static void tvdb__tree_destroy(tvdb_tree_t *tree) {
                 tvdb__nodemask_destroy(&lf->value_mask);
                 if (lf->data)
                     tvdb__free(a, lf->data, lf->data_size);
+                if (lf->point_indices)
+                    tvdb__free(a, lf->point_indices,
+                               (size_t)lf->num_point_indices * sizeof(int32_t));
+                if (lf->point_aux_data)
+                    tvdb__free(a, lf->point_aux_data,
+                               (size_t)lf->point_aux_data_size);
                 break;
             }
         }
@@ -2631,6 +2718,8 @@ static void tvdb__grid_destroy(tvdb_grid_t *grid, tvdb_allocator_t *a) {
     tvdb__grid_descriptor_destroy(&grid->descriptor, a);
     tvdb__metadata_destroy(&grid->metadata);
     tvdb__tree_destroy(&grid->tree);
+    if (grid->point_data_blob)
+        tvdb__free(a, grid->point_data_blob, grid->point_data_blob_size);
     memset(grid, 0, sizeof(*grid));
 }
 
@@ -2643,6 +2732,7 @@ static tvdb_status_t tvdb__read_grid(tvdb__sr_t *sr, tvdb_grid_t *grid,
                                      tvdb_allocator_t *alloc,
                                      tvdb_error_t *err) {
     uint32_t file_version = header->file_version;
+    uint64_t point_blob_start = 0;
 
     /* Read per-grid compression (v222+) */
     grid->compression_flags = TVDB_COMPRESS_NONE;
@@ -2660,6 +2750,7 @@ static tvdb_status_t tvdb__read_grid(tvdb__sr_t *sr, tvdb_grid_t *grid,
     /* Read transform */
     st = tvdb__read_transform(sr, &grid->transform, alloc, err);
     if (st != TVDB_OK) return st;
+    point_blob_start = sr->pos;
 
     /* Parse grid type into layout */
     st = tvdb__parse_grid_type(grid->descriptor.grid_type,
@@ -2678,6 +2769,13 @@ static tvdb_status_t tvdb__read_grid(tvdb__sr_t *sr, tvdb_grid_t *grid,
     grid->tree.nodes = NULL;
     grid->tree.num_nodes = 0;
     grid->tree.nodes_capacity = 0;
+    grid->tree.is_point_data_grid =
+        (grid->descriptor.grid_type &&
+         strstr(grid->descriptor.grid_type, "ptdataidx") != NULL) ? 1 : 0;
+    grid->tree.is_point_index_grid =
+        (grid->descriptor.grid_type &&
+         strstr(grid->descriptor.grid_type, "ptidx") != NULL &&
+         strstr(grid->descriptor.grid_type, "ptdataidx") == NULL) ? 1 : 0;
 
     /* Determine value type (half-float promotion) */
     tvdb_value_type_t vtype = grid->tree.layout.levels[0].value_type;
@@ -2719,8 +2817,19 @@ static tvdb_status_t tvdb__read_grid(tvdb__sr_t *sr, tvdb_grid_t *grid,
        tinyvdb does not parse. Topology is already loaded; skip the buffer
        phase and jump to the grid's end marker so subsequent grids still
        read correctly. */
-    if (grid->descriptor.grid_type &&
-        strstr(grid->descriptor.grid_type, "ptdataidx") != NULL) {
+    if (grid->tree.is_point_data_grid) {
+        if (grid->descriptor.end_byte_offset > point_blob_start &&
+            grid->descriptor.end_byte_offset <= sr->length) {
+            size_t blob_size =
+                (size_t)(grid->descriptor.end_byte_offset - point_blob_start);
+            grid->point_data_blob = (uint8_t *)tvdb__alloc(alloc, blob_size);
+            if (!grid->point_data_blob) {
+                tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+                return TVDB_ERROR_OUT_OF_MEMORY;
+            }
+            memcpy(grid->point_data_blob, sr->data + point_blob_start, blob_size);
+            grid->point_data_blob_size = blob_size;
+        }
         if (grid->descriptor.end_byte_offset > 0) {
             tvdb__sr_seek_set(sr, grid->descriptor.end_byte_offset);
         }
@@ -3038,6 +3147,60 @@ const char *tvdb_grid_name(const tvdb_file_t *file, size_t idx) {
 const char *tvdb_grid_type_name(const tvdb_file_t *file, size_t idx) {
     if (!file || idx >= file->num_grids) return NULL;
     return file->grids[idx].descriptor.grid_type;
+}
+
+int tvdb_grid_is_point_data(const tvdb_file_t *file, size_t idx) {
+    if (!file || idx >= file->num_grids) return 0;
+    return file->grids[idx].tree.is_point_data_grid ? 1 : 0;
+}
+
+int tvdb_grid_is_point_index(const tvdb_file_t *file, size_t idx) {
+    if (!file || idx >= file->num_grids) return 0;
+    return file->grids[idx].tree.is_point_index_grid ? 1 : 0;
+}
+
+const uint8_t *tvdb_grid_point_data_blob(const tvdb_file_t *file, size_t idx) {
+    if (!file || idx >= file->num_grids) return NULL;
+    return file->grids[idx].point_data_blob;
+}
+
+size_t tvdb_grid_point_data_blob_size(const tvdb_file_t *file, size_t idx) {
+    if (!file || idx >= file->num_grids) return 0;
+    return file->grids[idx].point_data_blob_size;
+}
+
+tvdb_status_t tvdb_grid_set_point_data_blob(tvdb_file_t *file, size_t idx,
+                                            const uint8_t *data, size_t size,
+                                            tvdb_error_t *err) {
+    if (!file || idx >= file->num_grids) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                        "grid index out of range");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+
+    tvdb_grid_t *g = &file->grids[idx];
+    if (!g->tree.is_point_data_grid) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                        "grid is not PointDataGrid");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (g->point_data_blob) {
+        tvdb__free(&file->alloc, g->point_data_blob, g->point_data_blob_size);
+        g->point_data_blob = NULL;
+        g->point_data_blob_size = 0;
+    }
+
+    if (!data || size == 0) return TVDB_OK;
+
+    g->point_data_blob = (uint8_t *)tvdb__alloc(&file->alloc, size);
+    if (!g->point_data_blob) {
+        tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    memcpy(g->point_data_blob, data, size);
+    g->point_data_blob_size = size;
+    return TVDB_OK;
 }
 
 /* ========================================================================== */
@@ -3657,9 +3820,35 @@ static tvdb_status_t tvdb__write_leaf_buffer(
     tvdb__sw_write(sw, leaf->value_mask.bits.data,
                    leaf->value_mask.bits.num_bytes);
 
-    return tvdb__write_mask_values(
+    tvdb_status_t st = tvdb__write_mask_values(
         sw, compression_flags, background, num_values, vt,
         &leaf->value_mask, leaf->data, half_precision, sw->alloc, err);
+    if (st != TVDB_OK) return st;
+
+    if (tree->is_point_index_grid) {
+        int64_t num_indices = (int64_t)leaf->num_point_indices;
+        tvdb__sw_write_i64(sw, num_indices);
+        if (num_indices > 0) {
+            if (!leaf->point_indices) {
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "PointIndex leaf missing index payload");
+                return TVDB_ERROR_INVALID_DATA;
+            }
+            tvdb__sw_write(sw, (const uint8_t *)leaf->point_indices,
+                           (size_t)num_indices * sizeof(int32_t));
+        }
+        int64_t aux_size = (int64_t)leaf->point_aux_data_size;
+        tvdb__sw_write_i64(sw, aux_size);
+        if (aux_size > 0) {
+            if (!leaf->point_aux_data) {
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "PointIndex leaf missing aux payload");
+                return TVDB_ERROR_INVALID_DATA;
+            }
+            tvdb__sw_write(sw, leaf->point_aux_data, (size_t)aux_size);
+        }
+    }
+    return TVDB_OK;
 }
 
 static tvdb_status_t tvdb__write_node_buffer(
@@ -3833,6 +4022,7 @@ static void tvdb__write_transform(tvdb__sw_t *sw, const tvdb_transform_t *x) {
 static tvdb_status_t tvdb__write_grid(
     tvdb__sw_t *sw, const tvdb_grid_t *grid, const tvdb_header_t *header,
     uint32_t compression_flags, tvdb_error_t *err) {
+    (void)header;
 
     /* Grid compression (v222+) */
     tvdb__sw_write_u32(sw, compression_flags);
@@ -3842,6 +4032,18 @@ static tvdb_status_t tvdb__write_grid(
 
     /* Transform */
     tvdb__write_transform(sw, &grid->transform);
+
+    if (grid->tree.is_point_data_grid ||
+        (grid->descriptor.grid_type &&
+         strstr(grid->descriptor.grid_type, "ptdataidx") != NULL)) {
+        if (!grid->point_data_blob || grid->point_data_blob_size == 0) {
+            tvdb__set_error(err, TVDB_ERROR_UNIMPLEMENTED,
+                            "PointDataGrid write requires point_data_blob payload");
+            return TVDB_ERROR_UNIMPLEMENTED;
+        }
+        tvdb__sw_write(sw, grid->point_data_blob, grid->point_data_blob_size);
+        return TVDB_OK;
+    }
 
     /* Instance grids share another grid's tree — no tree to write */
     if (grid->descriptor.instance_parent_name &&

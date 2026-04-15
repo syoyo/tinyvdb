@@ -535,6 +535,20 @@ static PyObject *VDBNode_get_data(PyObject *self, void *c) {
     Py_RETURN_NONE;
 }
 
+static PyObject *VDBNode_get_point_indices(PyObject *self, void *c) {
+    tvdb_tree_node_t *n = ((PyVDBNode *)self)->node;
+    if (n->type != TVDB_NODE_LEAF || !n->u.leaf.point_indices) Py_RETURN_NONE;
+    return PyBytes_FromStringAndSize((const char *)n->u.leaf.point_indices,
+                                     (Py_ssize_t)(n->u.leaf.num_point_indices * sizeof(int32_t)));
+}
+
+static PyObject *VDBNode_get_point_aux_data(PyObject *self, void *c) {
+    tvdb_tree_node_t *n = ((PyVDBNode *)self)->node;
+    if (n->type != TVDB_NODE_LEAF || !n->u.leaf.point_aux_data) Py_RETURN_NONE;
+    return PyBytes_FromStringAndSize((const char *)n->u.leaf.point_aux_data,
+                                     (Py_ssize_t)n->u.leaf.point_aux_data_size);
+}
+
 static PyObject *VDBNode_get_background(PyObject *self, void *c) {
     tvdb_tree_node_t *n = ((PyVDBNode *)self)->node;
     if (n->type != TVDB_NODE_ROOT) Py_RETURN_NONE;
@@ -547,6 +561,8 @@ static PyGetSetDef VDBNode_getset[] = {
     {"origin", VDBNode_get_origin, NULL, "Node origin", NULL},
     {"active_voxel_count", VDBNode_get_active_voxel_count, NULL, "Active voxels", NULL},
     {"data", VDBNode_get_data, NULL, "Raw leaf data or None", NULL},
+    {"point_indices", VDBNode_get_point_indices, NULL, "PointIndex leaf indices payload (bytes) or None", NULL},
+    {"point_aux_data", VDBNode_get_point_aux_data, NULL, "PointIndex leaf auxiliary payload (bytes) or None", NULL},
     {"background", VDBNode_get_background, NULL, "Root background or None", NULL},
     {NULL}
 };
@@ -716,18 +732,46 @@ static PyObject *VDBGrid_get_tree(PyObject *self, void *c) {
     return (PyObject *)t;
 }
 
+static PyObject *VDBGrid_get_is_point_data(PyObject *self, void *c) {
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    return PyBool_FromLong(g->tree.is_point_data_grid ? 1 : 0);
+}
+
+static PyObject *VDBGrid_get_is_point_index(PyObject *self, void *c) {
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    return PyBool_FromLong(g->tree.is_point_index_grid ? 1 : 0);
+}
+
+static PyObject *VDBGrid_point_data_blob(PyObject *self, PyObject *Py_UNUSED(args)) {
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    if (!g->tree.is_point_data_grid || !g->point_data_blob) Py_RETURN_NONE;
+    return PyBytes_FromStringAndSize((const char *)g->point_data_blob,
+                                     (Py_ssize_t)g->point_data_blob_size);
+}
+
+static PyObject *VDBGrid_set_point_data_blob(PyObject *self, PyObject *args);
+
 static PyGetSetDef VDBGrid_getset[] = {
     {"name", VDBGrid_get_name, NULL, "Grid name", NULL},
     {"type_name", VDBGrid_get_type_name, NULL, "Grid type name", NULL},
     {"metadata", VDBGrid_get_metadata, NULL, "Grid metadata", NULL},
     {"transform", VDBGrid_get_transform, NULL, "Grid transform", NULL},
     {"tree", VDBGrid_get_tree, NULL, "Grid tree", NULL},
+    {"is_point_data", VDBGrid_get_is_point_data, NULL, "Whether this grid is PointDataGrid", NULL},
+    {"is_point_index", VDBGrid_get_is_point_index, NULL, "Whether this grid is PointIndexGrid", NULL},
+    {NULL}
+};
+
+static PyMethodDef VDBGrid_methods[] = {
+    {"point_data_blob", VDBGrid_point_data_blob, METH_NOARGS, "Get opaque PointData payload as bytes"},
+    {"set_point_data_blob", VDBGrid_set_point_data_blob, METH_VARARGS, "Replace opaque PointData payload from bytes"},
     {NULL}
 };
 
 static PyType_Slot VDBGrid_slots[] = {
     {Py_tp_dealloc, VDBGrid_dealloc},
     {Py_tp_getset, VDBGrid_getset},
+    {Py_tp_methods, VDBGrid_methods},
     {0, NULL}
 };
 
@@ -748,6 +792,39 @@ typedef struct {
     int is_open;
     PyObject *bytes_ref;
 } PyVDBFile;
+
+static PyObject *VDBGrid_set_point_data_blob(PyObject *self, PyObject *args) {
+    PyVDBGrid *g = (PyVDBGrid *)self;
+    Py_buffer view;
+    if (!PyArg_ParseTuple(args, "y*", &view)) return NULL;
+    if (!g->file_ref) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_RuntimeError, "no file reference");
+        return NULL;
+    }
+    PyVDBFile *f = (PyVDBFile *)g->file_ref;
+    if (!f->is_open) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_RuntimeError, "file is closed");
+        return NULL;
+    }
+
+    Py_ssize_t idx = (Py_ssize_t)(g->grid - f->file.grids);
+    if (idx < 0 || (size_t)idx >= f->file.num_grids) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_IndexError, "grid index out of range");
+        return NULL;
+    }
+
+    tvdb_error_t err;
+    memset(&err, 0, sizeof(err));
+    tvdb_status_t st = tvdb_grid_set_point_data_blob(&f->file, (size_t)idx,
+                                                     (const uint8_t *)view.buf,
+                                                     (size_t)view.len, &err);
+    PyBuffer_Release(&view);
+    if (st != TVDB_OK) return raise_tvdb_status(st, &err);
+    Py_RETURN_NONE;
+}
 
 static void VDBFile_dealloc(PyObject *self) {
     PyVDBFile *f = (PyVDBFile *)self;

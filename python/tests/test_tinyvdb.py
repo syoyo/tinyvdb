@@ -8,7 +8,7 @@ import tinyvdb
 
 def test_version():
     assert hasattr(tinyvdb, "__version__")
-    assert tinyvdb.__version__ == "0.8.0"
+    assert tinyvdb.__version__ == "0.8.1"
 
 
 def test_constants():
@@ -173,6 +173,16 @@ class TestVDBFileIO:
             assert tree.num_nodes > 0
             node = tree.node(0)
             assert node.type in ("root", "internal", "leaf")
+
+    def test_point_grid_helpers_on_non_point_grid(self, sphere_path):
+        with tinyvdb.open(sphere_path) as f:
+            f.read_grids()
+            g = f.grid(0)
+            assert g.is_point_data is False
+            assert g.is_point_index is False
+            assert g.point_data_blob() is None
+            with pytest.raises(tinyvdb.VDBError):
+                g.set_point_data_blob(b"\x00\x01")
 
     def test_round_trip_bytes(self, sphere_path):
         with tinyvdb.open(sphere_path) as f:

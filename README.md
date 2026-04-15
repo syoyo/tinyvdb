@@ -30,6 +30,8 @@ TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, p
 * [x] BLOSC compression (built-in, using bundled LZ4 — no external blosc dependency)
 * [x] Active mask compression (per-node flags 0-6)
 * [x] Half-float (FP16) grid support
+* [x] PointIndexGrid (`Tree_ptidx32_*`) leaf payload read/write
+* [x] PointDataGrid (`Tree_ptdataidx32_*`) topology read + opaque point payload round-trip
 
 ### Mesh (`tinyvdb_mesh.h`)
 
