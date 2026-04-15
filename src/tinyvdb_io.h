@@ -3156,6 +3156,18 @@ static int tvdb__sw_write_value(tvdb__sw_t *sw, const tvdb_value_t *v) {
         case TVDB_VALUE_INT64:  return tvdb__sw_write_i64(sw, v->u.i64);
         case TVDB_VALUE_FLOAT:  return tvdb__sw_write_f32(sw, v->u.f);
         case TVDB_VALUE_DOUBLE: return tvdb__sw_write_f64(sw, v->u.d);
+        case TVDB_VALUE_VEC3I:
+            return tvdb__sw_write_i32(sw, v->u.vec3i[0]) &&
+                   tvdb__sw_write_i32(sw, v->u.vec3i[1]) &&
+                   tvdb__sw_write_i32(sw, v->u.vec3i[2]);
+        case TVDB_VALUE_VEC3F:
+            return tvdb__sw_write_f32(sw, v->u.vec3f[0]) &&
+                   tvdb__sw_write_f32(sw, v->u.vec3f[1]) &&
+                   tvdb__sw_write_f32(sw, v->u.vec3f[2]);
+        case TVDB_VALUE_VEC3D:
+            return tvdb__sw_write_f64(sw, v->u.vec3d[0]) &&
+                   tvdb__sw_write_f64(sw, v->u.vec3d[1]) &&
+                   tvdb__sw_write_f64(sw, v->u.vec3d[2]);
         default: return 0;
     }
 }
@@ -3190,7 +3202,11 @@ static tvdb_status_t tvdb__compress_and_write(
 
     if (compression_mask & TVDB_COMPRESS_BLOSC) {
         if (total_size == 0) {
-            tvdb__sw_write_i64(sw, -1);
+            /* OpenVDB's bloscToStream writes `-Int64(inBytes) = 0` for
+               zero-length payloads; tinyvdb used to write -1 here, which
+               OpenVDB then misreads as "expected a 0-byte chunk, got 1-byte".
+               Keep 0 so tinyvdb-written files round-trip through openvdb. */
+            tvdb__sw_write_i64(sw, 0);
             if (swapped) tvdb__free(alloc, swapped, total_size);
             return TVDB_OK;
         }
@@ -3206,7 +3222,10 @@ static tvdb_status_t tvdb__compress_and_write(
             src_data, total_size, dest, dest_cap,
             element_size, clevel > 0 ? clevel : 5, alloc);
         if (csize <= 0 || (size_t)csize >= total_size) {
-            tvdb__sw_write_i64(sw, -1);
+            /* OpenVDB's sentinel for "uncompressed follows" is
+               -Int64(inBytes); tinyvdb used to write -1 which openvdb
+               misreads as "expected 1-byte chunk". */
+            tvdb__sw_write_i64(sw, -(int64_t)total_size);
             tvdb__sw_write(sw, src_data, total_size);
         } else {
             tvdb__sw_write_i64(sw, (int64_t)csize);
@@ -3215,7 +3234,8 @@ static tvdb_status_t tvdb__compress_and_write(
         tvdb__free(alloc, dest, dest_cap);
     } else if (compression_mask & TVDB_COMPRESS_ZIP) {
         if (total_size == 0) {
-            tvdb__sw_write_i64(sw, -1);
+            /* Match openvdb's zip-path zero-length sentinel. */
+            tvdb__sw_write_i64(sw, 0);
             if (swapped) tvdb__free(alloc, swapped, total_size);
             return TVDB_OK;
         }
@@ -3229,7 +3249,7 @@ static tvdb_status_t tvdb__compress_and_write(
         }
         int zret = compress(dest, &dest_len, src_data, (uLong)total_size);
         if (zret != Z_OK || (size_t)dest_len >= total_size) {
-            tvdb__sw_write_i64(sw, -1);
+            tvdb__sw_write_i64(sw, -(int64_t)total_size);
             tvdb__sw_write(sw, src_data, total_size);
         } else {
             tvdb__sw_write_i64(sw, (int64_t)dest_len);
@@ -3246,7 +3266,7 @@ static tvdb_status_t tvdb__compress_and_write(
         }
         int zret = mz_compress(dest, &dest_len, src_data, (mz_ulong)total_size);
         if (zret != MZ_OK || (size_t)dest_len >= total_size) {
-            tvdb__sw_write_i64(sw, -1);
+            tvdb__sw_write_i64(sw, -(int64_t)total_size);
             tvdb__sw_write(sw, src_data, total_size);
         } else {
             tvdb__sw_write_i64(sw, (int64_t)dest_len);
@@ -3397,19 +3417,34 @@ static tvdb_status_t tvdb__write_mask_values(
             tvdb__sw_write(sw, inactive_val1, vsize);
     }
 
-    /* Write selection mask if needed */
+    /* Write selection mask if needed.
+
+       The reader's convention for inactive-value reconstruction is fixed
+       (see tvdb__read_mask_values):
+         MASK_AND_NO_INACTIVE_VALS  : val0 = -background, val1 = +background
+         MASK_AND_ONE_INACTIVE_VAL  : val0 = (one stored value), val1 = background
+         MASK_AND_TWO_INACTIVE_VALS : val0, val1 both stored explicitly
+       The analysis above may have swapped our local inactive_val0/inactive_val1
+       to put a "special" value first for storage, which silently breaks the
+       round-trip for the no-inactive-vals case (the local val1 ends up as
+       -background, but the reader will reconstruct it as +background). Re-pin
+       the local convention before building the selection mask so the mask we
+       emit matches what the reader will recompute. */
+    if (flag == TVDB_MASK_AND_NO_INACTIVE_VALS) {
+        memcpy(inactive_val0, neg_bg_bytes, vsize);
+        memcpy(inactive_val1, bg_bytes, vsize);
+    }
     if (flag == TVDB_MASK_AND_NO_INACTIVE_VALS ||
         flag == TVDB_MASK_AND_ONE_INACTIVE_VAL ||
         flag == TVDB_MASK_AND_TWO_INACTIVE_VALS) {
-        /* Build selection mask: ON where inactive value == val1 */
+        /* Build selection mask: ON where inactive value == val1 (= reader val1). */
         tvdb_nodemask_t sel;
         tvdb__nodemask_init(&sel);
         tvdb__nodemask_alloc(&sel, value_mask->log2dim, alloc);
         for (size_t i = 0; i < num_values; i++) {
             if (!tvdb__nodemask_is_on(value_mask, (int32_t)i)) {
                 const uint8_t *v = values + i * vsize;
-                if (tvdb__values_equal(v, inactive_val1, vsize) ||
-                    tvdb__values_equal(v, bg_bytes, vsize)) {
+                if (tvdb__values_equal(v, inactive_val1, vsize)) {
                     sel.bits.data[i / 8] |= (uint8_t)(1u << (i % 8));
                 }
             }
@@ -3447,6 +3482,18 @@ static tvdb_status_t tvdb__write_mask_values(
             memcpy(active_buf + idx * vsize, values + i * vsize, vsize);
             idx++;
         }
+    }
+
+    /* Mirror of the half-precision read asymmetry: OpenVDB's
+       HalfWriter::write has `if (count < 1) return;` at its top, so
+       half-precision writes emit NOTHING (not even the blosc size
+       header) when there are no active values. Skip the header here to
+       stay byte-compatible so half-precision files round-trip through
+       openvdb. */
+    if (is_half && write_count == 0) {
+        tvdb__free(alloc, active_buf, write_count * vsize);
+        if (half_buf) tvdb__free(alloc, half_buf, num_values * 2);
+        return TVDB_OK;
     }
 
     tvdb_status_t st = tvdb__compress_and_write(
@@ -3857,18 +3904,11 @@ tvdb_status_t tvdb_write_to_memory(const tvdb_file_t *file,
     /* Grid count */
     tvdb__sw_write_i32(&sw, (int32_t)file->num_grids);
 
-    /* First pass: write grid descriptor headers with placeholder offsets */
-    size_t *gd_offset_positions = NULL;
-    if (file->num_grids > 0) {
-        gd_offset_positions = (size_t *)tvdb__alloc(
-            &alloc, file->num_grids * sizeof(size_t));
-        if (!gd_offset_positions) {
-            tvdb__sw_destroy(&sw);
-            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
-            return TVDB_ERROR_OUT_OF_MEMORY;
-        }
-    }
-
+    /* Write each grid as a DESCRIPTOR immediately followed by its GRID DATA.
+       OpenVDB (and tinyvdb's own reader) interleave descriptors with data:
+       [desc0][grid0][desc1][grid1][...]. Emitting all descriptors up front
+       instead produces a file that neither tinyvdb nor openvdb can re-read
+       for multi-grid archives. */
     for (size_t i = 0; i < file->num_grids; i++) {
         const tvdb_grid_descriptor_t *gd = &file->grids[i].descriptor;
 
@@ -3892,39 +3932,27 @@ tvdb_status_t tvdb_write_to_memory(const tvdb_file_t *file,
         tvdb__sw_write_string(&sw, gd->instance_parent_name
                                      ? gd->instance_parent_name : "");
 
-        /* Record position for offset backpatching */
-        gd_offset_positions[i] = sw.len;
+        /* Record position of offset triple for backpatching */
+        size_t offsets_pos = sw.len;
         tvdb__sw_write_u64(&sw, 0); /* grid_byte_offset placeholder */
         tvdb__sw_write_u64(&sw, 0); /* block_byte_offset placeholder */
         tvdb__sw_write_u64(&sw, 0); /* end_byte_offset placeholder */
-    }
 
-    /* Second pass: write each grid's data and backpatch offsets */
-    for (size_t i = 0; i < file->num_grids; i++) {
         size_t grid_pos = sw.len;
 
         tvdb_status_t st = tvdb__write_grid(
             &sw, &file->grids[i], &file->header, compression_flags, err);
         if (st != TVDB_OK) {
-            tvdb__free(&alloc, gd_offset_positions,
-                       file->num_grids * sizeof(size_t));
             tvdb__sw_destroy(&sw);
             return st;
         }
 
         size_t end_pos = sw.len;
 
-        /* Backpatch offsets */
-        tvdb__sw_patch_u64(&sw, gd_offset_positions[i] + 0,
-                           (uint64_t)grid_pos);
-        tvdb__sw_patch_u64(&sw, gd_offset_positions[i] + 8,
-                           (uint64_t)grid_pos); /* block == grid for now */
-        tvdb__sw_patch_u64(&sw, gd_offset_positions[i] + 16,
-                           (uint64_t)end_pos);
+        tvdb__sw_patch_u64(&sw, offsets_pos + 0, (uint64_t)grid_pos);
+        tvdb__sw_patch_u64(&sw, offsets_pos + 8, (uint64_t)grid_pos);
+        tvdb__sw_patch_u64(&sw, offsets_pos + 16, (uint64_t)end_pos);
     }
-
-    tvdb__free(&alloc, gd_offset_positions,
-               file->num_grids * sizeof(size_t));
 
     /* Transfer ownership of buffer to caller */
     *out_data = sw.data;
