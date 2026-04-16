@@ -1924,7 +1924,11 @@ static tvdb_status_t tvdb__read_and_decompress(
     tvdb__sr_t *sr, uint8_t *dst_data, size_t element_size, size_t count,
     uint32_t compression_mask, tvdb_allocator_t *alloc, tvdb_error_t *err) {
 
-    size_t total_size = element_size * count;
+    size_t total_size = tvdb__safe_mul(element_size, count);
+    if (element_size > 0 && count > 0 && total_size == 0) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA, "Buffer size overflow");
+        return TVDB_ERROR_INVALID_DATA;
+    }
 
     if (compression_mask & TVDB_COMPRESS_BLOSC) {
         int64_t num_compressed;
@@ -3344,7 +3348,11 @@ static tvdb_status_t tvdb__compress_and_write(
     uint32_t compression_mask, int clevel, tvdb_allocator_t *alloc,
     tvdb_error_t *err) {
 
-    size_t total_size = element_size * count;
+    size_t total_size = tvdb__safe_mul(element_size, count);
+    if (element_size > 0 && count > 0 && total_size == 0) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA, "Buffer size overflow");
+        return TVDB_ERROR_INVALID_DATA;
+    }
 
     /* Endian-swap a copy if needed */
     uint8_t *swapped = NULL;

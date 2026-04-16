@@ -18,6 +18,7 @@
 // License: MIT
 //
 
+#include <cassert>
 #include <cstdint>
 #include <vector>
 
@@ -45,8 +46,14 @@ struct DenseGrid {
   float voxel_size;
   std::vector<float> data;  // nx * ny * nz, row-major (x fastest)
 
-  float& at(int x, int y, int z) { return data[x + nx * (y + ny * z)]; }
-  float  at(int x, int y, int z) const { return data[x + nx * (y + ny * z)]; }
+  float& at(int x, int y, int z) {
+    assert(x >= 0 && x < nx && y >= 0 && y < ny && z >= 0 && z < nz);
+    return data[x + nx * (y + ny * z)];
+  }
+  float at(int x, int y, int z) const {
+    assert(x >= 0 && x < nx && y >= 0 && y < ny && z >= 0 && z < nz);
+    return data[x + nx * (y + ny * z)];
+  }
 };
 
 // ---- API ----

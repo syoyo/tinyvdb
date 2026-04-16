@@ -282,45 +282,55 @@ static inline float SampleVecClamped(const DenseVecGrid& g, int x, int y, int z,
 // ============================================================================
 
 inline float CentralDiffX(const DenseGrid& g, int ix, int iy, int iz) {
+  assert(g.voxel_size > 0.0f);
   return (SampleClamped(g, ix+1, iy, iz) - SampleClamped(g, ix-1, iy, iz))
          * (0.5f / g.voxel_size);
 }
 inline float CentralDiffY(const DenseGrid& g, int ix, int iy, int iz) {
+  assert(g.voxel_size > 0.0f);
   return (SampleClamped(g, ix, iy+1, iz) - SampleClamped(g, ix, iy-1, iz))
          * (0.5f / g.voxel_size);
 }
 inline float CentralDiffZ(const DenseGrid& g, int ix, int iy, int iz) {
+  assert(g.voxel_size > 0.0f);
   return (SampleClamped(g, ix, iy, iz+1) - SampleClamped(g, ix, iy, iz-1))
          * (0.5f / g.voxel_size);
 }
 
 inline float ForwardDiffX(const DenseGrid& g, int ix, int iy, int iz) {
+  assert(g.voxel_size > 0.0f);
   return (SampleClamped(g, ix+1, iy, iz) - SampleClamped(g, ix, iy, iz))
          / g.voxel_size;
 }
 inline float ForwardDiffY(const DenseGrid& g, int ix, int iy, int iz) {
+  assert(g.voxel_size > 0.0f);
   return (SampleClamped(g, ix, iy+1, iz) - SampleClamped(g, ix, iy, iz))
          / g.voxel_size;
 }
 inline float ForwardDiffZ(const DenseGrid& g, int ix, int iy, int iz) {
+  assert(g.voxel_size > 0.0f);
   return (SampleClamped(g, ix, iy, iz+1) - SampleClamped(g, ix, iy, iz))
          / g.voxel_size;
 }
 
 inline float BackwardDiffX(const DenseGrid& g, int ix, int iy, int iz) {
+  assert(g.voxel_size > 0.0f);
   return (SampleClamped(g, ix, iy, iz) - SampleClamped(g, ix-1, iy, iz))
          / g.voxel_size;
 }
 inline float BackwardDiffY(const DenseGrid& g, int ix, int iy, int iz) {
+  assert(g.voxel_size > 0.0f);
   return (SampleClamped(g, ix, iy, iz) - SampleClamped(g, ix, iy-1, iz))
          / g.voxel_size;
 }
 inline float BackwardDiffZ(const DenseGrid& g, int ix, int iy, int iz) {
+  assert(g.voxel_size > 0.0f);
   return (SampleClamped(g, ix, iy, iz) - SampleClamped(g, ix, iy, iz-1))
          / g.voxel_size;
 }
 
 inline float LaplacianStencil(const DenseGrid& g, int ix, int iy, int iz) {
+  assert(g.voxel_size > 0.0f);
   float c = SampleClamped(g, ix, iy, iz);
   float inv_h2 = 1.0f / (g.voxel_size * g.voxel_size);
   return (SampleClamped(g, ix+1, iy, iz) + SampleClamped(g, ix-1, iy, iz)
@@ -786,6 +796,7 @@ void AdvectSemiLagrangian(const DenseGrid& field,
 // Compute Ax = -Laplacian(x) with Dirichlet (zero) boundary conditions.
 // Positive definite: diagonal = 6/h^2 > 0.
 static void ApplyNegLaplacian(const DenseGrid& x, DenseGrid* out) {
+  assert(x.voxel_size > 0.0f);
   const int nx = x.nx, ny = x.ny, nz = x.nz;
   const float inv_h2 = 1.0f / (x.voxel_size * x.voxel_size);
 
@@ -1030,6 +1041,7 @@ void ParticlesToSDF(const std::vector<Particle>& particles,
   grid->ox = bmin_x; grid->oy = bmin_y; grid->oz = bmin_z;
   grid->voxel_size = voxel_size;
 
+  assert(voxel_size > 0.0f);
   float bg = band_width * voxel_size;
   grid->data.assign(static_cast<size_t>(nx) * ny * nz, bg);
 

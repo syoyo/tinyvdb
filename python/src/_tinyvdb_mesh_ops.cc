@@ -116,8 +116,16 @@ int tvdb_py_sdf_to_mesh(const float *data, int nx, int ny, int nz,
     *out_nt = mesh.faces.size();
     *out_verts = (float *)malloc(*out_nv * sizeof(tvdb_mesh::Vec3f));
     *out_tris = (uint32_t *)malloc(*out_nt * sizeof(tvdb_mesh::Triangle));
-    if (*out_verts) memcpy(*out_verts, mesh.vertices.data(), *out_nv * sizeof(tvdb_mesh::Vec3f));
-    if (*out_tris) memcpy(*out_tris, mesh.faces.data(), *out_nt * sizeof(tvdb_mesh::Triangle));
+    if (!*out_verts || !*out_tris) {
+        free(*out_verts);
+        free(*out_tris);
+        *out_verts = NULL;
+        *out_tris = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_verts, mesh.vertices.data(), *out_nv * sizeof(tvdb_mesh::Vec3f));
+    memcpy(*out_tris, mesh.faces.data(), *out_nt * sizeof(tvdb_mesh::Triangle));
     return 0;
 }
 
@@ -144,8 +152,16 @@ int tvdb_py_make_manifold(const float *verts, size_t nv,
     *out_nt = output.faces.size();
     *out_verts = (float *)malloc(*out_nv * sizeof(tvdb_mesh::Vec3f));
     *out_tris = (uint32_t *)malloc(*out_nt * sizeof(tvdb_mesh::Triangle));
-    if (*out_verts) memcpy(*out_verts, output.vertices.data(), *out_nv * sizeof(tvdb_mesh::Vec3f));
-    if (*out_tris) memcpy(*out_tris, output.faces.data(), *out_nt * sizeof(tvdb_mesh::Triangle));
+    if (!*out_verts || !*out_tris) {
+        free(*out_verts);
+        free(*out_tris);
+        *out_verts = NULL;
+        *out_tris = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_verts, output.vertices.data(), *out_nv * sizeof(tvdb_mesh::Vec3f));
+    memcpy(*out_tris, output.faces.data(), *out_nt * sizeof(tvdb_mesh::Triangle));
     return 0;
 }
 
@@ -234,7 +250,11 @@ int tvdb_py_csg_union(const float *a_data, const float *b_data,
     tvdb_ops::CSGUnion(a, b, &result);
     size_t n = (size_t)nx * ny * nz;
     *out_data = (float *)malloc(n * sizeof(float));
-    if (*out_data) memcpy(*out_data, result.data.data(), n * sizeof(float));
+    if (!*out_data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_data, result.data.data(), n * sizeof(float));
     return 0;
 }
 
@@ -248,7 +268,11 @@ int tvdb_py_csg_intersection(const float *a_data, const float *b_data,
     tvdb_ops::CSGIntersection(a, b, &result);
     size_t n = (size_t)nx * ny * nz;
     *out_data = (float *)malloc(n * sizeof(float));
-    if (*out_data) memcpy(*out_data, result.data.data(), n * sizeof(float));
+    if (!*out_data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_data, result.data.data(), n * sizeof(float));
     return 0;
 }
 
@@ -262,7 +286,11 @@ int tvdb_py_csg_difference(const float *a_data, const float *b_data,
     tvdb_ops::CSGDifference(a, b, &result);
     size_t n = (size_t)nx * ny * nz;
     *out_data = (float *)malloc(n * sizeof(float));
-    if (*out_data) memcpy(*out_data, result.data.data(), n * sizeof(float));
+    if (!*out_data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_data, result.data.data(), n * sizeof(float));
     return 0;
 }
 
@@ -294,7 +322,11 @@ int tvdb_py_gradient(const float *data, int nx, int ny, int nz,
     tvdb_ops::Gradient(scalar, &grad);
     size_t n = (size_t)nx * ny * nz * 3;
     *out_data = (float *)malloc(n * sizeof(float));
-    if (*out_data) memcpy(*out_data, grad.data.data(), n * sizeof(float));
+    if (!*out_data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_data, grad.data.data(), n * sizeof(float));
     return 0;
 }
 
@@ -306,7 +338,11 @@ int tvdb_py_divergence(const float *vec_data, int nx, int ny, int nz,
     tvdb_ops::Divergence(vec, &div_grid);
     size_t n = (size_t)nx * ny * nz;
     *out_data = (float *)malloc(n * sizeof(float));
-    if (*out_data) memcpy(*out_data, div_grid.data.data(), n * sizeof(float));
+    if (!*out_data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_data, div_grid.data.data(), n * sizeof(float));
     return 0;
 }
 
@@ -318,7 +354,11 @@ int tvdb_py_laplacian(const float *data, int nx, int ny, int nz,
     tvdb_ops::Laplacian(scalar, &lap);
     size_t n = (size_t)nx * ny * nz;
     *out_data = (float *)malloc(n * sizeof(float));
-    if (*out_data) memcpy(*out_data, lap.data.data(), n * sizeof(float));
+    if (!*out_data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_data, lap.data.data(), n * sizeof(float));
     return 0;
 }
 
@@ -330,7 +370,11 @@ int tvdb_py_curl(const float *vec_data, int nx, int ny, int nz,
     tvdb_ops::Curl(vec, &curl_grid);
     size_t n = (size_t)nx * ny * nz * 3;
     *out_data = (float *)malloc(n * sizeof(float));
-    if (*out_data) memcpy(*out_data, curl_grid.data.data(), n * sizeof(float));
+    if (!*out_data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_data, curl_grid.data.data(), n * sizeof(float));
     return 0;
 }
 
@@ -348,14 +392,18 @@ int tvdb_py_advect(const float *field_data, const float *vel_data,
     tvdb_ops::AdvectSemiLagrangian(field, vel, dt, &result);
     size_t n = (size_t)nx * ny * nz;
     *out_data = (float *)malloc(n * sizeof(float));
-    if (*out_data) memcpy(*out_data, result.data.data(), n * sizeof(float));
+    if (!*out_data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_data, result.data.data(), n * sizeof(float));
     return 0;
 }
 
 int tvdb_py_solve_poisson(const float *rhs_data, int nx, int ny, int nz,
-                          float voxel_size, float ox, float oy, float oz,
-                          int max_iters, float tolerance,
-                          float **out_data, int *out_iters) {
+                           float voxel_size, float ox, float oy, float oz,
+                           int max_iters, float tolerance,
+                           float **out_data, int *out_iters) {
     tvdb_mesh::DenseGrid rhs = make_grid(rhs_data, nx, ny, nz, voxel_size, ox, oy, oz);
     tvdb_mesh::DenseGrid x;
     x.nx = nx; x.ny = ny; x.nz = nz;
@@ -365,7 +413,11 @@ int tvdb_py_solve_poisson(const float *rhs_data, int nx, int ny, int nz,
     *out_iters = tvdb_ops::SolvePoisson(rhs, &x, max_iters, tolerance);
     size_t n = (size_t)nx * ny * nz;
     *out_data = (float *)malloc(n * sizeof(float));
-    if (*out_data) memcpy(*out_data, x.data.data(), n * sizeof(float));
+    if (!*out_data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
+    memcpy(*out_data, x.data.data(), n * sizeof(float));
     return 0;
 }
 
@@ -428,6 +480,14 @@ int tvdb_py_volume_to_spheres(const float *data, int nx, int ny, int nz,
     *out_count = spheres.size();
     *out_centers = (float *)malloc(*out_count * 3 * sizeof(float));
     *out_radii = (float *)malloc(*out_count * sizeof(float));
+    if (!*out_centers || !*out_radii) {
+        free(*out_centers);
+        free(*out_radii);
+        *out_centers = NULL;
+        *out_radii = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
     for (size_t i = 0; i < spheres.size(); i++) {
         (*out_centers)[i*3+0] = spheres[i].center.x;
         (*out_centers)[i*3+1] = spheres[i].center.y;
@@ -455,8 +515,19 @@ int tvdb_py_fracture(const float *vol_data, int nx, int ny, int nz,
     *out_num_pieces = (int)pieces.size();
     size_t n = (size_t)nx * ny * nz;
     *out_pieces = (float **)malloc(pieces.size() * sizeof(float *));
+    if (!*out_pieces) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+        return -1;
+    }
     for (size_t i = 0; i < pieces.size(); i++) {
         (*out_pieces)[i] = (float *)malloc(n * sizeof(float));
+        if (!(*out_pieces)[i]) {
+            for (size_t j = 0; j < i; j++) free((*out_pieces)[j]);
+            free(*out_pieces);
+            *out_pieces = NULL;
+            snprintf(s_error_msg, sizeof(s_error_msg), "malloc failed");
+            return -1;
+        }
         memcpy((*out_pieces)[i], pieces[i].data.data(), n * sizeof(float));
     }
     return 0;

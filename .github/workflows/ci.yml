@@ -25,6 +25,22 @@ jobs:
         run: |
           ./build/vdbdump --help || true
           ./build/vdbrender --help || true
+      - name: Run tests
+        run: |
+          # Run loader_test with sample VDB files
+          for f in sphere.vdb smoke.vdb cube.vdb bunny.vdb; do
+            if [ -f "$f" ]; then
+              echo "Testing $f..."
+              ./loader_test "$f" || echo "Failed: $f"
+            fi
+          done
+          # Run vdbdump on sample files
+          for f in sphere.vdb smoke.vdb; do
+            if [ -f "$f" ]; then
+              echo "vdbdump $f..."
+              ./build/vdbdump "$f" | head -20
+            fi
+          done
 
   # ---------------------------------------------------------------------------
   #  Linux arm64 (cross-compile)
@@ -68,6 +84,15 @@ jobs:
         run: |
           ./build/vdbdump --help || true
           ./build/vdbrender --help || true
+      - name: Run tests
+        run: |
+          # Run loader_test with sample VDB files
+          for f in sphere.vdb smoke.vdb cube.vdb bunny.vdb; do
+            if [ -f "$f" ]; then
+              echo "Testing $f..."
+              ./loader_test "$f" || echo "Failed: $f"
+            fi
+          done
 
   # ---------------------------------------------------------------------------
   #  Windows x64 (MSVC)
@@ -85,6 +110,15 @@ jobs:
       - name: Verify binaries
         run: |
           dir build\Release\*.exe
+      - name: Run tests
+        run: |
+          # Run loader_test with sample VDB files
+          ForEach ($f in @("sphere.vdb", "smoke.vdb")) {
+            if (Test-Path $f) {
+              Write-Host "Testing $f..."
+              .\loader_test.exe $f
+            }
+          }
 
   # ---------------------------------------------------------------------------
   #  Windows arm64 (MSVC cross-compile)
