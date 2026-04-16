@@ -1,6 +1,6 @@
 # tinyvdb
 
-Lightweight Python bindings for [TinyVDB](https://github.com/syoyo/tinyvdb) — a header-only C/C++ library for OpenVDB file I/O, mesh-to-SDF conversion, and grid operations. No OpenVDB dependency required.
+Lightweight Python bindings for [TinyVDB](https://github.com/syoyo/tinyvdb) — a header-only C/C++ library for OpenVDB and NanoVDB file I/O, mesh-to-SDF conversion, and grid operations. No OpenVDB dependency required.
 
 Built with the Python C Stable API (abi3) for broad compatibility: one wheel per platform works across Python 3.11+.
 
@@ -39,6 +39,43 @@ with tinyvdb.open("smoke.vdb") as f:
     tree = grid.tree
     node = tree.node(0)
     print(node.type, node.origin)
+```
+
+### Read a NanoVDB file
+
+```python
+import tinyvdb
+
+with tinyvdb.NanoVDBFile("sphere.nvdb") as f:
+    print(f.grid_count, "grids")
+    for i in range(f.grid_count):
+        print(f"  Grid {i}: {f.grid_name(i)}")
+        print(f"  Type: {f.grid_type(i)}")
+        print(f"  Class: {f.grid_class(i)}")
+        print(f"  Voxel size: {f.voxel_size(i)}")
+        print(f"  BBox: {f.bbox(i)}")
+        print(f"  World BBox: {f.world_bbox(i)}")
+        print(f"  Node counts: {f.node_counts(i)}")
+        print(f"  Active voxels: {f.active_voxel_count(i)}")
+```
+
+### NanoVDB utilities
+
+```python
+import tinyvdb
+
+# Node sizes
+leaf_size = tinyvdb.leaf_node_size()          # Default: Float
+lower_size = tinyvdb.lower_node_size()         # Default: Float
+upper_size = tinyvdb.upper_node_size()         # Default: Float
+
+# Value sizes
+float_size = tinyvdb.value_size()              # 4 bytes
+vec3f_size = tinyvdb.value_size(tinyvdb.GRID_TYPE_VEC3F)  # 12 bytes
+double_size = tinyvdb.value_size(tinyvdb.GRID_TYPE_DOUBLE) # 8 bytes
+
+# Grid type names
+name = tinyvdb.grid_type_name(tinyvdb.GRID_TYPE_FLOAT)  # "Float"
 ```
 
 ### Load from bytes / save round-trip
@@ -172,6 +209,8 @@ arr = np.frombuffer(grid, dtype=np.float32).reshape(grid.shape)
 
 ### Constants
 
+#### Compression
+
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `COMPRESS_NONE` | 0 | No compression |
@@ -180,6 +219,33 @@ arr = np.frombuffer(grid, dtype=np.float32).reshape(grid.shape)
 | `COMPRESS_BLOSC` | 4 | BLOSC (LZ4) |
 | `SIGN_FLOOD_FILL` | 0 | Exterior flood fill sign method |
 | `SIGN_SWEEP` | 1 | Directional sweep sign method |
+
+#### NanoVDB Codecs
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `CODEC_NONE` | 0 | No compression |
+| `CODEC_ZIP` | 1 | ZIP compression |
+| `CODEC_BLOSC` | 2 | BLOSC compression |
+
+#### NanoVDB Grid Types
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `GRID_TYPE_FLOAT` | 1 | 32-bit float |
+| `GRID_TYPE_DOUBLE` | 2 | 64-bit double |
+| `GRID_TYPE_INT32` | 4 | 32-bit integer |
+| `GRID_TYPE_INT64` | 5 | 64-bit integer |
+| `GRID_TYPE_VEC3F` | 6 | 3D float vector |
+| `GRID_TYPE_VEC3D` | 7 | 3D double vector |
+
+#### NanoVDB Grid Classes
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `GRID_CLASS_LEVEL_SET` | 1 | Level set |
+| `GRID_CLASS_FOG_VOLUME` | 2 | Fog volume |
+| `GRID_CLASS_POINT_DATA` | 6 | Point data |
 
 ## Supported VDB versions
 

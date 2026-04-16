@@ -47,6 +47,11 @@ if(NOT TINYVDB_USE_SYSTEM_ZLIB)
 endif()
 
 add_library(tinyvdb STATIC ${TINYVDB_C_SOURCES})
+
+# NanoVDB support library
+add_library(tinyvdb_nanovdb STATIC ${PROJECT_SOURCE_DIR}/src/tinyvdb_nanovdb.c)
+target_include_directories(tinyvdb_nanovdb PUBLIC ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(tinyvdb_nanovdb PRIVATE tinyvdb)
 target_include_directories(tinyvdb PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(tinyvdb PRIVATE TINYVDB_IO_IMPLEMENTATION MINIZ_NO_STDIO)
 
@@ -96,6 +101,8 @@ endif()
 # Examples
 if(TINYVDB_BUILD_EXAMPLES)
   add_subdirectory(examples/vdbdump)
+  add_subdirectory(examples/nanovdbdump)
+  add_subdirectory(examples/nanovdb_test)
 endif()
 
 # vdbrender (volume path tracer)

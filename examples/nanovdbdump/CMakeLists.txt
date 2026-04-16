@@ -1,0 +1,2 @@
+add_executable(nanovdbdump nanovdbdump.cc)
+target_link_libraries(nanovdbdump PRIVATE tinyvdb_nanovdb)

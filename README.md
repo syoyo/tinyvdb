@@ -11,6 +11,7 @@ TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, p
 | Header | Language | Description |
 |--------|----------|-------------|
 | `tinyvdb_io.h` | C11 | OpenVDB file I/O with custom memory allocator support |
+| `tinyvdb_nanovdb.h` | C11 | NanoVDB file I/O (read-only), GPU-friendly sparse volume format |
 | `tinyvdb_mesh.h` | C++11 | Mesh-to-SDF, marching cubes, manifold preprocessing |
 | `tinyvdb_ops.h` | C++11 | Grid operations: morphology, filtering, CSG, differential operators, advection, ray tracing, fracture |
 
@@ -32,6 +33,17 @@ TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, p
 * [x] Half-float (FP16) grid support
 * [x] PointIndexGrid (`Tree_ptidx32_*`) leaf payload read/write
 * [x] PointDataGrid (`Tree_ptdataidx32_*`) topology read + opaque point payload round-trip
+
+### NanoVDB I/O (`tinyvdb_nanovdb.h`)
+
+* [x] Read NanoVDB files (version 32+)
+* [x] Write NanoVDB files (raw data serialization)
+* [x] Support for all grid types (Float, Double, Vec3f, Int32, etc.)
+* [x] Support for compressed files (ZIP, BLOSC)
+* [x] Grid metadata access (voxel size, bounding box, node counts)
+* [x] Endianness handling (little and big endian)
+* [x] Memory buffer I/O support
+* [x] Node size calculation utilities
 
 ### Mesh (`tinyvdb_mesh.h`)
 
@@ -118,6 +130,33 @@ tvdb_status_t st = tvdb_write_to_memory(&file,
                                         &data, &data_size, &err);
 /* ... use data ... */
 free(data);
+```
+
+### NanoVDB I/O library
+
+```c
+/* In exactly one .c or .cc file: */
+#define TINYVDB_NANOVDB_IMPLEMENTATION
+#include "tinyvdb_nanovdb.h"
+```
+
+#### Reading a NanoVDB file
+
+```c
+tvdb_nanovdb_file_t file;
+tvdb_error_t err;
+memset(&err, 0, sizeof(err));
+
+tvdb_status_t st = tvdb_nanovdb_file_open(&file, "input.nvdb", NULL, &err);
+if (st != TVDB_OK) { /* handle error */ }
+
+for (size_t i = 0; i < tvdb_nanovdb_grid_count(&file); i++) {
+    printf("Grid: %s  Type: %s\n",
+           tvdb_nanovdb_grid_name(&file, i),
+           tvdb_nanovdb_grid_type_name(tvdb_nanovdb_grid_type(&file, i)));
+}
+
+tvdb_nanovdb_file_close(&file);
 ```
 
 #### Custom allocator
@@ -209,8 +248,9 @@ $ make
 | Option | Default | Description |
 |--------|---------|-------------|
 | `TINYVDB_USE_SYSTEM_ZLIB` | `OFF` | Use system zlib instead of bundled miniz |
-| `TINYVDB_BUILD_EXAMPLES` | `ON` | Build the vdbdump example |
+| `TINYVDB_BUILD_EXAMPLES` | `ON` | Build vdbdump and nanovdbdump examples |
 | `TINYVDB_BUILD_VDBRENDER` | `ON` | Build the vdbrender volume path tracer |
+| `TINYVDB_BUILD_PYTHON` | `OFF` | Build Python extension |
 
 ## vdbdump example
 
@@ -240,6 +280,86 @@ Write a copy with `--write` or `--write-mmap`:
 ```
 $ ./vdbdump input.vdb --write output.vdb
 $ ./vdbdump input.vdb --write-mmap output_mmap.vdb
+```
+
+## nanovdbdump example
+
+A command-line tool that reads a NanoVDB file and prints its structure:
+
+```
+$ ./nanovdbdump input.nvdb --verbose
+File: input.nvdb
+  NanoVDB version: 32
+  Grids: 1
+  Codec: blosc
+
+Grid[0]: "surface"
+  Type: Float
+  Class: LevelSet
+  Grid size: 123456 bytes
+  Voxel size: (0.1, 0.1, 0.1)
+  World bbox: [(0, 0, 0), (100, 100, 100)]
+  Index bbox: [(0, 0, 0), (999, 999, 999)]
+  Active voxels: 123456
+  Nodes: 10 leaf, 5 lower, 2 upper
+  Tiles: 0 level0, 0 level1, 0 level2
+```
+
+## Python bindings
+
+Install the Python extension:
+
+```bash
+pip install tinyvdb
+```
+
+Or build from source:
+
+```bash
+cd python && pip install .
+```
+
+Usage:
+
+```python
+import tinyvdb
+
+# Open a NanoVDB file
+with tinyvdb.NanoVDBFile("input.nvdb") as f:
+    print(f"Grids: {f.grid_count()}")
+    for i in range(f.grid_count()):
+        print(f"Grid {i}: {f.grid_name(i)}")
+        print(f"  Type: {f.grid_type(i)}")
+        print(f"  BBox: {f.bbox(i)}")
+        print(f"  Voxel size: {f.voxel_size(i, 0)}")
+
+# Get a voxel value
+val = f.get(0, 100, 100, 100)
+print(f"Value at (100, 100, 100): {val}")
+```
+
+Writing:
+
+```python
+# Save to file
+f.save("output.nvdb", codec=tinyvdb.CODEC_BLOSC)
+
+# Write to bytes
+data = f.to_bytes(codec=tinyvdb.CODEC_ZIP)
+```
+
+Utility functions:
+
+```python
+import tinyvdb
+
+# Get node sizes
+leaf_size = tinyvdb.leaf_node_size()      # Default: Float
+leaf_size = tinyvdb.leaf_node_size(tinyvdb.GRID_TYPE_DOUBLE)
+
+# Get value size
+val_size = tinyvdb.value_size()            # 4 for Float
+val_size = tinyvdb.value_size(tinyvdb.GRID_TYPE_VEC3F)  # 12
 ```
 
 ## Notes

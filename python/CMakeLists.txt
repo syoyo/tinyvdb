@@ -21,3 +21,16 @@ set_source_files_properties(src/_tinyvdb_mesh_ops.cc PROPERTIES
 )
 
 install(TARGETS _tinyvdb DESTINATION tinyvdb)
+
+# NanoVDB bindings
+Python3_add_library(_tinyvdb_nanovdb MODULE WITH_SOABI USE_SABI 3.11
+    src/_tinyvdb_nanovdb.cc
+)
+
+target_link_libraries(_tinyvdb_nanovdb PRIVATE tinyvdb_nanovdb)
+target_include_directories(_tinyvdb_nanovdb PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+install(TARGETS _tinyvdb_nanovdb DESTINATION tinyvdb)
