@@ -1,5 +1,5 @@
 #if defined(TINYVDB_IO_USE_SYSTEM_ZLIB)
-// or inclur your own zlib header here.
+// or include your own zlib header here.
 #include <zlib.h>
 #endif
 
