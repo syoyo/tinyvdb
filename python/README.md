@@ -1,6 +1,6 @@
 # tinyvdb
 
-Lightweight Python bindings for [TinyVDB](https://github.com/syoyo/tinyvdb) — a header-only C/C++ library for OpenVDB and NanoVDB file I/O, mesh-to-SDF conversion, and grid operations. No OpenVDB dependency required.
+Lightweight Python bindings for [TinyVDB](https://github.com/syoyo/tinyvdb) — a lightweight C/C++ library for OpenVDB and NanoVDB file I/O, mesh-to-SDF conversion, and grid operations. No OpenVDB dependency required.
 
 Built with the Python C Stable API (abi3) for broad compatibility: one wheel per platform works across Python 3.11+.
 

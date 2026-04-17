@@ -7,7 +7,7 @@ Python3_add_library(_tinyvdb MODULE WITH_SOABI USE_SABI 3.11
     src/_tinyvdb_mesh_ops.cc
 )
 
-target_link_libraries(_tinyvdb PRIVATE tinyvdb)
+target_link_libraries(_tinyvdb PRIVATE tinyvdb tinyvdb_mesh_ops)
 target_include_directories(_tinyvdb PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src

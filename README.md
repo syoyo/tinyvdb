@@ -1,8 +1,8 @@
-# TinyVDB, header-only C/C++ VDB library
+# TinyVDB, lightweight C/C++ VDB library
 
 [![PyPI](https://img.shields.io/pypi/v/tinyvdb)](https://pypi.org/project/tinyvdb/)
 
-TinyVDB is a collection of header-only C/C++ libraries for working with OpenVDB data. It provides lightweight VDB file I/O, mesh-to-SDF conversion, grid operations, and more — without depending on the full OpenVDB library.
+TinyVDB provides lightweight C/C++ libraries for working with OpenVDB data. It includes VDB file I/O, mesh-to-SDF conversion, grid operations, and more — without depending on the full OpenVDB library.
 
 TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, physics simulation, and any project that needs lightweight VDB functionality.
 
@@ -12,8 +12,8 @@ TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, p
 |--------|----------|-------------|
 | `tinyvdb_io.h` | C11 | OpenVDB file I/O with custom memory allocator support |
 | `tinyvdb_nanovdb.h` | C11 | NanoVDB file I/O (read-only), GPU-friendly sparse volume format |
-| `tinyvdb_mesh.h` | C++11 | Mesh-to-SDF, marching cubes, manifold preprocessing |
-| `tinyvdb_ops.h` | C++11 | Grid operations: morphology, filtering, CSG, differential operators, advection, ray tracing, fracture |
+| `tinyvdb_mesh.h` + `tinyvdb_mesh.cc` | C++11 | Mesh-to-SDF, marching cubes, manifold preprocessing |
+| `tinyvdb_ops.h` + `tinyvdb_ops.cc` | C++11 | Grid operations: morphology, filtering, CSG, differential operators, advection, ray tracing, fracture |
 
 ## Features
 
@@ -176,11 +176,7 @@ The allocator passes `old_size` to `realloc_fn` and `size` to `free_fn`, enablin
 
 ### Mesh library
 
-```cpp
-// In exactly one .cc file:
-#define TINYVDB_MESH_IMPLEMENTATION
-#include "tinyvdb_mesh.h"
-```
+Include `tinyvdb_mesh.h` and compile/link `src/tinyvdb_mesh.cc`.
 
 ```cpp
 // Mesh to SDF
@@ -197,11 +193,7 @@ tvdb_mesh::MakeManifold(input, resolution, isovalue, &output);
 
 ### Grid operations
 
-```cpp
-// In exactly one .cc file:
-#define TINYVDB_OPS_IMPLEMENTATION
-#include "tinyvdb_ops.h"
-```
+Include `tinyvdb_ops.h` and compile/link `src/tinyvdb_ops.cc`.
 
 ```cpp
 // CSG union of two SDF grids

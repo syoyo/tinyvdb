@@ -48,6 +48,16 @@ endif()
 
 add_library(tinyvdb STATIC ${TINYVDB_C_SOURCES})
 
+# Mesh/ops C++ helper library
+add_library(tinyvdb_mesh_ops STATIC
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_mesh.cc
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_ops.cc)
+target_include_directories(tinyvdb_mesh_ops PUBLIC ${PROJECT_SOURCE_DIR}/src)
+set_target_properties(tinyvdb_mesh_ops PROPERTIES
+  CXX_STANDARD 11
+  CXX_STANDARD_REQUIRED ON
+  CXX_EXTENSIONS OFF)
+
 # NanoVDB support library
 add_library(tinyvdb_nanovdb STATIC ${PROJECT_SOURCE_DIR}/src/tinyvdb_nanovdb.c)
 target_include_directories(tinyvdb_nanovdb PUBLIC ${PROJECT_SOURCE_DIR}/src)
@@ -58,6 +68,7 @@ target_compile_definitions(tinyvdb PRIVATE TINYVDB_IO_IMPLEMENTATION MINIZ_NO_ST
 # When building the Python extension, the static lib must be PIC
 if(TINYVDB_BUILD_PYTHON)
     set_target_properties(tinyvdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    set_target_properties(tinyvdb_mesh_ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
 # Force system zlib for iOS

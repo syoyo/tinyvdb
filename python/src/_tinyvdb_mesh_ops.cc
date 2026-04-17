@@ -5,10 +5,7 @@
  * All data is exchanged via flat arrays (float*, uint32_t*) and sizes.
  */
 
-#define TINYVDB_MESH_IMPLEMENTATION
 #include "tinyvdb_mesh.h"
-
-#define TINYVDB_OPS_IMPLEMENTATION
 #include "tinyvdb_ops.h"
 
 #include <cstring>

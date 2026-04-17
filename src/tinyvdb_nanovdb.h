@@ -492,6 +492,7 @@ void tvdb_projected_gaussian_destroy(tvdb_projected_gaussian_t *gaussians);
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
+#include <math.h>
 
 #ifndef TVDB_ASSERT
 #define TVDB_ASSERT(x) assert(x)
