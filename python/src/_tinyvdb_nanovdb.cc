@@ -21,9 +21,14 @@
 
 static struct PyModuleDef tvdb_nanovdb_module = {
     PyModuleDef_HEAD_INIT,
-    .m_name = "_tinyvdb_nanovdb",
-    .m_doc = "NanoVDB support for tinyvdb",
-    .m_size = -1,
+    "_tinyvdb_nanovdb",
+    "NanoVDB support for tinyvdb",
+    -1,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
 };
 
 /* ======================================================================== */
@@ -279,11 +284,11 @@ static PyType_Slot NanoVDBFile_slots[] = {
 };
 
 static PyType_Spec NanoVDBFile_spec = {
-    .name = "_tinyvdb_nanovdb.NanoVDBFile",
-    .basicsize = sizeof(NanoVDBFile),
-    .itemsize = 0,
-    .flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
-    .slots = NanoVDBFile_slots,
+    "_tinyvdb_nanovdb.NanoVDBFile",
+    sizeof(NanoVDBFile),
+    0,
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE,
+    NanoVDBFile_slots,
 };
 
 /* ======================================================================== */
@@ -414,11 +419,11 @@ static PyType_Slot GaussianSplat_slots[] = {
 };
 
 static PyType_Spec GaussianSplat_spec = {
-    .name = "_tinyvdb_nanovdb.GaussianSplat",
-    .basicsize = sizeof(GaussianSplat),
-    .itemsize = 0,
-    .flags = Py_TPFLAGS_DEFAULT,
-    .slots = GaussianSplat_slots,
+    "_tinyvdb_nanovdb.GaussianSplat",
+    sizeof(GaussianSplat),
+    0,
+    Py_TPFLAGS_DEFAULT,
+    GaussianSplat_slots,
 };
 
 /* ======================================================================== */
