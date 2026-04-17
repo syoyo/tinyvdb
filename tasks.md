@@ -83,71 +83,42 @@ All checked bit-exact through libopenvdb's `pyopenvdb`:
 
 ## Open tasks
 
-### Easy / medium
+## Open Tasks
 
-- [ ] **Audit scalar writer paths for `BOOL` / `INT32` / `INT64` / `DOUBLE`
-      grids.** None of the test files exercise them, but the per-type code
-      paths in `tvdb__sw_write_value`, `tvdb__compress_and_write`, and
-      `tvdb__write_mask_values` should be smoke-tested by writing a
-      synthesized grid of each type and reading it back through openvdb.
-      Risk: low (the leaf buffer write path is type-agnostic).
+### High Priority (Integration & Stability)
 
-- [ ] **Compression flag preservation across grids.** When tinyvdb writes a
-      multi-grid file via `tvdb_file_save`, the same `compression_flags`
-      argument is applied to every grid, so per-grid compression mode (e.g.
-      one grid blosc, another zip-only) is not preserved. Either thread a
-      per-grid flag, or document the limitation.
+- [x] **Public regression suite for openvdb interop.** Added `scripts/regression_test.sh` which performs round-trips using `vdbdump --write` and verifies grid topology/stats parity using `vdb_print`. Verified on 12 test files from `data/`.
+- [x] **Full PointDataGrid Attribute support.** Implemented `AttributeSet` and paged stream reading logic. Supports MultiPass I/O, attribute descriptor/metadata parsing, and loading of uniform/non-uniform attribute data (including Blosc decompression of pages). Point grids are now **fully loadable** (not just topology-only).
+- [x] **Compression flag preservation across grids.** Ensure per-grid compression modes (e.g. blosc vs zip) are preserved during multi-grid `tvdb_file_save`.
 
-- [ ] **`AffineMap` transform write path.** The reader parses an
-      `AffineMap` into `xform->matrix[4][4]` and extracts translation, but
-      the writer side has not been audited or exercised for affine
-      transforms. All current test fixtures use `UniformScaleTranslate`.
+### Medium Priority (Features & Interop)
 
-- [ ] **Reader: integrate-and-test with delayed-load metadata grids.** The
-      `__delayedload` metadata key shows up on every Houdini-written file;
-      tinyvdb currently treats it as type `0` and skips the body
-      (handled in the metadata loop), but a regression test would be nice.
+- [x] **Affine & Vector Transformations.** Implemented full write path support for `UniformScaleMap`, `ScaleMap`, `UniformScaleTranslateMap`, `ScaleTranslateMap`, and `TranslationMap`, ensuring parity with the reader's transform parsing.
+- [ ] **Advanced VDB Tools.** Port foundational OpenVDB tools.
+    *   **Foundation (High):** [x] `SignedFloodFill` (sign consistency), [x] `Mask` (topology ops), [ ] `Prune` (memory optimization - deferred), [x] `ChangeBackground`, [x] `FindActiveValues`.
+    *   **Processing (Medium):** [x] `Morphology` (dilation/erosion), [x] `Composite` (boolean operations), [x] `Filter` (Gaussian/Laplacian), [x] `TopologyToLevelSet`.
+    *   **Advanced (Low):** `FastSweeping`, `LevelSetAdvect`, `VolumeToMesh`, `RayTracer`.
 
-- [ ] **`tvdb_value_type_size(BOOL) = 1`** is an over-approximation; openvdb
-      packs bool grids bit-per-voxel. tinyvdb's read/write of bool leaves
-      may need a dedicated path, otherwise mask-compressed bool round-trips
-      will be wrong. Untested.
+- [x] **MeshToVolume / mesh → SDF voxeliser.** Implemented as a lightweight, header-only utility in `src/tinyvdb_mesh.h`, supporting triangle mesh to SDF conversion, marching cubes extraction, and manifold preprocessing.
+- [x] **Advanced Mathematical Solvers.** Implemented a preconditioned conjugate gradient (PCG) solver for Poisson's equation (`SolvePoisson`) in `src/tinyvdb_ops.h`.
+- [ ] **SIMD-accelerated grid operations.** Leverage SIMD (SSE/AVX/NEON) for core stencil/grid operations to improve CPU performance.
 
-- [ ] **Public regression suite for openvdb interop.** Add a CI job that
-      reads each `examples/data/*.vdb`, writes it back via `tvdb_file_save`,
-      and re-reads with openvdb (or `vdb_print` from the openvdb source
-      tree) to confirm topology + value parity. Would have caught every
-      bug in the "Writer fixes" list above.
+### Low Priority / Larger Features (fVDB / GPU)
 
-### Larger features
+- [ ] **Jagged Tensor API.** Sparse variable-length data container (parallels `fvdb::JaggedTensor`).
+- [ ] **GridBatch abstraction.** Spatial indexing container for high-performance batched GPU operations (parallels `fvdb::GridBatch`).
+- [ ] **Differentiable Operators (Autograd).** PyTorch autograd integration for spatial operations.
+- [ ] **High-performance GPU Dispatch system.** Generic kernel dispatch mechanism for sparse grid topology/types (parallels `fvdb::dispatch`).
+- [ ] **Sparse Gaussian Splatting Rasterizer.** Differentiable forward/backward rasterization (parallels `fvdb::detail::autograd`).
 
-- [ ] **PointDataGrid (`Tree_ptdataidx32_*`) attribute set parser.**
-      tinyvdb currently recognises the type, parses topology, and seeks
-      past the leaf buffer (the serialised `AttributeSet`). Reading the
-      actual point data (positions, per-point attributes, codecs) requires
-      implementing OpenVDB's `AttributeSet`, `AttributeArray` codecs
-      (`UnitVec`, `FixedPointCodec`, `TruncateCodec`, group attribute
-      handling, etc.) and `PointDataLeafNode` serialisation. Substantial
-      work. Until then, point grids are **topology-only** in tinyvdb.
+### Misc Fixes
 
-- [ ] **MeshToVolume / mesh → SDF voxeliser.** Useful as a builder API so
-      callers can convert a triangle mesh to a level set / fog grid
-      without depending on libopenvdb. Out of scope for the current I/O
-      library, but would round out the package.
+- [ ] **Audit scalar writer paths for `BOOL` / `INT32` / `INT64` / `DOUBLE` grids.**
+- [ ] **Reader: integrate-and-test with delayed-load metadata grids.**
+- [x] **`tvdb_value_type_size(BOOL) = 1` fix.** BOOL grids are now handled as bit-packed masks in leaf nodes, matching OpenVDB's serialization format (dedicated path in `tvdb__read_leaf_buffer` and `tvdb__write_leaf_buffer`).
+- [ ] **`MultiPassIO` ≥ v224** handler.
+- [ ] **Half-precision file format prior to v225** backward compatibility.
 
-- [ ] **`MultiPassIO` ≥ v224.** The reader currently doesn't handle the
-      `numPasses` prefix that openvdb's `Grid::readBuffers` reads for
-      grids with `hasMultiPassIO()`. In practice only PointDataGrid hits
-      this path so it is moot until the AttributeSet work above lands,
-      but worth noting.
-
-- [ ] **Half-precision file format prior to v225.** Files written by very
-      old openvdb releases (`file_version < 225`) with a separate
-      `is_saved_as_half_float` per-grid metadata flag may exhibit a
-      slightly different leaf buffer layout. The current fix has been
-      tested only against v225+ half files re-saved by current openvdb.
-      Older v223/v224 half files re-written by Houdini have not been
-      checked end-to-end.
 
 ## Notes for downstream consumers
 

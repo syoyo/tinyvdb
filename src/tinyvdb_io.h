@@ -380,6 +380,22 @@ typedef struct tvdb_file {
 /*  Public API                                                                */
 /* ========================================================================== */
 
+static inline void tvdb_grid_set_background(tvdb_grid_t *grid, tvdb_value_t background) {
+    if (!grid) return;
+    tvdb_root_node_t *root = &grid->tree.nodes[0].u.root;
+    root->background = background;
+}
+
+static inline void tvdb_nodemask_set_on(tvdb_nodemask_t *m, int32_t i) {
+    if (!m || i < 0 || i >= (1 << (3 * m->log2dim))) return;
+    m->bits.data[i >> 3] |= (1 << (i & 7));
+}
+
+static inline void tvdb_nodemask_set_off(tvdb_nodemask_t *m, int32_t i) {
+    if (!m || i < 0 || i >= (1 << (3 * m->log2dim))) return;
+    m->bits.data[i >> 3] &= ~(1 << (i & 7));
+}
+
 /* Nodemask helpers (for accessing tree data from application code) */
 int    tvdb_nodemask_is_on(const tvdb_nodemask_t *m, int32_t i);
 size_t tvdb_nodemask_count_on(const tvdb_nodemask_t *m);
