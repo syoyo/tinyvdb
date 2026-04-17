@@ -505,6 +505,12 @@ void tvdb_projected_gaussian_destroy(tvdb_projected_gaussian_t *gaussians);
 #if !defined(TVDB_NO_MMAP)
 #  if defined(_WIN32)
 #    include <windows.h>
+#    ifdef near
+#      undef near
+#    endif
+#    ifdef far
+#      undef far
+#    endif
 #  else
 #    include <sys/mman.h>
 #    include <sys/stat.h>
@@ -952,7 +958,7 @@ tvdb_status_t tvdb_nanovdb_file_open(tvdb_nanovdb_file_t *file,
         file->alloc.user_ctx = NULL;
     }
 
-#if !defined(TVDB_NO_MMAP)
+#if !defined(TVDB_NO_MMAP) && !defined(_WIN32)
     int fd = open(filepath_utf8, O_RDONLY);
     if (fd >= 0) {
         struct stat st;
@@ -1184,7 +1190,7 @@ void tvdb_nanovdb_file_close(tvdb_nanovdb_file_t *file) {
     if (file->buffer)
         free(file->buffer);
 
-#if !defined(TVDB_NO_MMAP)
+#if !defined(TVDB_NO_MMAP) && !defined(_WIN32)
     if (file->mmap_data)
         munmap((void *)file->mmap_data, file->file_size);
 #endif
