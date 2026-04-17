@@ -65,10 +65,11 @@ target_link_libraries(tinyvdb_nanovdb PRIVATE tinyvdb)
 target_include_directories(tinyvdb PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(tinyvdb PRIVATE TINYVDB_IO_IMPLEMENTATION MINIZ_NO_STDIO)
 
-# When building the Python extension, the static lib must be PIC
+# When building the Python extension, static libs linked into modules must be PIC
 if(TINYVDB_BUILD_PYTHON)
     set_target_properties(tinyvdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
     set_target_properties(tinyvdb_mesh_ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    set_target_properties(tinyvdb_nanovdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
 
 # Force system zlib for iOS
