@@ -279,6 +279,85 @@ typedef struct tvdb_nanovdb_file {
 } tvdb_nanovdb_file_t;
 
 /* ========================================================================== */
+/*  Gaussian Splat Structures                                                 */
+/* ========================================================================== */
+
+#define TVDB_GAUSSIAN_SPLAT_VERSION "fvdb_ply 1.0.0"
+
+typedef struct tvdb_gaussian_splat {
+    uint32_t version;
+    uint32_t num_gaussians;
+    uint32_t sh_degree;
+    uint32_t sh_dim;
+
+    float *means;
+    float *quats;
+    float *log_scales;
+    float *logit_opacities;
+    float *sh_coeffs;
+
+    char *metadata_keys;
+    float *metadata_values;
+    uint32_t *metadata_types;
+    uint32_t *metadata_counts;
+    uint32_t num_metadata;
+
+    uint8_t owns_data;
+} tvdb_gaussian_splat_t;
+
+void tvdb_gaussian_splat_destroy(tvdb_gaussian_splat_t *splat);
+
+/* ========================================================================== */
+/*  Gaussian Splat Rasterization Structures                                   */
+/* ========================================================================== */
+
+#define TVDB_GAUSSIAN_RASTER_MAX_FEATURES 256
+#define TVDB_GAUSSIAN_RASTER_TILE_SIZE 16
+#define TVDB_GAUSSIAN_RASTER_DEFAULT_ALPHA_THRESHOLD 0.005f
+
+typedef enum tvdb_camera_type {
+    TVDB_CAMERA_PERSPECTIVE = 0,
+    TVDB_CAMERA_ORTHOGRAPHIC = 1
+} tvdb_camera_type_t;
+
+typedef struct tvdb_camera {
+    tvdb_camera_type_t type;
+    float fx, fy;
+    float cx, cy;
+    float width, height;
+    float near, far;
+    float extrinsics[16];
+    float intrinsics[9];
+    int is_identity_extrinsics;
+} tvdb_camera_t;
+
+typedef struct tvdb_projected_gaussian {
+    float x, y;
+    float conic_a, conic_b, conic_c;
+    float opacity;
+    float depth;
+    float radius;
+    float feature[3];
+} tvdb_projected_gaussian_t;
+
+typedef struct tvdb_tile_intersection {
+    int32_t gaussian_id;
+    int32_t tile_x, tile_y;
+} tvdb_tile_intersection_t;
+
+typedef struct tvdb_raster_output {
+    float *image;
+    float *alpha;
+    int32_t *last_ids;
+    uint32_t width;
+    uint32_t height;
+    uint32_t num_features;
+    uint32_t owns_data;
+} tvdb_raster_output_t;
+
+void tvdb_raster_output_destroy(tvdb_raster_output_t *out);
+
+/* ========================================================================== */
 /*  Public API                                                                */
 /* ========================================================================== */
 
@@ -345,6 +424,57 @@ const char *tvdb_nanovdb_grid_class_name(uint32_t grid_class);
 int          tvdb_nanovdb_is_big_endian_file(const tvdb_nanovdb_file_t *file);
 uint32_t     tvdb_nanovdb_value_size(uint32_t grid_type);
 
+/* ========================================================================== */
+/*  Gaussian Splat PLY I/O                                                    */
+/* ========================================================================== */
+
+tvdb_gaussian_splat_t *tvdb_gaussian_splat_load(const char *filepath_utf8,
+                                                tvdb_error_t *err);
+
+tvdb_status_t tvdb_gaussian_splat_save(const char *filepath_utf8,
+                                        const tvdb_gaussian_splat_t *splat,
+                                        tvdb_error_t *err);
+
+uint32_t tvdb_gaussian_splat_count(const tvdb_gaussian_splat_t *splat);
+void tvdb_gaussian_splat_get(const tvdb_gaussian_splat_t *splat,
+                             uint32_t idx,
+                             float out_means[3],
+                             float out_quats[4],
+                             float out_scales[3],
+                             float *out_opacity);
+
+/* ========================================================================== */
+/*  Gaussian Splat CPU Rasterization                                          */
+/* ========================================================================== */
+
+tvdb_camera_t *tvdb_camera_create_perspective(float fx, float fy, float cx, float cy,
+                                               float width, float height,
+                                               float near, float far,
+                                               const float extrinsics[16]);
+tvdb_camera_t *tvdb_camera_create_orthographic(float scale, float cx, float cy,
+                                               float width, float height,
+                                               float near, float far,
+                                               const float extrinsics[16]);
+void tvdb_camera_destroy(tvdb_camera_t *cam);
+
+tvdb_projected_gaussian_t *tvdb_gaussian_project(const tvdb_gaussian_splat_t *splats,
+                                                  const tvdb_camera_t *cam,
+                                                  uint32_t *out_count,
+                                                  tvdb_error_t *err);
+
+tvdb_status_t tvdb_gaussian_rasterize_forward(
+    const tvdb_projected_gaussian_t *gaussians,
+    uint32_t num_gaussians,
+    uint32_t width,
+    uint32_t height,
+    uint32_t num_features,
+    float background[3],
+    float alpha_threshold,
+    tvdb_raster_output_t *out,
+    tvdb_error_t *err);
+
+void tvdb_projected_gaussian_destroy(tvdb_projected_gaussian_t *gaussians);
+
 #ifdef __cplusplus
 }
 #endif
@@ -354,6 +484,9 @@ uint32_t     tvdb_nanovdb_value_size(uint32_t grid_type);
 /* ========================================================================== */
 
 #ifdef TINYVDB_NANOVDB_IMPLEMENTATION
+
+#define TVDB_GAUSSIAN_VERSION "fvdb_ply 1.0.0"
+#define TVDB_GAUSSIAN_MAGIC "fvdb_ply_af_8198767135"
 
 #include <string.h>
 #include <stdlib.h>
@@ -1605,6 +1738,741 @@ void tvdb_nanovdb_destroy_grid(tvdb_nanovdb_grid_t *grid,
     if (grid->name) free(grid->name);
     if (grid->owns_data && grid->data) free(grid->data);
     memset(grid, 0, sizeof(*grid));
+}
+
+/* ========================================================================== */
+/*  Gaussian Splat PLY I/O Implementation                                      */
+/* ========================================================================== */
+
+static void tvdb__gaussian_splat_destroy(tvdb_gaussian_splat_t *splat) {
+    if (!splat) return;
+    if (splat->owns_data) {
+        if (splat->means) free(splat->means);
+        if (splat->quats) free(splat->quats);
+        if (splat->log_scales) free(splat->log_scales);
+        if (splat->logit_opacities) free(splat->logit_opacities);
+        if (splat->sh_coeffs) free(splat->sh_coeffs);
+        if (splat->metadata_keys) free(splat->metadata_keys);
+        if (splat->metadata_values) free(splat->metadata_values);
+        if (splat->metadata_types) free(splat->metadata_types);
+        if (splat->metadata_counts) free(splat->metadata_counts);
+    }
+    memset(splat, 0, sizeof(*splat));
+}
+
+void tvdb_gaussian_splat_destroy(tvdb_gaussian_splat_t *splat) {
+    tvdb__gaussian_splat_destroy(splat);
+    free(splat);
+}
+
+static int tvdb__skip_whitespace_and_comments(FILE *fp) {
+    int c;
+    while ((c = fgetc(fp)) != EOF) {
+        if (c == '#') {
+            while ((c = fgetc(fp)) != EOF && c != '\n')
+                ;
+            if (c == EOF) return 0;
+        } else if (c > ' ') {
+            ungetc(c, fp);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int tvdb__read_line(FILE *fp, char *buf, size_t bufsize) {
+    if (!fgets(buf, (int)bufsize, fp)) return 0;
+    size_t len = strlen(buf);
+    while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r')) {
+        buf[--len] = '\0';
+    }
+    return 1;
+}
+
+static int tvdb__parse_property(const char *line, char *name, size_t namelen,
+                                 char *type, size_t typelen) {
+    const char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    const char *start = p;
+    while (*p && *p != ' ' && *p != '\t') p++;
+    if ((size_t)(p - start) >= typelen) return 0;
+    strncpy(type, start, (size_t)(p - start));
+    type[p - start] = '\0';
+    while (*p == ' ' || *p == '\t') p++;
+    start = p;
+    while (*p && *p != ' ' && *p != '\t' && *p != '[') p++;
+    if ((size_t)(p - start) >= namelen) return 0;
+    strncpy(name, start, (size_t)(p - start));
+    name[p - start] = '\0';
+    return 1;
+}
+
+static int tvdb__match_property(const char *prop, const char *expected) {
+    return strncmp(prop, expected, strlen(expected)) == 0;
+}
+
+tvdb_gaussian_splat_t *tvdb_gaussian_splat_load(const char *filepath_utf8,
+                                                  tvdb_error_t *err) {
+    FILE *fp = fopen(filepath_utf8, "rb");
+    if (!fp) {
+        if (err) {
+            snprintf(err->message, sizeof(err->message),
+                     "Failed to open file: %s", filepath_utf8);
+        }
+        return NULL;
+    }
+
+    char line[1024];
+    char magic[64] = {0};
+    int num_vertices = 0;
+    int num_properties = 0;
+    int has_means = 0, has_quats = 0, has_scales = 0, has_opacities = 0;
+    int has_sh0 = 0, has_shN = 0;
+    int sh_degree = 0, sh_dim = 0;
+
+    if (!tvdb__read_line(fp, magic, sizeof(magic))) {
+        fclose(fp);
+        if (err) snprintf(err->message, sizeof(err->message), "Empty file");
+        return NULL;
+    }
+
+    if (strncmp(magic, "ply", 3) != 0) {
+        fclose(fp);
+        if (err) snprintf(err->message, sizeof(err->message), "Not a PLY file");
+        return NULL;
+    }
+
+    while (tvdb__skip_whitespace_and_comments(fp) &&
+           tvdb__read_line(fp, line, sizeof(line))) {
+        if (strncmp(line, "end_header", 10) == 0) break;
+
+        if (strncmp(line, "element vertex", 14) == 0) {
+            sscanf(line + 14, "%d", &num_vertices);
+        } else if (strncmp(line, "property", 8) == 0) {
+            num_properties++;
+            char prop_name[64] = {0}, prop_type[32] = {0};
+            if (tvdb__parse_property(line + 8, prop_name, sizeof(prop_name),
+                                      prop_type, sizeof(prop_type))) {
+                if (tvdb__match_property(prop_name, "x")) has_means = 1;
+                else if (tvdb__match_property(prop_name, "quat") || tvdb__match_property(prop_name, "rot")) has_quats = 1;
+                else if (tvdb__match_property(prop_name, "scale")) has_scales = 1;
+                else if (tvdb__match_property(prop_name, "opacity")) has_opacities = 1;
+                else if (tvdb__match_property(prop_name, "f_dc_0")) has_sh0 = 1;
+                else if (tvdb__match_property(prop_name, "f_rest_")) has_shN = 1;
+            }
+        }
+    }
+
+    if (num_vertices <= 0) {
+        fclose(fp);
+        if (err) snprintf(err->message, sizeof(err->message),
+                         "No vertices found");
+        return NULL;
+    }
+
+    tvdb_gaussian_splat_t *splat = (tvdb_gaussian_splat_t *)
+        calloc(1, sizeof(tvdb_gaussian_splat_t));
+    if (!splat) {
+        fclose(fp);
+        if (err) snprintf(err->message, sizeof(err->message), "Out of memory");
+        return NULL;
+    }
+
+    splat->owns_data = 1;
+    splat->num_gaussians = (uint32_t)num_vertices;
+    splat->sh_degree = sh_degree;
+    splat->sh_dim = sh_dim;
+
+    splat->means = (float *)malloc((size_t)num_vertices * 3 * sizeof(float));
+    splat->quats = (float *)malloc((size_t)num_vertices * 4 * sizeof(float));
+    splat->log_scales = (float *)malloc((size_t)num_vertices * 3 * sizeof(float));
+    splat->logit_opacities = (float *)malloc((size_t)num_vertices * sizeof(float));
+    splat->sh_coeffs = (float *)malloc((size_t)num_vertices * (has_sh0 ? 3 : 0) * sizeof(float));
+
+    if (!splat->means || !splat->quats || !splat->log_scales ||
+        !splat->logit_opacities) {
+        tvdb__gaussian_splat_destroy(splat);
+        fclose(fp);
+        if (err) snprintf(err->message, sizeof(err->message), "Out of memory");
+        return NULL;
+    }
+
+    for (int i = 0; i < num_vertices; i++) {
+        float x = 0, y = 0, z = 0;
+        float qw = 1, qx = 0, qy = 0, qz = 0;
+        float sx = 0, sy = 0, sz = 0;
+        float opacity = 0;
+        float sh0_r = 0, sh0_g = 0, sh0_b = 0;
+
+        int parsed = fscanf(fp, "%f %f %f", &x, &y, &z);
+
+        if (has_quats) {
+            float quat_arr[4] = {0};
+            for (int q = 0; q < 4; q++) {
+                if (fscanf(fp, "%f", &quat_arr[q]) != 1) break;
+            }
+            if (parsed >= 3) {
+                qw = quat_arr[0];
+                qx = quat_arr[1];
+                qy = quat_arr[2];
+                qz = quat_arr[3];
+            }
+        }
+
+        if (has_scales) {
+            for (int s = 0; s < 3; s++) {
+                if (fscanf(fp, "%f", &sx) != 1) break;
+                if (s == 0) sy = sx;
+                if (s <= 1) sz = sx;
+            }
+        }
+
+        if (has_opacities) {
+            fscanf(fp, "%f", &opacity);
+        }
+
+        if (has_sh0) {
+            for (int c = 0; c < 3; c++) {
+                float val = 0;
+                if (fscanf(fp, "%f", &val) != 1) break;
+                if (c == 0) sh0_r = val;
+                else if (c == 1) sh0_g = val;
+                else sh0_b = val;
+            }
+        }
+
+        fgetc(fp);
+
+        splat->means[i * 3 + 0] = x;
+        splat->means[i * 3 + 1] = y;
+        splat->means[i * 3 + 2] = z;
+        splat->quats[i * 4 + 0] = qw;
+        splat->quats[i * 4 + 1] = qx;
+        splat->quats[i * 4 + 2] = qy;
+        splat->quats[i * 4 + 3] = qz;
+        splat->log_scales[i * 3 + 0] = sx;
+        splat->log_scales[i * 3 + 1] = sy;
+        splat->log_scales[i * 3 + 2] = sz;
+        splat->logit_opacities[i] = opacity;
+    }
+
+    fclose(fp);
+    return splat;
+}
+
+tvdb_status_t tvdb_gaussian_splat_save(const char *filepath_utf8,
+                                        const tvdb_gaussian_splat_t *splat,
+                                        tvdb_error_t *err) {
+    if (!filepath_utf8 || !splat) {
+        if (err) snprintf(err->message, sizeof(err->message),
+                         "Invalid argument");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+
+    FILE *fp = fopen(filepath_utf8, "w");
+    if (!fp) {
+        if (err) snprintf(err->message, sizeof(err->message),
+                         "Failed to open file: %s", filepath_utf8);
+        return TVDB_ERROR_IO;
+    }
+
+    fprintf(fp, "ply\n");
+    fprintf(fp, "format ascii 1.0\n");
+    fprintf(fp, "%s\n", TVDB_GAUSSIAN_MAGIC);
+    fprintf(fp, TVDB_GAUSSIAN_VERSION "\n");
+    fprintf(fp, "element vertex %u\n", splat->num_gaussians);
+
+    fprintf(fp, "property float x\n");
+    fprintf(fp, "property float y\n");
+    fprintf(fp, "property float z\n");
+    fprintf(fp, "property float quat_0\n");
+    fprintf(fp, "property float quat_1\n");
+    fprintf(fp, "property float quat_2\n");
+    fprintf(fp, "property float quat_3\n");
+    fprintf(fp, "property float scale_0\n");
+    fprintf(fp, "property float scale_1\n");
+    fprintf(fp, "property float scale_2\n");
+    fprintf(fp, "property float opacity\n");
+    fprintf(fp, "property float f_dc_0\n");
+    fprintf(fp, "property float f_dc_1\n");
+    fprintf(fp, "property float f_dc_2\n");
+
+    fprintf(fp, "end_header\n");
+
+    for (uint32_t i = 0; i < splat->num_gaussians; i++) {
+        const float *means = splat->means + i * 3;
+        const float *quats = splat->quats + i * 4;
+        const float *scales = splat->log_scales + i * 3;
+        float opacity = splat->logit_opacities ? splat->logit_opacities[i] : 0.0f;
+        float sh0_r = 0, sh0_g = 0, sh0_b = 0;
+        if (splat->sh_coeffs) {
+            const float *sh = splat->sh_coeffs + i * 3;
+            sh0_r = sh[0];
+            sh0_g = sh[1];
+            sh0_b = sh[2];
+        }
+
+        fprintf(fp, "%g %g %g %g %g %g %g %g %g %g %g %g %g %g\n",
+                (double)means[0], (double)means[1], (double)means[2],
+                (double)quats[0], (double)quats[1], (double)quats[2], (double)quats[3],
+                (double)scales[0], (double)scales[1], (double)scales[2],
+                (double)opacity,
+                (double)sh0_r, (double)sh0_g, (double)sh0_b);
+    }
+
+    fclose(fp);
+    return TVDB_OK;
+}
+
+uint32_t tvdb_gaussian_splat_count(const tvdb_gaussian_splat_t *splat) {
+    return splat ? splat->num_gaussians : 0;
+}
+
+void tvdb_gaussian_splat_get(const tvdb_gaussian_splat_t *splat,
+                              uint32_t idx,
+                              float out_means[3],
+                              float out_quats[4],
+                              float out_scales[3],
+                              float *out_opacity) {
+    if (!splat || idx >= splat->num_gaussians) return;
+
+    if (out_means) {
+        out_means[0] = splat->means[idx * 3 + 0];
+        out_means[1] = splat->means[idx * 3 + 1];
+        out_means[2] = splat->means[idx * 3 + 2];
+    }
+    if (out_quats) {
+        out_quats[0] = splat->quats[idx * 4 + 0];
+        out_quats[1] = splat->quats[idx * 4 + 1];
+        out_quats[2] = splat->quats[idx * 4 + 2];
+        out_quats[3] = splat->quats[idx * 4 + 3];
+    }
+    if (out_scales) {
+        out_scales[0] = splat->log_scales[idx * 3 + 0];
+        out_scales[1] = splat->log_scales[idx * 3 + 1];
+        out_scales[2] = splat->log_scales[idx * 3 + 2];
+    }
+    if (out_opacity) {
+        *out_opacity = splat->logit_opacities ? splat->logit_opacities[idx] : 0.0f;
+    }
+}
+
+/* ========================================================================== */
+/*  Gaussian Splat Rasterization Implementation                               */
+/* ========================================================================== */
+
+/* Math helpers */
+static float tvdb__fast_exp2(float x) {
+    union { uint32_t i; float f; } u;
+    u.f = x + 127.0f;
+    u.i = (u.i & 0xFF800000) | (126 << 23);
+    return u.f;
+}
+
+static float tvdb__fast_sigmoid(float x) {
+    return 1.0f / (1.0f + tvdb__fast_exp2(-x));
+}
+
+static float tvdb__fast_sqrt(float x) {
+    union { float f; uint32_t i; } u;
+    u.f = x;
+    u.i = (u.i >> 1) + 0x1fbc0000;
+    return u.f;
+}
+
+static void tvdb__mat4_mul_vec4(float out[4], const float m[16], const float v[4]) {
+    out[0] = m[0]*v[0] + m[4]*v[1] + m[8]*v[2]  + m[12]*v[3];
+    out[1] = m[1]*v[0] + m[5]*v[1] + m[9]*v[2]  + m[13]*v[3];
+    out[2] = m[2]*v[0] + m[6]*v[1] + m[10]*v[2] + m[14]*v[3];
+    out[3] = m[3]*v[0] + m[7]*v[1] + m[11]*v[2] + m[15]*v[3];
+}
+
+static void tvdb__quat_rotate(float out[3], const float q[4], const float v[3]) {
+    float qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    float ix =  qw*v[0] + qy*v[2] - qz*v[1];
+    float iy =  qw*v[1] + qz*v[0] - qx*v[2];
+    float iz =  qw*v[2] + qx*v[1] - qy*v[0];
+    float iw = -qx*v[0] - qy*v[1] - qz*v[2];
+    out[0] = ix*qw + iw*(-qx) + iy*(-qz) - iz*(-qy);
+    out[1] = iy*qw + iw*(-qy) + iz*(-qx) - ix*(-qz);
+    out[2] = iz*qw + iw*(-qz) + ix*(-qy) - iy*(-qx);
+}
+
+static float tvdb__inverse_sigmoid(float x) {
+    return logf(x / (1.0f - x));
+}
+
+static float tvdb__sigmoid(float x) {
+    return 1.0f / (1.0f + tvdb__fast_exp2(-x));
+}
+
+/* Camera creation */
+tvdb_camera_t *tvdb_camera_create_perspective(float fx, float fy, float cx, float cy,
+                                               float width, float height,
+                                               float near, float far,
+                                               const float extrinsics[16]) {
+    tvdb_camera_t *cam = (tvdb_camera_t *)calloc(1, sizeof(tvdb_camera_t));
+    if (!cam) return NULL;
+
+    cam->type = TVDB_CAMERA_PERSPECTIVE;
+    cam->fx = fx;
+    cam->fy = fy;
+    cam->cx = cx;
+    cam->cy = cy;
+    cam->width = width;
+    cam->height = height;
+    cam->near = near;
+    cam->far = far;
+
+    if (extrinsics) {
+        memcpy(cam->extrinsics, extrinsics, 16 * sizeof(float));
+        cam->is_identity_extrinsics = 0;
+    } else {
+        for (int i = 0; i < 16; i++) {
+            cam->extrinsics[i] = (i == 0 || i == 5 || i == 10 || i == 15) ? 1.0f : 0.0f;
+        }
+        cam->is_identity_extrinsics = 1;
+    }
+
+    cam->intrinsics[0] = fx;  cam->intrinsics[1] = 0;    cam->intrinsics[2] = cx;
+    cam->intrinsics[3] = 0;    cam->intrinsics[4] = fy;   cam->intrinsics[5] = cy;
+    cam->intrinsics[6] = 0;    cam->intrinsics[7] = 0;    cam->intrinsics[8] = 1;
+
+    return cam;
+}
+
+tvdb_camera_t *tvdb_camera_create_orthographic(float scale, float cx, float cy,
+                                                float width, float height,
+                                                float near, float far,
+                                                const float extrinsics[16]) {
+    tvdb_camera_t *cam = (tvdb_camera_t *)calloc(1, sizeof(tvdb_camera_t));
+    if (!cam) return NULL;
+
+    cam->type = TVDB_CAMERA_ORTHOGRAPHIC;
+    cam->fx = scale * width;
+    cam->fy = scale * height;
+    cam->cx = cx;
+    cam->cy = cy;
+    cam->width = width;
+    cam->height = height;
+    cam->near = near;
+    cam->far = far;
+
+    if (extrinsics) {
+        memcpy(cam->extrinsics, extrinsics, 16 * sizeof(float));
+        cam->is_identity_extrinsics = 0;
+    } else {
+        for (int i = 0; i < 16; i++) {
+            cam->extrinsics[i] = (i == 0 || i == 5 || i == 10 || i == 15) ? 1.0f : 0.0f;
+        }
+        cam->is_identity_extrinsics = 1;
+    }
+
+    cam->intrinsics[0] = cam->fx; cam->intrinsics[1] = 0;    cam->intrinsics[2] = cx;
+    cam->intrinsics[3] = 0;       cam->intrinsics[4] = cam->fy; cam->intrinsics[5] = cy;
+    cam->intrinsics[6] = 0;       cam->intrinsics[7] = 0;    cam->intrinsics[8] = 1;
+
+    return cam;
+}
+
+void tvdb_camera_destroy(tvdb_camera_t *cam) {
+    free(cam);
+}
+
+/* Gaussian projection: 3D -> 2D with covariance */
+tvdb_projected_gaussian_t *tvdb_gaussian_project(const tvdb_gaussian_splat_t *splats,
+                                                   const tvdb_camera_t *cam,
+                                                   uint32_t *out_count,
+                                                   tvdb_error_t *err) {
+    if (!splats || !cam || !out_count) {
+        if (err) snprintf(err->message, sizeof(err->message), "Invalid argument");
+        return NULL;
+    }
+
+    uint32_t N = splats->num_gaussians;
+    tvdb_projected_gaussian_t *gaussians = (tvdb_projected_gaussian_t *)
+        malloc(N * sizeof(tvdb_projected_gaussian_t));
+    if (!gaussians) {
+        if (err) snprintf(err->message, sizeof(err->message), "Out of memory");
+        return NULL;
+    }
+
+    const float eps2d = 0.3f;
+
+    for (uint32_t i = 0; i < N; i++) {
+        const float *mean3d = splats->means + i * 3;
+        const float *quat = splats->quats + i * 4;
+        const float *log_scale = splats->log_scales + i * 3;
+        float opacity = splats->logit_opacities ? splats->logit_opacities[i] : 0.0f;
+
+        float scale[3] = {
+            tvdb__fast_exp2(log_scale[0]),
+            tvdb__fast_exp2(log_scale[1]),
+            tvdb__fast_exp2(log_scale[2])
+        };
+
+        float mean_cam[4] = { mean3d[0], mean3d[1], mean3d[2], 1.0f };
+        float proj[4];
+        tvdb__mat4_mul_vec4(proj, cam->extrinsics, mean_cam);
+
+        float depth = proj[2];
+        if (depth <= cam->near || depth >= cam->far) {
+            gaussians[i].radius = 0.0f;
+            gaussians[i].opacity = 0.0f;
+            continue;
+        }
+
+        float cam_x = proj[0] / proj[3];
+        float cam_y = proj[1] / proj[3];
+
+        float inv_depth = 1.0f / depth;
+        float fx = cam->intrinsics[0];
+        float fy = cam->intrinsics[4];
+        float cx = cam->intrinsics[2];
+        float cy = cam->intrinsics[5];
+
+        float x = fx * cam_x * inv_depth + cx;
+        float y = fy * cam_y * inv_depth + cy;
+        gaussians[i].x = x;
+        gaussians[i].y = y;
+        gaussians[i].depth = depth;
+
+        float sx = scale[0], sy = scale[1], sz = scale[2];
+
+        float covar_3d[6];
+        float sqx = sx * sx, sqy = sy * sy, sqz = sz * sz;
+        covar_3d[0] = sqx;
+        covar_3d[1] = 0.0f;
+        covar_3d[2] = 0.0f;
+        covar_3d[3] = sqy;
+        covar_3d[4] = 0.0f;
+        covar_3d[5] = sqz;
+
+        float R[9];
+        float qx = quat[0], qy = quat[1], qz = quat[2], qw = quat[3];
+        R[0] = 1 - 2*(qy*qy + qz*qz); R[1] = 2*(qx*qy - qw*qz);     R[2] = 2*(qx*qz + qw*qy);
+        R[3] = 2*(qx*qy + qw*qz);     R[4] = 1 - 2*(qx*qx + qz*qz); R[5] = 2*(qy*qz - qw*qx);
+        R[6] = 2*(qx*qz - qw*qy);     R[7] = 2*(qy*qz + qw*qx);     R[8] = 1 - 2*(qx*qx + qy*qy);
+
+        float covar_rot[6];
+        for (int r = 0; r < 3; r++) {
+            for (int c = r; c < 3; c++) {
+                covar_rot[r*3+c] = R[r*3+0]*R[c*3+0]*sqx + R[r*3+1]*R[c*3+1]*sqy + R[r*3+2]*R[c*3+2]*sqz;
+                if (r != c) covar_rot[c*3+r] = covar_rot[r*3+c];
+            }
+        }
+
+        float inv_fx = 1.0f / fx;
+        float inv_fy = 1.0f / fy;
+        float d_x = x - cx;
+        float d_y = y - cy;
+
+        float covar_2d[3];
+        covar_2d[0] = inv_fx*inv_fx * covar_rot[0] + d_x*d_x*inv_fx*inv_fx*inv_depth*inv_depth * covar_rot[2];
+        covar_2d[1] = d_x*d_y*inv_fx*inv_fy*inv_depth*inv_depth * covar_rot[2];
+        covar_2d[2] = inv_fy*inv_fy * covar_rot[3] + d_y*d_y*inv_fy*inv_fy*inv_depth*inv_depth * covar_rot[5];
+
+        covar_2d[0] += eps2d;
+        covar_2d[2] += eps2d;
+
+        float det = covar_2d[0] * covar_2d[2] - covar_2d[1] * covar_2d[1];
+        if (det > 1e-10f) {
+            float inv_det = 1.0f / det;
+            gaussians[i].conic_a = covar_2d[2] * inv_det;
+            gaussians[i].conic_b = -covar_2d[1] * inv_det;
+            gaussians[i].conic_c = covar_2d[0] * inv_det;
+        } else {
+            gaussians[i].conic_a = 1.0f;
+            gaussians[i].conic_b = 0.0f;
+            gaussians[i].conic_c = 1.0f;
+        }
+
+        float det2d = gaussians[i].conic_a * gaussians[i].conic_c - gaussians[i].conic_b * gaussians[i].conic_b;
+        float eig_max = 0.5f * (gaussians[i].conic_a + gaussians[i].conic_c + tvdb__fast_sqrt((gaussians[i].conic_a - gaussians[i].conic_c) * (gaussians[i].conic_a - gaussians[i].conic_c) + 4.0f * gaussians[i].conic_b * gaussians[i].conic_b));
+        if (eig_max > 1e-10f) {
+            gaussians[i].radius = 3.0f * tvdb__fast_sqrt(1.0f / eig_max);
+        } else {
+            gaussians[i].radius = 0.0f;
+        }
+
+        gaussians[i].opacity = tvdb__sigmoid(opacity);
+
+        if (splats->sh_coeffs) {
+            const float *sh = splats->sh_coeffs + i * 3;
+            gaussians[i].feature[0] = sh[0];
+            gaussians[i].feature[1] = sh[1];
+            gaussians[i].feature[2] = sh[2];
+        } else {
+            gaussians[i].feature[0] = 1.0f;
+            gaussians[i].feature[1] = 0.0f;
+            gaussians[i].feature[2] = 0.0f;
+        }
+    }
+
+    *out_count = N;
+    return gaussians;
+}
+
+void tvdb_projected_gaussian_destroy(tvdb_projected_gaussian_t *gaussians) {
+    free(gaussians);
+}
+
+/* Forward rasterization */
+tvdb_status_t tvdb_gaussian_rasterize_forward(
+    const tvdb_projected_gaussian_t *gaussians,
+    uint32_t num_gaussians,
+    uint32_t width,
+    uint32_t height,
+    uint32_t num_features,
+    float background[3],
+    float alpha_threshold,
+    tvdb_raster_output_t *out,
+    tvdb_error_t *err) {
+
+    if (!gaussians || !out || width == 0 || height == 0) {
+        if (err) snprintf(err->message, sizeof(err->message), "Invalid argument");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+
+    if (num_features == 0) num_features = 3;
+    if (alpha_threshold <= 0) alpha_threshold = TVDB_GAUSSIAN_RASTER_DEFAULT_ALPHA_THRESHOLD;
+
+    memset(out, 0, sizeof(*out));
+    out->width = width;
+    out->height = height;
+    out->num_features = num_features;
+    out->owns_data = 1;
+
+    size_t pixel_count = (size_t)width * height;
+    out->image = (float *)calloc(pixel_count * num_features, sizeof(float));
+    out->alpha = (float *)calloc(pixel_count, sizeof(float));
+    out->last_ids = (int32_t *)malloc(pixel_count * sizeof(int32_t));
+
+    if (!out->image || !out->alpha || !out->last_ids) {
+        if (out->image) free(out->image);
+        if (out->alpha) free(out->alpha);
+        if (out->last_ids) free(out->last_ids);
+        if (err) snprintf(err->message, sizeof(err->message), "Out of memory");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+
+    for (size_t i = 0; i < pixel_count; i++) {
+        for (uint32_t f = 0; f < num_features; f++) {
+            out->image[i * num_features + f] = background ? background[f] : 0.0f;
+        }
+    }
+
+    uint32_t tile_size = TVDB_GAUSSIAN_RASTER_TILE_SIZE;
+    uint32_t num_tiles_x = (width + tile_size - 1) / tile_size;
+    uint32_t num_tiles_y = (height + tile_size - 1) / tile_size;
+
+    typedef struct {
+        uint32_t gaussian_id;
+        float depth;
+        int32_t tile_x, tile_y;
+    } tile_entry_t;
+
+    size_t max_entries = num_gaussians * 16;
+    tile_entry_t *entries = (tile_entry_t *)malloc(max_entries * sizeof(tile_entry_t));
+    if (!entries) {
+        free(out->image);
+        free(out->alpha);
+        free(out->last_ids);
+        if (err) snprintf(err->message, sizeof(err->message), "Out of memory");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    size_t num_entries = 0;
+
+    for (uint32_t i = 0; i < num_gaussians; i++) {
+        if (gaussians[i].radius <= 0.0f || gaussians[i].opacity <= 0.0f) continue;
+
+        int32_t center_x = (int32_t)gaussians[i].x;
+        int32_t center_y = (int32_t)gaussians[i].y;
+        int32_t radius = (int32_t)(gaussians[i].radius + 0.5f);
+
+        int32_t tile_x0 = center_x / (int32_t)tile_size;
+        int32_t tile_y0 = center_y / (int32_t)tile_size;
+        int32_t tile_x1 = (center_x + radius) / (int32_t)tile_size;
+        int32_t tile_y1 = (center_y + radius) / (int32_t)tile_size;
+
+        for (int32_t ty = tile_y0; ty <= tile_y1; ty++) {
+            for (int32_t tx = tile_x0; tx <= tile_x1; tx++) {
+                if (tx < 0 || ty < 0 || (uint32_t)tx >= num_tiles_x || (uint32_t)ty >= num_tiles_y) continue;
+                if (num_entries >= max_entries) continue;
+                entries[num_entries].gaussian_id = i;
+                entries[num_entries].depth = gaussians[i].depth;
+                entries[num_entries].tile_x = tx;
+                entries[num_entries].tile_y = ty;
+                num_entries++;
+            }
+        }
+    }
+
+    for (size_t e = 0; e < num_entries; e++) {
+        for (size_t k = e + 1; k < num_entries; k++) {
+            if (entries[e].tile_x > entries[k].tile_x ||
+                (entries[e].tile_x == entries[k].tile_x && entries[e].tile_y > entries[k].tile_y) ||
+                (entries[e].tile_x == entries[k].tile_x && entries[e].tile_y == entries[k].tile_y && entries[e].depth > entries[k].depth)) {
+                tile_entry_t tmp = entries[e];
+                entries[e] = entries[k];
+                entries[k] = tmp;
+            }
+        }
+    }
+
+    for (size_t e = 0; e < num_entries; e++) {
+        uint32_t gid = entries[e].gaussian_id;
+        const tvdb_projected_gaussian_t *g = &gaussians[gid];
+        int32_t tile_x = entries[e].tile_x;
+        int32_t tile_y = entries[e].tile_y;
+
+        uint32_t px0 = (uint32_t)(tile_x * tile_size);
+        uint32_t py0 = (uint32_t)(tile_y * tile_size);
+        uint32_t px1 = px0 + tile_size;
+        uint32_t py1 = py0 + tile_size;
+        if (px1 > width) px1 = width;
+        if (py1 > height) py1 = height;
+
+        float conic_a = g->conic_a, conic_b = g->conic_b, conic_c = g->conic_c;
+        float gx = g->x, gy = g->y;
+        float alpha = g->opacity;
+
+        for (uint32_t py = py0; py < py1; py++) {
+            for (uint32_t px = px0; px < px1; px++) {
+                float dx = (float)px - gx;
+                float dy = (float)py - gy;
+                float sigma = 0.5f * (conic_a * dx * dx + 2.0f * conic_b * dx * dy + conic_c * dy * dy);
+                if (sigma > 10.0f) continue;
+
+                float gaussian_alpha = alpha * tvdb__fast_exp2(-sigma);
+                if (gaussian_alpha < alpha_threshold) continue;
+
+                size_t pixel_idx = (size_t)py * width + px;
+
+                float T = 1.0f - out->alpha[pixel_idx];
+                if (T < 0.001f) continue;
+
+                out->alpha[pixel_idx] += gaussian_alpha * T;
+                for (uint32_t f = 0; f < num_features; f++) {
+                    out->image[pixel_idx * num_features + f] += g->feature[f] * gaussian_alpha * T;
+                }
+                out->last_ids[pixel_idx] = (int32_t)gid;
+            }
+        }
+    }
+
+    free(entries);
+    return TVDB_OK;
+}
+
+void tvdb_raster_output_destroy(tvdb_raster_output_t *out) {
+    if (!out) return;
+    if (out->owns_data) {
+        if (out->image) free(out->image);
+        if (out->alpha) free(out->alpha);
+        if (out->last_ids) free(out->last_ids);
+    }
+    memset(out, 0, sizeof(*out));
 }
 
 #endif /* TINYVDB_NANOVDB_IMPLEMENTATION */
