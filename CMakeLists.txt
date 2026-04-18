@@ -48,15 +48,15 @@ endif()
 
 add_library(tinyvdb STATIC ${TINYVDB_C_SOURCES})
 
-# Mesh/ops C++ helper library
+# Mesh/ops C helper library
 add_library(tinyvdb_mesh_ops STATIC
-  ${PROJECT_SOURCE_DIR}/src/tinyvdb_mesh.cc
-  ${PROJECT_SOURCE_DIR}/src/tinyvdb_ops.cc)
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_mesh.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_ops.c)
 target_include_directories(tinyvdb_mesh_ops PUBLIC ${PROJECT_SOURCE_DIR}/src)
 set_target_properties(tinyvdb_mesh_ops PROPERTIES
-  CXX_STANDARD 11
-  CXX_STANDARD_REQUIRED ON
-  CXX_EXTENSIONS OFF)
+  C_STANDARD 11
+  C_STANDARD_REQUIRED ON
+  C_EXTENSIONS OFF)
 
 # NanoVDB support library
 add_library(tinyvdb_nanovdb STATIC ${PROJECT_SOURCE_DIR}/src/tinyvdb_nanovdb.c)
