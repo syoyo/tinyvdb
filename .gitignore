@@ -12,6 +12,7 @@ build*/
 *.pyd
 
 # Python
+uv.lock
 __pycache__/
 *.py[cod]
 *.egg-info/
