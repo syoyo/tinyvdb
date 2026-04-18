@@ -79,8 +79,9 @@ int tvdb_py_mesh_to_sdf(const float *verts, size_t nv,
 
     tvdb_dense_grid grid;
     grid.data = NULL; // Initialized by tvdb_mesh_to_sdf_vdb
+    tvdb_arena_allocator_t* arena = NULL;
     bool ok = tvdb_mesh_to_sdf_vdb(&mesh, voxel_size, band_width, &grid,
-                                   (tvdb_sign_method)sign_method);
+                                   (tvdb_sign_method)sign_method, arena);
     tvdb_triangle_mesh_free(&mesh);
 
     if (!ok) {
@@ -100,7 +101,8 @@ int tvdb_py_sdf_to_mesh(const float *data, int nx, int ny, int nz,
     tvdb_dense_grid grid = make_grid(data, nx, ny, nz, voxel_size, ox, oy, oz);
     tvdb_triangle_mesh mesh;
     tvdb_triangle_mesh_init(&mesh);
-    bool ok = tvdb_sdf_to_mesh(&grid, isovalue, &mesh);
+    tvdb_arena_allocator_t* arena = NULL;
+    bool ok = tvdb_sdf_to_mesh(&grid, isovalue, &mesh, arena);
     tvdb_dense_grid_free(&grid);
 
     if (!ok) {
@@ -139,8 +141,9 @@ int tvdb_py_make_manifold(const float *verts, size_t nv,
 
     tvdb_triangle_mesh output;
     tvdb_triangle_mesh_init(&output);
+    tvdb_arena_allocator_t* arena = NULL;
     bool ok = tvdb_make_manifold_vdb(&input, resolution, isovalue, &output,
-                                     (tvdb_sign_method)sign_method);
+                                     (tvdb_sign_method)sign_method, arena);
     tvdb_triangle_mesh_free(&input);
     if (!ok) {
         snprintf(s_error_msg, sizeof(s_error_msg), "MakeManifold_VDB failed");
