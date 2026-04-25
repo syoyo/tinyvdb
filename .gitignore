@@ -1,5 +1,6 @@
 # Build artifacts
 build*/
+Testing/
 *.o
 *.obj
 *.a
