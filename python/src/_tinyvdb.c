@@ -86,6 +86,7 @@ extern int tvdb_py_curl(const float *, int, int, int, float, float, float, float
 
 extern int tvdb_py_advect(const float *, const float *, int, int, int, float, float, float, float, float, float **);
 extern int tvdb_py_solve_poisson(const float *, int, int, int, float, float, float, float, int, float, float **, int *);
+extern int tvdb_py_solve_poisson_d(const float *, int, int, int, float, float, float, float, int, double, float **, int *);
 
 extern int tvdb_py_ray_cast_sdf(const float *, int, int, int, float, float, float, float,
                                 float, float, float, float, float, float, float,
@@ -100,6 +101,57 @@ extern int tvdb_py_volume_to_spheres(const float *, int, int, int, float, float,
 
 extern int tvdb_py_fracture(const float *, int, int, int, float, float, float, float,
                             const float **, int, float ***, int *);
+
+extern int tvdb_py_sample_trilinear(const float *, int, int, int, float, float, float, float,
+                                    const float *, size_t, float **);
+extern int tvdb_py_integrate_tsdf(const float *, int, int, float, float, float, float,
+                                  const float *, float, float, float,
+                                  int, int, int, float, float, float, float,
+                                  float **, float **);
+extern int tvdb_py_coarsen_grid(const float *, int, int, int, float, float, float, float,
+                                int, float **, int *, int *, int *,
+                                float *, float *, float *, float *);
+extern int tvdb_py_refine_grid(const float *, int, int, int, float, float, float, float,
+                               int, float **, int *, int *, int *,
+                               float *, float *, float *, float *);
+extern int tvdb_py_max_pool(const float *, int, int, int, float, float, float, float,
+                            int, int, int, float **, int *, int *, int *,
+                            float *, float *, float *, float *);
+extern int tvdb_py_avg_pool(const float *, int, int, int, float, float, float, float,
+                            int, int, int, float **, int *, int *, int *,
+                            float *, float *, float *, float *);
+
+extern int tvdb_py_splat_trilinear(float *, int, int, int, float, float, float, float,
+                                   const float *, const float *, size_t, float *);
+extern int tvdb_py_voxels_along_ray(const float *, int, int, int, float, float, float, float,
+                                    float, float, float, float, float, float, float, float,
+                                    int **, size_t *);
+extern int tvdb_py_uniform_ray_samples(float, float, float, float, float, float,
+                                       float, float, size_t, float **, float **);
+extern int tvdb_py_segments_along_ray(const float *, int, int, int, float, float, float, float,
+                                      float, float, float, float, float, float, float, float, float,
+                                      size_t, size_t, float **, size_t *);
+extern int tvdb_py_clip_grid(const float *, int, int, int, float, float, float, float,
+                             const float *, const float *,
+                             float **, int *, int *, int *,
+                             float *, float *, float *, float *);
+extern int tvdb_py_prune_grid(float *, int, int, int, float, float, float, float,
+                              float, float);
+extern int tvdb_py_merge_grids(const float *, int, int, int, float, float, float, float,
+                               const float *, int, int, int, float, float, float, float,
+                               float, float **, int *, int *, int *,
+                               float *, float *, float *, float *);
+
+extern int tvdb_py_integrate_tsdf_into(float *, float *, int, int, int, float,
+                                       float, float, float,
+                                       const float *, int, int, float, float, float, float,
+                                       const float *, float, float, float);
+extern int tvdb_py_integrate_tsdf_with_color_into(float *, float *, float *,
+                                                  int, int, int, float, float, float, float,
+                                                  const float *, int, int,
+                                                  float, float, float, float,
+                                                  const float *, float, float, float,
+                                                  const uint8_t *);
 
 /* ======================================================================== */
 /*  Module state & exception                                                */
@@ -150,6 +202,10 @@ typedef struct {
     int nx, ny, nz;
     float ox, oy, oz;
     float voxel_size;
+    /* Cached for buffer protocol (filled on demand). Layout: data[x + nx*y +
+       nx*ny*z] -> exposes shape (nz, ny, nx) C-contiguous, format 'f'. */
+    Py_ssize_t buf_shape[3];
+    Py_ssize_t buf_strides[3];
 } PyDenseGrid;
 
 static void DenseGrid_dealloc(PyObject *self) {
@@ -214,8 +270,28 @@ static int DenseGrid_getbuffer(PyObject *self, Py_buffer *view, int flags) {
         PyErr_SetString(PyExc_BufferError, "DenseGrid has no data");
         return -1;
     }
-    size_t n = (size_t)g->nx * g->ny * g->nz;
-    return PyBuffer_FillInfo(view, self, g->data, (Py_ssize_t)(n * sizeof(float)), 0, flags);
+    /* Layout: linear index = x + nx*y + nx*ny*z, so axis 0 = z (slowest),
+       axis 1 = y, axis 2 = x (fastest). Shape (nz, ny, nx) is C-contiguous.
+       Numpy users index as arr[z, y, x]. */
+    g->buf_shape[0] = g->nz; g->buf_shape[1] = g->ny; g->buf_shape[2] = g->nx;
+    g->buf_strides[0] = (Py_ssize_t)g->ny * g->nx * (Py_ssize_t)sizeof(float);
+    g->buf_strides[1] = (Py_ssize_t)g->nx * (Py_ssize_t)sizeof(float);
+    g->buf_strides[2] = (Py_ssize_t)sizeof(float);
+
+    Py_ssize_t total = (Py_ssize_t)g->nz * g->ny * g->nx * (Py_ssize_t)sizeof(float);
+    view->buf      = g->data;
+    view->obj      = (PyObject *)self;
+    Py_INCREF(self);
+    view->len      = total;
+    view->readonly = 0;
+    view->itemsize = (Py_ssize_t)sizeof(float);
+    view->format   = (flags & PyBUF_FORMAT) ? (char *)"f" : NULL;
+    view->ndim     = 3;
+    view->shape    = (flags & PyBUF_ND) ? g->buf_shape : NULL;
+    view->strides  = (flags & PyBUF_STRIDES) ? g->buf_strides : NULL;
+    view->suboffsets = NULL;
+    view->internal = NULL;
+    return 0;
 }
 
 static PyObject *DenseGrid_getitem(PyObject *self, PyObject *args) {
@@ -301,6 +377,8 @@ typedef struct {
     int nx, ny, nz;
     float ox, oy, oz;
     float voxel_size;
+    Py_ssize_t buf_shape[4];
+    Py_ssize_t buf_strides[4];
 } PyDenseVecGrid;
 
 static void DenseVecGrid_dealloc(PyObject *self) {
@@ -336,8 +414,29 @@ static int DenseVecGrid_getbuffer(PyObject *self, Py_buffer *view, int flags) {
         PyErr_SetString(PyExc_BufferError, "DenseVecGrid has no data");
         return -1;
     }
-    size_t n = (size_t)g->nx * g->ny * g->nz * 3;
-    return PyBuffer_FillInfo(view, self, g->data, (Py_ssize_t)(n * sizeof(float)), 0, flags);
+    /* Layout: data[((z * ny + y) * nx + x) * 3 + c] -> shape (nz, ny, nx, 3),
+       C-contiguous. */
+    g->buf_shape[0] = g->nz; g->buf_shape[1] = g->ny;
+    g->buf_shape[2] = g->nx; g->buf_shape[3] = 3;
+    g->buf_strides[3] = (Py_ssize_t)sizeof(float);
+    g->buf_strides[2] = 3 * (Py_ssize_t)sizeof(float);
+    g->buf_strides[1] = (Py_ssize_t)g->nx * 3 * (Py_ssize_t)sizeof(float);
+    g->buf_strides[0] = (Py_ssize_t)g->ny * g->nx * 3 * (Py_ssize_t)sizeof(float);
+
+    Py_ssize_t total = (Py_ssize_t)g->nz * g->ny * g->nx * 3 * (Py_ssize_t)sizeof(float);
+    view->buf      = g->data;
+    view->obj      = (PyObject *)self;
+    Py_INCREF(self);
+    view->len      = total;
+    view->readonly = 0;
+    view->itemsize = (Py_ssize_t)sizeof(float);
+    view->format   = (flags & PyBUF_FORMAT) ? (char *)"f" : NULL;
+    view->ndim     = 4;
+    view->shape    = (flags & PyBUF_ND) ? g->buf_shape : NULL;
+    view->strides  = (flags & PyBUF_STRIDES) ? g->buf_strides : NULL;
+    view->suboffsets = NULL;
+    view->internal = NULL;
+    return 0;
 }
 
 static PyGetSetDef DenseVecGrid_getset[] = {
@@ -347,9 +446,29 @@ static PyGetSetDef DenseVecGrid_getset[] = {
     {NULL}
 };
 
+static int DenseVecGrid_init(PyObject *self, PyObject *args, PyObject *kw) {
+    PyDenseVecGrid *g = (PyDenseVecGrid *)self;
+    int nx = 0, ny = 0, nz = 0;
+    float voxel_size = 1.0f, ox = 0, oy = 0, oz = 0;
+    static char *kwlist[] = {"nx", "ny", "nz", "voxel_size", "ox", "oy", "oz", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "|iiiffff", kwlist,
+                                     &nx, &ny, &nz, &voxel_size, &ox, &oy, &oz))
+        return -1;
+    g->nx = nx; g->ny = ny; g->nz = nz;
+    g->voxel_size = voxel_size;
+    g->ox = ox; g->oy = oy; g->oz = oz;
+    if (nx > 0 && ny > 0 && nz > 0) {
+        size_t n = (size_t)nx * ny * nz * 3;
+        g->data = (float *)calloc(n, sizeof(float));
+        if (!g->data) { PyErr_NoMemory(); return -1; }
+    }
+    return 0;
+}
+
 static PyType_Slot DenseVecGrid_slots[] = {
     {Py_tp_dealloc, DenseVecGrid_dealloc},
     {Py_tp_new, DenseVecGrid_new},
+    {Py_tp_init, DenseVecGrid_init},
     {Py_tp_getset, DenseVecGrid_getset},
     {Py_bf_getbuffer, DenseVecGrid_getbuffer},
     {0, NULL}
@@ -385,6 +504,10 @@ typedef struct {
     uint32_t *faces;
     size_t num_vertices;
     size_t num_faces;
+    Py_ssize_t vert_shape[2];
+    Py_ssize_t vert_strides[2];
+    Py_ssize_t face_shape[2];
+    Py_ssize_t face_strides[2];
 } PyTriangleMesh;
 
 static void TriangleMesh_dealloc(PyObject *self) {
@@ -406,34 +529,99 @@ static PyObject *TriangleMesh_get_num_vertices(PyObject *self, void *c) {
 static PyObject *TriangleMesh_get_num_faces(PyObject *self, void *c) {
     return PyLong_FromSize_t(((PyTriangleMesh *)self)->num_faces);
 }
-static PyObject *TriangleMesh_get_vertices(PyObject *self, void *c) {
+static PyObject *TriangleMesh_get_vertices_bytes(PyObject *self, void *c) {
     PyTriangleMesh *m = (PyTriangleMesh *)self;
     if (!m->vertices) Py_RETURN_NONE;
     return PyBytes_FromStringAndSize((const char *)m->vertices,
                                     (Py_ssize_t)(m->num_vertices * 3 * sizeof(float)));
 }
-static PyObject *TriangleMesh_get_faces(PyObject *self, void *c) {
+static PyObject *TriangleMesh_get_faces_bytes(PyObject *self, void *c) {
     PyTriangleMesh *m = (PyTriangleMesh *)self;
     if (!m->faces) Py_RETURN_NONE;
     return PyBytes_FromStringAndSize((const char *)m->faces,
                                     (Py_ssize_t)(m->num_faces * 3 * sizeof(uint32_t)));
 }
 
+/* Build a 2D memoryview backed by mesh data; mesh keeps memory alive. */
+static PyObject *TriangleMesh_get_vertices(PyObject *self, void *c) {
+    PyTriangleMesh *m = (PyTriangleMesh *)self;
+    if (!m->vertices || m->num_vertices == 0) Py_RETURN_NONE;
+    m->vert_shape[0] = (Py_ssize_t)m->num_vertices;
+    m->vert_shape[1] = 3;
+    m->vert_strides[0] = 3 * (Py_ssize_t)sizeof(float);
+    m->vert_strides[1] = (Py_ssize_t)sizeof(float);
+    Py_buffer view;
+    view.buf       = m->vertices;
+    view.obj       = self; Py_INCREF(self);
+    view.len       = (Py_ssize_t)(m->num_vertices * 3 * sizeof(float));
+    view.readonly  = 0;
+    view.itemsize  = (Py_ssize_t)sizeof(float);
+    view.format    = (char *)"f";
+    view.ndim      = 2;
+    view.shape     = m->vert_shape;
+    view.strides   = m->vert_strides;
+    view.suboffsets = NULL;
+    view.internal  = NULL;
+    return PyMemoryView_FromBuffer(&view);
+}
+
+static PyObject *TriangleMesh_get_faces(PyObject *self, void *c) {
+    PyTriangleMesh *m = (PyTriangleMesh *)self;
+    if (!m->faces || m->num_faces == 0) Py_RETURN_NONE;
+    m->face_shape[0] = (Py_ssize_t)m->num_faces;
+    m->face_shape[1] = 3;
+    m->face_strides[0] = 3 * (Py_ssize_t)sizeof(uint32_t);
+    m->face_strides[1] = (Py_ssize_t)sizeof(uint32_t);
+    Py_buffer view;
+    view.buf       = m->faces;
+    view.obj       = self; Py_INCREF(self);
+    view.len       = (Py_ssize_t)(m->num_faces * 3 * sizeof(uint32_t));
+    view.readonly  = 0;
+    view.itemsize  = (Py_ssize_t)sizeof(uint32_t);
+    view.format    = (char *)"I";
+    view.ndim      = 2;
+    view.shape     = m->face_shape;
+    view.strides   = m->face_strides;
+    view.suboffsets = NULL;
+    view.internal  = NULL;
+    return PyMemoryView_FromBuffer(&view);
+}
+
+/* Object-level buffer protocol: 2D vertices view (format 'f', shape (nv, 3)). */
 static int TriangleMesh_getbuffer(PyObject *self, Py_buffer *view, int flags) {
     PyTriangleMesh *m = (PyTriangleMesh *)self;
     if (!m->vertices) {
         PyErr_SetString(PyExc_BufferError, "TriangleMesh has no vertices");
         return -1;
     }
-    return PyBuffer_FillInfo(view, self, m->vertices,
-                            (Py_ssize_t)(m->num_vertices * 3 * sizeof(float)), 1, flags);
+    m->vert_shape[0] = (Py_ssize_t)m->num_vertices;
+    m->vert_shape[1] = 3;
+    m->vert_strides[0] = 3 * (Py_ssize_t)sizeof(float);
+    m->vert_strides[1] = (Py_ssize_t)sizeof(float);
+    Py_ssize_t total = (Py_ssize_t)(m->num_vertices * 3 * sizeof(float));
+    view->buf       = m->vertices;
+    view->obj       = self; Py_INCREF(self);
+    view->len       = total;
+    view->readonly  = 0;
+    view->itemsize  = (Py_ssize_t)sizeof(float);
+    view->format    = (flags & PyBUF_FORMAT) ? (char *)"f" : NULL;
+    view->ndim      = 2;
+    view->shape     = (flags & PyBUF_ND) ? m->vert_shape : NULL;
+    view->strides   = (flags & PyBUF_STRIDES) ? m->vert_strides : NULL;
+    view->suboffsets = NULL;
+    view->internal  = NULL;
+    return 0;
 }
 
 static PyGetSetDef TriangleMesh_getset[] = {
     {"num_vertices", TriangleMesh_get_num_vertices, NULL, "Number of vertices", NULL},
     {"num_faces", TriangleMesh_get_num_faces, NULL, "Number of faces", NULL},
-    {"vertices_bytes", TriangleMesh_get_vertices, NULL, "Vertices as bytes", NULL},
-    {"faces_bytes", TriangleMesh_get_faces, NULL, "Faces as bytes", NULL},
+    {"vertices", TriangleMesh_get_vertices, NULL,
+     "Vertices as a 2D memoryview, shape (nv, 3), float32", NULL},
+    {"faces", TriangleMesh_get_faces, NULL,
+     "Face indices as a 2D memoryview, shape (nf, 3), uint32", NULL},
+    {"vertices_bytes", TriangleMesh_get_vertices_bytes, NULL, "Vertices as raw bytes", NULL},
+    {"faces_bytes", TriangleMesh_get_faces_bytes, NULL, "Faces as raw bytes", NULL},
     {NULL}
 };
 
@@ -751,6 +939,165 @@ static PyObject *VDBGrid_point_data_blob(PyObject *self, PyObject *Py_UNUSED(arg
 
 static PyObject *VDBGrid_set_point_data_blob(PyObject *self, PyObject *args);
 
+/* ---- bridge methods on VDBGrid ---- */
+
+extern size_t tvdb_py_grid_active_voxel_count(const tvdb_grid_t *);
+extern int    tvdb_py_grid_active_bbox(const tvdb_grid_t *, int32_t [3], int32_t [3]);
+extern float  tvdb_py_grid_float_background(const tvdb_grid_t *);
+extern int    tvdb_py_grid_materialize_dense(const tvdb_grid_t *,
+                                             const int32_t [3], const int32_t [3],
+                                             float, float **, int *, int *, int *,
+                                             float *, float *, float *, float *);
+extern int    tvdb_py_grid_dilate_active(const tvdb_grid_t *, int,
+                                         int32_t **, float **, size_t *);
+extern int    tvdb_py_grid_erode_active(const tvdb_grid_t *, int,
+                                        int32_t **, float **, size_t *);
+extern int    tvdb_py_grid_to_sparse(const tvdb_grid_t *,
+                                     int32_t **, float **, size_t *);
+extern int    tvdb_py_grid_dilate_topology(const tvdb_grid_t *, int,
+                                           int32_t **, float **, size_t *);
+extern int    tvdb_py_grid_erode_topology(const tvdb_grid_t *, int,
+                                          int32_t **, float **, size_t *);
+extern int    tvdb_py_grid_csg(const tvdb_grid_t *, const tvdb_grid_t *, int,
+                               int32_t **, float **, size_t *);
+extern int    tvdb_py_grid_update_from_sparse(tvdb_grid_t *,
+                                              const int32_t *, const float *,
+                                              size_t, size_t *, size_t *);
+
+static PyObject *VDBGrid_active_voxel_count(PyObject *self, PyObject *Py_UNUSED(args)) {
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    return PyLong_FromSize_t(tvdb_py_grid_active_voxel_count(g));
+}
+
+static PyObject *VDBGrid_active_bbox(PyObject *self, PyObject *Py_UNUSED(args)) {
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    int32_t mn[3], mx[3];
+    if (tvdb_py_grid_active_bbox(g, mn, mx) != 0) Py_RETURN_NONE;
+    return Py_BuildValue("((iii)(iii))", mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]);
+}
+
+static PyObject *VDBGrid_float_background(PyObject *self, PyObject *Py_UNUSED(args)) {
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    return PyFloat_FromDouble((double)tvdb_py_grid_float_background(g));
+}
+
+static PyObject *VDBGrid_materialize_dense(PyObject *self, PyObject *args, PyObject *kw) {
+    PyObject *bb_min_t, *bb_max_t;
+    float background = 0.0f;
+    static char *kwlist[] = {"bbox_min", "bbox_max", "background", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OO|f", kwlist,
+                                     &bb_min_t, &bb_max_t, &background)) return NULL;
+    int32_t mn[3], mx[3];
+    if (!PyArg_ParseTuple(bb_min_t, "iii", &mn[0], &mn[1], &mn[2])) return NULL;
+    if (!PyArg_ParseTuple(bb_max_t, "iii", &mx[0], &mx[1], &mx[2])) return NULL;
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    float *out = NULL; int onx, ony, onz; float ovs, oox, ooy, ooz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_grid_materialize_dense(g, mn, mx, background,
+                                        &out, &onx, &ony, &onz,
+                                        &ovs, &oox, &ooy, &ooz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *mod = PyState_FindModule(&tinyvdb_module);
+    return DenseGrid_from_c(get_state(mod)->DenseGridType, out, onx, ony, onz, ovs, oox, ooy, ooz);
+}
+
+static PyObject *VDBGrid_morph_active(PyObject *self, PyObject *args, PyObject *kw,
+                                      int (*fn)(const tvdb_grid_t *, int,
+                                                int32_t **, float **, size_t *)) {
+    int iterations = 1;
+    static char *kwlist[] = {"iterations", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "|i", kwlist, &iterations)) return NULL;
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    int32_t *coords = NULL; float *values = NULL; size_t cnt = 0;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = fn(g, iterations, &coords, &values, &cnt);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *cb = PyBytes_FromStringAndSize((const char *)coords, (Py_ssize_t)(cnt * 3 * sizeof(int32_t)));
+    PyObject *vb = PyBytes_FromStringAndSize((const char *)values, (Py_ssize_t)(cnt * sizeof(float)));
+    free(coords); free(values);
+    return Py_BuildValue("{s:N,s:N,s:n}", "coords", cb, "values", vb, "count", (Py_ssize_t)cnt);
+}
+
+static PyObject *VDBGrid_dilate_active(PyObject *self, PyObject *args, PyObject *kw) {
+    return VDBGrid_morph_active(self, args, kw, tvdb_py_grid_dilate_active);
+}
+static PyObject *VDBGrid_erode_active(PyObject *self, PyObject *args, PyObject *kw) {
+    return VDBGrid_morph_active(self, args, kw, tvdb_py_grid_erode_active);
+}
+static PyObject *VDBGrid_dilate_topology(PyObject *self, PyObject *args, PyObject *kw) {
+    return VDBGrid_morph_active(self, args, kw, tvdb_py_grid_dilate_topology);
+}
+static PyObject *VDBGrid_erode_topology(PyObject *self, PyObject *args, PyObject *kw) {
+    return VDBGrid_morph_active(self, args, kw, tvdb_py_grid_erode_topology);
+}
+
+static PyObject *VDBGrid_update_from_sparse(PyObject *self, PyObject *args, PyObject *kw) {
+    Py_buffer cb, vb;
+    static char *kwlist[] = {"coords", "values", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "y*y*", kwlist, &cb, &vb)) return NULL;
+    if (cb.len % (3 * (Py_ssize_t)sizeof(int32_t)) != 0 ||
+        vb.len != (cb.len / 3 / (Py_ssize_t)sizeof(int32_t)) * (Py_ssize_t)sizeof(float)) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb);
+        PyErr_SetString(PyExc_ValueError, "coords must be int32 xyz triples; values must be float32 of matching count");
+        return NULL;
+    }
+    size_t count = (size_t)(cb.len / 3 / (Py_ssize_t)sizeof(int32_t));
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    size_t updated = 0, skipped = 0;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_grid_update_from_sparse(g, (const int32_t *)cb.buf,
+                                         (const float *)vb.buf, count,
+                                         &updated, &skipped);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&cb); PyBuffer_Release(&vb);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return Py_BuildValue("{s:n,s:n}", "updated", (Py_ssize_t)updated,
+                         "skipped", (Py_ssize_t)skipped);
+}
+
+static PyObject *VDBGrid_csg(PyObject *self, PyObject *args, PyObject *kw) {
+    PyObject *other = NULL;
+    int op = 0;
+    static char *kwlist[] = {"other", "op", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "Oi", kwlist, &other, &op)) return NULL;
+    PyObject *mod = PyState_FindModule(&tinyvdb_module);
+    if (!PyObject_TypeCheck(other, (PyTypeObject *)get_state(mod)->VDBGridType)) {
+        PyErr_SetString(PyExc_TypeError, "other must be a VDBGrid");
+        return NULL;
+    }
+    tvdb_grid_t *a = ((PyVDBGrid *)self)->grid;
+    tvdb_grid_t *b = ((PyVDBGrid *)other)->grid;
+    int32_t *coords = NULL; float *values = NULL; size_t cnt = 0;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_grid_csg(a, b, op, &coords, &values, &cnt);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *cb = PyBytes_FromStringAndSize((const char *)coords, (Py_ssize_t)(cnt * 3 * sizeof(int32_t)));
+    PyObject *vb = PyBytes_FromStringAndSize((const char *)values, (Py_ssize_t)(cnt * sizeof(float)));
+    free(coords); free(values);
+    return Py_BuildValue("{s:N,s:N,s:n}", "coords", cb, "values", vb, "count", (Py_ssize_t)cnt);
+}
+
+static PyObject *VDBGrid_to_sparse(PyObject *self, PyObject *Py_UNUSED(args)) {
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    int32_t *coords = NULL; float *values = NULL; size_t cnt = 0;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_grid_to_sparse(g, &coords, &values, &cnt);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *cb = PyBytes_FromStringAndSize((const char *)coords, (Py_ssize_t)(cnt * 3 * sizeof(int32_t)));
+    PyObject *vb = PyBytes_FromStringAndSize((const char *)values, (Py_ssize_t)(cnt * sizeof(float)));
+    free(coords); free(values);
+    return Py_BuildValue("{s:N,s:N,s:n}", "coords", cb, "values", vb, "count", (Py_ssize_t)cnt);
+}
+
 static PyGetSetDef VDBGrid_getset[] = {
     {"name", VDBGrid_get_name, NULL, "Grid name", NULL},
     {"type_name", VDBGrid_get_type_name, NULL, "Grid type name", NULL},
@@ -765,6 +1112,21 @@ static PyGetSetDef VDBGrid_getset[] = {
 static PyMethodDef VDBGrid_methods[] = {
     {"point_data_blob", VDBGrid_point_data_blob, METH_NOARGS, "Get opaque PointData payload as bytes"},
     {"set_point_data_blob", VDBGrid_set_point_data_blob, METH_VARARGS, "Replace opaque PointData payload from bytes"},
+    {"active_voxel_count", VDBGrid_active_voxel_count, METH_NOARGS, "Number of active voxels across all leaves"},
+    {"active_bbox", VDBGrid_active_bbox, METH_NOARGS, "Voxel-space ((min), (max)) bbox enclosing all active leaves; None if empty"},
+    {"float_background", VDBGrid_float_background, METH_NOARGS, "Root-tile background value (float grids only; 0 otherwise)"},
+    {"materialize_dense", (PyCFunction)VDBGrid_materialize_dense, METH_VARARGS | METH_KEYWORDS, "Materialize a voxel-space sub-bbox into a DenseGrid"},
+    {"dilate_active", (PyCFunction)VDBGrid_dilate_active, METH_VARARGS | METH_KEYWORDS, "Leaf-stamp 6-neighbor min over active voxels; returns {coords, values, count}"},
+    {"erode_active", (PyCFunction)VDBGrid_erode_active, METH_VARARGS | METH_KEYWORDS, "Leaf-stamp 6-neighbor max over active voxels; returns {coords, values, count}"},
+    {"to_sparse", VDBGrid_to_sparse, METH_NOARGS, "Extract active voxels as {coords (int32 xyz triples bytes), values (float bytes), count}"},
+    {"dilate_topology", (PyCFunction)VDBGrid_dilate_topology, METH_VARARGS | METH_KEYWORDS,
+     "Topology-growing dilate: extracts active voxels, expands by `iterations` rings (6-connected); returns {coords, values, count}"},
+    {"erode_topology", (PyCFunction)VDBGrid_erode_topology, METH_VARARGS | METH_KEYWORDS,
+     "Topology-shrinking erode: drops voxels whose 6-neighborhood is not fully active; returns {coords, values, count}"},
+    {"update_from_sparse", (PyCFunction)VDBGrid_update_from_sparse, METH_VARARGS | METH_KEYWORDS,
+     "Update voxel values in-place from sparse (coords bytes, values bytes); coords outside active leaves are skipped. Returns {updated, skipped}."},
+    {"csg", (PyCFunction)VDBGrid_csg, METH_VARARGS | METH_KEYWORDS,
+     "Tree-aware sparse CSG with another VDBGrid; op=0 union, 1 intersection, 2 difference; returns {coords, values, count}"},
     {NULL}
 };
 
@@ -1471,6 +1833,28 @@ static PyObject *mod_solve_poisson(PyObject *module, PyObject *args, PyObject *k
     return Py_BuildValue("(Oi)", grid, iters);
 }
 
+static PyObject *mod_solve_poisson_d(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *rhs_obj; int max_iters = 500; double tolerance = 1e-10;
+    static char *kwlist[] = {"rhs", "max_iters", "tolerance", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|id", kwlist, &rhs_obj, &max_iters, &tolerance))
+        return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(rhs_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)rhs_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
+    float *out = NULL; int iters;
+    Py_BEGIN_ALLOW_THREADS
+    tvdb_py_solve_poisson_d(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                            g->ox, g->oy, g->oz, max_iters, tolerance, &out, &iters);
+    Py_END_ALLOW_THREADS
+    PyObject *grid = DenseGrid_from_c(st->DenseGridType, out, g->nx, g->ny, g->nz,
+                                      g->voxel_size, g->ox, g->oy, g->oz);
+    if (!grid) return NULL;
+    return Py_BuildValue("(Oi)", grid, iters);
+}
+
 /* ======================================================================== */
 /*  Ray casting                                                             */
 /* ======================================================================== */
@@ -1598,6 +1982,476 @@ static PyObject *mod_fracture(PyObject *module, PyObject *args) {
 }
 
 /* ======================================================================== */
+/*  Phase 4-6 dispatchers                                                    */
+/* ======================================================================== */
+
+static PyObject *mod_sample_trilinear(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj, *pts_obj;
+    static char *kwlist[] = {"grid", "points", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OO", kwlist, &grid_obj, &pts_obj)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    Py_ssize_t nfloats;
+    float *pts = extract_floats(pts_obj, &nfloats);
+    if (!pts) return NULL;
+    size_t npts = (size_t)(nfloats / 3);
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_sample_trilinear(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                                  g->ox, g->oy, g->oz, pts, npts, &out);
+    Py_END_ALLOW_THREADS
+    free(pts);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *bytes = PyBytes_FromStringAndSize((const char *)out, (Py_ssize_t)(npts * sizeof(float)));
+    free(out);
+    return bytes;
+}
+
+static PyObject *mod_integrate_tsdf(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *depth_obj, *pose_obj;
+    int W, H, nx, ny, nz;
+    float fx, fy, cx_, cy_;
+    float trunc_distance, dmin, dmax;
+    float voxel_size, ox, oy, oz;
+    static char *kwlist[] = {"depth", "width", "height", "fx", "fy", "cx", "cy",
+                             "pose", "trunc", "depth_min", "depth_max",
+                             "nx", "ny", "nz", "voxel_size", "ox", "oy", "oz", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OiiffffOfffiiiffff", kwlist,
+                                     &depth_obj, &W, &H, &fx, &fy, &cx_, &cy_,
+                                     &pose_obj, &trunc_distance, &dmin, &dmax,
+                                     &nx, &ny, &nz, &voxel_size, &ox, &oy, &oz))
+        return NULL;
+    Py_ssize_t nf;
+    float *depth = extract_floats(depth_obj, &nf);
+    if (!depth) return NULL;
+    Py_ssize_t np;
+    float *pose = extract_floats(pose_obj, &np);
+    if (!pose || np < 12) { free(depth); free(pose);
+        PyErr_SetString(PyExc_ValueError, "pose must contain 12 floats"); return NULL; }
+    float *out_tsdf = NULL, *out_w = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_integrate_tsdf(depth, W, H, fx, fy, cx_, cy_, pose,
+                                trunc_distance, dmin, dmax,
+                                nx, ny, nz, voxel_size, ox, oy, oz,
+                                &out_tsdf, &out_w);
+    Py_END_ALLOW_THREADS
+    free(depth); free(pose);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *gtsdf = DenseGrid_from_c(get_state(module)->DenseGridType,
+                                       out_tsdf, nx, ny, nz, voxel_size, ox, oy, oz);
+    PyObject *gw    = DenseGrid_from_c(get_state(module)->DenseGridType,
+                                       out_w,    nx, ny, nz, voxel_size, ox, oy, oz);
+    return Py_BuildValue("(OO)", gtsdf, gw);
+}
+
+static PyObject *mod_resize_op(PyObject *module, PyObject *args, PyObject *kw,
+                               int (*fn)(const float *, int, int, int, float, float, float, float,
+                                         int, float **, int *, int *, int *,
+                                         float *, float *, float *, float *)) {
+    PyObject *grid_obj; int factor;
+    static char *kwlist[] = {"grid", "factor", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "Oi", kwlist, &grid_obj, &factor)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    float *out = NULL;
+    int onx, ony, onz; float ovs, oox, ooy, ooz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = fn(g->data, g->nx, g->ny, g->nz, g->voxel_size, g->ox, g->oy, g->oz,
+            factor, &out, &onx, &ony, &onz, &ovs, &oox, &ooy, &ooz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, onx, ony, onz, ovs, oox, ooy, ooz);
+}
+
+static PyObject *mod_coarsen_grid(PyObject *module, PyObject *args, PyObject *kw) {
+    return mod_resize_op(module, args, kw, tvdb_py_coarsen_grid);
+}
+static PyObject *mod_refine_grid(PyObject *module, PyObject *args, PyObject *kw) {
+    return mod_resize_op(module, args, kw, tvdb_py_refine_grid);
+}
+
+static PyObject *mod_pool_op(PyObject *module, PyObject *args, PyObject *kw,
+                             int (*fn)(const float *, int, int, int, float, float, float, float,
+                                       int, int, int, float **, int *, int *, int *,
+                                       float *, float *, float *, float *)) {
+    PyObject *grid_obj; int kx, ky, kz;
+    static char *kwlist[] = {"grid", "kx", "ky", "kz", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "Oiii", kwlist, &grid_obj, &kx, &ky, &kz)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    float *out = NULL;
+    int onx, ony, onz; float ovs, oox, ooy, ooz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = fn(g->data, g->nx, g->ny, g->nz, g->voxel_size, g->ox, g->oy, g->oz,
+            kx, ky, kz, &out, &onx, &ony, &onz, &ovs, &oox, &ooy, &ooz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, onx, ony, onz, ovs, oox, ooy, ooz);
+}
+
+static PyObject *mod_max_pool(PyObject *module, PyObject *args, PyObject *kw) {
+    return mod_pool_op(module, args, kw, tvdb_py_max_pool);
+}
+static PyObject *mod_avg_pool(PyObject *module, PyObject *args, PyObject *kw) {
+    return mod_pool_op(module, args, kw, tvdb_py_avg_pool);
+}
+
+/* ---- splat / ray / clip / prune / merge ---- */
+
+static PyObject *mod_splat_trilinear(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj, *pts_obj, *vals_obj;
+    int with_weights = 0;
+    static char *kwlist[] = {"grid", "points", "values", "weights", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOO|p", kwlist,
+                                     &grid_obj, &pts_obj, &vals_obj, &with_weights)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    Py_ssize_t pn, vn;
+    float *pts  = extract_floats(pts_obj,  &pn);
+    float *vals = extract_floats(vals_obj, &vn);
+    if (!pts || !vals) { free(pts); free(vals); return NULL; }
+    size_t n = (size_t)(pn / 3);
+    float *weights = NULL;
+    if (with_weights) {
+        weights = (float *)calloc((size_t)g->nx * g->ny * g->nz, sizeof(float));
+        if (!weights) { free(pts); free(vals); return PyErr_NoMemory(); }
+    }
+    Py_BEGIN_ALLOW_THREADS
+    tvdb_py_splat_trilinear(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                            g->ox, g->oy, g->oz, pts, vals, n, weights);
+    Py_END_ALLOW_THREADS
+    free(pts); free(vals);
+    if (!with_weights) { Py_RETURN_NONE; }
+    PyObject *wgrid = DenseGrid_from_c(st->DenseGridType, weights,
+                                       g->nx, g->ny, g->nz,
+                                       g->voxel_size, g->ox, g->oy, g->oz);
+    return wgrid;
+}
+
+static PyObject *mod_voxels_along_ray(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj, *origin_t, *dir_t;
+    float tmin = 0.0f, tmax = 1e6f;
+    static char *kwlist[] = {"grid", "origin", "direction", "tmin", "tmax", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOO|ff", kwlist,
+                                     &grid_obj, &origin_t, &dir_t, &tmin, &tmax)) return NULL;
+    float rx, ry, rz, dx, dy, dz;
+    if (!PyArg_ParseTuple(origin_t, "fff", &rx, &ry, &rz)) return NULL;
+    if (!PyArg_ParseTuple(dir_t, "fff", &dx, &dy, &dz)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    int *out = NULL; size_t cnt;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_voxels_along_ray(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                                  g->ox, g->oy, g->oz,
+                                  rx, ry, rz, dx, dy, dz, tmin, tmax,
+                                  &out, &cnt);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *bytes = PyBytes_FromStringAndSize((const char *)out, (Py_ssize_t)(cnt * 3 * sizeof(int)));
+    free(out);
+    return Py_BuildValue("(Nn)", bytes, (Py_ssize_t)cnt);
+}
+
+static PyObject *mod_uniform_ray_samples(PyObject *module, PyObject *args, PyObject *kw) {
+    (void)module;
+    PyObject *origin_t, *dir_t;
+    int n;
+    float tmin = 0.0f, tmax = 1.0f;
+    static char *kwlist[] = {"origin", "direction", "n", "tmin", "tmax", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOi|ff", kwlist,
+                                     &origin_t, &dir_t, &n, &tmin, &tmax)) return NULL;
+    float rx, ry, rz, dx, dy, dz;
+    if (!PyArg_ParseTuple(origin_t, "fff", &rx, &ry, &rz)) return NULL;
+    if (!PyArg_ParseTuple(dir_t, "fff", &dx, &dy, &dz)) return NULL;
+    if (n <= 0) { PyErr_SetString(PyExc_ValueError, "n must be > 0"); return NULL; }
+    float *pts = NULL, *ts = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_uniform_ray_samples(rx, ry, rz, dx, dy, dz, tmin, tmax,
+                                     (size_t)n, &pts, &ts);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error("uniform_ray_samples: alloc failed");
+    PyObject *p_bytes = PyBytes_FromStringAndSize((const char *)pts, (Py_ssize_t)((size_t)n * 3 * sizeof(float)));
+    PyObject *t_bytes = PyBytes_FromStringAndSize((const char *)ts,  (Py_ssize_t)((size_t)n * sizeof(float)));
+    free(pts); free(ts);
+    return Py_BuildValue("(NN)", p_bytes, t_bytes);
+}
+
+static PyObject *mod_segments_along_ray(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj, *origin_t, *dir_t;
+    float tmin = 0.0f, tmax = 1e6f, isovalue = 0.0f;
+    int step_count = 256, cap = 16;
+    static char *kwlist[] = {"grid", "origin", "direction", "isovalue",
+                             "tmin", "tmax", "steps", "cap", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOO|fffii", kwlist,
+                                     &grid_obj, &origin_t, &dir_t, &isovalue,
+                                     &tmin, &tmax, &step_count, &cap)) return NULL;
+    float rx, ry, rz, dx, dy, dz;
+    if (!PyArg_ParseTuple(origin_t, "fff", &rx, &ry, &rz)) return NULL;
+    if (!PyArg_ParseTuple(dir_t, "fff", &dx, &dy, &dz)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    float *pairs = NULL; size_t cnt;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_segments_along_ray(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                                    g->ox, g->oy, g->oz,
+                                    rx, ry, rz, dx, dy, dz,
+                                    tmin, tmax, isovalue,
+                                    (size_t)step_count, (size_t)cap,
+                                    &pairs, &cnt);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    if (cnt > (size_t)cap) cnt = (size_t)cap;
+    PyObject *bytes = PyBytes_FromStringAndSize((const char *)pairs, (Py_ssize_t)(cnt * 2 * sizeof(float)));
+    free(pairs);
+    return Py_BuildValue("(Nn)", bytes, (Py_ssize_t)cnt);
+}
+
+static PyObject *mod_clip_grid(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj, *bb_min_t, *bb_max_t;
+    static char *kwlist[] = {"grid", "bbox_min", "bbox_max", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOO", kwlist,
+                                     &grid_obj, &bb_min_t, &bb_max_t)) return NULL;
+    float bb_min[3], bb_max[3];
+    if (!PyArg_ParseTuple(bb_min_t, "fff", &bb_min[0], &bb_min[1], &bb_min[2])) return NULL;
+    if (!PyArg_ParseTuple(bb_max_t, "fff", &bb_max[0], &bb_max[1], &bb_max[2])) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    float *out = NULL;
+    int onx, ony, onz; float ovs, oox, ooy, ooz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_clip_grid(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                           g->ox, g->oy, g->oz, bb_min, bb_max,
+                           &out, &onx, &ony, &onz, &ovs, &oox, &ooy, &ooz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, onx, ony, onz, ovs, oox, ooy, ooz);
+}
+
+static PyObject *mod_prune_grid(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj;
+    float background = 0.0f, tolerance = 1e-6f;
+    static char *kwlist[] = {"grid", "background", "tolerance", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|ff", kwlist,
+                                     &grid_obj, &background, &tolerance)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    Py_BEGIN_ALLOW_THREADS
+    tvdb_py_prune_grid(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                       g->ox, g->oy, g->oz, background, tolerance);
+    Py_END_ALLOW_THREADS
+    Py_RETURN_NONE;
+}
+
+static PyObject *mod_integrate_tsdf_into(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *tsdf_obj, *wgt_obj, *depth_obj, *pose_obj;
+    int W, H;
+    float fx, fy, cx_, cy_, trunc_distance, dmin, dmax;
+    static char *kwlist[] = {"tsdf", "weights", "depth", "width", "height",
+                             "fx", "fy", "cx", "cy", "pose",
+                             "trunc", "depth_min", "depth_max", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOOiiffffOfff", kwlist,
+                                     &tsdf_obj, &wgt_obj, &depth_obj, &W, &H,
+                                     &fx, &fy, &cx_, &cy_, &pose_obj,
+                                     &trunc_distance, &dmin, &dmax))
+        return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(tsdf_obj, st->DenseGridType) ||
+        !PyObject_IsInstance(wgt_obj,  st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "tsdf and weights must be DenseGrid");
+        return NULL;
+    }
+    PyDenseGrid *T = (PyDenseGrid *)tsdf_obj;
+    PyDenseGrid *Wg = (PyDenseGrid *)wgt_obj;
+    if (T->nx != Wg->nx || T->ny != Wg->ny || T->nz != Wg->nz) {
+        PyErr_SetString(PyExc_ValueError, "tsdf and weights shape mismatch");
+        return NULL;
+    }
+    Py_ssize_t nfd, np;
+    float *depth = extract_floats(depth_obj, &nfd);
+    if (!depth) return NULL;
+    float *pose = extract_floats(pose_obj, &np);
+    if (!pose || np < 12) { free(depth); free(pose);
+        PyErr_SetString(PyExc_ValueError, "pose must contain 12 floats"); return NULL; }
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_integrate_tsdf_into(T->data, Wg->data,
+                                     T->nx, T->ny, T->nz, T->voxel_size,
+                                     T->ox, T->oy, T->oz,
+                                     depth, W, H, fx, fy, cx_, cy_,
+                                     pose, trunc_distance, dmin, dmax);
+    Py_END_ALLOW_THREADS
+    free(depth); free(pose);
+    if (rc != 0) return raise_vdb_error("integrate_tsdf_into failed");
+    Py_RETURN_NONE;
+}
+
+static PyObject *mod_integrate_tsdf_with_color_into(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *tsdf_obj, *wgt_obj, *col_obj, *depth_obj, *rgb_obj, *pose_obj;
+    int W, H;
+    float fx, fy, cx_, cy_, trunc_distance, dmin, dmax;
+    static char *kwlist[] = {"tsdf", "weights", "color", "depth", "rgb",
+                             "width", "height",
+                             "fx", "fy", "cx", "cy", "pose",
+                             "trunc", "depth_min", "depth_max", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOOOOiiffffOfff", kwlist,
+                                     &tsdf_obj, &wgt_obj, &col_obj,
+                                     &depth_obj, &rgb_obj, &W, &H,
+                                     &fx, &fy, &cx_, &cy_, &pose_obj,
+                                     &trunc_distance, &dmin, &dmax))
+        return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(tsdf_obj, st->DenseGridType) ||
+        !PyObject_IsInstance(wgt_obj,  st->DenseGridType) ||
+        !PyObject_IsInstance(col_obj,  st->DenseVecGridType)) {
+        PyErr_SetString(PyExc_TypeError,
+                        "tsdf, weights must be DenseGrid; color must be DenseVecGrid");
+        return NULL;
+    }
+    PyDenseGrid *T  = (PyDenseGrid *)tsdf_obj;
+    PyDenseGrid *Wg = (PyDenseGrid *)wgt_obj;
+    PyDenseVecGrid *C = (PyDenseVecGrid *)col_obj;
+    if (T->nx != Wg->nx || T->ny != Wg->ny || T->nz != Wg->nz ||
+        T->nx != C->nx  || T->ny != C->ny  || T->nz != C->nz) {
+        PyErr_SetString(PyExc_ValueError, "tsdf/weights/color shape mismatch");
+        return NULL;
+    }
+    Py_ssize_t nfd, np;
+    float *depth = extract_floats(depth_obj, &nfd);
+    if (!depth) return NULL;
+    float *pose = extract_floats(pose_obj, &np);
+    if (!pose || np < 12) { free(depth); free(pose);
+        PyErr_SetString(PyExc_ValueError, "pose must contain 12 floats"); return NULL; }
+    Py_buffer rgb_buf;
+    if (PyObject_GetBuffer(rgb_obj, &rgb_buf, PyBUF_C_CONTIGUOUS) < 0) {
+        free(depth); free(pose); return NULL;
+    }
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_integrate_tsdf_with_color_into(
+            T->data, Wg->data, C->data,
+            T->nx, T->ny, T->nz, T->voxel_size, T->ox, T->oy, T->oz,
+            depth, W, H, fx, fy, cx_, cy_, pose,
+            trunc_distance, dmin, dmax,
+            (const uint8_t *)rgb_buf.buf);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&rgb_buf);
+    free(depth); free(pose);
+    if (rc != 0) return raise_vdb_error("integrate_tsdf_with_color_into failed");
+    Py_RETURN_NONE;
+}
+
+static PyObject *mod_merge_grids(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *a_obj, *b_obj;
+    float background = 0.0f;
+    static char *kwlist[] = {"a", "b", "background", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OO|f", kwlist,
+                                     &a_obj, &b_obj, &background)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(a_obj, st->DenseGridType) ||
+        !PyObject_IsInstance(b_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected two DenseGrids"); return NULL;
+    }
+    PyDenseGrid *A = (PyDenseGrid *)a_obj;
+    PyDenseGrid *B = (PyDenseGrid *)b_obj;
+    float *out = NULL;
+    int onx, ony, onz; float ovs, oox, ooy, ooz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_merge_grids(A->data, A->nx, A->ny, A->nz, A->voxel_size,
+                             A->ox, A->oy, A->oz,
+                             B->data, B->nx, B->ny, B->nz, B->voxel_size,
+                             B->ox, B->oy, B->oz, background,
+                             &out, &onx, &ony, &onz, &ovs, &oox, &ooy, &ooz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, onx, ony, onz, ovs, oox, ooy, ooz);
+}
+
+extern int tvdb_py_sparse_conv3d(const int32_t *in_coords, const float *in_values, size_t in_count,
+                                 float voxel_size, float ox, float oy, float oz,
+                                 const float *kernel, int kx, int ky, int kz, float pad_value,
+                                 int32_t **out_coords, float **out_values, size_t *out_count);
+
+static PyObject *mod_sparse_conv3d(PyObject *module, PyObject *args, PyObject *kw) {
+    Py_buffer cb, vb, kb;
+    int kx, ky, kz;
+    float voxel_size = 1.0f, ox = 0, oy = 0, oz = 0;
+    float pad_value = 0.0f;
+    static char *kwlist[] = {"coords", "values", "kernel",
+                             "kx", "ky", "kz",
+                             "voxel_size", "ox", "oy", "oz", "pad_value", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "y*y*y*iii|fffff", kwlist,
+                                     &cb, &vb, &kb, &kx, &ky, &kz,
+                                     &voxel_size, &ox, &oy, &oz, &pad_value))
+        return NULL;
+    if (cb.len % (3 * (Py_ssize_t)sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&kb);
+        PyErr_SetString(PyExc_ValueError, "coords must be int32 xyz triples");
+        return NULL;
+    }
+    size_t in_count = (size_t)(cb.len / 3 / (Py_ssize_t)sizeof(int32_t));
+    if (vb.len != (Py_ssize_t)(in_count * sizeof(float))) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&kb);
+        PyErr_SetString(PyExc_ValueError, "values length must match coord count");
+        return NULL;
+    }
+    if (kb.len != (Py_ssize_t)((size_t)kx * ky * kz * sizeof(float))) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&kb);
+        PyErr_SetString(PyExc_ValueError, "kernel length must equal kx*ky*kz floats");
+        return NULL;
+    }
+    int32_t *out_coords = NULL; float *out_values = NULL; size_t out_count = 0;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_sparse_conv3d((const int32_t *)cb.buf, (const float *)vb.buf, in_count,
+                               voxel_size, ox, oy, oz,
+                               (const float *)kb.buf, kx, ky, kz, pad_value,
+                               &out_coords, &out_values, &out_count);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&kb);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *cb_out = PyBytes_FromStringAndSize((const char *)out_coords,
+                                                 (Py_ssize_t)(out_count * 3 * sizeof(int32_t)));
+    PyObject *vb_out = PyBytes_FromStringAndSize((const char *)out_values,
+                                                 (Py_ssize_t)(out_count * sizeof(float)));
+    free(out_coords); free(out_values);
+    return Py_BuildValue("{s:N,s:N,s:n}", "coords", cb_out, "values", vb_out,
+                         "count", (Py_ssize_t)out_count);
+}
+
+/* ======================================================================== */
 /*  Module definition                                                       */
 /* ======================================================================== */
 
@@ -1624,11 +2478,30 @@ static PyMethodDef module_methods[] = {
     {"laplacian", mod_laplacian_op, METH_VARARGS, "Laplacian"},
     {"curl", mod_curl, METH_VARARGS, "Curl"},
     {"advect", (PyCFunction)mod_advect, METH_VARARGS | METH_KEYWORDS, "Advection"},
-    {"solve_poisson", (PyCFunction)mod_solve_poisson, METH_VARARGS | METH_KEYWORDS, "Poisson solver"},
+    {"solve_poisson", (PyCFunction)mod_solve_poisson, METH_VARARGS | METH_KEYWORDS, "Poisson solver (fp32 internals)"},
+    {"solve_poisson_d", (PyCFunction)mod_solve_poisson_d, METH_VARARGS | METH_KEYWORDS,
+     "Poisson solver with fp64 internals (tighter convergence; input/output remain fp32)"},
     {"ray_cast_sdf", (PyCFunction)mod_ray_cast_sdf, METH_VARARGS | METH_KEYWORDS, "Ray cast SDF"},
     {"particles_to_sdf", (PyCFunction)mod_particles_to_sdf, METH_VARARGS | METH_KEYWORDS, "Particles to SDF"},
     {"volume_to_spheres", (PyCFunction)mod_volume_to_spheres, METH_VARARGS | METH_KEYWORDS, "Volume to spheres"},
     {"fracture", mod_fracture, METH_VARARGS, "Fracture"},
+    {"sample_trilinear", (PyCFunction)mod_sample_trilinear, METH_VARARGS | METH_KEYWORDS, "Trilinear sampling at world points; returns bytes of float32 values"},
+    {"integrate_tsdf", (PyCFunction)mod_integrate_tsdf, METH_VARARGS | METH_KEYWORDS, "TSDF fusion from a depth frame; returns (tsdf, weights)"},
+    {"coarsen_grid", (PyCFunction)mod_coarsen_grid, METH_VARARGS | METH_KEYWORDS, "Coarsen by integer factor (block average)"},
+    {"refine_grid", (PyCFunction)mod_refine_grid, METH_VARARGS | METH_KEYWORDS, "Refine by integer factor (trilinear upsample)"},
+    {"max_pool", (PyCFunction)mod_max_pool, METH_VARARGS | METH_KEYWORDS, "Max pool over kxxky*kz blocks"},
+    {"avg_pool", (PyCFunction)mod_avg_pool, METH_VARARGS | METH_KEYWORDS, "Average pool over kxxky*kz blocks"},
+    {"splat_trilinear", (PyCFunction)mod_splat_trilinear, METH_VARARGS | METH_KEYWORDS, "Trilinear splat of point values into a DenseGrid"},
+    {"voxels_along_ray", (PyCFunction)mod_voxels_along_ray, METH_VARARGS | METH_KEYWORDS, "Enumerate voxels traversed by a ray; returns (bytes, count) of int32 xyz triples"},
+    {"uniform_ray_samples", (PyCFunction)mod_uniform_ray_samples, METH_VARARGS | METH_KEYWORDS, "Generate uniformly-spaced ray samples; returns (point_bytes, t_bytes)"},
+    {"segments_along_ray", (PyCFunction)mod_segments_along_ray, METH_VARARGS | METH_KEYWORDS, "Find isosurface entry/exit pairs along a ray; returns (bytes, count) of (t_in, t_out) float32 pairs"},
+    {"clip_grid", (PyCFunction)mod_clip_grid, METH_VARARGS | METH_KEYWORDS, "Clip a DenseGrid to a world-space bbox"},
+    {"prune_grid", (PyCFunction)mod_prune_grid, METH_VARARGS | METH_KEYWORDS, "Snap voxels near background to background"},
+    {"merge_grids", (PyCFunction)mod_merge_grids, METH_VARARGS | METH_KEYWORDS, "Merge two DenseGrids (SDF union)"},
+    {"integrate_tsdf_into", (PyCFunction)mod_integrate_tsdf_into, METH_VARARGS | METH_KEYWORDS, "Update existing (tsdf, weights) DenseGrids in place from a depth frame; supports multi-frame fusion"},
+    {"integrate_tsdf_with_color_into", (PyCFunction)mod_integrate_tsdf_with_color_into, METH_VARARGS | METH_KEYWORDS, "Update (tsdf, weights, color) buffers in place from a (depth, rgb) frame pair"},
+    {"sparse_conv3d", (PyCFunction)mod_sparse_conv3d, METH_VARARGS | METH_KEYWORDS,
+     "3D convolution on a sparse grid (same-topology). coords/values/kernel are bytes; kernel is kx*ky*kz float32. Returns {coords, values, count}."},
     {NULL, NULL, 0, NULL}
 };
 

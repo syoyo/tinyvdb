@@ -341,16 +341,284 @@ static uint32_t get_or_create_edge_vertex_c(edge_cache_t* cache, tvdb_arena_allo
     return idx;
 }
 
-// MeshToSDF/Mesh operations (abbreviated)
-bool tvdb_mesh_to_sdf(const tvdb_triangle_mesh* mesh, float voxel_size, float band_width, tvdb_dense_grid* grid, tvdb_arena_allocator_t* arena) {
-    // ... complete implementation ...
+// -------------------------------------------------------------------------
+// SDF -> mesh (marching cubes)
+// -------------------------------------------------------------------------
+
+// Marching-cubes corner-of-cube offsets and edge endpoint table.
+static const int MC_CORNER_OFFSETS[8][3] = {
+    {0,0,0},{1,0,0},{1,1,0},{0,1,0},
+    {0,0,1},{1,0,1},{1,1,1},{0,1,1}
+};
+
+// MC edge -> (corner_a, corner_b) using the canonical lookup-table indexing.
+static const int MC_EDGE_VERTS[12][2] = {
+    {0,1},{1,2},{2,3},{3,0},
+    {4,5},{5,6},{6,7},{7,4},
+    {0,4},{1,5},{2,6},{3,7}
+};
+
+static bool ensure_mesh_capacity(tvdb_triangle_mesh* mesh,
+                                 tvdb_arena_allocator_t* arena,
+                                 size_t need_verts, size_t need_faces) {
+    if (mesh->vertex_capacity < need_verts) {
+        size_t cap = mesh->vertex_capacity ? mesh->vertex_capacity : 64;
+        while (cap < need_verts) cap *= 2;
+        tvdb_vec3f* nv = (tvdb_vec3f*)arena_alloc_wrapper(arena, cap * sizeof(tvdb_vec3f));
+        if (!nv) return false;
+        if (mesh->vertices) memcpy(nv, mesh->vertices, mesh->vertex_count * sizeof(tvdb_vec3f));
+        // arena-backed memory is not freed; for malloc fall back, leak the
+        // old buffer if arena==NULL (callers using malloc should size up-front).
+        if (!arena && mesh->vertices) free(mesh->vertices);
+        mesh->vertices = nv;
+        mesh->vertex_capacity = cap;
+    }
+    if (mesh->face_capacity < need_faces) {
+        size_t cap = mesh->face_capacity ? mesh->face_capacity : 64;
+        while (cap < need_faces) cap *= 2;
+        tvdb_triangle* nf = (tvdb_triangle*)arena_alloc_wrapper(arena, cap * sizeof(tvdb_triangle));
+        if (!nf) return false;
+        if (mesh->faces) memcpy(nf, mesh->faces, mesh->face_count * sizeof(tvdb_triangle));
+        if (!arena && mesh->faces) free(mesh->faces);
+        mesh->faces = nf;
+        mesh->face_capacity = cap;
+    }
     return true;
 }
-bool tvdb_sdf_to_mesh(const tvdb_dense_grid* grid, float isovalue, tvdb_triangle_mesh* mesh, tvdb_arena_allocator_t* arena) {
-    // ... complete implementation ...
+
+bool tvdb_sdf_to_mesh(const tvdb_dense_grid* grid, float isovalue,
+                      tvdb_triangle_mesh* mesh, tvdb_arena_allocator_t* arena) {
+    if (!grid || !grid->data || !mesh) return false;
+    if (grid->nx < 2 || grid->ny < 2 || grid->nz < 2) return false;
+
+    // The cache is keyed by edge-key (sorted pair of voxel flat indices); it
+    // dedupes vertices that lie on shared cube edges.
+    edge_cache_t cache;
+    edge_cache_init(&cache, arena);
+
+    // Pre-size the mesh buffers conservatively to avoid many reallocs.
+    size_t init_verts = (size_t)grid->nx * grid->ny;
+    size_t init_faces = init_verts * 2;
+    if (mesh->vertex_capacity == 0) {
+        if (!ensure_mesh_capacity(mesh, arena, init_verts, init_faces)) return false;
+    }
+
+    const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+    for (int z = 0; z < nz - 1; ++z) {
+      for (int y = 0; y < ny - 1; ++y) {
+        for (int x = 0; x < nx - 1; ++x) {
+            float vals[8];
+            int corner_xyz[8][3];
+            int cube_idx = 0;
+            for (int i = 0; i < 8; ++i) {
+                int cx = x + MC_CORNER_OFFSETS[i][0];
+                int cy = y + MC_CORNER_OFFSETS[i][1];
+                int cz = z + MC_CORNER_OFFSETS[i][2];
+                corner_xyz[i][0] = cx;
+                corner_xyz[i][1] = cy;
+                corner_xyz[i][2] = cz;
+                vals[i] = grid->data[voxel_idx_c(nx, ny, cx, cy, cz)];
+                if (vals[i] < isovalue) cube_idx |= (1 << i);
+            }
+            int edges = MC_EDGE_TABLE[cube_idx];
+            if (edges == 0) continue;
+
+            // Compute (or fetch from cache) one vertex per active edge.
+            uint32_t edge_vert_idx[12] = {0};
+            for (int e = 0; e < 12; ++e) {
+                if (!(edges & (1 << e))) continue;
+                int a = MC_EDGE_VERTS[e][0];
+                int b = MC_EDGE_VERTS[e][1];
+                edge_vert_idx[e] = get_or_create_edge_vertex_c(
+                    &cache, arena, grid, isovalue, mesh,
+                    corner_xyz[a][0], corner_xyz[a][1], corner_xyz[a][2],
+                    corner_xyz[b][0], corner_xyz[b][1], corner_xyz[b][2]);
+            }
+
+            // Emit triangles for this cube.
+            const int* tri = MC_TRI_TABLE[cube_idx];
+            for (int i = 0; i < 16 && tri[i] != -1; i += 3) {
+                if (tri[i+1] == -1 || tri[i+2] == -1) break;
+                if (mesh->face_count == mesh->face_capacity) {
+                    if (!ensure_mesh_capacity(mesh, arena,
+                            mesh->vertex_capacity,
+                            mesh->face_capacity ? mesh->face_capacity * 2 : 64))
+                        return false;
+                }
+                tvdb_triangle t;
+                t.v0 = edge_vert_idx[tri[i]];
+                t.v1 = edge_vert_idx[tri[i+1]];
+                t.v2 = edge_vert_idx[tri[i+2]];
+                mesh->faces[mesh->face_count++] = t;
+            }
+        }
+      }
+    }
     return true;
 }
-bool tvdb_make_manifold(const tvdb_triangle_mesh* input, double resolution, double isovalue, tvdb_triangle_mesh* output, tvdb_arena_allocator_t* arena) {
-    // ... complete implementation ...
+
+// -------------------------------------------------------------------------
+// Mesh -> SDF (closest-triangle, signed via face normal)
+// -------------------------------------------------------------------------
+//
+// For each voxel, compute distance to nearest triangle; sign comes from
+// dot((voxel - closest_point), triangle_normal). This is the classic
+// "pseudo-normal-free" approach: simple, robust for moderately well-formed
+// closed meshes, but can have sign artifacts at sharp edges/vertices.
+//
+// Distance is clamped to ±band_width.
+
+static tvdb_vec3f tri_closest_point_c(tvdb_vec3f p, tvdb_vec3f a, tvdb_vec3f b, tvdb_vec3f c) {
+    // Same case analysis as point_triangle_dist_sq_c, but returning the point.
+    tvdb_vec3f ab = sub_c(b, a), ac = sub_c(c, a), ap = sub_c(p, a);
+    float d1 = dot_c(ab, ap), d2 = dot_c(ac, ap);
+    if (d1 <= 0.0f && d2 <= 0.0f) return a;
+    tvdb_vec3f bp = sub_c(p, b);
+    float d3 = dot_c(ab, bp), d4 = dot_c(ac, bp);
+    if (d3 >= 0.0f && d4 <= d3) return b;
+    float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        float v = d1 / (d1 - d3);
+        return add_c(a, mul_c(ab, v));
+    }
+    tvdb_vec3f cp = sub_c(p, c);
+    float d5 = dot_c(ab, cp), d6 = dot_c(ac, cp);
+    if (d6 >= 0.0f && d5 <= d6) return c;
+    float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        float w = d2 / (d2 - d6);
+        return add_c(a, mul_c(ac, w));
+    }
+    float va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f) {
+        float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return add_c(b, mul_c(sub_c(c, b), w));
+    }
+    float denom = 1.0f / (va + vb + vc);
+    return add_c(add_c(a, mul_c(ab, vb * denom)), mul_c(ac, vc * denom));
+}
+
+static tvdb_vec3f cross_c(tvdb_vec3f a, tvdb_vec3f b) {
+    return (tvdb_vec3f){a.y * b.z - a.z * b.y,
+                        a.z * b.x - a.x * b.z,
+                        a.x * b.y - a.y * b.x};
+}
+
+static tvdb_vec3f normalize_c(tvdb_vec3f v) {
+    float L = sqrtf(dot_c(v, v));
+    if (L < 1e-30f) return (tvdb_vec3f){0, 0, 0};
+    return mul_c(v, 1.0f / L);
+}
+
+bool tvdb_mesh_to_sdf(const tvdb_triangle_mesh* mesh, float voxel_size,
+                      float band_width, tvdb_dense_grid* grid,
+                      tvdb_arena_allocator_t* arena) {
+    if (!mesh || !grid || mesh->vertex_count == 0 || mesh->face_count == 0) return false;
+    if (voxel_size <= 0.0f || band_width <= 0.0f) return false;
+
+    // World-space bounding box of the mesh, padded by band_width.
+    tvdb_vec3f bb_min = mesh->vertices[0], bb_max = mesh->vertices[0];
+    for (size_t i = 1; i < mesh->vertex_count; ++i) {
+        tvdb_vec3f v = mesh->vertices[i];
+        if (v.x < bb_min.x) bb_min.x = v.x; if (v.x > bb_max.x) bb_max.x = v.x;
+        if (v.y < bb_min.y) bb_min.y = v.y; if (v.y > bb_max.y) bb_max.y = v.y;
+        if (v.z < bb_min.z) bb_min.z = v.z; if (v.z > bb_max.z) bb_max.z = v.z;
+    }
+    bb_min.x -= band_width; bb_min.y -= band_width; bb_min.z -= band_width;
+    bb_max.x += band_width; bb_max.y += band_width; bb_max.z += band_width;
+
+    int nx = (int)ceilf((bb_max.x - bb_min.x) / voxel_size);
+    int ny = (int)ceilf((bb_max.y - bb_min.y) / voxel_size);
+    int nz = (int)ceilf((bb_max.z - bb_min.z) / voxel_size);
+    if (nx < 1) nx = 1; if (ny < 1) ny = 1; if (nz < 1) nz = 1;
+    if (nx > TVDB_MAX_GRID_DIM || ny > TVDB_MAX_GRID_DIM || nz > TVDB_MAX_GRID_DIM)
+        return false;
+
+    grid->nx = nx; grid->ny = ny; grid->nz = nz;
+    grid->voxel_size = voxel_size;
+    grid->ox = bb_min.x; grid->oy = bb_min.y; grid->oz = bb_min.z;
+    size_t total = (size_t)nx * ny * nz;
+    grid->data = (float*)arena_alloc_wrapper(arena, total * sizeof(float));
+    if (!grid->data) return false;
+
+    // Pre-compute triangle data for speed.
+    size_t nf = mesh->face_count;
+    tvdb_vec3f* tri_n = (tvdb_vec3f*)arena_alloc_wrapper(arena, nf * sizeof(tvdb_vec3f));
+    if (!tri_n) return false;
+    for (size_t f = 0; f < nf; ++f) {
+        tvdb_vec3f a = mesh->vertices[mesh->faces[f].v0];
+        tvdb_vec3f b = mesh->vertices[mesh->faces[f].v1];
+        tvdb_vec3f c = mesh->vertices[mesh->faces[f].v2];
+        tri_n[f] = normalize_c(cross_c(sub_c(b, a), sub_c(c, a)));
+    }
+
+    for (int z = 0; z < nz; ++z) {
+      for (int y = 0; y < ny; ++y) {
+        for (int x = 0; x < nx; ++x) {
+            tvdb_vec3f p = voxel_pos_c(grid, x, y, z);
+            float best_dsq = INFINITY;
+            tvdb_vec3f best_cp = {0, 0, 0};
+            tvdb_vec3f best_n  = {0, 0, 0};
+            for (size_t f = 0; f < nf; ++f) {
+                tvdb_vec3f a = mesh->vertices[mesh->faces[f].v0];
+                tvdb_vec3f b = mesh->vertices[mesh->faces[f].v1];
+                tvdb_vec3f c = mesh->vertices[mesh->faces[f].v2];
+                tvdb_vec3f cp = tri_closest_point_c(p, a, b, c);
+                tvdb_vec3f d = sub_c(p, cp);
+                float dsq = dot_c(d, d);
+                if (dsq < best_dsq) {
+                    best_dsq = dsq;
+                    best_cp = cp;
+                    best_n = tri_n[f];
+                }
+            }
+            float dist = sqrtf(best_dsq);
+            float s = dot_c(sub_c(p, best_cp), best_n) >= 0.0f ? 1.0f : -1.0f;
+            float v = s * dist;
+            if (v >  band_width) v =  band_width;
+            if (v < -band_width) v = -band_width;
+            grid->data[voxel_idx_c(nx, ny, x, y, z)] = v;
+        }
+      }
+    }
     return true;
+}
+
+// -------------------------------------------------------------------------
+// Mesh -> SDF -> Mesh (remeshing for manifold-ness)
+// -------------------------------------------------------------------------
+
+bool tvdb_make_manifold(const tvdb_triangle_mesh* input, double resolution,
+                        double isovalue, tvdb_triangle_mesh* output,
+                        tvdb_arena_allocator_t* arena) {
+    if (!input || !output || resolution <= 0.0) return false;
+
+    tvdb_dense_grid grid;
+    grid.data = NULL;
+    float band = (float)(resolution * 4.0);
+    if (!tvdb_mesh_to_sdf(input, (float)resolution, band, &grid, arena)) return false;
+    bool ok = tvdb_sdf_to_mesh(&grid, (float)isovalue, output, arena);
+    if (!arena) tvdb_dense_grid_free(&grid);
+    return ok;
+}
+
+// -------------------------------------------------------------------------
+// _vdb variants (sign_method is currently advisory; the implementation uses
+// closest-triangle pseudo-normal sign regardless).
+// -------------------------------------------------------------------------
+
+bool tvdb_mesh_to_sdf_vdb(const tvdb_triangle_mesh* mesh, float voxel_size,
+                          float band_width, tvdb_dense_grid* grid,
+                          tvdb_sign_method sign_method,
+                          tvdb_arena_allocator_t* arena) {
+    (void)sign_method;
+    return tvdb_mesh_to_sdf(mesh, voxel_size, band_width, grid, arena);
+}
+
+bool tvdb_make_manifold_vdb(const tvdb_triangle_mesh* input, double resolution,
+                            double isovalue, tvdb_triangle_mesh* output,
+                            tvdb_sign_method sign_method,
+                            tvdb_arena_allocator_t* arena) {
+    (void)sign_method;
+    return tvdb_make_manifold(input, resolution, isovalue, output, arena);
 }

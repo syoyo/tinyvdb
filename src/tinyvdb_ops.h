@@ -57,6 +57,16 @@ int tvdb_solve_poisson(const tvdb_dense_grid* rhs,
                        int max_iters,
                        float tolerance);
 
+// Higher-precision Poisson solve. Identical interface to tvdb_solve_poisson
+// but performs all CG iterates and the 7-point Laplacian apply in fp64
+// internally (input/output remain fp32). Use when the fp32 path stalls or
+// for grids large enough that fp32 rounding limits convergence (≥ 64^3).
+// Returns iterations used.
+int tvdb_solve_poisson_d(const tvdb_dense_grid* rhs,
+                         tvdb_dense_grid* x,
+                         int max_iters,
+                         double tolerance);
+
 // Memory management
 void tvdb_dense_vec_grid_init(tvdb_dense_vec_grid* grid, int nx, int ny, int nz);
 void tvdb_dense_vec_grid_free(tvdb_dense_vec_grid* grid);
