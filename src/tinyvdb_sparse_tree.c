@@ -1,5 +1,6 @@
 #include "tinyvdb_sparse_tree.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -817,6 +818,487 @@ static void collect_mutable_leaves(tvdb_tree_t *tree, size_t node_idx,
         collect_mutable_leaves(tree, in->child_indices[c_idx], co, out);
         ++c_idx;
     }
+}
+
+// ----- from-sparse builder (topology construction) -----
+
+// Allocator that wraps the standard libc allocator. Required because
+// tvdb__tree_destroy / nodemask_destroy / etc call alloc->free_fn(ptr, size,
+// user_ctx) without a NULL check, so the fn pointers must be valid.
+static void *s_libc_malloc(size_t size, void *ctx) { (void)ctx; return malloc(size); }
+static void *s_libc_realloc(void *ptr, size_t old_size, size_t new_size, void *ctx) {
+    (void)ctx; (void)old_size; return realloc(ptr, new_size);
+}
+static void s_libc_free(void *ptr, size_t size, void *ctx) {
+    (void)ctx; (void)size; free(ptr);
+}
+static tvdb_allocator_t s_owned_alloc = {
+    s_libc_malloc, s_libc_realloc, s_libc_free, NULL
+};
+
+typedef struct { int32_t lorig[3]; int32_t slot; float val; } tvdb__coord_entry;
+// Sort PRIMARILY by leaf origin (not by full coord). Coords with the same
+// leaf origin must be contiguous so the per-leaf grouping loop is correct.
+static int tvdb__cmp_coord_entry(const void *a, const void *b) {
+    const tvdb__coord_entry *A = (const tvdb__coord_entry *)a;
+    const tvdb__coord_entry *B = (const tvdb__coord_entry *)b;
+    if (A->lorig[0] != B->lorig[0]) return (A->lorig[0] < B->lorig[0]) ? -1 : 1;
+    if (A->lorig[1] != B->lorig[1]) return (A->lorig[1] < B->lorig[1]) ? -1 : 1;
+    if (A->lorig[2] != B->lorig[2]) return (A->lorig[2] < B->lorig[2]) ? -1 : 1;
+    // Within same leaf, sort by slot (irrelevant but deterministic).
+    return (A->slot < B->slot) ? -1 : (A->slot > B->slot);
+}
+
+static char *xstrdup_(const char *s) {
+    if (!s) return NULL;
+    size_t n = strlen(s);
+    char *d = (char *)malloc(n + 1);
+    if (!d) return NULL;
+    memcpy(d, s, n + 1);
+    return d;
+}
+
+static bool nodemask_alloc_owned(tvdb_nodemask_t *m, int log2dim) {
+    m->log2dim = log2dim;
+    m->bitsize = 1 << (3 * log2dim);
+    m->bits.num_bits = (size_t)m->bitsize;
+    m->bits.num_bytes = ((size_t)m->bitsize + 7) / 8;
+    m->bits.alloc = &s_owned_alloc;
+    m->bits.data = (uint8_t *)calloc(m->bits.num_bytes, 1);
+    return m->bits.data != NULL;
+}
+
+static inline void nm_set(tvdb_nodemask_t *m, int32_t i) {
+    m->bits.data[i >> 3] |= (uint8_t)(1u << (i & 7));
+}
+
+// Cumulative voxel-extent of all levels descending from level `lv` (inclusive).
+// Equals 2^(sum of log2dims from lv to leaf).
+static int level_voxel_span(const tvdb_grid_layout_t *layout, int lv) {
+    int sum = 0;
+    for (int i = lv; i < layout->num_levels; ++i) sum += layout->levels[i].log2dim;
+    return 1 << sum;
+}
+
+// Compute slot index in a parent at level `lv` for a child whose origin lies
+// at `(child_origin)`. The slot uses OpenVDB packing:
+//   slot = (sx << 2*L) | (sy << L) | sz, where L = log2dim of `lv`.
+static int32_t slot_in_parent(const tvdb_grid_layout_t *layout, int lv,
+                              const int32_t parent_origin[3],
+                              const int32_t child_origin[3]) {
+    int L = layout->levels[lv].log2dim;
+    int child_span = level_voxel_span(layout, lv + 1);
+    int dim_mask = (1 << L) - 1;
+    int sx = ((child_origin[0] - parent_origin[0]) / child_span) & dim_mask;
+    int sy = ((child_origin[1] - parent_origin[1]) / child_span) & dim_mask;
+    int sz = ((child_origin[2] - parent_origin[2]) / child_span) & dim_mask;
+    return (sx << (2 * L)) | (sy << L) | sz;
+}
+
+typedef struct {
+    int32_t origin[3];
+    size_t  node_idx;       // index into tree.nodes[]
+} grouping_entry_t;
+
+// Comparator for grouping_entry_t: lexicographic on origin.
+static int cmp_origin(const void *a, const void *b) {
+    const grouping_entry_t *A = (const grouping_entry_t *)a;
+    const grouping_entry_t *B = (const grouping_entry_t *)b;
+    if (A->origin[0] != B->origin[0]) return (A->origin[0] < B->origin[0]) ? -1 : 1;
+    if (A->origin[1] != B->origin[1]) return (A->origin[1] < B->origin[1]) ? -1 : 1;
+    if (A->origin[2] != B->origin[2]) return (A->origin[2] < B->origin[2]) ? -1 : 1;
+    return 0;
+}
+
+// Add a new node to tree.nodes[]; returns index. Allocates nodes[] via realloc.
+static size_t append_node(tvdb_tree_t *tree, tvdb_node_type_t type, int level,
+                          const int32_t origin[3]) {
+    if (tree->num_nodes >= tree->nodes_capacity) {
+        size_t new_cap = tree->nodes_capacity ? tree->nodes_capacity * 2 : 64;
+        tvdb_tree_node_t *nn = (tvdb_tree_node_t *)realloc(
+            tree->nodes, new_cap * sizeof(tvdb_tree_node_t));
+        if (!nn) return (size_t)-1;
+        memset(nn + tree->nodes_capacity, 0,
+               (new_cap - tree->nodes_capacity) * sizeof(tvdb_tree_node_t));
+        tree->nodes = nn;
+        tree->nodes_capacity = new_cap;
+    }
+    size_t idx = tree->num_nodes++;
+    memset(&tree->nodes[idx], 0, sizeof(tvdb_tree_node_t));
+    tree->nodes[idx].type = type;
+    tree->nodes[idx].level = level;
+    tree->nodes[idx].origin[0] = origin[0];
+    tree->nodes[idx].origin[1] = origin[1];
+    tree->nodes[idx].origin[2] = origin[2];
+    return idx;
+}
+
+// Build internal nodes at level `lv` from an unsorted children list.
+// Groups children by parent origin via hash table, regardless of input order.
+// Returns a list of created internal-node entries (one per unique parent).
+static bool build_parent_level(tvdb_tree_t *tree, int parent_lv,
+                               int child_lv,
+                               const grouping_entry_t *children,
+                               size_t n_children, float background,
+                               grouping_entry_t **out_parents,
+                               size_t *out_n_parents) {
+    (void)child_lv;
+    if (n_children == 0) {
+        *out_parents = NULL; *out_n_parents = 0; return true;
+    }
+    // Parent voxel extent = covers (1 << log2dim) children of voxel-extent
+    // child_span. parent_voxel_span = level_voxel_span(parent_lv).
+    int parent_span = level_voxel_span(&tree->layout, parent_lv);
+    int parent_log2dim = tree->layout.levels[parent_lv].log2dim;
+    int parent_bitsize = 1 << (3 * parent_log2dim);
+    int vsize = (int)sizeof(float);
+
+    // Floor-divide helper for parent origin computation.
+    #define PORIGIN(c) (((c) >= 0 ? (c) / parent_span \
+                        : -(((-(c)) + parent_span - 1) / parent_span)) * parent_span)
+
+    // Hash table: (parent_origin) -> index into local `pgroup` array.
+    // Key = pack 3x21-bit signed-shifted origins into uint64.
+    size_t htbl_cap = pow2_(n_children * 2 + 16);
+    size_t htbl_mask = htbl_cap - 1;
+    typedef struct { uint64_t key; uint32_t group_plus_one; } htbl_entry_t;
+    htbl_entry_t *htbl = (htbl_entry_t *)calloc(htbl_cap, sizeof(htbl_entry_t));
+    if (!htbl) return false;
+
+    typedef struct {
+        int32_t origin[3];
+        size_t  *child_idx;     // node indices of children in this group
+        size_t   n_child;
+        size_t   child_cap;
+    } pgroup_t;
+    pgroup_t *pg = NULL;
+    size_t n_pg = 0, pg_cap = 0;
+
+    for (size_t i = 0; i < n_children; ++i) {
+        int32_t porig[3] = {
+            PORIGIN(children[i].origin[0]),
+            PORIGIN(children[i].origin[1]),
+            PORIGIN(children[i].origin[2])
+        };
+        uint64_t key = pack_leaf_key(porig[0], porig[1], porig[2]);
+        size_t h = (size_t)(mix64_(key) & htbl_mask);
+        size_t group_idx = (size_t)-1;
+        while (htbl[h].group_plus_one) {
+            size_t gi = htbl[h].group_plus_one - 1;
+            if (pg[gi].origin[0] == porig[0] &&
+                pg[gi].origin[1] == porig[1] &&
+                pg[gi].origin[2] == porig[2]) { group_idx = gi; break; }
+            h = (h + 1) & htbl_mask;
+        }
+        if (group_idx == (size_t)-1) {
+            // New parent group.
+            if (n_pg == pg_cap) {
+                size_t nc = pg_cap ? pg_cap * 2 : 32;
+                pgroup_t *np = (pgroup_t *)realloc(pg, nc * sizeof(pgroup_t));
+                if (!np) goto fail;
+                pg = np; pg_cap = nc;
+            }
+            pg[n_pg].origin[0] = porig[0];
+            pg[n_pg].origin[1] = porig[1];
+            pg[n_pg].origin[2] = porig[2];
+            pg[n_pg].child_idx = NULL;
+            pg[n_pg].n_child = 0;
+            pg[n_pg].child_cap = 0;
+            group_idx = n_pg++;
+            htbl[h].key = key;
+            htbl[h].group_plus_one = (uint32_t)(group_idx + 1);
+        }
+        // Append child node_idx to this group.
+        pgroup_t *gp = &pg[group_idx];
+        if (gp->n_child == gp->child_cap) {
+            size_t nc = gp->child_cap ? gp->child_cap * 2 : 8;
+            size_t *na = (size_t *)realloc(gp->child_idx, nc * sizeof(size_t));
+            if (!na) goto fail;
+            gp->child_idx = na; gp->child_cap = nc;
+        }
+        gp->child_idx[gp->n_child++] = children[i].node_idx;
+    }
+    free(htbl); htbl = NULL;
+
+    // Build internal nodes from groups.
+    grouping_entry_t *parents = (grouping_entry_t *)malloc(n_pg * sizeof(grouping_entry_t));
+    if (!parents) goto fail;
+
+    typedef struct { int32_t slot; size_t idx; } slot_pair_t;
+    for (size_t g = 0; g < n_pg; ++g) {
+        pgroup_t *gp = &pg[g];
+        size_t pidx = append_node(tree, TVDB_NODE_INTERNAL, parent_lv, gp->origin);
+        if (pidx == (size_t)-1) { free(parents); goto fail; }
+        tvdb_internal_node_t *in = &tree->nodes[pidx].u.internal;
+        if (!nodemask_alloc_owned(&in->child_mask, parent_log2dim) ||
+            !nodemask_alloc_owned(&in->value_mask, parent_log2dim)) {
+            free(parents); goto fail;
+        }
+        in->num_children = gp->n_child;
+        in->child_indices = (size_t *)malloc(gp->n_child * sizeof(size_t));
+        if (!in->child_indices) { free(parents); goto fail; }
+        in->values_size = (size_t)parent_bitsize * (size_t)vsize;
+        in->values = (uint8_t *)malloc(in->values_size);
+        if (!in->values) { free(parents); goto fail; }
+        for (int k = 0; k < parent_bitsize; ++k) {
+            memcpy(in->values + (size_t)k * vsize, &background, sizeof(float));
+        }
+        // Compute slots, sort by slot, populate child_mask + child_indices.
+        slot_pair_t *pairs = (slot_pair_t *)malloc(gp->n_child * sizeof(slot_pair_t));
+        if (!pairs) { free(parents); goto fail; }
+        for (size_t k = 0; k < gp->n_child; ++k) {
+            // Need each child's origin. Look it up via tree.nodes.
+            size_t cni = gp->child_idx[k];
+            int32_t corigin[3] = {
+                tree->nodes[cni].origin[0],
+                tree->nodes[cni].origin[1],
+                tree->nodes[cni].origin[2]
+            };
+            pairs[k].slot = slot_in_parent(&tree->layout, parent_lv,
+                                           gp->origin, corigin);
+            pairs[k].idx = cni;
+        }
+        for (size_t a = 1; a < gp->n_child; ++a) {
+            slot_pair_t v = pairs[a]; size_t b = a;
+            while (b > 0 && pairs[b - 1].slot > v.slot) {
+                pairs[b] = pairs[b - 1]; --b;
+            }
+            pairs[b] = v;
+        }
+        for (size_t k = 0; k < gp->n_child; ++k) {
+            nm_set(&in->child_mask, pairs[k].slot);
+            in->child_indices[k] = pairs[k].idx;
+        }
+        free(pairs);
+        parents[g].origin[0] = gp->origin[0];
+        parents[g].origin[1] = gp->origin[1];
+        parents[g].origin[2] = gp->origin[2];
+        parents[g].node_idx = pidx;
+    }
+
+    for (size_t i = 0; i < n_pg; ++i) free(pg[i].child_idx);
+    free(pg);
+    *out_parents = parents;
+    *out_n_parents = n_pg;
+    #undef PORIGIN
+    return true;
+
+fail:
+    if (htbl) free(htbl);
+    if (pg) { for (size_t i = 0; i < n_pg; ++i) free(pg[i].child_idx); free(pg); }
+    #undef PORIGIN
+    return false;
+}
+
+bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
+                                          const tvdb_sparse_grid *sg,
+                                          const char *grid_name,
+                                          float background,
+                                          tvdb_grid_t *out) {
+    if (!tmpl || !sg || !out) return false;
+    if (!grid_is_float(tmpl)) return false;
+    if (tmpl->tree.layout.num_levels != 4) return false;  // Tree_float_5_4_3 only
+
+    memset(out, 0, sizeof(*out));
+    int leaf_lv = tmpl->tree.layout.num_levels - 1;
+    int leaf_log2dim = tmpl->tree.layout.levels[leaf_lv].log2dim;
+    int leaf_dim = 1 << leaf_log2dim;
+    int leaf_dim_mask = leaf_dim - 1;
+    int leaf_bitsize = 1 << (3 * leaf_log2dim);
+
+    // Descriptor: copy grid_type, set new grid_name. Leave unique_name etc empty.
+    out->descriptor.grid_name = xstrdup_(grid_name ? grid_name : "");
+    out->descriptor.grid_type = xstrdup_(tmpl->descriptor.grid_type ? tmpl->descriptor.grid_type : "Tree_float_5_4_3");
+
+    // Transform: deep-copy (no pointers in tvdb_transform_t).
+    out->transform = tmpl->transform;
+
+    // Tree skeleton.
+    out->tree.alloc = &s_owned_alloc;
+    out->tree.layout = tmpl->tree.layout;
+    out->tree.num_nodes = 0;
+    out->tree.nodes_capacity = 0;
+    out->tree.nodes = NULL;
+    out->tree.is_point_data_grid = 0;
+    out->tree.is_point_index_grid = 0;
+
+    // Step 1: group sparse coords by leaf origin.
+    // Create one (origin, slot, value) entry per coord, sort by leaf origin.
+    tvdb__coord_entry *ce = (tvdb__coord_entry *)malloc(sg->count * sizeof(tvdb__coord_entry));
+    if (!ce) { tvdb_grid_destroy_owned(out); return false; }
+    for (size_t ii = 0; ii < sg->count; ++ii) {
+        int32_t cx = sg->coords[ii].x, cy = sg->coords[ii].y, cz = sg->coords[ii].z;
+        int32_t lx = (cx >> leaf_log2dim) << leaf_log2dim;
+        int32_t ly = (cy >> leaf_log2dim) << leaf_log2dim;
+        int32_t lz = (cz >> leaf_log2dim) << leaf_log2dim;
+        ce[ii].lorig[0] = lx; ce[ii].lorig[1] = ly; ce[ii].lorig[2] = lz;
+        int slx = cx & leaf_dim_mask;
+        int sly = cy & leaf_dim_mask;
+        int slz = cz & leaf_dim_mask;
+        ce[ii].slot = (slx << (2 * leaf_log2dim)) | (sly << leaf_log2dim) | slz;
+        ce[ii].val = sg->values[ii];
+    }
+    qsort(ce, sg->count, sizeof(tvdb__coord_entry), tvdb__cmp_coord_entry);
+
+    // Step 2: walk sorted ce[], emit a leaf node per unique leaf origin.
+    grouping_entry_t *leaves = NULL;
+    size_t leaf_cap = 0, n_leaves = 0;
+
+    size_t i = 0;
+    while (i < sg->count) {
+        int32_t lorig[3] = { ce[i].lorig[0], ce[i].lorig[1], ce[i].lorig[2] };
+        size_t leaf_node_idx = append_node(&out->tree, TVDB_NODE_LEAF, leaf_lv, lorig);
+        if (leaf_node_idx == (size_t)-1) { free(ce); free(leaves); tvdb_grid_destroy_owned(out); return false; }
+        tvdb_leaf_node_t *leaf = &out->tree.nodes[leaf_node_idx].u.leaf;
+        if (!nodemask_alloc_owned(&leaf->value_mask, leaf_log2dim)) {
+            free(ce); free(leaves); tvdb_grid_destroy_owned(out); return false;
+        }
+        leaf->num_voxels = (uint32_t)leaf_bitsize;
+        leaf->data_size = (size_t)leaf_bitsize * sizeof(float);
+        leaf->data = (uint8_t *)malloc(leaf->data_size);
+        if (!leaf->data) { free(ce); free(leaves); tvdb_grid_destroy_owned(out); return false; }
+        // Fill all voxels with background (inactive default).
+        for (int k = 0; k < leaf_bitsize; ++k) {
+            memcpy(leaf->data + (size_t)k * sizeof(float), &background, sizeof(float));
+        }
+        // Write active voxels in this group.
+        while (i < sg->count &&
+               ce[i].lorig[0] == lorig[0] &&
+               ce[i].lorig[1] == lorig[1] &&
+               ce[i].lorig[2] == lorig[2]) {
+            int32_t slot = ce[i].slot;
+            memcpy(leaf->data + (size_t)slot * sizeof(float), &ce[i].val, sizeof(float));
+            nm_set(&leaf->value_mask, slot);
+            ++i;
+        }
+        // Append to leaves grouping list.
+        if (n_leaves == leaf_cap) {
+            leaf_cap = leaf_cap ? leaf_cap * 2 : 64;
+            grouping_entry_t *nl = (grouping_entry_t *)realloc(leaves, leaf_cap * sizeof(grouping_entry_t));
+            if (!nl) { free(ce); free(leaves); tvdb_grid_destroy_owned(out); return false; }
+            leaves = nl;
+        }
+        leaves[n_leaves].origin[0] = lorig[0];
+        leaves[n_leaves].origin[1] = lorig[1];
+        leaves[n_leaves].origin[2] = lorig[2];
+        leaves[n_leaves].node_idx = leaf_node_idx;
+        ++n_leaves;
+    }
+    free(ce);
+
+    // Step 3: build L_(N-2) parents from leaves.
+    grouping_entry_t *l2_parents = NULL; size_t n_l2 = 0;
+    if (!build_parent_level(&out->tree, /*parent_lv=*/leaf_lv - 1,
+                             /*child_lv=*/leaf_lv,
+                             leaves, n_leaves, background,
+                             &l2_parents, &n_l2)) {
+        free(leaves); tvdb_grid_destroy_owned(out); return false;
+    }
+    free(leaves);
+    // Re-sort l2_parents by origin to be safe.
+    qsort(l2_parents, n_l2, sizeof(grouping_entry_t), cmp_origin);
+
+    // Step 4: build L_(N-3) (= level 1 = root's children) from l2_parents.
+    grouping_entry_t *l1_parents = NULL; size_t n_l1 = 0;
+    if (!build_parent_level(&out->tree, /*parent_lv=*/leaf_lv - 2,
+                             /*child_lv=*/leaf_lv - 1,
+                             l2_parents, n_l2, background,
+                             &l1_parents, &n_l1)) {
+        free(l2_parents); tvdb_grid_destroy_owned(out); return false;
+    }
+    free(l2_parents);
+    qsort(l1_parents, n_l1, sizeof(grouping_entry_t), cmp_origin);
+
+    // Step 5: build root with l1_parents as children.
+    int32_t root_origin[3] = {0, 0, 0};
+    size_t root_idx = append_node(&out->tree, TVDB_NODE_ROOT, 0, root_origin);
+    if (root_idx == (size_t)-1) { free(l1_parents); tvdb_grid_destroy_owned(out); return false; }
+    // Root must be at index 0 conceptually, but tree allows any index.
+    // The visit code in this file uses idx 0 as root start, so we want root first.
+    // Easiest: swap root to index 0 if not already.
+    if (root_idx != 0 && out->tree.num_nodes > 1) {
+        tvdb_tree_node_t tmp = out->tree.nodes[0];
+        out->tree.nodes[0] = out->tree.nodes[root_idx];
+        out->tree.nodes[root_idx] = tmp;
+        // Patch any child_indices pointing at the swapped node.
+        for (size_t n = 0; n < out->tree.num_nodes; ++n) {
+            if (out->tree.nodes[n].type == TVDB_NODE_INTERNAL) {
+                tvdb_internal_node_t *in = &out->tree.nodes[n].u.internal;
+                for (size_t c = 0; c < in->num_children; ++c) {
+                    if (in->child_indices[c] == 0) in->child_indices[c] = root_idx;
+                    else if (in->child_indices[c] == root_idx) in->child_indices[c] = 0;
+                }
+            }
+        }
+        // Patch l1_parents node_idx references.
+        for (size_t k = 0; k < n_l1; ++k) {
+            if (l1_parents[k].node_idx == 0) l1_parents[k].node_idx = root_idx;
+            else if (l1_parents[k].node_idx == root_idx) l1_parents[k].node_idx = 0;
+        }
+        root_idx = 0;
+    }
+    tvdb_root_node_t *root = &out->tree.nodes[root_idx].u.root;
+    root->background.type = TVDB_VALUE_FLOAT;
+    root->background.u.f = background;
+    root->num_tiles = 0;
+    root->tile_origins = NULL;
+    root->tile_values = NULL;
+    root->tile_active = NULL;
+    root->num_children = (uint32_t)n_l1;
+    if (n_l1 > 0) {
+        root->child_origins = (int32_t *)malloc((size_t)n_l1 * 3 * sizeof(int32_t));
+        root->child_indices = (size_t *)malloc((size_t)n_l1 * sizeof(size_t));
+        if (!root->child_origins || !root->child_indices) {
+            free(l1_parents); tvdb_grid_destroy_owned(out); return false;
+        }
+        for (size_t k = 0; k < n_l1; ++k) {
+            root->child_origins[3*k + 0] = l1_parents[k].origin[0];
+            root->child_origins[3*k + 1] = l1_parents[k].origin[1];
+            root->child_origins[3*k + 2] = l1_parents[k].origin[2];
+            root->child_indices[k] = l1_parents[k].node_idx;
+        }
+    }
+    free(l1_parents);
+    return true;
+}
+
+void tvdb_grid_destroy_owned(tvdb_grid_t *grid) {
+    if (!grid) return;
+    free(grid->descriptor.grid_name);     grid->descriptor.grid_name = NULL;
+    free(grid->descriptor.unique_name);   grid->descriptor.unique_name = NULL;
+    free(grid->descriptor.grid_type);     grid->descriptor.grid_type = NULL;
+    free(grid->descriptor.instance_parent_name); grid->descriptor.instance_parent_name = NULL;
+
+    // Tree: walk nodes, free per type.
+    tvdb_tree_t *tree = &grid->tree;
+    for (size_t i = 0; i < tree->num_nodes; ++i) {
+        tvdb_tree_node_t *n = &tree->nodes[i];
+        switch (n->type) {
+            case TVDB_NODE_ROOT: {
+                tvdb_root_node_t *r = &n->u.root;
+                free(r->tile_origins);
+                free(r->tile_values);
+                free(r->tile_active);
+                free(r->child_origins);
+                free(r->child_indices);
+            } break;
+            case TVDB_NODE_INTERNAL: {
+                tvdb_internal_node_t *in = &n->u.internal;
+                free(in->child_mask.bits.data);
+                free(in->value_mask.bits.data);
+                free(in->values);
+                free(in->child_indices);
+            } break;
+            case TVDB_NODE_LEAF: {
+                tvdb_leaf_node_t *lf = &n->u.leaf;
+                free(lf->value_mask.bits.data);
+                free(lf->data);
+            } break;
+        }
+    }
+    free(tree->nodes);
+    memset(tree, 0, sizeof(*tree));
+    memset(grid, 0, sizeof(*grid));
 }
 
 size_t tvdb_grid_update_from_sparse(tvdb_grid_t *grid,

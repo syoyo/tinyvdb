@@ -76,6 +76,33 @@ size_t tvdb_grid_update_from_sparse(tvdb_grid_t *grid,
                                     const tvdb_sparse_grid *sg,
                                     size_t *out_skipped);
 
+// Build a fresh tvdb_grid_t from a tvdb_sparse_grid using a template
+// grid's descriptor / transform / tree layout. The output owns all its
+// memory (allocated via malloc); free with tvdb_grid_destroy_owned.
+//
+// `tmpl` provides: descriptor.grid_type (e.g. "Tree_float_5_4_3"),
+// transform, and tree.layout (level structure + log2dims).
+//
+// `grid_name` becomes the new grid's name (descriptor.grid_name).
+//
+// `background` is the float background fill for inactive voxels and
+// internal-node tiles. The voxel size and origin in `sg` are not used —
+// the template's transform is preserved.
+//
+// Currently supports only Tree_float_5_4_3 (3 internal levels above leaf,
+// float value type). Returns false otherwise.
+//
+// Pairs with tvdb_file_save: after building, append the grid to a
+// tvdb_file_t and call tvdb_file_save.
+bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
+                                          const tvdb_sparse_grid *sg,
+                                          const char *grid_name,
+                                          float background,
+                                          tvdb_grid_t *out);
+
+// Free a grid produced by tvdb_grid_from_sparse_using_template.
+void tvdb_grid_destroy_owned(tvdb_grid_t *grid);
+
 // Leaf-stamp dilate / erode. Walks active leaves directly; for each leaf,
 // computes 6-neighbor min/max per voxel using halo data from adjacent leaves
 // via a leaf-coord hash (no dense intermediate). Output is a flat sparse grid

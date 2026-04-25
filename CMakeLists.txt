@@ -147,6 +147,11 @@ if(TINYVDB_BUILD_TESTS)
   add_test(NAME test_sparse_tree
            COMMAND test_sparse_tree ${PROJECT_SOURCE_DIR}/sphere.vdb)
 
+  add_executable(test_grid_from_sparse ${PROJECT_SOURCE_DIR}/tests/test_grid_from_sparse.c)
+  target_link_libraries(test_grid_from_sparse PRIVATE tinyvdb_mesh_ops tinyvdb)
+  add_test(NAME test_grid_from_sparse
+           COMMAND test_grid_from_sparse ${PROJECT_SOURCE_DIR}/sphere.vdb)
+
   if(TINYVDB_BUILD_PYTHON)
     find_program(PYTHON3_EXE NAMES python3 python)
     if(PYTHON3_EXE)

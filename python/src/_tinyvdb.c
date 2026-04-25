@@ -1320,6 +1320,48 @@ static PyObject *VDBFile_grid(PyObject *self, PyObject *args) {
     return (PyObject *)g;
 }
 
+extern int tvdb_py_replace_grid_from_sparse(tvdb_file_t *file, size_t grid_idx,
+                                            const int32_t *coords, const float *values, size_t count,
+                                            const char *new_name, float background);
+
+static PyObject *VDBFile_replace_grid_from_sparse(PyObject *self, PyObject *args, PyObject *kw) {
+    PyVDBFile *f = (PyVDBFile *)self; CHECK_OPEN(f);
+    Py_ssize_t grid_idx = 0;
+    Py_buffer cb, vb;
+    const char *new_name = NULL;
+    float background = 0.0f;
+    static char *kwlist[] = {"grid_idx", "coords", "values", "name", "background", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "ny*y*s|f", kwlist,
+                                     &grid_idx, &cb, &vb, &new_name, &background))
+        return NULL;
+    if (grid_idx < 0 || (size_t)grid_idx >= f->file.num_grids) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb);
+        PyErr_SetString(PyExc_IndexError, "grid_idx out of range");
+        return NULL;
+    }
+    if (cb.len % (3 * (Py_ssize_t)sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb);
+        PyErr_SetString(PyExc_ValueError, "coords must be int32 xyz triples");
+        return NULL;
+    }
+    size_t count = (size_t)(cb.len / 3 / (Py_ssize_t)sizeof(int32_t));
+    if (vb.len != (Py_ssize_t)(count * sizeof(float))) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb);
+        PyErr_SetString(PyExc_ValueError, "values length must match coord count");
+        return NULL;
+    }
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_replace_grid_from_sparse(&f->file, (size_t)grid_idx,
+                                          (const int32_t *)cb.buf,
+                                          (const float *)vb.buf, count,
+                                          new_name, background);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&cb); PyBuffer_Release(&vb);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    Py_RETURN_NONE;
+}
+
 static PyObject *VDBFile_save(PyObject *self, PyObject *args, PyObject *kw) {
     PyVDBFile *f = (PyVDBFile *)self; CHECK_OPEN(f);
     const char *path;
@@ -1397,6 +1439,8 @@ static PyMethodDef VDBFile_methods[] = {
     {"grid_type_name", VDBFile_grid_type_name, METH_VARARGS, "Get grid type name by index"},
     {"grid", VDBFile_grid, METH_VARARGS, "Get VDBGrid by index"},
     {"save", (PyCFunction)VDBFile_save, METH_VARARGS | METH_KEYWORDS, "Save to file"},
+    {"replace_grid_from_sparse", (PyCFunction)VDBFile_replace_grid_from_sparse, METH_VARARGS | METH_KEYWORDS,
+     "Replace grid at grid_idx with one freshly built from sparse coords/values, using the existing grid as template (descriptor + transform + tree layout). After this, call save() to persist."},
     {"to_bytes", (PyCFunction)VDBFile_to_bytes, METH_VARARGS | METH_KEYWORDS, "Serialize to bytes"},
     {"__enter__", VDBFile_enter, METH_NOARGS, NULL},
     {"__exit__", VDBFile_exit, METH_VARARGS, NULL},

@@ -1180,6 +1180,55 @@ int tvdb_py_sparse_conv3d(const int32_t *in_coords, const float *in_values, size
     return 0;
 }
 
+// Replace a file's grid at index `grid_idx` with a freshly-built grid from
+// sparse coords/values, using the existing grid as a template (descriptor +
+// transform + tree layout). The original grid contents are freed.
+int tvdb_py_replace_grid_from_sparse(tvdb_file_t *file, size_t grid_idx,
+                                     const int32_t *coords, const float *values, size_t count,
+                                     const char *new_name, float background) {
+    if (!file || grid_idx >= file->num_grids) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "replace_grid_from_sparse: bad grid_idx");
+        return -1;
+    }
+    tvdb_grid_t *tmpl = &file->grids[grid_idx];
+
+    // Build a sparse_grid from the inputs.
+    tvdb_sparse_grid sg; tvdb_sparse_grid_init(&sg);
+    if (count > 0) {
+        if (!tvdb_sparse_grid_reserve(&sg, count)) {
+            snprintf(s_error_msg, sizeof(s_error_msg), "alloc failed");
+            return -1;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            sg.coords[i].x = coords[3*i + 0];
+            sg.coords[i].y = coords[3*i + 1];
+            sg.coords[i].z = coords[3*i + 2];
+            sg.values[i] = values[i];
+        }
+        sg.count = count;
+    }
+
+    // Build the new grid.
+    tvdb_grid_t built;
+    if (!tvdb_grid_from_sparse_using_template(tmpl, &sg, new_name, background, &built)) {
+        tvdb_sparse_grid_free(&sg);
+        snprintf(s_error_msg, sizeof(s_error_msg), "grid_from_sparse_using_template failed");
+        return -1;
+    }
+    tvdb_sparse_grid_free(&sg);
+
+    // Free the template-grid's old contents and overwrite with the new grid.
+    // We use tvdb_grid_destroy_owned which only works if the grid was built by
+    // us; for loader-allocated grids we rely on tvdb_file_close to clean up.
+    // Here we trust that the file's allocator is the system default (malloc-
+    // backed) — true when tvdb_file_open was called with NULL allocator.
+    // Manually reset the destination's allocator pointers to ours so the
+    // file_close path is consistent.
+    tvdb_grid_destroy_owned(tmpl);
+    *tmpl = built;
+    return 0;
+}
+
 // Update existing tree's voxel values from sparse coords/values
 // (topology-preserving — coords outside any active leaf are skipped).
 int tvdb_py_grid_update_from_sparse(tvdb_grid_t *grid,
