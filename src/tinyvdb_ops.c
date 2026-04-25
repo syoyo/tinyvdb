@@ -1,5 +1,6 @@
 #include "tinyvdb_ops.h"
 #include "tinyvdb_ops_internal.h"
+#include "tinyvdb_simd.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -488,10 +489,17 @@ static void tvdb_apply_laplacian(const tvdb_dense_grid* x, tvdb_dense_grid* y) {
 }
 
 static double tvdb_dot(const float* a, const float* b, size_t n) {
+#if defined(TINYVDB_SIMD) && defined(__AVX2__) && !defined(TINYVDB_OPENMP_ENABLED)
+  // AVX2 reduction (single-threaded). When OpenMP is enabled we keep the
+  // OpenMP-reduction path because mixing nested SIMD with omp reduction
+  // produces unstable summation order across threads.
+  return tvdb_simd_dot_f32(a, b, n);
+#else
   double s = 0.0;
   #pragma omp parallel for reduction(+:s) schedule(static)
   for (long long i = 0; i < (long long)n; ++i) s += (double)a[i] * (double)b[i];
   return s;
+#endif
 }
 
 // fp64 7-point laplacian: out[i] = (sum_6_neighbors - 6*self) / h^2.

@@ -12,6 +12,7 @@ option(TINYVDB_USE_SYSTEM_ZSTD "Use system zstd instead of bundled deps/zstd" OF
 option(TINYVDB_BUILD_VDBRENDER "Build vdbrender volume path tracer example" ON)
 option(TINYVDB_BUILD_PYTHON "Build Python extension" OFF)
 option(TINYVDB_OPENMP "Enable OpenMP parallelism in mesh/ops kernels" OFF)
+option(TINYVDB_SIMD "Enable SSE2/AVX2/F16C SIMD paths (x86-64 only; scalar fallback otherwise)" ON)
 
 # cmake modules
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
@@ -76,6 +77,22 @@ if(TINYVDB_OPENMP)
     message(STATUS "OpenMP enabled for tinyvdb_mesh_ops (${OpenMP_C_FLAGS})")
   else()
     message(WARNING "TINYVDB_OPENMP=ON requested but OpenMP not found; building scalar")
+  endif()
+endif()
+
+if(TINYVDB_SIMD)
+  # x86-64 only; on other architectures the scalar fallback is used.
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    if(MSVC)
+      # MSVC: /arch:AVX2 implies SSE/SSE2/AVX/AVX2; F16C is a separate intrinsic header.
+      target_compile_options(tinyvdb_mesh_ops PRIVATE /arch:AVX2)
+    else()
+      target_compile_options(tinyvdb_mesh_ops PRIVATE -msse4.2 -mavx2 -mf16c -mfma)
+    endif()
+    target_compile_definitions(tinyvdb_mesh_ops PUBLIC TINYVDB_SIMD=1)
+    message(STATUS "SIMD (SSE4.2/AVX2/F16C) enabled for tinyvdb_mesh_ops")
+  else()
+    message(STATUS "TINYVDB_SIMD=ON but architecture is not x86-64; scalar fallback")
   endif()
 endif()
 set_target_properties(tinyvdb_mesh_ops PROPERTIES
@@ -151,6 +168,19 @@ if(TINYVDB_BUILD_TESTS)
   target_link_libraries(test_grid_from_sparse PRIVATE tinyvdb_mesh_ops tinyvdb)
   add_test(NAME test_grid_from_sparse
            COMMAND test_grid_from_sparse ${PROJECT_SOURCE_DIR}/sphere.vdb)
+
+  add_executable(test_simd ${PROJECT_SOURCE_DIR}/tests/test_simd.c)
+  target_link_libraries(test_simd PRIVATE tinyvdb_mesh_ops)
+  # Inherit the SIMD compile flags from tinyvdb_mesh_ops via PUBLIC define;
+  # we also set them locally so the test exercises the same code paths.
+  if(TINYVDB_SIMD AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    if(MSVC)
+      target_compile_options(test_simd PRIVATE /arch:AVX2)
+    else()
+      target_compile_options(test_simd PRIVATE -msse4.2 -mavx2 -mf16c -mfma)
+    endif()
+  endif()
+  add_test(NAME test_simd COMMAND test_simd)
 
   if(TINYVDB_BUILD_PYTHON)
     find_program(PYTHON3_EXE NAMES python3 python)
