@@ -1129,6 +1129,61 @@ int tvdb_py_grid_erode_topology(const tvdb_grid_t *grid, int iterations,
                                     out_coords, out_values, out_count);
 }
 
+// Multi-channel sparse 3D convolution.
+// Output: out_coords[count*3], out_values[count * c_out].
+int tvdb_py_sparse_conv3d_mc(const int32_t *in_coords, const float *in_values_mc, size_t in_count,
+                             int c_in, float voxel_size, float ox, float oy, float oz,
+                             const float *kernel, int kx, int ky, int kz, int c_out,
+                             float pad_value,
+                             int32_t **out_coords, float **out_values_mc, size_t *out_count) {
+    tvdb_sparse_grid in; tvdb_sparse_grid_init(&in);
+    if (in_count > 0) {
+        if (!tvdb_sparse_grid_reserve(&in, in_count)) {
+            snprintf(s_error_msg, sizeof(s_error_msg), "conv3d_mc: alloc failed");
+            return -1;
+        }
+        for (size_t i = 0; i < in_count; ++i) {
+            in.coords[i].x = in_coords[3*i + 0];
+            in.coords[i].y = in_coords[3*i + 1];
+            in.coords[i].z = in_coords[3*i + 2];
+        }
+        in.count = in_count;
+        in.voxel_size = voxel_size; in.ox = ox; in.oy = oy; in.oz = oz;
+    }
+    tvdb_sparse_grid out; tvdb_sparse_grid_init(&out);
+    float *out_mc = NULL;
+    if (!tvdb_sparse_conv3d_mc(&in, in_values_mc, c_in, kernel, kx, ky, kz, c_out,
+                                pad_value, &out, &out_mc)) {
+        tvdb_sparse_grid_free(&in);
+        tvdb_sparse_grid_free(&out);
+        free(out_mc);
+        snprintf(s_error_msg, sizeof(s_error_msg), "sparse_conv3d_mc failed");
+        return -1;
+    }
+    tvdb_sparse_grid_free(&in);
+    *out_count = out.count;
+    if (out.count == 0) {
+        *out_coords = NULL; *out_values_mc = NULL;
+        free(out_mc);
+        tvdb_sparse_grid_free(&out);
+        return 0;
+    }
+    *out_coords = (int32_t *)malloc(out.count * 3 * sizeof(int32_t));
+    if (!*out_coords) {
+        free(out_mc);
+        tvdb_sparse_grid_free(&out);
+        return -1;
+    }
+    for (size_t i = 0; i < out.count; ++i) {
+        (*out_coords)[3*i + 0] = out.coords[i].x;
+        (*out_coords)[3*i + 1] = out.coords[i].y;
+        (*out_coords)[3*i + 2] = out.coords[i].z;
+    }
+    *out_values_mc = out_mc;  // ownership transfers
+    tvdb_sparse_grid_free(&out);
+    return 0;
+}
+
 // Sparse 3D convolution. Inputs as flat coord/value arrays; kernel kx*ky*kz floats.
 int tvdb_py_sparse_conv3d(const int32_t *in_coords, const float *in_values, size_t in_count,
                           float voxel_size, float ox, float oy, float oz,

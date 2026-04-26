@@ -2447,6 +2447,58 @@ extern int tvdb_py_sparse_conv3d(const int32_t *in_coords, const float *in_value
                                  float voxel_size, float ox, float oy, float oz,
                                  const float *kernel, int kx, int ky, int kz, float pad_value,
                                  int32_t **out_coords, float **out_values, size_t *out_count);
+extern int tvdb_py_sparse_conv3d_mc(const int32_t *in_coords, const float *in_values_mc, size_t in_count,
+                                    int c_in, float voxel_size, float ox, float oy, float oz,
+                                    const float *kernel, int kx, int ky, int kz, int c_out,
+                                    float pad_value,
+                                    int32_t **out_coords, float **out_values_mc, size_t *out_count);
+
+static PyObject *mod_sparse_conv3d_mc(PyObject *module, PyObject *args, PyObject *kw) {
+    Py_buffer cb, vb, kb;
+    int c_in = 1, c_out = 1, kx, ky, kz;
+    float voxel_size = 1.0f, ox = 0, oy = 0, oz = 0, pad_value = 0.0f;
+    static char *kwlist[] = {"coords", "values", "kernel",
+                             "kx", "ky", "kz", "c_in", "c_out",
+                             "voxel_size", "ox", "oy", "oz", "pad_value", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "y*y*y*iiiii|fffff", kwlist,
+                                     &cb, &vb, &kb, &kx, &ky, &kz, &c_in, &c_out,
+                                     &voxel_size, &ox, &oy, &oz, &pad_value))
+        return NULL;
+    if (cb.len % (3 * (Py_ssize_t)sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&kb);
+        PyErr_SetString(PyExc_ValueError, "coords must be int32 xyz triples");
+        return NULL;
+    }
+    size_t in_count = (size_t)(cb.len / 3 / (Py_ssize_t)sizeof(int32_t));
+    if (vb.len != (Py_ssize_t)((size_t)in_count * (size_t)c_in * sizeof(float))) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&kb);
+        PyErr_SetString(PyExc_ValueError, "values length must equal in_count * c_in floats");
+        return NULL;
+    }
+    Py_ssize_t want_kb = (Py_ssize_t)((size_t)kx * ky * kz * c_out * c_in * sizeof(float));
+    if (kb.len != want_kb) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&kb);
+        PyErr_SetString(PyExc_ValueError, "kernel length must equal kx*ky*kz*c_out*c_in floats");
+        return NULL;
+    }
+    int32_t *out_coords = NULL; float *out_values_mc = NULL; size_t out_count = 0;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_sparse_conv3d_mc((const int32_t *)cb.buf, (const float *)vb.buf, in_count,
+                                  c_in, voxel_size, ox, oy, oz,
+                                  (const float *)kb.buf, kx, ky, kz, c_out, pad_value,
+                                  &out_coords, &out_values_mc, &out_count);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&kb);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *cb_out = PyBytes_FromStringAndSize((const char *)out_coords,
+                                                 (Py_ssize_t)(out_count * 3 * sizeof(int32_t)));
+    PyObject *vb_out = PyBytes_FromStringAndSize((const char *)out_values_mc,
+                                                 (Py_ssize_t)(out_count * (size_t)c_out * sizeof(float)));
+    free(out_coords); free(out_values_mc);
+    return Py_BuildValue("{s:N,s:N,s:n,s:i}", "coords", cb_out, "values", vb_out,
+                         "count", (Py_ssize_t)out_count, "c_out", c_out);
+}
 
 static PyObject *mod_sparse_conv3d(PyObject *module, PyObject *args, PyObject *kw) {
     Py_buffer cb, vb, kb;
@@ -2546,6 +2598,8 @@ static PyMethodDef module_methods[] = {
     {"integrate_tsdf_with_color_into", (PyCFunction)mod_integrate_tsdf_with_color_into, METH_VARARGS | METH_KEYWORDS, "Update (tsdf, weights, color) buffers in place from a (depth, rgb) frame pair"},
     {"sparse_conv3d", (PyCFunction)mod_sparse_conv3d, METH_VARARGS | METH_KEYWORDS,
      "3D convolution on a sparse grid (same-topology). coords/values/kernel are bytes; kernel is kx*ky*kz float32. Returns {coords, values, count}."},
+    {"sparse_conv3d_mc", (PyCFunction)mod_sparse_conv3d_mc, METH_VARARGS | METH_KEYWORDS,
+     "Multi-channel 3D convolution on a sparse grid. values laid out (count*c_in) channel-fastest; kernel laid out (kx*ky*kz*c_out*c_in) channel-fastest. Returns {coords, values, count, c_out}."},
     {NULL, NULL, 0, NULL}
 };
 

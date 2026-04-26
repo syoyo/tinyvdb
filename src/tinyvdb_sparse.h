@@ -86,6 +86,28 @@ bool tvdb_sparse_conv3d(const tvdb_sparse_grid* in,
                         float pad_value,
                         tvdb_sparse_grid* out);
 
+// Multi-channel 3D convolution. Input has c_in channels per voxel; output
+// has c_out channels per voxel. Values arrays are interleaved per voxel
+// (length count * c_{in,out}, channel-fastest layout).
+//
+// Kernel layout: kernel[((((dk * ky) + dj) * kx + di) * c_out + co) * c_in + ci]
+// — i.e. for each spatial offset (di, dj, dk), a c_out × c_in matrix
+// stored row-major (output channel outer, input channel inner).
+//
+// Output topology = input topology. Out-of-active-set taps contribute
+// pad_value for every channel.
+//
+// `in_values` is in->count * c_in floats; `out_values` is allocated and
+// returned via *out_values_out (caller frees with free()) of length
+// out->count * c_out.
+bool tvdb_sparse_conv3d_mc(const tvdb_sparse_grid* in,
+                           const float* in_values, int c_in,
+                           const float* kernel, int kx, int ky, int kz,
+                           int c_out,
+                           float pad_value,
+                           tvdb_sparse_grid* out,
+                           float** out_values_mc);
+
 #ifdef __cplusplus
 }
 #endif

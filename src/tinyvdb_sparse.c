@@ -428,3 +428,82 @@ bool tvdb_sparse_conv3d(const tvdb_sparse_grid* in,
   free(tbl);
   return true;
 }
+
+// -------------------------------------------------------------------------
+// Multi-channel sparse 3D convolution
+// -------------------------------------------------------------------------
+
+bool tvdb_sparse_conv3d_mc(const tvdb_sparse_grid* in,
+                           const float* in_values, int c_in,
+                           const float* kernel, int kx, int ky, int kz,
+                           int c_out,
+                           float pad_value,
+                           tvdb_sparse_grid* out,
+                           float** out_values_mc) {
+  if (!in || !in_values || !kernel || !out || !out_values_mc) return false;
+  if (kx <= 0 || ky <= 0 || kz <= 0 || c_in <= 0 || c_out <= 0) return false;
+
+  out->count = 0;
+  out->voxel_size = in->voxel_size;
+  out->ox = in->ox; out->oy = in->oy; out->oz = in->oz;
+  *out_values_mc = NULL;
+  if (in->count == 0) return true;
+  if (!tvdb_sparse_grid_reserve(out, in->count)) return false;
+
+  *out_values_mc = (float *)calloc(in->count * (size_t)c_out, sizeof(float));
+  if (!*out_values_mc) return false;
+
+  const int ax = kx / 2, ay = ky / 2, az = kz / 2;
+  const size_t spatial_stride = (size_t)c_out * (size_t)c_in;
+
+  tvdb_hash_entry* tbl = NULL; size_t mask = 0;
+  if (!tvdb_hash_build(in, &tbl, &mask)) {
+    free(*out_values_mc); *out_values_mc = NULL;
+    return false;
+  }
+
+  #pragma omp parallel for schedule(static)
+  for (long long i = 0; i < (long long)in->count; ++i) {
+    int cx = in->coords[i].x;
+    int cy = in->coords[i].y;
+    int cz = in->coords[i].z;
+    out->coords[i].x = cx;
+    out->coords[i].y = cy;
+    out->coords[i].z = cz;
+    float* acc = (*out_values_mc) + (size_t)i * (size_t)c_out;
+
+    for (int dk = 0; dk < kz; ++dk) {
+      int oz = cz + (dk - az);
+      for (int dj = 0; dj < ky; ++dj) {
+        int oy = cy + (dj - ay);
+        for (int di = 0; di < kx; ++di) {
+          int ox = cx + (di - ax);
+          const float* W = kernel +
+              (((size_t)dk * (size_t)ky + (size_t)dj) * (size_t)kx + (size_t)di) * spatial_stride;
+          int j = tvdb_hash_get(tbl, mask, ox, oy, oz);
+          if (j >= 0) {
+            const float* in_v = in_values + (size_t)j * (size_t)c_in;
+            for (int co = 0; co < c_out; ++co) {
+              float s = 0.0f;
+              for (int ci = 0; ci < c_in; ++ci) {
+                s += W[(size_t)co * (size_t)c_in + (size_t)ci] * in_v[ci];
+              }
+              acc[co] += s;
+            }
+          } else {
+            for (int co = 0; co < c_out; ++co) {
+              float s = 0.0f;
+              for (int ci = 0; ci < c_in; ++ci) {
+                s += W[(size_t)co * (size_t)c_in + (size_t)ci] * pad_value;
+              }
+              acc[co] += s;
+            }
+          }
+        }
+      }
+    }
+  }
+  out->count = in->count;
+  free(tbl);
+  return true;
+}

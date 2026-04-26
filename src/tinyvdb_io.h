@@ -786,29 +786,68 @@ static uint16_t tvdb__float_to_half(float f) {
     return h;
 }
 
-/* Promote an array of half-float values to float in-place (expands buffer).
-   `halfs` has `count` uint16_t values; `floats` must hold `count` floats. */
+#if defined(TINYVDB_SIMD) && defined(__F16C__) && defined(__AVX2__)
+  #include <immintrin.h>
+  #define TVDB_IO_HAS_F16C 1
+#else
+  #define TVDB_IO_HAS_F16C 0
+#endif
+
+/* Promote an array of half-float values to float (expands buffer).
+   `halfs` has `count` uint16_t values; `floats` must hold `count` floats.
+   Buffers must NOT alias: callers always pass distinct buffers. */
 static void tvdb__promote_half_to_float(const uint8_t *halfs, uint8_t *floats,
                                         size_t count) {
-    /* Process backwards to allow in-place if floats == halfs (overlapping) */
+#if TVDB_IO_HAS_F16C
+    /* 8-wide F16C path: VCVTPH2PS converts 8 halves to 8 floats per insn. */
+    size_t i = 0;
+    for (; i + 8 <= count; i += 8) {
+        __m128i h = _mm_loadu_si128((const __m128i *)(halfs + i * 2));
+        __m256  f = _mm256_cvtph_ps(h);
+        _mm256_storeu_ps((float *)(floats + i * 4), f);
+    }
+    for (; i < count; ++i) {
+        uint16_t h;
+        memcpy(&h, halfs + i * 2, 2);
+        float fv = tvdb__half_to_float(h);
+        memcpy(floats + i * 4, &fv, 4);
+    }
+#else
+    /* Scalar: process backwards to allow in-place if floats == halfs. */
     for (size_t i = count; i > 0; i--) {
         uint16_t h;
         memcpy(&h, halfs + (i - 1) * 2, 2);
         float fv = tvdb__half_to_float(h);
         memcpy(floats + (i - 1) * 4, &fv, 4);
     }
+#endif
 }
 
 /* Demote an array of float values to half-float.
    `floats` has `count` float values; `halfs` must hold `count` uint16_t. */
 static void tvdb__demote_float_to_half(const uint8_t *floats, uint8_t *halfs,
                                        size_t count) {
+#if TVDB_IO_HAS_F16C
+    size_t i = 0;
+    for (; i + 8 <= count; i += 8) {
+        __m256  f = _mm256_loadu_ps((const float *)(floats + i * 4));
+        __m128i h = _mm256_cvtps_ph(f, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
+        _mm_storeu_si128((__m128i *)(halfs + i * 2), h);
+    }
+    for (; i < count; ++i) {
+        float fv;
+        memcpy(&fv, floats + i * 4, 4);
+        uint16_t h = tvdb__float_to_half(fv);
+        memcpy(halfs + i * 2, &h, 2);
+    }
+#else
     for (size_t i = 0; i < count; i++) {
         float fv;
         memcpy(&fv, floats + i * 4, 4);
         uint16_t h = tvdb__float_to_half(fv);
         memcpy(halfs + i * 2, &h, 2);
     }
+#endif
 }
 
 /* ========================================================================== */

@@ -67,6 +67,7 @@ from tinyvdb._tinyvdb import (
     integrate_tsdf_into,
     integrate_tsdf_with_color_into,
     sparse_conv3d,
+    sparse_conv3d_mc,
     # Constants
     COMPRESS_NONE,
     COMPRESS_ZIP,
@@ -160,6 +161,7 @@ __all__ = [
     "integrate_tsdf_into",
     "integrate_tsdf_with_color_into",
     "sparse_conv3d",
+    "sparse_conv3d_mc",
     "write_obj",
     "COMPRESS_NONE",
     "COMPRESS_ZIP",
