@@ -216,6 +216,12 @@ if(TINYVDB_BUILD_TESTS)
   add_test(NAME test_corpus_roundtrip
            COMMAND test_corpus_roundtrip ${PROJECT_SOURCE_DIR} ${CMAKE_BINARY_DIR})
 
+  add_executable(test_reference_roundtrip
+                 ${PROJECT_SOURCE_DIR}/tests/test_reference_roundtrip.c)
+  target_link_libraries(test_reference_roundtrip PRIVATE tinyvdb m)
+  add_test(NAME test_reference_roundtrip
+           COMMAND test_reference_roundtrip ${PROJECT_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+
   if(TINYVDB_BUILD_PYTHON)
     find_program(PYTHON3_EXE NAMES python3 python)
     if(PYTHON3_EXE)
