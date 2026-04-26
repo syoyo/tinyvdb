@@ -387,10 +387,19 @@ uint32_t      tvdb_nanovdb_grid_type(const tvdb_nanovdb_file_t *file, size_t idx
 uint32_t      tvdb_nanovdb_grid_class(const tvdb_nanovdb_file_t *file, size_t idx);
 double        tvdb_nanovdb_grid_voxel_size(const tvdb_nanovdb_file_t *file, size_t idx, int axis);
 
-/* Value access */
+/* Value access (Root → Upper → Lower → Leaf, byte-exact NanoVDB layout
+   via vendored PNanoVDB.h). Returns the active value at active voxels and
+   the encoded inactive/background value at inactive voxels. */
 float   tvdb_nanovdb_get_voxel_f(const tvdb_nanovdb_grid_t *grid, int x, int y, int z);
 double  tvdb_nanovdb_get_voxel_d(const tvdb_nanovdb_grid_t *grid, int x, int y, int z);
 int     tvdb_nanovdb_is_voxel_active(const tvdb_nanovdb_grid_t *grid, int x, int y, int z);
+
+/* Trilinear sample for FloatGrid. Cell-center convention: integer voxel
+   (i,j,k) sits at sample point (i+0.5, j+0.5, k+0.5), so a sample at
+   (i+0.5, j+0.5, k+0.5) returns get_voxel_f(i,j,k) exactly. Out-of-bounds
+   taps fall back through the standard accessor (background value). */
+float   tvdb_nanovdb_sample_trilinear_f(const tvdb_nanovdb_grid_t *grid,
+                                         float ix, float iy, float iz);
 
 /* World <-> index space transforms.
  *
@@ -517,6 +526,14 @@ void tvdb_projected_gaussian_destroy(tvdb_projected_gaussian_t *gaussians);
 #include <stdio.h>
 #include <assert.h>
 #include <math.h>
+
+/* Vendored PNanoVDB.h provides byte-exact NanoVDB hierarchical accessors
+   (Root → Upper → Lower → Leaf) in pure C, matching nanovdb::ReadAccessor.
+   We use it for tvdb_nanovdb_get_voxel_f / _d / sample_trilinear_f. All
+   PNANOVDB_FORCE_INLINE symbols are static inline, so multiple TUs that
+   include this header don't collide. */
+#define PNANOVDB_C
+#include "third_party/nanovdb/PNanoVDB.h"
 
 #ifndef TVDB_ASSERT
 #define TVDB_ASSERT(x) assert(x)
@@ -1251,32 +1268,79 @@ double tvdb_nanovdb_grid_voxel_size(const tvdb_nanovdb_file_t *file,
     return file->grids[idx].voxel_size[axis];
 }
 
+/* Real Root → Upper → Lower → Leaf accessor backed by PNanoVDB.h. */
+static pnanovdb_buf_t tvdb__nanovdb_make_buf(const tvdb_nanovdb_grid_t *grid) {
+    /* PNanoVDB treats the buffer as uint32_t* with grid handle at address 0.
+       Grid->data is byte-aligned (mmap or malloc), so casting to uint32_t*
+       is safe — NanoVDB requires 8-byte alignment minimum. */
+    return pnanovdb_make_buf((uint32_t *)grid->data,
+                             /*size_in_words=*/(uint64_t)(grid->size / 4));
+}
+
 float tvdb_nanovdb_get_voxel_f(const tvdb_nanovdb_grid_t *grid,
                                int x, int y, int z) {
-    if (!grid || grid->grid_type != TVDB_NANOVDB_GRID_TYPE_FLOAT) return 0.0f;
+    if (!grid || !grid->data) return 0.0f;
+    if (grid->grid_type != TVDB_NANOVDB_GRID_TYPE_FLOAT) return 0.0f;
 
-    int nx = grid->index_bbox_max[0] - grid->index_bbox_min[0] + 1;
-    int ny = grid->index_bbox_max[1] - grid->index_bbox_min[1] + 1;
-
-    if (x < grid->index_bbox_min[0] || x > grid->index_bbox_max[0] ||
-        y < grid->index_bbox_min[1] || y > grid->index_bbox_max[1] ||
-        z < grid->index_bbox_min[2] || z > grid->index_bbox_max[2]) {
-        return 0.0f;
-    }
-
-    x -= grid->index_bbox_min[0];
-    y -= grid->index_bbox_min[1];
-    z -= grid->index_bbox_min[2];
-
-    size_t idx = (size_t)(x + nx * (y + ny * z));
-    const float *vals = (const float *)(grid->data + grid->leaf_data_offset + 64);
-    return vals[idx];
+    pnanovdb_buf_t buf = tvdb__nanovdb_make_buf(grid);
+    pnanovdb_grid_handle_t gh = { { 0u } };
+    pnanovdb_root_handle_t root =
+        pnanovdb_tree_get_root(buf, pnanovdb_grid_get_tree(buf, gh));
+    pnanovdb_coord_t ijk = { x, y, z };
+    pnanovdb_address_t addr = pnanovdb_root_get_value_address(
+        PNANOVDB_GRID_TYPE_FLOAT, buf, root, PNANOVDB_REF(ijk));
+    return pnanovdb_read_float(buf, addr);
 }
 
 double tvdb_nanovdb_get_voxel_d(const tvdb_nanovdb_grid_t *grid,
                                int x, int y, int z) {
-    if (!grid || grid->grid_type != TVDB_NANOVDB_GRID_TYPE_DOUBLE) return 0.0;
-    return 0.0;
+    if (!grid || !grid->data) return 0.0;
+    if (grid->grid_type != TVDB_NANOVDB_GRID_TYPE_DOUBLE) return 0.0;
+
+    pnanovdb_buf_t buf = tvdb__nanovdb_make_buf(grid);
+    pnanovdb_grid_handle_t gh = { { 0u } };
+    pnanovdb_root_handle_t root =
+        pnanovdb_tree_get_root(buf, pnanovdb_grid_get_tree(buf, gh));
+    pnanovdb_coord_t ijk = { x, y, z };
+    pnanovdb_address_t addr = pnanovdb_root_get_value_address(
+        PNANOVDB_GRID_TYPE_DOUBLE, buf, root, PNANOVDB_REF(ijk));
+    return pnanovdb_read_double(buf, addr);
+}
+
+float tvdb_nanovdb_sample_trilinear_f(const tvdb_nanovdb_grid_t *grid,
+                                      float ix, float iy, float iz) {
+    if (!grid || !grid->data) return 0.0f;
+    if (grid->grid_type != TVDB_NANOVDB_GRID_TYPE_FLOAT) return 0.0f;
+
+    /* Cell-center convention: voxel (i,j,k) is centered at (i+0.5, j+0.5,
+       k+0.5). Subtract 0.5 to get the lattice coordinate. */
+    float fx = ix - 0.5f, fy = iy - 0.5f, fz = iz - 0.5f;
+    int x0 = (int)floorf(fx), y0 = (int)floorf(fy), z0 = (int)floorf(fz);
+    float tx = fx - (float)x0, ty = fy - (float)y0, tz = fz - (float)z0;
+
+    pnanovdb_buf_t buf = tvdb__nanovdb_make_buf(grid);
+    pnanovdb_grid_handle_t gh = { { 0u } };
+    pnanovdb_root_handle_t root =
+        pnanovdb_tree_get_root(buf, pnanovdb_grid_get_tree(buf, gh));
+
+    float v[2][2][2];
+    for (int dz = 0; dz < 2; ++dz) {
+        for (int dy = 0; dy < 2; ++dy) {
+            for (int dx = 0; dx < 2; ++dx) {
+                pnanovdb_coord_t ijk = { x0 + dx, y0 + dy, z0 + dz };
+                pnanovdb_address_t addr = pnanovdb_root_get_value_address(
+                    PNANOVDB_GRID_TYPE_FLOAT, buf, root, PNANOVDB_REF(ijk));
+                v[dz][dy][dx] = pnanovdb_read_float(buf, addr);
+            }
+        }
+    }
+    float c00 = v[0][0][0] * (1 - tx) + v[0][0][1] * tx;
+    float c01 = v[0][1][0] * (1 - tx) + v[0][1][1] * tx;
+    float c10 = v[1][0][0] * (1 - tx) + v[1][0][1] * tx;
+    float c11 = v[1][1][0] * (1 - tx) + v[1][1][1] * tx;
+    float c0  = c00 * (1 - ty) + c01 * ty;
+    float c1  = c10 * (1 - ty) + c11 * ty;
+    return c0 * (1 - tz) + c1 * tz;
 }
 
 tvdb_status_t tvdb_nanovdb_index_to_world(const tvdb_nanovdb_grid_t *grid,
@@ -1322,13 +1386,26 @@ tvdb_status_t tvdb_nanovdb_world_to_index(const tvdb_nanovdb_grid_t *grid,
 
 int tvdb_nanovdb_is_voxel_active(const tvdb_nanovdb_grid_t *grid,
                                  int x, int y, int z) {
-    if (!grid) return 0;
+    if (!grid || !grid->data) return 0;
+    /* Quick bbox reject: voxels outside the active bbox are guaranteed
+       inactive. PNanoVDB would return false at higher levels too, but the
+       bbox check avoids descending the tree for the common all-outside
+       case in renderers. */
     if (x < grid->index_bbox_min[0] || x > grid->index_bbox_max[0] ||
         y < grid->index_bbox_min[1] || y > grid->index_bbox_max[1] ||
         z < grid->index_bbox_min[2] || z > grid->index_bbox_max[2]) {
         return 0;
     }
-    return 1;
+    pnanovdb_buf_t buf = tvdb__nanovdb_make_buf(grid);
+    pnanovdb_grid_handle_t gh = { { 0u } };
+    pnanovdb_root_handle_t root =
+        pnanovdb_tree_get_root(buf, pnanovdb_grid_get_tree(buf, gh));
+    pnanovdb_readaccessor_t acc;
+    pnanovdb_readaccessor_init(PNANOVDB_REF(acc), root);
+    pnanovdb_coord_t ijk = { x, y, z };
+    return pnanovdb_readaccessor_is_active(grid->grid_type, buf,
+                                            PNANOVDB_REF(acc),
+                                            PNANOVDB_REF(ijk)) ? 1 : 0;
 }
 
 const char *tvdb_nanovdb_grid_type_name(uint32_t grid_type) {

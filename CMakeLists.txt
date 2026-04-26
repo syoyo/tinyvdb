@@ -222,6 +222,12 @@ if(TINYVDB_BUILD_TESTS)
   add_test(NAME test_reference_roundtrip
            COMMAND test_reference_roundtrip ${PROJECT_SOURCE_DIR} ${CMAKE_BINARY_DIR})
 
+  add_executable(test_nanovdb_reference
+                 ${PROJECT_SOURCE_DIR}/tests/test_nanovdb_reference.c)
+  target_link_libraries(test_nanovdb_reference PRIVATE tinyvdb_nanovdb tinyvdb m)
+  add_test(NAME test_nanovdb_reference
+           COMMAND test_nanovdb_reference ${PROJECT_SOURCE_DIR})
+
   if(TINYVDB_BUILD_PYTHON)
     find_program(PYTHON3_EXE NAMES python3 python)
     if(PYTHON3_EXE)

@@ -25,6 +25,7 @@ wheelhouse/
 
 # Test data
 *.vdb
+*.nvdb
 
 # Profiling
 gmon.out
