@@ -38,6 +38,7 @@ typedef struct {
         int32_t  i32_vals[64];
         int64_t  i64_vals[64];
         double   f64_vals[64];
+        uint8_t  bool_vals[64];
     };
 } test_data_t;
 
@@ -54,6 +55,14 @@ static void make_test_coords(test_data_t *td) {
             }
     td->count = 64;
 }
+
+// BOOL note: tinyvdb's internal storage for BOOL is 1 byte per voxel (0 / 1)
+// rather than OpenVDB's 1-bit-per-voxel bit-packed buffer. This means BOOL
+// .vdb files we write are self-consistent (our reader unpacks them back
+// correctly) but NOT byte-compatible with the official OpenVDB format —
+// they will fail to load in DCCs. Closing that gap properly needs an
+// OpenVDB-produced reference BOOL .vdb to validate against; this test
+// only checks self-consistency.
 
 // Run a round-trip for a typed grid and verify every active voxel matches.
 //
@@ -207,6 +216,17 @@ int main(int argc, char **argv) {
         char path[256];
         snprintf(path, sizeof(path), "%s/audit_double.vdb", out_dir);
         if (run_round_trip("DOUBLE", TVDB_VALUE_DOUBLE, td.f64_vals, &bg,
+                            path, tmpl_path, &td)) ++fails;
+    }
+    // ---- BOOL (self-consistency only — 1 byte per voxel; not byte-compat
+    // with OpenVDB's bit-packed BOOL leaf format, see comment above) ----
+    {
+        // Alternating pattern: even indices = 1, odd = 0.
+        for (int i = 0; i < td.count; ++i) td.bool_vals[i] = (uint8_t)((i & 1) == 0);
+        uint8_t bg = 0;
+        char path[256];
+        snprintf(path, sizeof(path), "%s/audit_bool.vdb", out_dir);
+        if (run_round_trip("BOOL", TVDB_VALUE_BOOL, td.bool_vals, &bg,
                             path, tmpl_path, &td)) ++fails;
     }
 
