@@ -158,6 +158,64 @@ def gaussian_filter_sparse(sparse_or_grid, width, sigma=None, voxel_size=1.0,
                          voxel_size=vs, ox=ox, oy=oy, oz=oz, pad_value=0.0)
 
 
+def mean_filter_sparse(sparse_or_grid, width=3, voxel_size=1.0,
+                       origin=(0.0, 0.0, 0.0)):
+    """Apply a uniform box (mean) filter to a sparse grid (same topology).
+
+    Each output voxel is the unweighted average of its kx*ky*kz neighborhood
+    (with `width` taps per axis). Out-of-active-set taps contribute 0 (so
+    boundary voxels see slight darkening).
+    """
+    try:
+        import numpy as _np
+    except ImportError:
+        raise RuntimeError("mean_filter_sparse requires numpy")
+    if width < 1:
+        raise ValueError("width must be >= 1")
+    n = width * width * width
+    kernel = _np.full(n, 1.0 / n, dtype=_np.float32)
+    if isinstance(sparse_or_grid, dict):
+        sg = sparse_or_grid
+    elif hasattr(sparse_or_grid, "to_sparse"):
+        sg = sparse_or_grid.to_sparse()
+    else:
+        raise TypeError("expected dict or VDBGrid")
+    return sparse_conv3d(coords=sg["coords"], values=sg["values"],
+                         kernel=kernel.tobytes(), kx=width, ky=width, kz=width,
+                         voxel_size=voxel_size, ox=origin[0], oy=origin[1], oz=origin[2],
+                         pad_value=0.0)
+
+
+def laplacian_filter_sparse(sparse_or_grid, voxel_size=1.0,
+                            origin=(0.0, 0.0, 0.0)):
+    """Apply a 7-point discrete Laplacian to a sparse grid (same topology).
+
+    Out-of-active-set neighbors contribute 0 (Dirichlet boundary).
+    """
+    try:
+        import numpy as _np
+    except ImportError:
+        raise RuntimeError("laplacian_filter_sparse requires numpy")
+    # 3x3x3 kernel with center=-6, six face-neighbors=+1, rest=0.
+    kernel = _np.zeros((3, 3, 3), dtype=_np.float32)
+    kernel[1, 1, 1] = -6.0
+    kernel[0, 1, 1] = kernel[2, 1, 1] = 1.0
+    kernel[1, 0, 1] = kernel[1, 2, 1] = 1.0
+    kernel[1, 1, 0] = kernel[1, 1, 2] = 1.0
+    h2 = float(voxel_size) * float(voxel_size)
+    kernel /= h2
+    if isinstance(sparse_or_grid, dict):
+        sg = sparse_or_grid
+    elif hasattr(sparse_or_grid, "to_sparse"):
+        sg = sparse_or_grid.to_sparse()
+    else:
+        raise TypeError("expected dict or VDBGrid")
+    return sparse_conv3d(coords=sg["coords"], values=sg["values"],
+                         kernel=kernel.flatten().tobytes(), kx=3, ky=3, kz=3,
+                         voxel_size=voxel_size, ox=origin[0], oy=origin[1], oz=origin[2],
+                         pad_value=0.0)
+
+
 __version__ = "0.8.2"
 
 __all__ = [
@@ -215,6 +273,8 @@ __all__ = [
     "sparse_conv3d",
     "sparse_conv3d_mc",
     "gaussian_filter_sparse",
+    "mean_filter_sparse",
+    "laplacian_filter_sparse",
     "write_obj",
     "COMPRESS_NONE",
     "COMPRESS_ZIP",

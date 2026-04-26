@@ -221,11 +221,11 @@ worth knowing.
   uses `#pragma omp parallel for` with `omp atomic update` on per-tap
   scatter writes. Bit-identical to scalar when OpenMP is off; safe
   under contention when on.
-- [x] **Gaussian filter on sparse grids (Python).**
-  `tinyvdb.gaussian_filter_sparse(sparse_or_grid, width, sigma=...)`
-  builds a separable 3-D Gaussian kernel and calls `sparse_conv3d`.
-  Same-topology output. (Mean/laplacian filters trivially compose
-  via `sparse_conv3d`; not yet wrapped, but doable in user code.)
+- [x] **Filters on sparse grids (Python).**
+  `tinyvdb.gaussian_filter_sparse`, `mean_filter_sparse`, and
+  `laplacian_filter_sparse`. Each builds a kernel and dispatches to
+  `sparse_conv3d`. Accept either a sparse-grid dict or a `VDBGrid`.
+  Same-topology output (out-of-active-set taps contribute 0).
 - [ ] **fp64 dense grid type.** Only the Poisson solver has a fp64 path
   (`tvdb_solve_poisson_d`); the dense grid storage is fp32. A parallel
   `tvdb_dense_grid_d` for full fp64 ops is a much larger surface-area
