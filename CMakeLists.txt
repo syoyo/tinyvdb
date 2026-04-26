@@ -9,6 +9,7 @@ option(TINYVDB_BUILD_EXAMPLES "Build examples" ON)
 option(TINYVDB_USE_SYSTEM_ZLIB "Use system zlib instead of bundled miniz" OFF)
 option(TINYVDB_USE_ZSTD "Enable ZSTD compression support in BLOSC frames" ON)
 option(TINYVDB_USE_SYSTEM_ZSTD "Use system zstd instead of bundled deps/zstd" OFF)
+option(TINYVDB_USE_SYSTEM_BLOSC "Link system libblosc for real BLOSC framing in NanoVDB I/O" OFF)
 option(TINYVDB_BUILD_VDBRENDER "Build vdbrender volume path tracer example" ON)
 option(TINYVDB_BUILD_PYTHON "Build Python extension" OFF)
 option(TINYVDB_OPENMP "Enable OpenMP parallelism in mesh/ops kernels" OFF)
@@ -107,6 +108,22 @@ set_target_properties(tinyvdb_mesh_ops PROPERTIES
 add_library(tinyvdb_nanovdb STATIC ${PROJECT_SOURCE_DIR}/src/tinyvdb_nanovdb.c)
 target_include_directories(tinyvdb_nanovdb PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(tinyvdb_nanovdb PRIVATE tinyvdb)
+
+# Optional: real BLOSC1 framing (replaces the LZ4-with-fake-header fallback).
+# When ON, NanoVDB-Codec=BLOSC files written by libnanovdb load correctly.
+if(TINYVDB_USE_SYSTEM_BLOSC)
+  find_library(BLOSC_LIBRARY NAMES blosc)
+  find_path(BLOSC_INCLUDE_DIR NAMES blosc.h)
+  if(BLOSC_LIBRARY AND BLOSC_INCLUDE_DIR)
+    target_link_libraries(tinyvdb_nanovdb PUBLIC ${BLOSC_LIBRARY})
+    target_include_directories(tinyvdb_nanovdb PUBLIC ${BLOSC_INCLUDE_DIR})
+    target_compile_definitions(tinyvdb_nanovdb PUBLIC TVDB_HAVE_BLOSC)
+    message(STATUS "Found libblosc: ${BLOSC_LIBRARY} (BLOSC framing enabled)")
+  else()
+    message(FATAL_ERROR "TINYVDB_USE_SYSTEM_BLOSC=ON but libblosc not found. "
+                        "Install libblosc-dev or set TINYVDB_USE_SYSTEM_BLOSC=OFF.")
+  endif()
+endif()
 target_include_directories(tinyvdb PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(tinyvdb PRIVATE TINYVDB_IO_IMPLEMENTATION MINIZ_NO_STDIO)
 

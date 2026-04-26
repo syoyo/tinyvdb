@@ -457,6 +457,38 @@ const char *tvdb_nanovdb_grid_class_name(uint32_t grid_class);
 int          tvdb_nanovdb_is_big_endian_file(const tvdb_nanovdb_file_t *file);
 uint32_t     tvdb_nanovdb_value_size(uint32_t grid_type);
 
+/* CRC32 of a contiguous byte range. Polynomial 0xEDB88320, initial state
+ * `crc`, returns ~final. Matches NanoVDB's util::crc32 byte-for-byte. */
+uint32_t tvdb_nanovdb_crc32(const void *data, size_t size, uint32_t crc);
+
+/* Compute the head CRC32 of a grid: bytes [16, sizeof(GridData)+sizeof(TreeData))
+ * for grid file_version > 32.6.0, i.e. the GridData+TreeData blob excluding
+ * the 16-byte magic + stored-checksum prefix. Returns 0 for older versions
+ * (head split is per-node and not yet implemented).
+ *
+ * `grid->data` must point to the beginning of the GridData blob. */
+uint32_t tvdb_nanovdb_compute_head_checksum(const tvdb_nanovdb_grid_t *grid);
+
+/* Compute the tail CRC32 of a grid: blocked-CRC32 (4KB blocks; see
+ * NANOVDB_CRC32_LOG2_BLOCK_SIZE) over bytes
+ * [sizeof(GridData)+sizeof(TreeData), grid_size). Returns 0 if the grid
+ * is too small or the version is older than 32.6.0. */
+uint32_t tvdb_nanovdb_compute_tail_checksum(const tvdb_nanovdb_grid_t *grid);
+
+/* Validate the stored 64-bit checksum (`grid_data.checksum`) against the
+ * recomputed value.
+ *
+ * `mode` chooses how much to recompute:
+ *   TVDB_NANOVDB_CHECKSUM_NONE       — accept any stored value (no-op)
+ *   TVDB_NANOVDB_CHECKSUM_EASTWOOD   — head only (32-bit "Half" check)
+ *   TVDB_NANOVDB_CHECKSUM_DEFAULT    — full check (head + tail)
+ *
+ * Returns 1 if the stored checksum matches, 0 if it doesn't, and
+ * 1 if the stored checksum is the "empty" sentinel (0xFFFFFFFFFFFFFFFF —
+ * meaning no checksum was written). */
+int tvdb_nanovdb_validate_checksum(const tvdb_nanovdb_grid_t *grid,
+                                    tvdb_nanovdb_checksum_mode_t mode);
+
 /* ========================================================================== */
 /*  Gaussian Splat PLY I/O                                                    */
 /* ========================================================================== */
@@ -792,29 +824,30 @@ static void tvdb__nnvdb_sw_write_str(tvdb__nnvdb_sw_t *sw, const char *s,
 /*  BLOSC decompression for NanoVDB                                            */
 /* ========================================================================== */
 
+#ifdef TVDB_HAVE_BLOSC
+#include <blosc.h>
+#endif
+
 static int tvdb__nnvdb_decompress_blosc(void *dst, size_t dst_size,
                                         const void *src, size_t src_size) {
     if (!dst || !src) return 0;
-
-    int flags = 0;
-    int typesize = 0;
-    size_t nbytes = 0, cbytes = 0;
-    if (LZ4_decompress_safe(src, dst, src_size, dst_size) < 0) return 0;
-
-    const uint8_t *p = (const uint8_t *)src;
-    flags = p[0];
-    typesize = flags & 0x1F;
-    nbytes = (size_t)p[1] | ((size_t)p[2] << 8) |
-             ((size_t)p[3] << 16) | ((size_t)p[4] << 24);
-    cbytes = (size_t)p[5] | ((size_t)p[6] << 8) |
-             ((size_t)p[7] << 16) | ((size_t)p[8] << 24);
-
-    if (nbytes > dst_size) return 0;
-    (void)cbytes;
-
-    int rc = LZ4_decompress_safe((const char *)src + 12, dst, src_size - 12,
-                                  dst_size);
-    return (rc >= 0) ? 1 : 0;
+#ifdef TVDB_HAVE_BLOSC
+    /* Real BLOSC1 decompression. NanoVDB writes one chunk per grid (each
+       up to 1GB uncompressed), and each chunk is a full Blosc1 frame. */
+    int rc = blosc_decompress_ctx(src, dst, dst_size, /*numinternalthreads=*/1);
+    return rc > 0 ? 1 : 0;
+#else
+    /* Fallback path retained only for backwards compatibility with the
+       earlier "fake LZ4 with 12-byte prefix" framing produced by older
+       tinyvdb writes. Real BLOSC-encoded NanoVDB files (e.g. produced by
+       libnanovdb's nanovdb_convert --blosc) require building with
+       TINYVDB_USE_SYSTEM_BLOSC=ON. */
+    (void)src_size;
+    if (src_size < 12) return 0;
+    int rc = LZ4_decompress_safe((const char *)src + 12, (char *)dst,
+                                 (int)(src_size - 12), (int)dst_size);
+    return rc >= 0 ? 1 : 0;
+#endif
 }
 
 /* ========================================================================== */
@@ -1406,6 +1439,112 @@ int tvdb_nanovdb_is_voxel_active(const tvdb_nanovdb_grid_t *grid,
     return pnanovdb_readaccessor_is_active(grid->grid_type, buf,
                                             PNANOVDB_REF(acc),
                                             PNANOVDB_REF(ijk)) ? 1 : 0;
+}
+
+/* ----- CRC32 + grid checksum (matches NanoVDB tools/GridChecksum.h) ----- */
+
+uint32_t tvdb_nanovdb_crc32(const void *data, size_t size, uint32_t crc) {
+    if (!data) return crc;
+    crc = ~crc;
+    const uint8_t *p = (const uint8_t *)data;
+    for (size_t i = 0; i < size; ++i) {
+        crc ^= p[i];
+        for (int j = 0; j < 8; ++j) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)-(int32_t)(crc & 1u));
+        }
+    }
+    return ~crc;
+}
+
+#define TVDB__NVDB_GRID_DATA_BYTES 672u
+#define TVDB__NVDB_TREE_DATA_BYTES 64u
+#define TVDB__NVDB_CRC32_BLOCK_LOG2 12  /* 4 KB blocks */
+
+/* Decode the grid's encoded version word into (major, minor, patch). The
+ * NanoVDB encoding is `(major << 21) | (minor << 10) | patch` for v32.6.0+
+ * and `(major << 24) | (minor << 16) | patch_low_16` for older. We follow
+ * the modern encoding here since we already require v32+. */
+static int tvdb__nvdb_version_gt_32_6_0(uint32_t enc) {
+    uint32_t major = (enc >> 21) & 0x7FFu;
+    uint32_t minor = (enc >> 10) & 0x7FFu;
+    if (major > 32u) return 1;
+    if (major == 32u && minor > 6u) return 1;
+    return 0;
+}
+
+uint32_t tvdb_nanovdb_compute_head_checksum(const tvdb_nanovdb_grid_t *grid) {
+    if (!grid || !grid->data || grid->size < 16u + TVDB__NVDB_TREE_DATA_BYTES) {
+        return 0u;
+    }
+    /* Read the encoded version from the grid's GridData (offset 16). */
+    uint32_t enc;
+    memcpy(&enc, grid->data + 16, 4);
+    if (!tvdb__nvdb_version_gt_32_6_0(enc)) return 0u;
+
+    size_t head_end = TVDB__NVDB_GRID_DATA_BYTES + TVDB__NVDB_TREE_DATA_BYTES;
+    if (head_end > grid->size) return 0u;
+    return tvdb_nanovdb_crc32(grid->data + 16, head_end - 16, 0u);
+}
+
+uint32_t tvdb_nanovdb_compute_tail_checksum(const tvdb_nanovdb_grid_t *grid) {
+    if (!grid || !grid->data) return 0u;
+    uint32_t enc;
+    memcpy(&enc, grid->data + 16, 4);
+    if (!tvdb__nvdb_version_gt_32_6_0(enc)) return 0u;
+
+    size_t head_end = TVDB__NVDB_GRID_DATA_BYTES + TVDB__NVDB_TREE_DATA_BYTES;
+    if (grid->size <= head_end) return 0u;
+    size_t tail_size = grid->size - head_end;
+    const uint8_t *tail = grid->data + head_end;
+
+    /* blockedCrc32: 4KB blocks, then CRC32 of the resulting CRCs. The last
+     * block absorbs the leftover bytes (matching NanoVDB's behavior of
+     * extending blockSize on the final iteration when blockCount<<LOG2 <
+     * size). If size < 4096, blockCount==0 and there's nothing to hash. */
+    size_t block_size = (size_t)1 << TVDB__NVDB_CRC32_BLOCK_LOG2;
+    size_t block_count = tail_size >> TVDB__NVDB_CRC32_BLOCK_LOG2;
+    if (block_count == 0) return ~(uint32_t)0;
+
+    uint32_t *checksums = (uint32_t *)malloc(block_count * sizeof(uint32_t));
+    if (!checksums) return 0u;
+    for (size_t i = 0; i < block_count; ++i) {
+        size_t bs = block_size;
+        if (i + 1 == block_count) {
+            bs += tail_size - (block_count << TVDB__NVDB_CRC32_BLOCK_LOG2);
+        }
+        checksums[i] = tvdb_nanovdb_crc32(
+            tail + (i << TVDB__NVDB_CRC32_BLOCK_LOG2), bs, 0u);
+    }
+    uint32_t out = tvdb_nanovdb_crc32(checksums,
+                                      block_count * sizeof(uint32_t), 0u);
+    free(checksums);
+    return out;
+}
+
+int tvdb_nanovdb_validate_checksum(const tvdb_nanovdb_grid_t *grid,
+                                   tvdb_nanovdb_checksum_mode_t mode) {
+    if (!grid || !grid->data) return 0;
+    uint64_t stored;
+    memcpy(&stored, grid->data + 8, 8);
+
+    /* Empty/uninitialized checksum sentinel is all-1s. NanoVDB treats this
+     * as "skip validation". */
+    if (stored == 0xFFFFFFFFFFFFFFFFull) return 1;
+    if (mode == TVDB_NANOVDB_CHECKSUM_NONE) return 1;
+
+    uint32_t stored_head = (uint32_t)(stored & 0xFFFFFFFFu);
+    uint32_t stored_tail = (uint32_t)((stored >> 32) & 0xFFFFFFFFu);
+
+    uint32_t head = tvdb_nanovdb_compute_head_checksum(grid);
+    if (head != stored_head) return 0;
+
+    /* If the stored tail half is 0xFFFFFFFF, the file was written in
+     * "Half" mode (head-only). Don't fail on tail mismatch in that case. */
+    if (stored_tail == 0xFFFFFFFFu || mode == TVDB_NANOVDB_CHECKSUM_EASTWOOD) {
+        return 1;
+    }
+    uint32_t tail = tvdb_nanovdb_compute_tail_checksum(grid);
+    return tail == stored_tail ? 1 : 0;
 }
 
 const char *tvdb_nanovdb_grid_type_name(uint32_t grid_type) {

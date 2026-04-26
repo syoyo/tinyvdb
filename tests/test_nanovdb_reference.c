@@ -151,6 +151,44 @@ int main(int argc, char **argv) {
     int fails = 0;
     fails += check_float(ff);
     fails += check_double(fd);
+
+    /* Checksum validation: open ref_float.nvdb (which carries a Half-mode
+     * checksum from nanovdb_convert's default settings) and verify both
+     * the head CRC32 matches the stored value, and that
+     * tvdb_nanovdb_validate_checksum returns 1 in both Half and Full mode
+     * (Full mode is forgiving when stored.tail == 0xFFFFFFFF). */
+    {
+        tvdb_nanovdb_file_t f; memset(&f, 0, sizeof(f));
+        tvdb_error_t err = {0};
+        if (tvdb_nanovdb_file_open(&f, ff, NULL, &err) == TVDB_OK
+            && f.grid_count > 0) {
+            const tvdb_nanovdb_grid_t *g = &f.grids[0];
+            uint64_t stored;
+            memcpy(&stored, g->data + 8, 8);
+            uint32_t stored_head = (uint32_t)(stored & 0xFFFFFFFFu);
+            uint32_t computed_head = tvdb_nanovdb_compute_head_checksum(g);
+            if (stored_head != computed_head) {
+                fprintf(stderr, "FAIL: head CRC32 mismatch: "
+                        "stored=%08x computed=%08x\n",
+                        stored_head, computed_head);
+                ++fails;
+            }
+            if (!tvdb_nanovdb_validate_checksum(
+                    g, TVDB_NANOVDB_CHECKSUM_EASTWOOD)) {
+                fprintf(stderr, "FAIL: validate(EASTWOOD/half) returned 0\n");
+                ++fails;
+            }
+            if (!tvdb_nanovdb_validate_checksum(
+                    g, TVDB_NANOVDB_CHECKSUM_DEFAULT)) {
+                fprintf(stderr, "FAIL: validate(DEFAULT) returned 0\n");
+                ++fails;
+            }
+            if (fails == 0) {
+                printf("[ok] checksum validation passed for %s\n", ff);
+            }
+            tvdb_nanovdb_file_close(&f);
+        }
+    }
     if (fails) {
         fprintf(stderr, "%d FAILURES\n", fails);
         return 1;
