@@ -2449,12 +2449,31 @@ static tvdb_status_t tvdb__read_internal_topology(
     }
     memset(inode->values, 0, inode->values_size);
 
-    tvdb_status_t st = tvdb__read_mask_values(
+    if (vt == TVDB_VALUE_BOOL) {
+        size_t packed_bytes = ((size_t)num_values + 7) / 8;
+        uint8_t *packed = (uint8_t *)tvdb__alloc(a, packed_bytes);
+        if (!packed) {
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        if (!tvdb__sr_read(sr, packed_bytes, packed)) {
+            tvdb__free(a, packed, packed_bytes);
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                            "Failed to read bool internal node values");
+            return TVDB_ERROR_INVALID_DATA;
+        }
+        for (size_t s = 0; s < (size_t)num_values; ++s) {
+            inode->values[s] = (packed[s >> 3] >> (s & 7)) & 1u;
+        }
+        tvdb__free(a, packed, packed_bytes);
+    } else {
+    tvdb_status_t mst = tvdb__read_mask_values(
         sr, params->compression_flags, params->file_version,
         params->background, (size_t)num_values, vt,
         &inode->value_mask, inode->values,
         params->half_precision, a, err);
-    if (st != TVDB_OK) return st;
+    if (mst != TVDB_OK) return mst;
+    }
 
     /* Read child nodes */
     size_t nc = tvdb__nodemask_count_on(&inode->child_mask);
@@ -2479,9 +2498,9 @@ static tvdb_status_t tvdb__read_internal_topology(
             inode = &tree->nodes[node_idx].u.internal;
             inode->child_indices[child_n++] = child_idx;
 
-            st = tvdb__read_node_topology(tree, sr, child_idx, level + 1,
-                                          params, err);
-            if (st != TVDB_OK) return st;
+            tvdb_status_t cst = tvdb__read_node_topology(tree, sr, child_idx,
+                                                        level + 1, params, err);
+            if (cst != TVDB_OK) return cst;
             inode = &tree->nodes[node_idx].u.internal;
         }
     }
@@ -2623,12 +2642,35 @@ static tvdb_status_t tvdb__read_leaf_buffer(
     }
     memset(leaf->data, 0, leaf->data_size > 0 ? leaf->data_size : 1);
 
+    /* BOOL leaves: read N/8 bytes of bit-packed values directly (matches
+       OpenVDB's LeafBuffer<bool>::readBuffers). Bypass the generic
+       mask_values machinery (no flag byte, no inactive-value selection,
+       no compression — bool buffers are always raw bit-packed). */
+    if (vt == TVDB_VALUE_BOOL) {
+        size_t packed_bytes = (num_values + 7) / 8;
+        uint8_t *packed = (uint8_t *)tvdb__alloc(a, packed_bytes);
+        if (!packed) {
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        tvdb__sr_read(sr, packed_bytes, packed);
+        for (size_t s = 0; s < num_values; ++s) {
+            leaf->data[s] = (packed[s >> 3] >> (s & 7)) & 1u;
+        }
+        tvdb__free(a, packed, packed_bytes);
+        if (tree->is_point_index_grid) {
+            /* fall through to point-index payload below */
+        } else {
+            return TVDB_OK;
+        }
+    } else {
     tvdb_status_t st = tvdb__read_mask_values(
         sr, params->compression_flags, params->file_version,
         params->background, num_values, vt,
         &leaf->value_mask, leaf->data,
         params->half_precision, a, err);
     if (st != TVDB_OK) return st;
+    }
 
     if (tree->is_point_index_grid) {
         int64_t num_indices_i64 = 0;
@@ -3784,11 +3826,29 @@ static tvdb_status_t tvdb__write_internal_topology(
                    inode->value_mask.bits.num_bytes);
 
     int32_t num_values = inode->child_mask.bitsize;
-    tvdb_status_t st = tvdb__write_mask_values(
+    /* BOOL internal nodes: bit-packed value buffer (matches OpenVDB's
+       NodeMask serialization for InternalNode<bool>). */
+    if (vt == TVDB_VALUE_BOOL) {
+        size_t packed_bytes = ((size_t)num_values + 7) / 8;
+        uint8_t *packed = (uint8_t *)tvdb__alloc(sw->alloc, packed_bytes);
+        if (!packed) {
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        memset(packed, 0, packed_bytes);
+        for (size_t s = 0; s < (size_t)num_values; ++s) {
+            if (inode->values[s]) packed[s >> 3] |= (uint8_t)(1u << (s & 7));
+        }
+        tvdb__sw_write(sw, packed, packed_bytes);
+        tvdb__free(sw->alloc, packed, packed_bytes);
+    } else {
+    tvdb_status_t mst = tvdb__write_mask_values(
         sw, compression_flags, background, (size_t)num_values, vt,
         &inode->value_mask, inode->values, half_precision, sw->alloc, err);
-    if (st != TVDB_OK) return st;
+    if (mst != TVDB_OK) return mst;
+    }
 
+    tvdb_status_t st = TVDB_OK;
     size_t child_n = 0;
     for (int32_t i = 0; i < inode->child_mask.bitsize; i++) {
         if (tvdb__nodemask_is_on(&inode->child_mask, i)) {
@@ -3885,10 +3945,29 @@ static tvdb_status_t tvdb__write_leaf_buffer(
     tvdb__sw_write(sw, leaf->value_mask.bits.data,
                    leaf->value_mask.bits.num_bytes);
 
+    /* BOOL leaves: pack the byte-per-voxel internal buffer into a
+       bit-packed (N/8 bytes) buffer and write raw. Matches OpenVDB's
+       LeafBuffer<bool>::writeBuffers and bypasses the compression
+       machinery (no flag byte, no inactive-value selection). */
+    if (vt == TVDB_VALUE_BOOL) {
+        size_t packed_bytes = (num_values + 7) / 8;
+        uint8_t *packed = (uint8_t *)tvdb__alloc(sw->alloc, packed_bytes);
+        if (!packed) {
+            tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        memset(packed, 0, packed_bytes);
+        for (size_t s = 0; s < num_values; ++s) {
+            if (leaf->data[s]) packed[s >> 3] |= (uint8_t)(1u << (s & 7));
+        }
+        tvdb__sw_write(sw, packed, packed_bytes);
+        tvdb__free(sw->alloc, packed, packed_bytes);
+    } else {
     tvdb_status_t st = tvdb__write_mask_values(
         sw, compression_flags, background, num_values, vt,
         &leaf->value_mask, leaf->data, half_precision, sw->alloc, err);
     if (st != TVDB_OK) return st;
+    }
 
     if (tree->is_point_index_grid) {
         int64_t num_indices = (int64_t)leaf->num_point_indices;
