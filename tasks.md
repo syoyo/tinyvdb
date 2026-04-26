@@ -94,14 +94,85 @@ All checked bit-exact through libopenvdb's `pyopenvdb`:
 ### Medium Priority (Features & Interop)
 
 - [x] **Affine & Vector Transformations.** Implemented full write path support for `UniformScaleMap`, `ScaleMap`, `UniformScaleTranslateMap`, `ScaleTranslateMap`, and `TranslationMap`, ensuring parity with the reader's transform parsing.
-- [ ] **Advanced VDB Tools.** Port foundational OpenVDB tools.
-    *   **Foundation (High):** [x] `SignedFloodFill` (sign consistency), [x] `Mask` (topology ops), [ ] `Prune` (memory optimization - deferred), [x] `ChangeBackground`, [x] `FindActiveValues`.
-    *   **Processing (Medium):** [x] `Morphology` (dilation/erosion), [x] `Composite` (boolean operations), [x] `Filter` (Gaussian/Laplacian), [x] `TopologyToLevelSet`.
-    *   **Advanced (Low):** `FastSweeping`, `LevelSetAdvect`, `VolumeToMesh`, `RayTracer`.
+- [x] **Advanced VDB Tools.** Port foundational OpenVDB tools.
+    *   **Foundation (High):** [x] `SignedFloodFill` (sign consistency), [x] `Mask` (topology ops), [x] `Prune` (`tvdb_prune_grid` snaps near-background voxels), [x] `ChangeBackground`, [x] `FindActiveValues`.
+    *   **Processing (Medium):** [x] `Morphology` (dilation/erosion, `tvdb_dilate`/`tvdb_erode`/`tvdb_open`/`tvdb_close` plus sparse + tree-aware variants `dilate_active`/`erode_active`/`dilate_topology`/`erode_topology`), [x] `Composite` (`tvdb_csg_union`/`intersection`/`difference` for dense; sparse + tree-aware variants), [x] `Filter` (`tvdb_gaussian_filter`/`mean_filter`/`laplacian_filter`), [x] `TopologyToLevelSet`.
+    *   **Advanced (Low):** [ ] `FastSweeping` (deferred), [x] `LevelSetAdvect` (`tvdb_advect_semi_lagrangian`), [x] `VolumeToMesh` (`tvdb_sdf_to_mesh` marching cubes + batched variant `tvdb_marching_cubes_batch`), [x] `RayTracer` (`tvdb_ray_cast_sdf`, `tvdb_voxels_along_ray` Amanatides-Woo DDA, `tvdb_segments_along_ray`, `tvdb_uniform_ray_samples`).
 
 - [x] **MeshToVolume / mesh → SDF voxeliser.** Implemented as a lightweight, header-only utility in `src/tinyvdb_mesh.h`, supporting triangle mesh to SDF conversion, marching cubes extraction, and manifold preprocessing.
-- [x] **Advanced Mathematical Solvers.** Implemented a preconditioned conjugate gradient (PCG) solver for Poisson's equation (`SolvePoisson`) in `src/tinyvdb_ops.h`.
-- [ ] **SIMD-accelerated grid operations.** Leverage SIMD (SSE/AVX/NEON) for core stencil/grid operations to improve CPU performance.
+- [x] **Advanced Mathematical Solvers.** Implemented a preconditioned conjugate gradient (PCG) solver for Poisson's equation (`SolvePoisson`) in `src/tinyvdb_ops.h`. Also added `tvdb_solve_poisson_d` (fp64 internal CG) for ill-conditioned problems where the fp32 path stalls.
+- [x] **SIMD-accelerated grid operations.** `src/tinyvdb_simd.h` provides AVX2 fp32 dot/AXPY and F16C bulk fp16↔fp32 conversion, gated on `TINYVDB_SIMD` CMake option (default ON). All paths have scalar fallbacks via `#ifdef`. Wired into Poisson CG dot kernel. Measured ~2.25× speedup on 8M-elem dot, ~3× on 16M-elem fp16 conversion. Verified parity in `tests/test_simd.c`.
+- [x] **OpenMP threading with build flag.** `TINYVDB_OPENMP` CMake option (default OFF). When ON, `#pragma omp parallel for` annotates per-voxel loops in dense ops (gradient/divergence/laplacian/curl/advection), Poisson CG (fp32+fp64), sparse_conv3d, sample batches, and TSDF integration. Scalar path bit-identical when OFF. ~5.9× speedup on 64³ Poisson at 8 threads.
+
+### CPU-friendly fvdb feature port (landed)
+
+The following capabilities were ported from `fvdb-core` for CPU use, sized to
+fit tinyvdb's "header-first, dependency-free, pure C public API" design.
+Implementations live in `src/tinyvdb_*.{h,c}` and are wired through
+`python/tinyvdb/__init__.py` via Py_LIMITED_API bindings.
+
+- [x] **Sampling / splat.** `tvdb_sample_trilinear_dense` (single + batched),
+  `tvdb_sample_trilinear_vec_dense`, `tvdb_splat_trilinear_dense` (cell-center
+  convention; world↔voxel via `tvdb_apply_xform`).
+- [x] **TSDF fusion.** `tvdb_integrate_tsdf` (depth-only) and
+  `tvdb_integrate_tsdf_with_color` (depth + RGB) with single-frame and
+  multi-frame in-place variants (`*_into`). `tvdb_invert_rigid_pose` helper.
+- [x] **Topology ops.** `tvdb_coarsen_grid` / `tvdb_refine_grid` (factor-N
+  block average / trilinear), `tvdb_clip_grid`, `tvdb_prune_grid`,
+  `tvdb_merge_grids` (SDF union).
+- [x] **Pooling.** `tvdb_max_pool` and `tvdb_avg_pool` over kx×ky×kz blocks.
+- [x] **Ray ops.** Amanatides-Woo DDA (`tvdb_voxels_along_ray`),
+  `tvdb_uniform_ray_samples`, isosurface segments (`tvdb_segments_along_ray`),
+  batched marching cubes (`tvdb_marching_cubes_batch`).
+- [x] **Sparse grid representation.** Flat (coords[], values[]) layout
+  (`tvdb_sparse_grid`) with hash-based CSG and morphology
+  (`tvdb_csg_*_sparse`, `tvdb_dilate_sparse`, `tvdb_erode_sparse`),
+  dense↔sparse materializers, and active-coord enumeration.
+- [x] **Sparse 3D convolution.** `tvdb_sparse_conv3d`: same-topology
+  fp32 convolution with arbitrary kx×ky×kz kernel, anchor at floor(k/2),
+  hash-based O(1) neighbor lookup.
+- [x] **OpenVDB-tree sparse bridge.** `src/tinyvdb_sparse_tree.{h,c}`
+  operates directly on a loaded `tvdb_grid_t`:
+    *   `tvdb_grid_visit_leaves_float` (DFS leaf iterator)
+    *   `tvdb_grid_active_voxel_count` / `tvdb_grid_active_bbox`
+    *   `tvdb_grid_to_sparse` / `tvdb_grid_materialize_dense`
+    *   `tvdb_grid_dilate_active` / `tvdb_grid_erode_active`
+      (leaf-stamp, topology-preserving)
+    *   `tvdb_grid_dilate_topology` / `tvdb_grid_erode_topology`
+      (topology-changing)
+    *   `tvdb_grid_csg_union` / `intersection` / `difference`
+      (tree-aware CSG)
+    *   `tvdb_grid_update_from_sparse` (write sparse coords back into
+      existing leaves; topology-preserving)
+- [x] **From-scratch VDB tree builder.** `tvdb_grid_from_sparse_using_template`
+  rebuilds a `tvdb_grid_t` (Tree_float_5_4_3) from a flat sparse_grid using
+  another grid as the layout template. The built grid round-trips through
+  `tvdb_file_save` / `tvdb_file_open`. Wired to Python as
+  `VDBFile.replace_grid_from_sparse`. Enables saving topology-changing op
+  results (dilate_topology, sparse CSG, sparse_conv3d) to .vdb.
+- [x] **Particle-to-SDF / volume-to-spheres / fracture.** Implemented in
+  the Python C wrapper (`particles_to_sdf`, `volume_to_spheres` greedy
+  medial-axis cover, `fracture` N+1 piece split).
+- [x] **Numpy zero-copy buffer protocol.** PEP 3118 buffers on
+  `DenseGrid` (3D, float32), `DenseVecGrid` (4D, float32), and
+  `TriangleMesh` (vertices: 2D float32, faces: 2D uint32). No pybind /
+  nanobind dependency.
+- [x] **End-to-end capstone demo.** `scripts/capstone_demo.py`: particles
+  → SDF → gradient/laplacian → 8-pose 360° depth fly-around →
+  multi-frame TSDF fusion → volume_to_spheres medial cover →
+  marching-cubes mesh → OBJ output. Produced 4568 verts / 16270 faces.
+
+### Test coverage
+
+CTest registers 5 tests under `build/`:
+
+| target | what |
+| --- | --- |
+| `test_ops` | Phase 1-6 dense ops smoke (volume, surface_area, dilate, csg, gradient, Poisson recovery, advection, sampling, TSDF, topology, ray, sparse) |
+| `test_sparse_tree` | OpenVDB-tree bridge on `sphere.vdb`: counts, bbox, sparse extraction, dense materialization, leaf-stamp dilate/erode |
+| `test_grid_from_sparse` | Sphere round-trip + synthetic 27-leaf cross-parent test for `tvdb_grid_from_sparse_using_template` |
+| `test_simd` | SIMD vs scalar parity for dot, AXPY, fp16 round-trip, fp16 encoder ≤1 ULP |
+| `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate_active/erode_active/dilate_topology/erode_topology counts, self-CSG idempotence, update_from_sparse → save → reload |
 
 ### Low Priority / Larger Features (fVDB / GPU)
 
@@ -118,6 +189,53 @@ All checked bit-exact through libopenvdb's `pyopenvdb`:
 - [x] **`tvdb_value_type_size(BOOL) = 1` fix.** BOOL grids are now handled as bit-packed masks in leaf nodes, matching OpenVDB's serialization format (dedicated path in `tvdb__read_leaf_buffer` and `tvdb__write_leaf_buffer`).
 - [ ] **`MultiPassIO` ≥ v224** handler.
 - [ ] **Half-precision file format prior to v225** backward compatibility.
+
+## Remaining items (fvdb-port scope)
+
+Honest list of what's still missing or scope-limited from the CPU-friendly
+fvdb feature port. These are non-blockers for the documented workflows but
+worth knowing.
+
+### Open
+
+- [ ] **From-scratch tree builder for non-Tree_float_5_4_3 layouts.**
+  `tvdb_grid_from_sparse_using_template` currently only handles 4-level
+  float trees (the standard SDF/density layout). Extend to:
+    *   `Tree_vec3s_5_4_3` for velocity grids
+    *   Other layouts (different log2dim mixes, fp16 storage, etc.)
+- [ ] **Topology-extending `update_from_sparse`.** Today it only writes
+  into existing leaves; coords outside any leaf are skipped. A combined
+  "merge sparse into existing tree, adding new leaves where needed"
+  primitive would avoid the rebuild path for incremental updates.
+- [ ] **Multi-channel sparse convolution.** `tvdb_sparse_conv3d` is
+  single-channel. Adding `n_in_channels` / `n_out_channels` (with
+  values laid out as `coord_i × n_channels`) would cover the
+  deep-learning use case. Modest implementation effort.
+- [ ] **F16C wiring inside `tinyvdb_io.h` half-precision path.**
+  `tvdb_simd_f16_to_f32` / `tvdb_simd_f32_to_f16` exist as standalone
+  helpers but `tinyvdb_io.h`'s `tvdb__demote_float_to_half` /
+  `tvdb__promote_half_to_float` still use scalar code. Wiring would
+  bring 3× speedup to half-precision .vdb load/save.
+- [ ] **Splat parallelization.** `tvdb_splat_trilinear_dense` is the only
+  hot loop deliberately left scalar in the OpenMP build (write-write
+  hazard on the output grid). Per-thread accumulation buffers + a
+  reduce step would let it parallelize.
+- [ ] **Sparse-tree variants of dense filters (Gaussian/mean/laplacian).**
+  Currently only morphology and CSG have sparse-tree variants. Adding
+  filter variants would let large SDFs be processed without
+  materializing full bboxes.
+- [ ] **fp64 dense grid type.** Only the Poisson solver has a fp64 path
+  (`tvdb_solve_poisson_d`); the dense grid storage is fp32. A parallel
+  `tvdb_dense_grid_d` for full fp64 ops is a much larger surface-area
+  change.
+
+### Out of scope (deferred)
+
+- `FastSweeping` — dense fp32 Eikonal solver. Useful for level-set
+  redistancing but non-trivial; deferred.
+- All of the **fVDB / GPU** items below — JaggedTensor, GridBatch,
+  autograd, GPU dispatch, Gaussian splatting rasterizer — require a
+  tensor framework + CUDA, both fundamentally out of tinyvdb's design.
 
 
 ## Notes for downstream consumers
