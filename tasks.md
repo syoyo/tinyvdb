@@ -346,11 +346,23 @@ worth knowing.
 
 ### NanoVDB gaps still open
 
-- [ ] **VDB → NanoVDB Float SDF builder.** `tvdb_nanovdb_create_grid` builds
-      metadata only; `examples/openvdb2nanovdb/openvdb2nanovdb.cc` is empty.
-      With `nanovdb_convert` available locally we can now byte-diff a
-      tinyvdb-built grid against the reference, but the actual builder
-      (mask packing, child offset writing) is still TODO.
+- [x] **VDB → NanoVDB Float SDF builder.** New
+      `tvdb_grid_to_nanovdb_float(grid, &out_data, &out_size, &err)`
+      converts a loaded `Tree_float_5_4_3` `tvdb_grid_t` (e.g. from
+      `tvdb_file_open` + `tvdb_read_all_grids`) into an in-memory
+      NanoVDB FloatGrid byte buffer. Implementation in
+      `src/tinyvdb_to_nanovdb.c`: walks root → upper(level1) →
+      lower(level2) → leaf(level3), emits GridData/TreeData/RootData
+      + RootTiles + Upper/Lower/Leaf nodes byte-for-byte at the
+      offsets PNanoVDB.h expects, packs child/value masks, computes
+      per-leaf min/max/ave/stddev, propagates bboxes upward.
+      Validated end-to-end: `ref_float.vdb` (64 active) and
+      `sphere.vdb` (2076 active across 8 leaves) both convert,
+      round-trip through PNanoVDB's hierarchical accessor exactly,
+      pass `nanovdb_validate` (exit 0), and `nanovdb_convert` reads
+      the output back into a valid `Tree_float_5_4_3` `.vdb` with
+      the same active counts and min/max. Wired into
+      `test_nanovdb_reference` as a permanent regression guard.
 - [x] **CRC32 checksum compute / validate.**
       `tvdb_nanovdb_crc32`, `tvdb_nanovdb_compute_head_checksum`,
       `tvdb_nanovdb_compute_tail_checksum`, `tvdb_nanovdb_validate_checksum`.

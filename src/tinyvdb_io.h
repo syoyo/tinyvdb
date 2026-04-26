@@ -52,6 +52,8 @@ extern "C" {
 /*  Status codes                                                              */
 /* ========================================================================== */
 
+#ifndef TVDB_STATUS_T_DEFINED
+#define TVDB_STATUS_T_DEFINED
 typedef enum tvdb_status {
     TVDB_OK = 0,
     TVDB_ERROR_INVALID_FILE,
@@ -80,6 +82,7 @@ typedef struct tvdb_error {
     uint64_t      byte_offset;
     int32_t       grid_index;
 } tvdb_error_t;
+#endif /* TVDB_STATUS_T_DEFINED */
 
 /* ========================================================================== */
 /*  Custom memory allocator                                                   */

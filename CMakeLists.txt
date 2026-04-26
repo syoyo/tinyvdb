@@ -105,7 +105,9 @@ set_target_properties(tinyvdb_mesh_ops PROPERTIES
   C_EXTENSIONS OFF)
 
 # NanoVDB support library
-add_library(tinyvdb_nanovdb STATIC ${PROJECT_SOURCE_DIR}/src/tinyvdb_nanovdb.c)
+add_library(tinyvdb_nanovdb STATIC
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_nanovdb.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_to_nanovdb.c)
 target_include_directories(tinyvdb_nanovdb PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(tinyvdb_nanovdb PRIVATE tinyvdb)
 
@@ -241,7 +243,10 @@ if(TINYVDB_BUILD_TESTS)
 
   add_executable(test_nanovdb_reference
                  ${PROJECT_SOURCE_DIR}/tests/test_nanovdb_reference.c)
-  target_link_libraries(test_nanovdb_reference PRIVATE tinyvdb_nanovdb tinyvdb m)
+  target_link_libraries(test_nanovdb_reference PRIVATE
+                        tinyvdb_nanovdb tinyvdb m)
+  target_include_directories(test_nanovdb_reference PRIVATE
+                              ${PROJECT_SOURCE_DIR}/src)
   add_test(NAME test_nanovdb_reference
            COMMAND test_nanovdb_reference ${PROJECT_SOURCE_DIR})
 

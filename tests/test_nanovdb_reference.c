@@ -14,10 +14,12 @@
 // Skips with exit 0 if the corpus is absent (the .nvdb files are
 // gitignored and only present after running nanovdb_convert).
 
+#include "tinyvdb_io.h"
 #include "tinyvdb_nanovdb.h"
 
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -151,6 +153,78 @@ int main(int argc, char **argv) {
     int fails = 0;
     fails += check_float(ff);
     fails += check_double(fd);
+
+    /* VDB → NanoVDB conversion: load ref_float.vdb via tinyvdb's VDB
+       reader, convert to NanoVDB in memory via tvdb_grid_to_nanovdb_float,
+       then verify all 64 voxels round-trip exactly through PNanoVDB. */
+    {
+        char vdb_path[512];
+        snprintf(vdb_path, sizeof(vdb_path),
+                 "%s/data/reference/ref_float.vdb", root);
+        struct stat st_v;
+        if (stat(vdb_path, &st_v) == 0) {
+            tvdb_file_t f; memset(&f, 0, sizeof(f));
+            tvdb_error_t err = {0};
+            if (tvdb_file_open(&f, vdb_path, NULL, &err) == TVDB_OK
+                && tvdb_read_all_grids(&f, &err) == TVDB_OK
+                && f.num_grids > 0) {
+
+                uint8_t *nv_data = NULL;
+                size_t nv_size = 0;
+                if (tvdb_grid_to_nanovdb_float(&f.grids[0], &nv_data,
+                                                &nv_size, &err) == TVDB_OK) {
+                    tvdb_nanovdb_grid_t nvg; memset(&nvg, 0, sizeof(nvg));
+                    nvg.data = nv_data;
+                    nvg.size = nv_size;
+                    nvg.grid_type = 1;
+                    /* Hydrate index_bbox from the root bbox in the buffer
+                       so is_voxel_active's bbox-pre-check works. */
+                    int32_t *root_bb = (int32_t *)(nv_data + 672 + 64);
+                    for (int k = 0; k < 3; ++k) {
+                        nvg.index_bbox_min[k] = root_bb[k];
+                        nvg.index_bbox_max[k] = root_bb[k + 3];
+                    }
+                    int conv_errors = 0;
+                    for (int z = 0; z < 4; ++z) {
+                        for (int y = 0; y < 4; ++y) {
+                            for (int x = 0; x < 4; ++x) {
+                                int idx = z * 16 + y * 4 + x;
+                                float exp = idx * 0.125f - 1.0f;
+                                float got = tvdb_nanovdb_get_voxel_f(
+                                    &nvg, x, y, z);
+                                if (fabsf(got - exp) > 1e-6f) ++conv_errors;
+                            }
+                        }
+                    }
+                    int active = 0;
+                    for (int z = 0; z < 4; ++z) {
+                        for (int y = 0; y < 4; ++y) {
+                            for (int x = 0; x < 4; ++x) {
+                                if (tvdb_nanovdb_is_voxel_active(
+                                        &nvg, x, y, z)) ++active;
+                            }
+                        }
+                    }
+                    if (conv_errors > 0 || active != 64) {
+                        fprintf(stderr,
+                                "FAIL: VDB→NanoVDB conv: %d voxel errors, "
+                                "%d active (expected 64)\n",
+                                conv_errors, active);
+                        ++fails;
+                    } else {
+                        printf("[ok] VDB→NanoVDB conversion of "
+                               "ref_float.vdb: 64 voxels exact\n");
+                    }
+                    free(nv_data);
+                } else {
+                    fprintf(stderr, "FAIL: tvdb_grid_to_nanovdb_float: %s\n",
+                            err.message);
+                    ++fails;
+                }
+                tvdb_file_close(&f);
+            }
+        }
+    }
 
     /* Checksum validation: open ref_float.nvdb (which carries a Half-mode
      * checksum from nanovdb_convert's default settings) and verify both

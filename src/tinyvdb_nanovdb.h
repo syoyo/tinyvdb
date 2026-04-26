@@ -394,6 +394,34 @@ float   tvdb_nanovdb_get_voxel_f(const tvdb_nanovdb_grid_t *grid, int x, int y, 
 double  tvdb_nanovdb_get_voxel_d(const tvdb_nanovdb_grid_t *grid, int x, int y, int z);
 int     tvdb_nanovdb_is_voxel_active(const tvdb_nanovdb_grid_t *grid, int x, int y, int z);
 
+/* Convert a loaded tinyvdb FloatGrid (Tree_float_5_4_3) into an in-memory
+ * NanoVDB FloatGrid byte buffer. The output is malloc'd; caller must
+ * `free(*out_data)`.
+ *
+ * Inputs:
+ *   grid  — a tvdb_grid_t loaded from a .vdb file (e.g. via
+ *           tvdb_file_open + tvdb_read_all_grids), with Tree_float_5_4_3
+ *           layout. Other types return TVDB_ERROR_UNSUPPORTED_VERSION.
+ *
+ * Output:
+ *   *out_data / *out_size — a complete NanoVDB FloatGrid byte stream
+ *           starting at GridData (i.e. raw grid bytes, no codec/file
+ *           header), suitable to wrap in tvdb_nanovdb_grid_t.data or
+ *           write to disk preceded by a NanoVDB file header.
+ *
+ * Semantics: all active voxel values, leaf topology, internal-node tile
+ * values, and root background are preserved. Per-leaf and per-tree
+ * bounding boxes are recomputed; min/max/ave/stddev are derived from
+ * active voxels. Checksum is set to "empty" (0xFFFFFFFFFFFFFFFF), which
+ * NanoVDB treats as "skip validation".
+ */
+struct tvdb_grid;
+typedef struct tvdb_grid tvdb_grid_t;
+tvdb_status_t tvdb_grid_to_nanovdb_float(const struct tvdb_grid *grid,
+                                          uint8_t **out_data,
+                                          size_t *out_size,
+                                          tvdb_error_t *err);
+
 /* Trilinear sample for FloatGrid. Cell-center convention: integer voxel
    (i,j,k) sits at sample point (i+0.5, j+0.5, k+0.5), so a sample at
    (i+0.5, j+0.5, k+0.5) returns get_voxel_f(i,j,k) exactly. Out-of-bounds
