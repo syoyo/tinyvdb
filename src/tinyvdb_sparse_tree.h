@@ -100,6 +100,27 @@ bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
                                           float background,
                                           tvdb_grid_t *out);
 
+// Vec3 (Tree_vec3s_5_4_3) variant. `coords` and `values` describe `count`
+// active voxels; `values` is `count*3` floats laid out (vx,vy,vz) per voxel.
+// Template grid must be a vec3 grid (leaf level value_type == VEC3F);
+// otherwise returns false. `background` is 3 floats (may be NULL → zero).
+bool tvdb_grid_from_sparse_vec3_using_template(const tvdb_grid_t *tmpl,
+                                               const tvdb_vec3i *coords,
+                                               const float *values,
+                                               size_t count,
+                                               const char *grid_name,
+                                               const float background[3],
+                                               tvdb_grid_t *out);
+
+// Topology-extending merge: rebuild grid as `existing` ∪ `sg` (sg wins on
+// overlap, new leaves are created where needed). Output ownership matches
+// tvdb_grid_from_sparse_using_template. Float layouts only.
+bool tvdb_grid_extend_from_sparse(const tvdb_grid_t *existing,
+                                  const tvdb_sparse_grid *sg,
+                                  const char *grid_name,
+                                  float background,
+                                  tvdb_grid_t *out);
+
 // Free a grid produced by tvdb_grid_from_sparse_using_template.
 void tvdb_grid_destroy_owned(tvdb_grid_t *grid);
 

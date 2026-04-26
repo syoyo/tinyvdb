@@ -3,6 +3,7 @@
 #include "tinyvdb_simd.h"
 
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -676,6 +677,457 @@ int tvdb_solve_poisson(const tvdb_dense_grid* rhs,
     rz = rz_new;
   }
 
+  free(r); free(p); free(Ap); free(z);
+  return it;
+}
+
+// ---- Fast Sweeping (3D Eikonal solver, Zhao 2005) ----
+//
+// Solves (D^+x phi)^2 + (D^-x phi)^2 + ... = h^2 with upwind selection.
+// Per-voxel: pick min(|x-|, |x+|), min(|y-|, |y+|), min(|z-|, |z+|), sort
+// ascending as a,b,c. Try 1-D update, then 2-D, then 3-D solution; choose the
+// smallest consistent root (first that satisfies the upwind condition).
+
+static inline float tvdb__min2f(float a, float b) { return a < b ? a : b; }
+
+static float tvdb__godunov_solve(float a, float b, float c, float h) {
+    // a <= b <= c (sorted, all non-negative finite). h is voxel size.
+    // 1D: x = a + h
+    float x = a + h;
+    if (x <= b) return x;
+    // 2D: solve (x-a)^2 + (x-b)^2 = h^2  =>  2x^2 - 2(a+b)x + a^2+b^2-h^2 = 0
+    float ab = a + b;
+    float disc = 2.0f * h * h - (a - b) * (a - b);
+    if (disc < 0.0f) return x;  // shouldn't happen if a<=b
+    x = 0.5f * (ab + sqrtf(disc));
+    if (x <= c) return x;
+    // 3D: solve (x-a)^2 + (x-b)^2 + (x-c)^2 = h^2
+    float abc = a + b + c;
+    float sumsq = a * a + b * b + c * c;
+    float disc3 = abc * abc - 3.0f * (sumsq - h * h);
+    if (disc3 < 0.0f) return x;
+    x = (abc + sqrtf(disc3)) / 3.0f;
+    return x;
+}
+
+int tvdb_fast_sweeping(tvdb_dense_grid* grid, float frozen_band,
+                       int max_iters, float tol) {
+    if (!grid || !grid->data) return 0;
+    if (max_iters <= 0) max_iters = 1;
+    if (frozen_band < 0.0f) frozen_band = 0.0f;
+    const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+    const float h = grid->voxel_size > 0.0f ? grid->voxel_size : 1.0f;
+    const size_t N = (size_t)nx * ny * nz;
+
+    // Capture sign from the input field; voxels at exactly 0 are treated as
+    // positive half-space.
+    uint8_t* sign_pos = (uint8_t*)malloc(N);
+    uint8_t* frozen   = (uint8_t*)malloc(N);
+    float*   absphi   = (float*)malloc(N * sizeof(float));
+    if (!sign_pos || !frozen || !absphi) {
+        free(sign_pos); free(frozen); free(absphi); return 0;
+    }
+    const float HUGE_VAL_F = 1e30f;
+    for (size_t i = 0; i < N; ++i) {
+        float v = grid->data[i];
+        sign_pos[i] = (v >= 0.0f) ? 1u : 0u;
+        float av = fabsf(v);
+        if (av <= frozen_band) {
+            frozen[i] = 1u;
+            absphi[i] = av;
+        } else {
+            frozen[i] = 0u;
+            absphi[i] = HUGE_VAL_F;
+        }
+    }
+
+    // 8 sweep directions over (x,y,z) ranges.
+    const int dirs[8][3] = {
+        { 1, 1, 1}, {-1, 1, 1}, { 1,-1, 1}, {-1,-1, 1},
+        { 1, 1,-1}, {-1, 1,-1}, { 1,-1,-1}, {-1,-1,-1}
+    };
+
+    int iter = 0;
+    for (; iter < max_iters; ++iter) {
+        float max_change = 0.0f;
+        for (int d = 0; d < 8; ++d) {
+            int sx = dirs[d][0], sy = dirs[d][1], sz = dirs[d][2];
+            int x0 = (sx > 0) ? 0 : nx - 1, x1 = (sx > 0) ? nx : -1;
+            int y0 = (sy > 0) ? 0 : ny - 1, y1 = (sy > 0) ? ny : -1;
+            int z0 = (sz > 0) ? 0 : nz - 1, z1 = (sz > 0) ? nz : -1;
+            for (int z = z0; z != z1; z += sz) {
+                for (int y = y0; y != y1; y += sy) {
+                    for (int x = x0; x != x1; x += sx) {
+                        size_t idx = tvdb_idx(grid, x, y, z);
+                        if (frozen[idx]) continue;
+                        // Upwind neighbor min on each axis.
+                        float ax = HUGE_VAL_F;
+                        if (x > 0)        ax = tvdb__min2f(ax, absphi[tvdb_idx(grid, x - 1, y, z)]);
+                        if (x + 1 < nx)   ax = tvdb__min2f(ax, absphi[tvdb_idx(grid, x + 1, y, z)]);
+                        float ay = HUGE_VAL_F;
+                        if (y > 0)        ay = tvdb__min2f(ay, absphi[tvdb_idx(grid, x, y - 1, z)]);
+                        if (y + 1 < ny)   ay = tvdb__min2f(ay, absphi[tvdb_idx(grid, x, y + 1, z)]);
+                        float az = HUGE_VAL_F;
+                        if (z > 0)        az = tvdb__min2f(az, absphi[tvdb_idx(grid, x, y, z - 1)]);
+                        if (z + 1 < nz)   az = tvdb__min2f(az, absphi[tvdb_idx(grid, x, y, z + 1)]);
+                        // Sort a<=b<=c.
+                        float a = ax, b = ay, c = az;
+                        if (a > b) { float t = a; a = b; b = t; }
+                        if (b > c) { float t = b; b = c; c = t; }
+                        if (a > b) { float t = a; a = b; b = t; }
+                        if (a >= HUGE_VAL_F * 0.5f) continue;
+                        float new_v = tvdb__godunov_solve(a, b, c, h);
+                        if (new_v < absphi[idx]) {
+                            float ch = absphi[idx] - new_v;
+                            if (ch > max_change) max_change = ch;
+                            absphi[idx] = new_v;
+                        }
+                    }
+                }
+            }
+        }
+        if (max_change <= tol) { ++iter; break; }
+    }
+
+    // Write back signed values.
+    for (size_t i = 0; i < N; ++i) {
+        if (frozen[i]) continue;
+        float a = absphi[i];
+        grid->data[i] = sign_pos[i] ? a : -a;
+    }
+    free(sign_pos); free(frozen); free(absphi);
+    return iter;
+}
+
+// =============================================================================
+// fp64 dense grid: lifecycle, conversion, and ops parallel to the fp32 path.
+// =============================================================================
+
+void tvdb_dense_grid_d_init(tvdb_dense_grid_d* g, int nx, int ny, int nz) {
+  g->nx = nx; g->ny = ny; g->nz = nz;
+  g->voxel_size = 1.0;
+  g->ox = g->oy = g->oz = 0.0;
+  size_t n = (size_t)nx * (size_t)ny * (size_t)nz;
+  g->data = (double*)calloc(n, sizeof(double));
+}
+
+void tvdb_dense_grid_d_free(tvdb_dense_grid_d* g) {
+  if (!g) return;
+  free(g->data); g->data = NULL;
+  g->nx = g->ny = g->nz = 0;
+}
+
+void tvdb_dense_grid_f_to_d(const tvdb_dense_grid* in, tvdb_dense_grid_d* out) {
+  tvdb_dense_grid_d_init(out, in->nx, in->ny, in->nz);
+  out->voxel_size = (double)in->voxel_size;
+  out->ox = (double)in->ox; out->oy = (double)in->oy; out->oz = (double)in->oz;
+  size_t n = (size_t)in->nx * in->ny * in->nz;
+  for (size_t i = 0; i < n; ++i) out->data[i] = (double)in->data[i];
+}
+
+void tvdb_dense_grid_d_to_f(const tvdb_dense_grid_d* in, tvdb_dense_grid* out) {
+  tvdb_dense_grid_init(out, in->nx, in->ny, in->nz);
+  out->voxel_size = (float)in->voxel_size;
+  out->ox = (float)in->ox; out->oy = (float)in->oy; out->oz = (float)in->oz;
+  size_t n = (size_t)in->nx * in->ny * in->nz;
+  for (size_t i = 0; i < n; ++i) out->data[i] = (float)in->data[i];
+}
+
+double tvdb_sample_trilinear_dense_d(const tvdb_dense_grid_d* g,
+                                     double wx, double wy, double wz) {
+  if (!g->data) return 0.0;
+  // Cell-center convention: voxel `i` stores its sample at world position
+  // `ox + (i + 0.5) * vs`. Same as the fp32 sampler.
+  double vx = (wx - g->ox) / g->voxel_size - 0.5;
+  double vy = (wy - g->oy) / g->voxel_size - 0.5;
+  double vz = (wz - g->oz) / g->voxel_size - 0.5;
+  int ix = (int)floor(vx), iy = (int)floor(vy), iz = (int)floor(vz);
+  double fx = vx - (double)ix, fy = vy - (double)iy, fz = vz - (double)iz;
+
+  double c000 = tvdb_at_d(g, ix,     iy,     iz);
+  double c100 = tvdb_at_d(g, ix + 1, iy,     iz);
+  double c010 = tvdb_at_d(g, ix,     iy + 1, iz);
+  double c110 = tvdb_at_d(g, ix + 1, iy + 1, iz);
+  double c001 = tvdb_at_d(g, ix,     iy,     iz + 1);
+  double c101 = tvdb_at_d(g, ix + 1, iy,     iz + 1);
+  double c011 = tvdb_at_d(g, ix,     iy + 1, iz + 1);
+  double c111 = tvdb_at_d(g, ix + 1, iy + 1, iz + 1);
+  double c00 = c000 * (1.0 - fx) + c100 * fx;
+  double c10 = c010 * (1.0 - fx) + c110 * fx;
+  double c01 = c001 * (1.0 - fx) + c101 * fx;
+  double c11 = c011 * (1.0 - fx) + c111 * fx;
+  double c0 = c00 * (1.0 - fy) + c10 * fy;
+  double c1 = c01 * (1.0 - fy) + c11 * fy;
+  return c0 * (1.0 - fz) + c1 * fz;
+}
+
+void tvdb_laplacian_d(const tvdb_dense_grid_d* g, tvdb_dense_grid_d* out) {
+  // 7-point Laplacian with edge clamp. h^2 normalization.
+  double inv_h2 = 1.0 / (g->voxel_size * g->voxel_size);
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int z = 0; z < g->nz; ++z) {
+    for (int y = 0; y < g->ny; ++y) {
+      for (int x = 0; x < g->nx; ++x) {
+        double c = g->data[tvdb_idx_d(g, x, y, z)];
+        double s = tvdb_at_d(g, x - 1, y,     z)
+                 + tvdb_at_d(g, x + 1, y,     z)
+                 + tvdb_at_d(g, x,     y - 1, z)
+                 + tvdb_at_d(g, x,     y + 1, z)
+                 + tvdb_at_d(g, x,     y,     z - 1)
+                 + tvdb_at_d(g, x,     y,     z + 1);
+        out->data[tvdb_idx_d(out, x, y, z)] = (s - 6.0 * c) * inv_h2;
+      }
+    }
+  }
+}
+
+static inline double dmin(double a, double b) { return a < b ? a : b; }
+static inline double dmax(double a, double b) { return a > b ? a : b; }
+
+void tvdb_csg_union_d(const tvdb_dense_grid_d* a, const tvdb_dense_grid_d* b,
+                      tvdb_dense_grid_d* out) {
+  size_t n = (size_t)out->nx * out->ny * out->nz;
+  #pragma omp parallel for schedule(static)
+  for (long long i = 0; i < (long long)n; ++i) {
+    out->data[i] = dmin(a->data[i], b->data[i]);
+  }
+}
+
+void tvdb_csg_intersection_d(const tvdb_dense_grid_d* a, const tvdb_dense_grid_d* b,
+                             tvdb_dense_grid_d* out) {
+  size_t n = (size_t)out->nx * out->ny * out->nz;
+  #pragma omp parallel for schedule(static)
+  for (long long i = 0; i < (long long)n; ++i) {
+    out->data[i] = dmax(a->data[i], b->data[i]);
+  }
+}
+
+void tvdb_csg_difference_d(const tvdb_dense_grid_d* a, const tvdb_dense_grid_d* b,
+                           tvdb_dense_grid_d* out) {
+  size_t n = (size_t)out->nx * out->ny * out->nz;
+  #pragma omp parallel for schedule(static)
+  for (long long i = 0; i < (long long)n; ++i) {
+    out->data[i] = dmax(a->data[i], -b->data[i]);
+  }
+}
+
+double tvdb_volume_d(const tvdb_dense_grid_d* g) {
+  // Sum of voxel cells whose value is < 0.
+  double cell = g->voxel_size * g->voxel_size * g->voxel_size;
+  double vol = 0.0;
+  size_t n = (size_t)g->nx * g->ny * g->nz;
+  #pragma omp parallel for reduction(+:vol) schedule(static)
+  for (long long i = 0; i < (long long)n; ++i) {
+    if (g->data[i] < 0.0) vol += cell;
+  }
+  return vol;
+}
+
+double tvdb_surface_area_d(const tvdb_dense_grid_d* g) {
+  // Count zero-crossings over 6-neighbor edges; weight by voxel_size^2.
+  double face = g->voxel_size * g->voxel_size;
+  double area = 0.0;
+  #pragma omp parallel for collapse(2) reduction(+:area) schedule(static)
+  for (int z = 0; z < g->nz; ++z) {
+    for (int y = 0; y < g->ny; ++y) {
+      for (int x = 0; x < g->nx; ++x) {
+        double c = g->data[tvdb_idx_d(g, x, y, z)];
+        if (x + 1 < g->nx) {
+          double n2 = g->data[tvdb_idx_d(g, x + 1, y, z)];
+          if ((c < 0.0) != (n2 < 0.0)) area += face;
+        }
+        if (y + 1 < g->ny) {
+          double n2 = g->data[tvdb_idx_d(g, x, y + 1, z)];
+          if ((c < 0.0) != (n2 < 0.0)) area += face;
+        }
+        if (z + 1 < g->nz) {
+          double n2 = g->data[tvdb_idx_d(g, x, y, z + 1)];
+          if ((c < 0.0) != (n2 < 0.0)) area += face;
+        }
+      }
+    }
+  }
+  return area;
+}
+
+// FastSweeping: fp64 8-direction Eikonal solver. Logic mirrors the fp32
+// path but accumulates everything in double.
+
+static inline double tvdb__godunov_solve_d(double a, double b, double c, double h) {
+  double x = a + h;
+  if (x <= b) return x;
+  double ab = a + b;
+  double disc = 2.0 * h * h - (a - b) * (a - b);
+  if (disc < 0.0) return x;
+  x = 0.5 * (ab + sqrt(disc));
+  if (x <= c) return x;
+  double abc = a + b + c;
+  double sumsq = a * a + b * b + c * c;
+  double disc3 = abc * abc - 3.0 * (sumsq - h * h);
+  if (disc3 < 0.0) return x;
+  return (abc + sqrt(disc3)) / 3.0;
+}
+
+int tvdb_fast_sweeping_d(tvdb_dense_grid_d* grid, double frozen_band,
+                         int max_iters, double tol) {
+  if (!grid || !grid->data) return 0;
+  if (max_iters <= 0) max_iters = 1;
+  if (frozen_band < 0.0) frozen_band = 0.0;
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  const double h = grid->voxel_size > 0.0 ? grid->voxel_size : 1.0;
+  const size_t N = (size_t)nx * ny * nz;
+  uint8_t* sign_pos = (uint8_t*)malloc(N);
+  uint8_t* frozen   = (uint8_t*)malloc(N);
+  double*  absphi   = (double*)malloc(N * sizeof(double));
+  if (!sign_pos || !frozen || !absphi) {
+    free(sign_pos); free(frozen); free(absphi); return 0;
+  }
+  const double HUGE_D = 1e30;
+  for (size_t i = 0; i < N; ++i) {
+    double v = grid->data[i];
+    sign_pos[i] = (v >= 0.0) ? 1u : 0u;
+    double av = fabs(v);
+    if (av <= frozen_band) { frozen[i] = 1u; absphi[i] = av; }
+    else { frozen[i] = 0u; absphi[i] = HUGE_D; }
+  }
+  const int dirs[8][3] = {
+    { 1, 1, 1}, {-1, 1, 1}, { 1,-1, 1}, {-1,-1, 1},
+    { 1, 1,-1}, {-1, 1,-1}, { 1,-1,-1}, {-1,-1,-1}
+  };
+  int iter = 0;
+  for (; iter < max_iters; ++iter) {
+    double max_change = 0.0;
+    for (int d = 0; d < 8; ++d) {
+      int sx = dirs[d][0], sy = dirs[d][1], sz = dirs[d][2];
+      int x0 = (sx > 0) ? 0 : nx - 1, x1 = (sx > 0) ? nx : -1;
+      int y0 = (sy > 0) ? 0 : ny - 1, y1 = (sy > 0) ? ny : -1;
+      int z0 = (sz > 0) ? 0 : nz - 1, z1 = (sz > 0) ? nz : -1;
+      for (int z = z0; z != z1; z += sz) {
+        for (int y = y0; y != y1; y += sy) {
+          for (int x = x0; x != x1; x += sx) {
+            size_t idx = tvdb_idx_d(grid, x, y, z);
+            if (frozen[idx]) continue;
+            double ax = HUGE_D;
+            if (x > 0)        ax = dmin(ax, absphi[tvdb_idx_d(grid, x - 1, y, z)]);
+            if (x + 1 < nx)   ax = dmin(ax, absphi[tvdb_idx_d(grid, x + 1, y, z)]);
+            double ay = HUGE_D;
+            if (y > 0)        ay = dmin(ay, absphi[tvdb_idx_d(grid, x, y - 1, z)]);
+            if (y + 1 < ny)   ay = dmin(ay, absphi[tvdb_idx_d(grid, x, y + 1, z)]);
+            double az = HUGE_D;
+            if (z > 0)        az = dmin(az, absphi[tvdb_idx_d(grid, x, y, z - 1)]);
+            if (z + 1 < nz)   az = dmin(az, absphi[tvdb_idx_d(grid, x, y, z + 1)]);
+            double a = ax, b = ay, c = az;
+            if (a > b) { double t = a; a = b; b = t; }
+            if (b > c) { double t = b; b = c; c = t; }
+            if (a > b) { double t = a; a = b; b = t; }
+            if (a >= HUGE_D * 0.5) continue;
+            double new_v = tvdb__godunov_solve_d(a, b, c, h);
+            if (new_v < absphi[idx]) {
+              double ch = absphi[idx] - new_v;
+              if (ch > max_change) max_change = ch;
+              absphi[idx] = new_v;
+            }
+          }
+        }
+      }
+    }
+    if (max_change <= tol) { ++iter; break; }
+  }
+  for (size_t i = 0; i < N; ++i) {
+    if (frozen[i]) continue;
+    grid->data[i] = sign_pos[i] ? absphi[i] : -absphi[i];
+  }
+  free(sign_pos); free(frozen); free(absphi);
+  return iter;
+}
+
+// fp64 Poisson (PCG with Jacobi preconditioner; identical structure to the
+// fp32 path but doubles throughout).
+static inline double tvdb__lap_apply_d(const tvdb_dense_grid_d* g, int x, int y, int z) {
+  double c = g->data[tvdb_idx_d(g, x, y, z)];
+  double s = tvdb_at_d(g, x - 1, y, z) + tvdb_at_d(g, x + 1, y, z)
+           + tvdb_at_d(g, x, y - 1, z) + tvdb_at_d(g, x, y + 1, z)
+           + tvdb_at_d(g, x, y, z - 1) + tvdb_at_d(g, x, y, z + 1);
+  return s - 6.0 * c;
+}
+
+int tvdb_solve_poisson_dd(const tvdb_dense_grid_d* rhs, tvdb_dense_grid_d* x,
+                          int max_iters, double tolerance) {
+  if (!rhs || !x || !rhs->data || !x->data) return 0;
+  if (rhs->nx != x->nx || rhs->ny != x->ny || rhs->nz != x->nz) return 0;
+  size_t n = (size_t)rhs->nx * rhs->ny * rhs->nz;
+  double inv_h2 = 1.0 / (x->voxel_size * x->voxel_size);
+
+  double* r  = (double*)malloc(n * sizeof(double));
+  double* p  = (double*)malloc(n * sizeof(double));
+  double* Ap = (double*)malloc(n * sizeof(double));
+  double* z  = (double*)malloc(n * sizeof(double));
+  if (!r || !p || !Ap || !z) {
+    free(r); free(p); free(Ap); free(z); return 0;
+  }
+
+  // Working grid for x with its current values; A*x uses x->data directly.
+  // r = b - A*x
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int zi = 0; zi < rhs->nz; ++zi) {
+    for (int yi = 0; yi < rhs->ny; ++yi) {
+      for (int xi = 0; xi < rhs->nx; ++xi) {
+        size_t i = tvdb_idx_d(rhs, xi, yi, zi);
+        r[i] = rhs->data[i] - inv_h2 * tvdb__lap_apply_d(x, xi, yi, zi);
+      }
+    }
+  }
+  // Jacobi preconditioner: M = -6/h^2  =>  z = r / (-6/h^2) = -r * h^2 / 6
+  double inv_diag = -1.0 / (6.0 * inv_h2);
+  #pragma omp parallel for schedule(static)
+  for (long long i = 0; i < (long long)n; ++i) { z[i] = r[i] * inv_diag; p[i] = z[i]; }
+
+  double rz = 0.0;
+  #pragma omp parallel for reduction(+:rz) schedule(static)
+  for (long long i = 0; i < (long long)n; ++i) rz += r[i] * z[i];
+  double tol2 = tolerance * tolerance;
+  int it = 0;
+  for (; it < max_iters; ++it) {
+    // Ap = A*p  (apply Laplacian over `p` viewed as grid).
+    // Treat p as a temporary dense_grid_d with the same shape/origin as x.
+    tvdb_dense_grid_d pgrid;
+    pgrid.nx = x->nx; pgrid.ny = x->ny; pgrid.nz = x->nz;
+    pgrid.voxel_size = x->voxel_size;
+    pgrid.ox = x->ox; pgrid.oy = x->oy; pgrid.oz = x->oz;
+    pgrid.data = p;
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int zi = 0; zi < pgrid.nz; ++zi) {
+      for (int yi = 0; yi < pgrid.ny; ++yi) {
+        for (int xi = 0; xi < pgrid.nx; ++xi) {
+          size_t i = tvdb_idx_d(&pgrid, xi, yi, zi);
+          Ap[i] = inv_h2 * tvdb__lap_apply_d(&pgrid, xi, yi, zi);
+        }
+      }
+    }
+    double pAp = 0.0;
+    #pragma omp parallel for reduction(+:pAp) schedule(static)
+    for (long long i = 0; i < (long long)n; ++i) pAp += p[i] * Ap[i];
+    if (pAp == 0.0) break;
+    double alpha = rz / pAp;
+    #pragma omp parallel for schedule(static)
+    for (long long i = 0; i < (long long)n; ++i) {
+      x->data[i] += alpha * p[i];
+      r[i]       -= alpha * Ap[i];
+    }
+    double rr = 0.0;
+    #pragma omp parallel for reduction(+:rr) schedule(static)
+    for (long long i = 0; i < (long long)n; ++i) rr += r[i] * r[i];
+    if (rr <= tol2) { ++it; break; }
+    #pragma omp parallel for schedule(static)
+    for (long long i = 0; i < (long long)n; ++i) z[i] = r[i] * inv_diag;
+    double rz_new = 0.0;
+    #pragma omp parallel for reduction(+:rz_new) schedule(static)
+    for (long long i = 0; i < (long long)n; ++i) rz_new += r[i] * z[i];
+    double beta = rz_new / rz;
+    rz = rz_new;
+    #pragma omp parallel for schedule(static)
+    for (long long i = 0; i < (long long)n; ++i) p[i] = z[i] + beta * p[i];
+  }
   free(r); free(p); free(Ap); free(z);
   return it;
 }

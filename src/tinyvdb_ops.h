@@ -67,9 +67,74 @@ int tvdb_solve_poisson_d(const tvdb_dense_grid* rhs,
                          int max_iters,
                          double tolerance);
 
+// Fast Sweeping: solve the Eikonal equation |∇φ|=1 on a dense grid to
+// redistance an SDF away from its zero-crossing band. Voxels with
+// |grid->data[i]| <= frozen_band are treated as boundary conditions (kept
+// fixed); all other voxels are recomputed from the upwind 3D quadratic
+// (Zhao 2005) using `voxel_size` as the metric. The solver runs eight
+// directional sweeps per iteration and stops when no update exceeds
+// `tol` (in world units) or after `max_iters` iterations. Sign of each
+// non-frozen voxel is preserved from its initial value (positive vs negative
+// half-space) so an outside-positive / inside-negative SDF is reproduced.
+// Returns the number of iterations executed.
+int tvdb_fast_sweeping(tvdb_dense_grid* grid, float frozen_band,
+                       int max_iters, float tol);
+
 // Memory management
 void tvdb_dense_vec_grid_init(tvdb_dense_vec_grid* grid, int nx, int ny, int nz);
 void tvdb_dense_vec_grid_free(tvdb_dense_vec_grid* grid);
+
+// =============================================================================
+// fp64 dense grid (`tvdb_dense_grid_d`). Mirrors `tvdb_dense_grid` but uses
+// double for storage and world-space metrics. A subset of ops is provided
+// where fp64 accuracy is most valuable (Poisson, Eikonal, large-grid CSG,
+// volume/surface integrals). For ops not in this subset, convert to fp32
+// via `tvdb_dense_grid_d_to_f` and use the fp32 path.
+// =============================================================================
+
+typedef struct {
+  int nx, ny, nz;
+  double ox, oy, oz;
+  double voxel_size;
+  double* data;
+} tvdb_dense_grid_d;
+
+void tvdb_dense_grid_d_init(tvdb_dense_grid_d* grid, int nx, int ny, int nz);
+void tvdb_dense_grid_d_free(tvdb_dense_grid_d* grid);
+
+// fp32 <-> fp64 deep-copy converters. `out` must be uninitialized; on
+// return it owns its data and the caller frees with the matching free fn.
+// Voxel-size and origin are widened/narrowed accordingly.
+void tvdb_dense_grid_f_to_d(const tvdb_dense_grid* in, tvdb_dense_grid_d* out);
+void tvdb_dense_grid_d_to_f(const tvdb_dense_grid_d* in, tvdb_dense_grid* out);
+
+// Sampling
+double tvdb_sample_trilinear_dense_d(const tvdb_dense_grid_d* g,
+                                     double wx, double wy, double wz);
+
+// Differential
+void tvdb_laplacian_d(const tvdb_dense_grid_d* scalar, tvdb_dense_grid_d* laplacian);
+
+// CSG
+void tvdb_csg_union_d(const tvdb_dense_grid_d* a, const tvdb_dense_grid_d* b, tvdb_dense_grid_d* result);
+void tvdb_csg_intersection_d(const tvdb_dense_grid_d* a, const tvdb_dense_grid_d* b, tvdb_dense_grid_d* result);
+void tvdb_csg_difference_d(const tvdb_dense_grid_d* a, const tvdb_dense_grid_d* b, tvdb_dense_grid_d* result);
+
+// Measurement (zero-crossing 6-edge area; volume of `value < 0` half-space)
+double tvdb_surface_area_d(const tvdb_dense_grid_d* grid);
+double tvdb_volume_d(const tvdb_dense_grid_d* grid);
+
+// FastSweeping (full fp64 path)
+int tvdb_fast_sweeping_d(tvdb_dense_grid_d* grid, double frozen_band,
+                         int max_iters, double tol);
+
+// Poisson solver: fp64 input/output, fp64 internals.
+// (Distinct from `tvdb_solve_poisson_d` which takes fp32 in/out with fp64
+// internals.) Returns iterations used.
+int tvdb_solve_poisson_dd(const tvdb_dense_grid_d* rhs,
+                          tvdb_dense_grid_d* x,
+                          int max_iters,
+                          double tolerance);
 
 #ifdef __cplusplus
 }

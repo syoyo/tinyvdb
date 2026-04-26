@@ -87,6 +87,7 @@ extern int tvdb_py_curl(const float *, int, int, int, float, float, float, float
 extern int tvdb_py_advect(const float *, const float *, int, int, int, float, float, float, float, float, float **);
 extern int tvdb_py_solve_poisson(const float *, int, int, int, float, float, float, float, int, float, float **, int *);
 extern int tvdb_py_solve_poisson_d(const float *, int, int, int, float, float, float, float, int, double, float **, int *);
+extern int tvdb_py_fast_sweeping(const float *, int, int, int, float, float, float, float, float, int, float, float **, int *);
 
 extern int tvdb_py_ray_cast_sdf(const float *, int, int, int, float, float, float, float,
                                 float, float, float, float, float, float, float,
@@ -1323,6 +1324,47 @@ static PyObject *VDBFile_grid(PyObject *self, PyObject *args) {
 extern int tvdb_py_replace_grid_from_sparse(tvdb_file_t *file, size_t grid_idx,
                                             const int32_t *coords, const float *values, size_t count,
                                             const char *new_name, float background);
+extern int tvdb_py_extend_grid_from_sparse(tvdb_file_t *file, size_t grid_idx,
+                                           const int32_t *coords, const float *values, size_t count,
+                                           const char *new_name, float background);
+
+static PyObject *VDBFile_extend_grid_from_sparse(PyObject *self, PyObject *args, PyObject *kw) {
+    PyVDBFile *f = (PyVDBFile *)self; CHECK_OPEN(f);
+    Py_ssize_t grid_idx = 0;
+    Py_buffer cb, vb;
+    const char *new_name = NULL;
+    float background = 0.0f;
+    static char *kwlist[] = {"grid_idx", "coords", "values", "name", "background", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "ny*y*s|f", kwlist,
+                                     &grid_idx, &cb, &vb, &new_name, &background))
+        return NULL;
+    if (grid_idx < 0 || (size_t)grid_idx >= f->file.num_grids) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb);
+        PyErr_SetString(PyExc_IndexError, "grid_idx out of range");
+        return NULL;
+    }
+    if (cb.len % (3 * (Py_ssize_t)sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb);
+        PyErr_SetString(PyExc_ValueError, "coords must be int32 xyz triples");
+        return NULL;
+    }
+    size_t count = (size_t)(cb.len / 3 / (Py_ssize_t)sizeof(int32_t));
+    if (vb.len != (Py_ssize_t)(count * sizeof(float))) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb);
+        PyErr_SetString(PyExc_ValueError, "values length must match coord count");
+        return NULL;
+    }
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_extend_grid_from_sparse(&f->file, (size_t)grid_idx,
+                                         (const int32_t *)cb.buf,
+                                         (const float *)vb.buf, count,
+                                         new_name, background);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&cb); PyBuffer_Release(&vb);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    Py_RETURN_NONE;
+}
 
 static PyObject *VDBFile_replace_grid_from_sparse(PyObject *self, PyObject *args, PyObject *kw) {
     PyVDBFile *f = (PyVDBFile *)self; CHECK_OPEN(f);
@@ -1441,6 +1483,8 @@ static PyMethodDef VDBFile_methods[] = {
     {"save", (PyCFunction)VDBFile_save, METH_VARARGS | METH_KEYWORDS, "Save to file"},
     {"replace_grid_from_sparse", (PyCFunction)VDBFile_replace_grid_from_sparse, METH_VARARGS | METH_KEYWORDS,
      "Replace grid at grid_idx with one freshly built from sparse coords/values, using the existing grid as template (descriptor + transform + tree layout). After this, call save() to persist."},
+    {"extend_grid_from_sparse", (PyCFunction)VDBFile_extend_grid_from_sparse, METH_VARARGS | METH_KEYWORDS,
+     "Topology-extending merge: rebuild grid_idx-th grid as existing ∪ sparse (sparse wins on overlap, new leaves are created where needed). After this, call save() to persist."},
     {"to_bytes", (PyCFunction)VDBFile_to_bytes, METH_VARARGS | METH_KEYWORDS, "Serialize to bytes"},
     {"__enter__", VDBFile_enter, METH_NOARGS, NULL},
     {"__exit__", VDBFile_exit, METH_VARARGS, NULL},
@@ -1893,6 +1937,32 @@ static PyObject *mod_solve_poisson_d(PyObject *module, PyObject *args, PyObject 
     tvdb_py_solve_poisson_d(g->data, g->nx, g->ny, g->nz, g->voxel_size,
                             g->ox, g->oy, g->oz, max_iters, tolerance, &out, &iters);
     Py_END_ALLOW_THREADS
+    PyObject *grid = DenseGrid_from_c(st->DenseGridType, out, g->nx, g->ny, g->nz,
+                                      g->voxel_size, g->ox, g->oy, g->oz);
+    if (!grid) return NULL;
+    return Py_BuildValue("(Oi)", grid, iters);
+}
+
+static PyObject *mod_fast_sweeping(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; float frozen_band = 0.0f, tol = 1e-4f;
+    int max_iters = 16;
+    static char *kwlist[] = {"grid", "frozen_band", "max_iters", "tol", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|fif", kwlist, &grid_obj,
+                                     &frozen_band, &max_iters, &tol))
+        return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
+    float *out = NULL; int iters = 0;
+    Py_BEGIN_ALLOW_THREADS
+    tvdb_py_fast_sweeping(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                          g->ox, g->oy, g->oz, frozen_band, max_iters, tol,
+                          &out, &iters);
+    Py_END_ALLOW_THREADS
+    if (!out) return raise_vdb_error("fast_sweeping allocation failed");
     PyObject *grid = DenseGrid_from_c(st->DenseGridType, out, g->nx, g->ny, g->nz,
                                       g->voxel_size, g->ox, g->oy, g->oz);
     if (!grid) return NULL;
@@ -2547,6 +2617,82 @@ static PyObject *mod_sparse_conv3d(PyObject *module, PyObject *args, PyObject *k
                          "count", (Py_ssize_t)out_count);
 }
 
+extern int tvdb_py_sparse_conv3d_vjp_values(const int32_t *, size_t, const float *,
+                                            const float *, int, int, int, float **);
+extern int tvdb_py_sparse_conv3d_vjp_kernel(const int32_t *, const float *, size_t,
+                                            const float *, int, int, int, float **);
+
+static PyObject *mod_sparse_conv3d_vjp_values(PyObject *module, PyObject *args, PyObject *kw) {
+    (void)module;
+    Py_buffer cb, gb, kb;
+    int kx, ky, kz;
+    static char *kwlist[] = {"coords", "grad_out_values", "kernel", "kx", "ky", "kz", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "y*y*y*iii", kwlist,
+                                     &cb, &gb, &kb, &kx, &ky, &kz))
+        return NULL;
+    if (cb.len % (3 * (Py_ssize_t)sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&gb); PyBuffer_Release(&kb);
+        PyErr_SetString(PyExc_ValueError, "coords must be int32 xyz triples"); return NULL;
+    }
+    size_t in_count = (size_t)(cb.len / 3 / (Py_ssize_t)sizeof(int32_t));
+    if (gb.len != (Py_ssize_t)(in_count * sizeof(float))) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&gb); PyBuffer_Release(&kb);
+        PyErr_SetString(PyExc_ValueError, "grad_out_values length must match coord count"); return NULL;
+    }
+    if (kb.len != (Py_ssize_t)((size_t)kx * ky * kz * sizeof(float))) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&gb); PyBuffer_Release(&kb);
+        PyErr_SetString(PyExc_ValueError, "kernel length must equal kx*ky*kz floats"); return NULL;
+    }
+    float *grad_in = NULL; int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_sparse_conv3d_vjp_values((const int32_t *)cb.buf, in_count,
+                                          (const float *)gb.buf,
+                                          (const float *)kb.buf, kx, ky, kz, &grad_in);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&cb); PyBuffer_Release(&gb); PyBuffer_Release(&kb);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *out = PyBytes_FromStringAndSize((const char *)grad_in,
+                                              (Py_ssize_t)(in_count * sizeof(float)));
+    free(grad_in);
+    return out;
+}
+
+static PyObject *mod_sparse_conv3d_vjp_kernel(PyObject *module, PyObject *args, PyObject *kw) {
+    (void)module;
+    Py_buffer cb, vb, gb;
+    int kx, ky, kz;
+    static char *kwlist[] = {"coords", "in_values", "grad_out_values", "kx", "ky", "kz", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "y*y*y*iii", kwlist,
+                                     &cb, &vb, &gb, &kx, &ky, &kz))
+        return NULL;
+    if (cb.len % (3 * (Py_ssize_t)sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&gb);
+        PyErr_SetString(PyExc_ValueError, "coords must be int32 xyz triples"); return NULL;
+    }
+    size_t in_count = (size_t)(cb.len / 3 / (Py_ssize_t)sizeof(int32_t));
+    if (vb.len != (Py_ssize_t)(in_count * sizeof(float))) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&gb);
+        PyErr_SetString(PyExc_ValueError, "in_values length must match coord count"); return NULL;
+    }
+    if (gb.len != (Py_ssize_t)(in_count * sizeof(float))) {
+        PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&gb);
+        PyErr_SetString(PyExc_ValueError, "grad_out_values length must match coord count"); return NULL;
+    }
+    float *grad_kern = NULL; int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_sparse_conv3d_vjp_kernel((const int32_t *)cb.buf,
+                                          (const float *)vb.buf, in_count,
+                                          (const float *)gb.buf, kx, ky, kz, &grad_kern);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&cb); PyBuffer_Release(&vb); PyBuffer_Release(&gb);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    size_t klen = (size_t)kx * ky * kz;
+    PyObject *out = PyBytes_FromStringAndSize((const char *)grad_kern,
+                                              (Py_ssize_t)(klen * sizeof(float)));
+    free(grad_kern);
+    return out;
+}
+
 /* ======================================================================== */
 /*  Module definition                                                       */
 /* ======================================================================== */
@@ -2577,6 +2723,8 @@ static PyMethodDef module_methods[] = {
     {"solve_poisson", (PyCFunction)mod_solve_poisson, METH_VARARGS | METH_KEYWORDS, "Poisson solver (fp32 internals)"},
     {"solve_poisson_d", (PyCFunction)mod_solve_poisson_d, METH_VARARGS | METH_KEYWORDS,
      "Poisson solver with fp64 internals (tighter convergence; input/output remain fp32)"},
+    {"fast_sweeping", (PyCFunction)mod_fast_sweeping, METH_VARARGS | METH_KEYWORDS,
+     "Fast Sweeping Eikonal redistance for SDF dense grids (returns (grid, iters))"},
     {"ray_cast_sdf", (PyCFunction)mod_ray_cast_sdf, METH_VARARGS | METH_KEYWORDS, "Ray cast SDF"},
     {"particles_to_sdf", (PyCFunction)mod_particles_to_sdf, METH_VARARGS | METH_KEYWORDS, "Particles to SDF"},
     {"volume_to_spheres", (PyCFunction)mod_volume_to_spheres, METH_VARARGS | METH_KEYWORDS, "Volume to spheres"},
@@ -2600,6 +2748,10 @@ static PyMethodDef module_methods[] = {
      "3D convolution on a sparse grid (same-topology). coords/values/kernel are bytes; kernel is kx*ky*kz float32. Returns {coords, values, count}."},
     {"sparse_conv3d_mc", (PyCFunction)mod_sparse_conv3d_mc, METH_VARARGS | METH_KEYWORDS,
      "Multi-channel 3D convolution on a sparse grid. values laid out (count*c_in) channel-fastest; kernel laid out (kx*ky*kz*c_out*c_in) channel-fastest. Returns {coords, values, count, c_out}."},
+    {"sparse_conv3d_vjp_values", (PyCFunction)mod_sparse_conv3d_vjp_values, METH_VARARGS | METH_KEYWORDS,
+     "VJP of sparse_conv3d w.r.t. input values. Returns grad_in (bytes, length count*4)."},
+    {"sparse_conv3d_vjp_kernel", (PyCFunction)mod_sparse_conv3d_vjp_kernel, METH_VARARGS | METH_KEYWORDS,
+     "VJP of sparse_conv3d w.r.t. kernel. Returns grad_kernel (bytes, length kx*ky*kz*4)."},
     {NULL, NULL, 0, NULL}
 };
 

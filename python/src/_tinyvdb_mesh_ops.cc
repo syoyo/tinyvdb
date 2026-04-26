@@ -12,6 +12,7 @@
 #include "tinyvdb_tsdf.h"
 #include "tinyvdb_topology.h"
 #include "tinyvdb_sparse_tree.h"
+#include "tinyvdb_autograd.h"
 
 #include <cmath>
 #include <cstring>
@@ -397,6 +398,25 @@ int tvdb_py_solve_poisson_d(const float *rhs_data, int nx, int ny, int nz,
     *out_data = (float *)malloc(n * sizeof(float));
     if (*out_data) memcpy(*out_data, x.data, n * sizeof(float));
     tvdb_dense_grid_free(&rhs); tvdb_dense_grid_free(&x);
+    return *out_data ? 0 : -1;
+}
+
+// Fast sweeping: redistance an SDF on a dense grid. In-place on a copy so
+// the Python caller gets ownership of `out_data`.
+int tvdb_py_fast_sweeping(const float *data, int nx, int ny, int nz,
+                          float voxel_size, float ox, float oy, float oz,
+                          float frozen_band, int max_iters, float tol,
+                          float **out_data, int *out_iters) {
+    size_t n = (size_t)nx * ny * nz;
+    tvdb_dense_grid g;
+    tvdb_dense_grid_init(&g, nx, ny, nz);
+    g.voxel_size = voxel_size; g.ox = ox; g.oy = oy; g.oz = oz;
+    if (data) memcpy(g.data, data, n * sizeof(float));
+    int iters = tvdb_fast_sweeping(&g, frozen_band, max_iters, tol);
+    if (out_iters) *out_iters = iters;
+    *out_data = (float *)malloc(n * sizeof(float));
+    if (*out_data) memcpy(*out_data, g.data, n * sizeof(float));
+    tvdb_dense_grid_free(&g);
     return *out_data ? 0 : -1;
 }
 
@@ -1279,6 +1299,115 @@ int tvdb_py_replace_grid_from_sparse(tvdb_file_t *file, size_t grid_idx,
     // backed) — true when tvdb_file_open was called with NULL allocator.
     // Manually reset the destination's allocator pointers to ours so the
     // file_close path is consistent.
+    tvdb_grid_destroy_owned(tmpl);
+    *tmpl = built;
+    return 0;
+}
+
+// Sparse conv3d VJPs.
+int tvdb_py_sparse_conv3d_vjp_values(const int32_t *in_coords, size_t in_count,
+                                     const float *grad_out_values,
+                                     const float *kernel, int kx, int ky, int kz,
+                                     float **out_grad_in /* malloc'd, length in_count */) {
+    tvdb_sparse_grid sg; tvdb_sparse_grid_init(&sg);
+    if (in_count > 0) {
+        if (!tvdb_sparse_grid_reserve(&sg, in_count)) {
+            snprintf(s_error_msg, sizeof(s_error_msg), "vjp_values: alloc failed");
+            return -1;
+        }
+        for (size_t i = 0; i < in_count; ++i) {
+            sg.coords[i].x = in_coords[3*i + 0];
+            sg.coords[i].y = in_coords[3*i + 1];
+            sg.coords[i].z = in_coords[3*i + 2];
+        }
+        sg.count = in_count;
+    }
+    *out_grad_in = (float *)calloc(in_count, sizeof(float));
+    if (!*out_grad_in && in_count > 0) {
+        tvdb_sparse_grid_free(&sg); return -1;
+    }
+    bool ok = tvdb_sparse_conv3d_vjp_values(&sg, grad_out_values, kernel,
+                                            kx, ky, kz, *out_grad_in);
+    tvdb_sparse_grid_free(&sg);
+    if (!ok) {
+        free(*out_grad_in); *out_grad_in = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "sparse_conv3d_vjp_values failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_sparse_conv3d_vjp_kernel(const int32_t *in_coords, const float *in_values,
+                                     size_t in_count,
+                                     const float *grad_out_values,
+                                     int kx, int ky, int kz,
+                                     float **out_grad_kernel /* malloc'd, length kx*ky*kz */) {
+    tvdb_sparse_grid sg; tvdb_sparse_grid_init(&sg);
+    if (in_count > 0) {
+        if (!tvdb_sparse_grid_reserve(&sg, in_count)) {
+            snprintf(s_error_msg, sizeof(s_error_msg), "vjp_kernel: alloc failed");
+            return -1;
+        }
+        for (size_t i = 0; i < in_count; ++i) {
+            sg.coords[i].x = in_coords[3*i + 0];
+            sg.coords[i].y = in_coords[3*i + 1];
+            sg.coords[i].z = in_coords[3*i + 2];
+            sg.values[i] = in_values[i];
+        }
+        sg.count = in_count;
+    }
+    size_t klen = (size_t)kx * (size_t)ky * (size_t)kz;
+    *out_grad_kernel = (float *)calloc(klen, sizeof(float));
+    if (!*out_grad_kernel) {
+        tvdb_sparse_grid_free(&sg); return -1;
+    }
+    bool ok = tvdb_sparse_conv3d_vjp_kernel(&sg, grad_out_values, kx, ky, kz,
+                                            *out_grad_kernel);
+    tvdb_sparse_grid_free(&sg);
+    if (!ok) {
+        free(*out_grad_kernel); *out_grad_kernel = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "sparse_conv3d_vjp_kernel failed");
+        return -1;
+    }
+    return 0;
+}
+
+// Topology-extending variant: rebuild the file's grid_idx-th grid as
+// existing ∪ sparse (sparse wins on overlap). Useful when the sparse coords
+// land outside any existing leaf — replace_grid_from_sparse drops those
+// because it builds purely from the sparse input; this preserves the
+// existing active set.
+int tvdb_py_extend_grid_from_sparse(tvdb_file_t *file, size_t grid_idx,
+                                    const int32_t *coords, const float *values, size_t count,
+                                    const char *new_name, float background) {
+    if (!file || grid_idx >= file->num_grids) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "extend_grid_from_sparse: bad grid_idx");
+        return -1;
+    }
+    tvdb_grid_t *tmpl = &file->grids[grid_idx];
+
+    tvdb_sparse_grid sg; tvdb_sparse_grid_init(&sg);
+    if (count > 0) {
+        if (!tvdb_sparse_grid_reserve(&sg, count)) {
+            snprintf(s_error_msg, sizeof(s_error_msg), "alloc failed");
+            return -1;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            sg.coords[i].x = coords[3*i + 0];
+            sg.coords[i].y = coords[3*i + 1];
+            sg.coords[i].z = coords[3*i + 2];
+            sg.values[i] = values[i];
+        }
+        sg.count = count;
+    }
+
+    tvdb_grid_t built;
+    bool ok = tvdb_grid_extend_from_sparse(tmpl, &sg, new_name, background, &built);
+    tvdb_sparse_grid_free(&sg);
+    if (!ok) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "grid_extend_from_sparse failed");
+        return -1;
+    }
     tvdb_grid_destroy_owned(tmpl);
     *tmpl = built;
     return 0;

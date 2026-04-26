@@ -836,7 +836,10 @@ static tvdb_allocator_t s_owned_alloc = {
     s_libc_malloc, s_libc_realloc, s_libc_free, NULL
 };
 
-typedef struct { int32_t lorig[3]; int32_t slot; float val; } tvdb__coord_entry;
+// Per-coord entry collected from input. `val_bytes` holds up to 24 bytes
+// (matches the largest tvdb_value_type_t = VEC3D); only `vsize` bytes are
+// meaningful per builder invocation.
+typedef struct { int32_t lorig[3]; int32_t slot; uint8_t val_bytes[24]; } tvdb__coord_entry;
 // Sort PRIMARILY by leaf origin (not by full coord). Coords with the same
 // leaf origin must be contiguous so the per-leaf grouping loop is correct.
 static int tvdb__cmp_coord_entry(const void *a, const void *b) {
@@ -939,7 +942,8 @@ static size_t append_node(tvdb_tree_t *tree, tvdb_node_type_t type, int level,
 static bool build_parent_level(tvdb_tree_t *tree, int parent_lv,
                                int child_lv,
                                const grouping_entry_t *children,
-                               size_t n_children, float background,
+                               size_t n_children,
+                               int vsize, const void *bg_bytes,
                                grouping_entry_t **out_parents,
                                size_t *out_n_parents) {
     (void)child_lv;
@@ -951,7 +955,6 @@ static bool build_parent_level(tvdb_tree_t *tree, int parent_lv,
     int parent_span = level_voxel_span(&tree->layout, parent_lv);
     int parent_log2dim = tree->layout.levels[parent_lv].log2dim;
     int parent_bitsize = 1 << (3 * parent_log2dim);
-    int vsize = (int)sizeof(float);
 
     // Floor-divide helper for parent origin computation.
     #define PORIGIN(c) (((c) >= 0 ? (c) / parent_span \
@@ -1041,7 +1044,7 @@ static bool build_parent_level(tvdb_tree_t *tree, int parent_lv,
         in->values = (uint8_t *)malloc(in->values_size);
         if (!in->values) { free(parents); goto fail; }
         for (int k = 0; k < parent_bitsize; ++k) {
-            memcpy(in->values + (size_t)k * vsize, &background, sizeof(float));
+            memcpy(in->values + (size_t)k * vsize, bg_bytes, (size_t)vsize);
         }
         // Compute slots, sort by slot, populate child_mask + child_indices.
         slot_pair_t *pairs = (slot_pair_t *)malloc(gp->n_child * sizeof(slot_pair_t));
@@ -1090,17 +1093,28 @@ fail:
     return false;
 }
 
-bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
-                                          const tvdb_sparse_grid *sg,
-                                          const char *grid_name,
-                                          float background,
-                                          tvdb_grid_t *out) {
-    if (!tmpl || !sg || !out) return false;
-    if (!grid_is_float(tmpl)) return false;
-    if (tmpl->tree.layout.num_levels != 4) return false;  // Tree_float_5_4_3 only
+// Typed builder core. `value_type` selects element size; `values` is a packed
+// array of `count` elements (each `vsize = tvdb_value_type_size(value_type)`
+// bytes). `bg_bytes` points at one element's worth of background. The output
+// grid's root background is filled in by the caller after this returns.
+static bool tvdb__grid_from_sparse_typed_core(const tvdb_grid_t *tmpl,
+                                              const tvdb_vec3i *coords,
+                                              const void *values,
+                                              size_t count,
+                                              tvdb_value_type_t value_type,
+                                              const void *bg_bytes,
+                                              const char *grid_name,
+                                              tvdb_grid_t *out) {
+    if (!tmpl || !out) return false;
+    int leaf_lv = tmpl->tree.layout.num_levels - 1;
+    if (leaf_lv < 0) return false;
+    if (tmpl->tree.layout.num_levels != 4) return false;
+    if (tmpl->tree.layout.levels[leaf_lv].value_type != value_type) return false;
+    int vsize = (int)tvdb_value_type_size(value_type);
+    if (vsize <= 0 || vsize > 24) return false;
+    if (count > 0 && (!coords || !values || !bg_bytes)) return false;
 
     memset(out, 0, sizeof(*out));
-    int leaf_lv = tmpl->tree.layout.num_levels - 1;
     int leaf_log2dim = tmpl->tree.layout.levels[leaf_lv].log2dim;
     int leaf_dim = 1 << leaf_log2dim;
     int leaf_dim_mask = leaf_dim - 1;
@@ -1123,11 +1137,15 @@ bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
     out->tree.is_point_index_grid = 0;
 
     // Step 1: group sparse coords by leaf origin.
-    // Create one (origin, slot, value) entry per coord, sort by leaf origin.
-    tvdb__coord_entry *ce = (tvdb__coord_entry *)malloc(sg->count * sizeof(tvdb__coord_entry));
-    if (!ce) { tvdb_grid_destroy_owned(out); return false; }
-    for (size_t ii = 0; ii < sg->count; ++ii) {
-        int32_t cx = sg->coords[ii].x, cy = sg->coords[ii].y, cz = sg->coords[ii].z;
+    // Create one (origin, slot, value-bytes) entry per coord, sort by leaf origin.
+    const uint8_t *vbytes = (const uint8_t *)values;
+    tvdb__coord_entry *ce = NULL;
+    if (count > 0) {
+        ce = (tvdb__coord_entry *)malloc(count * sizeof(tvdb__coord_entry));
+        if (!ce) { tvdb_grid_destroy_owned(out); return false; }
+    }
+    for (size_t ii = 0; ii < count; ++ii) {
+        int32_t cx = coords[ii].x, cy = coords[ii].y, cz = coords[ii].z;
         int32_t lx = (cx >> leaf_log2dim) << leaf_log2dim;
         int32_t ly = (cy >> leaf_log2dim) << leaf_log2dim;
         int32_t lz = (cz >> leaf_log2dim) << leaf_log2dim;
@@ -1136,16 +1154,16 @@ bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
         int sly = cy & leaf_dim_mask;
         int slz = cz & leaf_dim_mask;
         ce[ii].slot = (slx << (2 * leaf_log2dim)) | (sly << leaf_log2dim) | slz;
-        ce[ii].val = sg->values[ii];
+        memcpy(ce[ii].val_bytes, vbytes + ii * (size_t)vsize, (size_t)vsize);
     }
-    qsort(ce, sg->count, sizeof(tvdb__coord_entry), tvdb__cmp_coord_entry);
+    qsort(ce, count, sizeof(tvdb__coord_entry), tvdb__cmp_coord_entry);
 
     // Step 2: walk sorted ce[], emit a leaf node per unique leaf origin.
     grouping_entry_t *leaves = NULL;
     size_t leaf_cap = 0, n_leaves = 0;
 
     size_t i = 0;
-    while (i < sg->count) {
+    while (i < count) {
         int32_t lorig[3] = { ce[i].lorig[0], ce[i].lorig[1], ce[i].lorig[2] };
         size_t leaf_node_idx = append_node(&out->tree, TVDB_NODE_LEAF, leaf_lv, lorig);
         if (leaf_node_idx == (size_t)-1) { free(ce); free(leaves); tvdb_grid_destroy_owned(out); return false; }
@@ -1154,20 +1172,20 @@ bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
             free(ce); free(leaves); tvdb_grid_destroy_owned(out); return false;
         }
         leaf->num_voxels = (uint32_t)leaf_bitsize;
-        leaf->data_size = (size_t)leaf_bitsize * sizeof(float);
+        leaf->data_size = (size_t)leaf_bitsize * (size_t)vsize;
         leaf->data = (uint8_t *)malloc(leaf->data_size);
         if (!leaf->data) { free(ce); free(leaves); tvdb_grid_destroy_owned(out); return false; }
         // Fill all voxels with background (inactive default).
         for (int k = 0; k < leaf_bitsize; ++k) {
-            memcpy(leaf->data + (size_t)k * sizeof(float), &background, sizeof(float));
+            memcpy(leaf->data + (size_t)k * (size_t)vsize, bg_bytes, (size_t)vsize);
         }
         // Write active voxels in this group.
-        while (i < sg->count &&
+        while (i < count &&
                ce[i].lorig[0] == lorig[0] &&
                ce[i].lorig[1] == lorig[1] &&
                ce[i].lorig[2] == lorig[2]) {
             int32_t slot = ce[i].slot;
-            memcpy(leaf->data + (size_t)slot * sizeof(float), &ce[i].val, sizeof(float));
+            memcpy(leaf->data + (size_t)slot * (size_t)vsize, ce[i].val_bytes, (size_t)vsize);
             nm_set(&leaf->value_mask, slot);
             ++i;
         }
@@ -1190,7 +1208,7 @@ bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
     grouping_entry_t *l2_parents = NULL; size_t n_l2 = 0;
     if (!build_parent_level(&out->tree, /*parent_lv=*/leaf_lv - 1,
                              /*child_lv=*/leaf_lv,
-                             leaves, n_leaves, background,
+                             leaves, n_leaves, vsize, bg_bytes,
                              &l2_parents, &n_l2)) {
         free(leaves); tvdb_grid_destroy_owned(out); return false;
     }
@@ -1202,7 +1220,7 @@ bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
     grouping_entry_t *l1_parents = NULL; size_t n_l1 = 0;
     if (!build_parent_level(&out->tree, /*parent_lv=*/leaf_lv - 2,
                              /*child_lv=*/leaf_lv - 1,
-                             l2_parents, n_l2, background,
+                             l2_parents, n_l2, vsize, bg_bytes,
                              &l1_parents, &n_l1)) {
         free(l2_parents); tvdb_grid_destroy_owned(out); return false;
     }
@@ -1238,8 +1256,18 @@ bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
         root_idx = 0;
     }
     tvdb_root_node_t *root = &out->tree.nodes[root_idx].u.root;
-    root->background.type = TVDB_VALUE_FLOAT;
-    root->background.u.f = background;
+    root->background.type = value_type;
+    memset(&root->background.u, 0, sizeof(root->background.u));
+    switch (value_type) {
+        case TVDB_VALUE_FLOAT:  memcpy(&root->background.u.f,    bg_bytes, sizeof(float));      break;
+        case TVDB_VALUE_DOUBLE: memcpy(&root->background.u.d,    bg_bytes, sizeof(double));     break;
+        case TVDB_VALUE_INT32:  memcpy(&root->background.u.i32,  bg_bytes, sizeof(int32_t));    break;
+        case TVDB_VALUE_INT64:  memcpy(&root->background.u.i64,  bg_bytes, sizeof(int64_t));    break;
+        case TVDB_VALUE_VEC3F:  memcpy(root->background.u.vec3f, bg_bytes, 3 * sizeof(float));  break;
+        case TVDB_VALUE_VEC3I:  memcpy(root->background.u.vec3i, bg_bytes, 3 * sizeof(int32_t));break;
+        case TVDB_VALUE_VEC3D:  memcpy(root->background.u.vec3d, bg_bytes, 3 * sizeof(double)); break;
+        default: break;
+    }
     root->num_tiles = 0;
     root->tile_origins = NULL;
     root->tile_values = NULL;
@@ -1260,6 +1288,116 @@ bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
     }
     free(l1_parents);
     return true;
+}
+
+// Topology-extending merge: build a new owned grid that contains every
+// active voxel in `existing` plus every (coord, value) in `sg`. Where the
+// two overlap, `sg`'s value wins. New leaves are created where `sg`
+// references coordinates outside `existing`'s active set. Output ownership
+// matches tvdb_grid_from_sparse_using_template (free with
+// tvdb_grid_destroy_owned).
+bool tvdb_grid_extend_from_sparse(const tvdb_grid_t *existing,
+                                  const tvdb_sparse_grid *sg,
+                                  const char *grid_name,
+                                  float background,
+                                  tvdb_grid_t *out) {
+    if (!existing || !sg || !out) return false;
+    if (!grid_is_float(existing)) return false;
+    if (existing->tree.layout.num_levels != 4) return false;
+
+    // Pull existing active voxels into a flat sparse grid.
+    tvdb_sparse_grid old_sg; tvdb_sparse_grid_init(&old_sg);
+    if (!tvdb_grid_to_sparse(existing, &old_sg)) {
+        tvdb_sparse_grid_free(&old_sg);
+        return false;
+    }
+    // Build a hash table over sg's coords for O(1) override lookup.
+    size_t cap = pow2_(sg->count * 2 + 16);
+    typedef struct { uint64_t key; uint32_t idx_plus_one; } merge_he_t;
+    merge_he_t *htbl = (merge_he_t *)calloc(cap, sizeof(merge_he_t));
+    if (!htbl) { tvdb_sparse_grid_free(&old_sg); return false; }
+    size_t mask = cap - 1;
+    for (size_t i = 0; i < sg->count; ++i) {
+        uint64_t key = pack_leaf_key(sg->coords[i].x, sg->coords[i].y, sg->coords[i].z);
+        size_t h = (size_t)(mix64_(key) & mask);
+        while (htbl[h].idx_plus_one) {
+            size_t pi = htbl[h].idx_plus_one - 1;
+            if (sg->coords[pi].x == sg->coords[i].x &&
+                sg->coords[pi].y == sg->coords[i].y &&
+                sg->coords[pi].z == sg->coords[i].z) {
+                // Duplicate inside sg; latter wins.
+                break;
+            }
+            h = (h + 1) & mask;
+        }
+        htbl[h].key = key;
+        htbl[h].idx_plus_one = (uint32_t)(i + 1);
+    }
+
+    // Output capacity upper bound = old_sg.count + sg->count.
+    tvdb_sparse_grid merged; tvdb_sparse_grid_init(&merged);
+    if (!tvdb_sparse_grid_reserve(&merged, old_sg.count + sg->count)) {
+        free(htbl); tvdb_sparse_grid_free(&old_sg); return false;
+    }
+    merged.voxel_size = old_sg.voxel_size;
+    merged.ox = old_sg.ox; merged.oy = old_sg.oy; merged.oz = old_sg.oz;
+
+    // Walk old_sg; if a coord is overridden by sg, skip it (sg writes its own
+    // entry below). Otherwise emit it.
+    for (size_t i = 0; i < old_sg.count; ++i) {
+        uint64_t key = pack_leaf_key(old_sg.coords[i].x, old_sg.coords[i].y, old_sg.coords[i].z);
+        size_t h = (size_t)(mix64_(key) & mask);
+        int overridden = 0;
+        while (htbl[h].idx_plus_one) {
+            size_t pi = htbl[h].idx_plus_one - 1;
+            if (sg->coords[pi].x == old_sg.coords[i].x &&
+                sg->coords[pi].y == old_sg.coords[i].y &&
+                sg->coords[pi].z == old_sg.coords[i].z) { overridden = 1; break; }
+            h = (h + 1) & mask;
+        }
+        if (overridden) continue;
+        merged.coords[merged.count] = old_sg.coords[i];
+        merged.values[merged.count] = old_sg.values[i];
+        ++merged.count;
+    }
+    // Append every coord/value from sg (these win on overlap; new leaves elsewhere).
+    for (size_t i = 0; i < sg->count; ++i) {
+        merged.coords[merged.count] = sg->coords[i];
+        merged.values[merged.count] = sg->values[i];
+        ++merged.count;
+    }
+
+    free(htbl);
+    tvdb_sparse_grid_free(&old_sg);
+
+    bool ok = tvdb_grid_from_sparse_using_template(existing, &merged, grid_name,
+                                                   background, out);
+    tvdb_sparse_grid_free(&merged);
+    return ok;
+}
+
+bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
+                                          const tvdb_sparse_grid *sg,
+                                          const char *grid_name,
+                                          float background,
+                                          tvdb_grid_t *out) {
+    if (!sg) return false;
+    return tvdb__grid_from_sparse_typed_core(tmpl, sg->coords, sg->values,
+                                             sg->count, TVDB_VALUE_FLOAT,
+                                             &background, grid_name, out);
+}
+
+bool tvdb_grid_from_sparse_vec3_using_template(const tvdb_grid_t *tmpl,
+                                               const tvdb_vec3i *coords,
+                                               const float *values,
+                                               size_t count,
+                                               const char *grid_name,
+                                               const float background[3],
+                                               tvdb_grid_t *out) {
+    float bg[3] = {0.0f, 0.0f, 0.0f};
+    if (background) { bg[0] = background[0]; bg[1] = background[1]; bg[2] = background[2]; }
+    return tvdb__grid_from_sparse_typed_core(tmpl, coords, values, count,
+                                             TVDB_VALUE_VEC3F, bg, grid_name, out);
 }
 
 void tvdb_grid_destroy_owned(tvdb_grid_t *grid) {

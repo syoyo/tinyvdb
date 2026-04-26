@@ -60,6 +60,7 @@ add_library(tinyvdb_mesh_ops STATIC
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_ray.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_sparse.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_sparse_tree.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_autograd.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_lifecycle.c
   ${PROJECT_SOURCE_DIR}/src/tvdb_memory.c)
 if(NOT WIN32)
@@ -183,6 +184,23 @@ if(TINYVDB_BUILD_TESTS)
     endif()
   endif()
   add_test(NAME test_simd COMMAND test_simd)
+
+  add_executable(test_fast_sweeping ${PROJECT_SOURCE_DIR}/tests/test_fast_sweeping.c)
+  target_link_libraries(test_fast_sweeping PRIVATE tinyvdb_mesh_ops)
+  add_test(NAME test_fast_sweeping COMMAND test_fast_sweeping)
+
+  add_executable(test_vec3_extend ${PROJECT_SOURCE_DIR}/tests/test_vec3_extend.c)
+  target_link_libraries(test_vec3_extend PRIVATE tinyvdb_mesh_ops tinyvdb)
+  add_test(NAME test_vec3_extend
+           COMMAND test_vec3_extend ${PROJECT_SOURCE_DIR}/sphere.vdb)
+
+  add_executable(test_dense_d ${PROJECT_SOURCE_DIR}/tests/test_dense_d.c)
+  target_link_libraries(test_dense_d PRIVATE tinyvdb_mesh_ops m)
+  add_test(NAME test_dense_d COMMAND test_dense_d)
+
+  add_executable(test_autograd ${PROJECT_SOURCE_DIR}/tests/test_autograd.c)
+  target_link_libraries(test_autograd PRIVATE tinyvdb_mesh_ops m)
+  add_test(NAME test_autograd COMMAND test_autograd)
 
   if(TINYVDB_BUILD_PYTHON)
     find_program(PYTHON3_EXE NAMES python3 python)

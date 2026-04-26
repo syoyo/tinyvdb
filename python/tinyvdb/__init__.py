@@ -43,6 +43,7 @@ from tinyvdb._tinyvdb import (
     advect,
     solve_poisson,
     solve_poisson_d,
+    fast_sweeping,
     # Ray casting
     ray_cast_sdf,
     # Particles
@@ -68,6 +69,8 @@ from tinyvdb._tinyvdb import (
     integrate_tsdf_with_color_into,
     sparse_conv3d,
     sparse_conv3d_mc,
+    sparse_conv3d_vjp_values,
+    sparse_conv3d_vjp_kernel,
     # Constants
     COMPRESS_NONE,
     COMPRESS_ZIP,
@@ -251,6 +254,7 @@ __all__ = [
     "advect",
     "solve_poisson",
     "solve_poisson_d",
+    "fast_sweeping",
     "ray_cast_sdf",
     "particles_to_sdf",
     "volume_to_spheres",
@@ -272,6 +276,8 @@ __all__ = [
     "integrate_tsdf_with_color_into",
     "sparse_conv3d",
     "sparse_conv3d_mc",
+    "sparse_conv3d_vjp_values",
+    "sparse_conv3d_vjp_kernel",
     "gaussian_filter_sparse",
     "mean_filter_sparse",
     "laplacian_filter_sparse",

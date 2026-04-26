@@ -164,7 +164,7 @@ Implementations live in `src/tinyvdb_*.{h,c}` and are wired through
 
 ### Test coverage
 
-CTest registers 5 tests under `build/`:
+CTest registers 9 tests under `build/`:
 
 | target | what |
 | --- | --- |
@@ -172,6 +172,10 @@ CTest registers 5 tests under `build/`:
 | `test_sparse_tree` | OpenVDB-tree bridge on `sphere.vdb`: counts, bbox, sparse extraction, dense materialization, leaf-stamp dilate/erode |
 | `test_grid_from_sparse` | Sphere round-trip + synthetic 27-leaf cross-parent test for `tvdb_grid_from_sparse_using_template` |
 | `test_simd` | SIMD vs scalar parity for dot, AXPY, fp16 round-trip, fp16 encoder ≤1 ULP |
+| `test_fast_sweeping` | Sphere SDF redistance: 8-sweep Eikonal recovery against analytic distance, max-error within voxel_size |
+| `test_vec3_extend` | Vec3 builder via `tvdb_grid_from_sparse_vec3_using_template` (round-trip 8-voxel leaf, root background type-tagged VEC3F); `tvdb_grid_extend_from_sparse` topology growth (sphere + 4 far-off coords → +3 leaves, +4 active) |
+| `test_dense_d` | fp64 dense grid: lifecycle, fp32↔fp64 round-trip, trilinear sample exactness at lattice points, CSG, lap(x²)=2 interior, sphere volume/area within 5%, fast_sweeping_d to <1×voxel, Poisson_dd recovery to ~3e-15 RMS (machine precision) |
+| `test_autograd` | Per-op VJPs (`tinyvdb_autograd.{h,c}`): trilinear sample VJP w.r.t. grid + points, splat VJP w.r.t. values, CSG union/intersection/difference VJPs, sparse_conv3d VJP w.r.t. values + kernel — every analytic gradient checked against finite differences |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate_active/erode_active/dilate_topology/erode_topology counts, self-CSG idempotence, update_from_sparse → save → reload |
 
 ### Low Priority / Larger Features (fVDB / GPU)
@@ -198,15 +202,22 @@ worth knowing.
 
 ### Open
 
-- [ ] **From-scratch tree builder for non-Tree_float_5_4_3 layouts.**
-  `tvdb_grid_from_sparse_using_template` currently only handles 4-level
-  float trees (the standard SDF/density layout). Extend to:
-    *   `Tree_vec3s_5_4_3` for velocity grids
-    *   Other layouts (different log2dim mixes, fp16 storage, etc.)
-- [ ] **Topology-extending `update_from_sparse`.** Today it only writes
-  into existing leaves; coords outside any leaf are skipped. A combined
-  "merge sparse into existing tree, adding new leaves where needed"
-  primitive would avoid the rebuild path for incremental updates.
+- [x] **Tree builder generalized to typed values.** Refactored
+  `tvdb_grid_from_sparse_using_template` to a typed core; the float entry
+  is now a thin wrapper. New `tvdb_grid_from_sparse_vec3_using_template`
+  accepts `(coords[], values[count*3], background[3])` and builds a
+  `Tree_vec3s_5_4_3` grid from a vec3-typed template. Root background is
+  type-tagged correctly. Other 4-level layouts (DOUBLE, INT32, INT64,
+  VEC3I, VEC3D) are all routed through the same core; adding their
+  public wrappers is mechanical. Still 4-level only (`num_levels == 4`,
+  matching the standard `5_4_3` hierarchy).
+- [x] **Topology-extending `update_from_sparse`.**
+  `tvdb_grid_extend_from_sparse(existing, sg, name, bg, out)` rebuilds
+  an owned grid containing every active voxel in `existing` plus every
+  coord in `sg` (sg wins on overlap, new leaves are created where
+  needed). Uses hash-based dedup over sg's coords against the
+  extracted-existing sparse set, then dispatches to the typed builder.
+  Float layouts only.
 - [x] **Multi-channel sparse convolution.** `tvdb_sparse_conv3d_mc`:
   c_in input channels, c_out output channels, kernel laid out
   `kernel[(((dk*ky+dj)*kx+di)*c_out+co)*c_in+ci]`. Wired to Python as
@@ -226,15 +237,41 @@ worth knowing.
   `laplacian_filter_sparse`. Each builds a kernel and dispatches to
   `sparse_conv3d`. Accept either a sparse-grid dict or a `VDBGrid`.
   Same-topology output (out-of-active-set taps contribute 0).
-- [ ] **fp64 dense grid type.** Only the Poisson solver has a fp64 path
-  (`tvdb_solve_poisson_d`); the dense grid storage is fp32. A parallel
-  `tvdb_dense_grid_d` for full fp64 ops is a much larger surface-area
-  change.
+- [x] **fp64 dense grid type (subset).** `tvdb_dense_grid_d` in
+  `tinyvdb_ops.{h,c}` with double-precision storage and matching
+  ops: lifecycle (`init`/`free`), fp32↔fp64 converters
+  (`tvdb_dense_grid_f_to_d` / `tvdb_dense_grid_d_to_f`), trilinear
+  sampling, 7-point Laplacian, CSG (union/intersection/difference),
+  surface_area / volume measurements, FastSweeping (`fast_sweeping_d`),
+  and a fully fp64-in/out Poisson PCG solver (`tvdb_solve_poisson_dd`,
+  distinct from the existing `tvdb_solve_poisson_d` which is fp32-in/out
+  with fp64 internals). All ops are OpenMP-parallel where the fp32 path
+  is. Ops not yet ported to fp64: morphology, separable filters,
+  advection, gradient/divergence/curl, ray ops, splatting (convert via
+  `_d_to_f` and use the fp32 path until needed). Adding any of these
+  follows the same mechanical pattern.
+- [x] **`FastSweeping` (Eikonal redistance).** `tvdb_fast_sweeping`
+  in `tinyvdb_ops.{h,c}`: 8-direction 3D fast sweeping (Zhao 2005)
+  with Godunov upwind quadratic, sign-preserving. Voxels with
+  `|phi| <= frozen_band` are kept fixed as boundary conditions; the
+  rest are redistanced. Wired to Python as `tinyvdb.fast_sweeping`.
+  Verified: sphere-SDF redistance produces max-error < 1×voxel_size.
+
+- [x] **CPU autograd (per-op VJPs).** `tinyvdb_autograd.{h,c}` — explicit
+  vector-Jacobian-product functions for the differentiable ops, mirroring
+  fvdb's PyTorch custom Function backwards but framework-free. Landed:
+  - `tvdb_sample_trilinear_dense_vjp_grid` / `_vjp_pts`
+  - `tvdb_splat_trilinear_dense_vjp_values`
+  - `tvdb_csg_{union,intersection,difference}_vjp`
+  - `tvdb_sparse_conv3d_vjp_values` / `_vjp_kernel`
+  All accumulate into output buffers (caller zeros for absolute gradients);
+  CSG VJPs split ties 50/50 to remain a valid subgradient. Python
+  bindings exposed for sparse_conv VJPs (`tinyvdb.sparse_conv3d_vjp_values`
+  / `_vjp_kernel`); dense VJPs are C-only for now. Every analytic gradient
+  is gradient-checked against finite differences in `test_autograd`.
 
 ### Out of scope (deferred)
 
-- `FastSweeping` — dense fp32 Eikonal solver. Useful for level-set
-  redistancing but non-trivial; deferred.
 - All of the **fVDB / GPU** items below — JaggedTensor, GridBatch,
   autograd, GPU dispatch, Gaussian splatting rasterizer — require a
   tensor framework + CUDA, both fundamentally out of tinyvdb's design.
