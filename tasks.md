@@ -164,7 +164,7 @@ Implementations live in `src/tinyvdb_*.{h,c}` and are wired through
 
 ### Test coverage
 
-CTest registers 11 tests under `build/`:
+CTest registers 12 tests under `build/`:
 
 | target | what |
 | --- | --- |
@@ -178,6 +178,7 @@ CTest registers 11 tests under `build/`:
 | `test_autograd` | Per-op VJPs (`tinyvdb_autograd.{h,c}`): trilinear sample VJP w.r.t. grid + points, splat VJP w.r.t. values, CSG union/intersection/difference VJPs, sparse_conv3d VJP w.r.t. values + kernel — every analytic gradient checked against finite differences |
 | `test_nanovdb_transform` | NanoVDB `world_to_index` / `index_to_world` round-trip on uniform-scale + rotation+scale+translation; singular-matrix error path |
 | `test_scalar_writer_audit` | INT32 / INT64 / DOUBLE / BOOL grids built via the typed sparse-tree builder, saved, reloaded, and verified voxel-by-voxel. Caught three real bugs: wrong `grid_type` descriptor string for non-float values, missing `int64_` parser, and BOOL leaves/internal nodes were stored as 1 byte/voxel instead of bit-packed |
+| `test_corpus_roundtrip` | Real `.vdb` corpus (sphere v224 BLOSC, bunny/cube/smoke v222 half-precision FLOAT, sphere-div1/div2 v224 BLOSC) round-tripped through the reader/writer; leaf count, active count, and value sum compared. Half-precision pre-v225 path confirmed working end-to-end (5.5M voxels in bunny, drift <1e-10) |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate_active/erode_active/dilate_topology/erode_topology counts, self-CSG idempotence, update_from_sparse → save → reload |
 
 ### Low Priority / Larger Features (fVDB / GPU)
@@ -215,7 +216,13 @@ CTest registers 11 tests under `build/`:
 - [ ] **Reader: integrate-and-test with delayed-load metadata grids.**
 - [x] **`tvdb_value_type_size(BOOL) = 1` fix.** BOOL grids are now handled as bit-packed masks in leaf nodes, matching OpenVDB's serialization format (dedicated path in `tvdb__read_leaf_buffer` and `tvdb__write_leaf_buffer`).
 - [ ] **`MultiPassIO` ≥ v224** handler.
-- [ ] **Half-precision file format prior to v225** backward compatibility.
+- [x] **Half-precision file format prior to v225 backward compatibility.**
+  Confirmed working end-to-end via `test_corpus_roundtrip`: bunny.vdb,
+  cube.vdb, and smoke.vdb (all v222 with `Tree_float_5_4_3 (half)`)
+  round-trip through reader → writer → reader cleanly. Leaf count,
+  active count, and value sum all match (drift < 1e-10 for 5.5M-voxel
+  bunny). The writer also preserves the source version (v222) and the
+  half-precision flag, so saved files keep their original format.
 
 ## Remaining items (fvdb-port scope)
 
