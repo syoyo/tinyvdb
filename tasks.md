@@ -381,7 +381,21 @@ worth knowing.
       to the uncompressed counterparts. Fallback path (without
       libblosc) keeps the legacy fake-LZ4 decoder for backwards
       compatibility with previously-written tinyvdb files.
-- [ ] **Backward pass for the Gaussian-splat rasterizer.**
+- [x] **Backward pass for the Gaussian-splat rasterizer.**
+      `tvdb_gaussian_rasterize_backward` (CPU). Reverses the per-tile,
+      depth-sorted alpha blend analytically: replays T and the post-i
+      color accumulator (`S`) in reverse forward order, accumulating
+      gradients into a `tvdb_gaussian_grad_t` (per-gaussian
+      grad_x/y/conic_a/b/c/opacity + per-(gaussian,feature) grad_feature).
+      No per-pixel intersection list saved; memory is O(W·H·F) for the
+      running color suffix. Verified by gradient-check: a 16×16 image
+      from 4 random gaussians, scalar loss `Σ ||C[p]||² + Σ A[p]²`,
+      backward gradients agree with central finite differences for all
+      36 parameters (analytic vs. FD <4% relative or <1% absolute).
+      Wired into `test_gaussian_backward` ctest. Side fix: replaced
+      the buggy `tvdb__fast_exp2` (which produced ±inf for typical
+      sigma) with `expf` in both forward and backward — α = opacity ·
+      exp(-σ) now matches the standard Gaussian-splat density.
 
 The reference corpus is under `data/reference_nvdb/` (gitignored;
 regenerate with the `nanovdb_convert` recipe documented in

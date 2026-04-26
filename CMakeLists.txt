@@ -241,6 +241,13 @@ if(TINYVDB_BUILD_TESTS)
   add_test(NAME test_reference_roundtrip
            COMMAND test_reference_roundtrip ${PROJECT_SOURCE_DIR} ${CMAKE_BINARY_DIR})
 
+  add_executable(test_gaussian_backward
+                 ${PROJECT_SOURCE_DIR}/tests/test_gaussian_backward.c)
+  target_link_libraries(test_gaussian_backward PRIVATE tinyvdb_nanovdb m)
+  target_include_directories(test_gaussian_backward PRIVATE
+                              ${PROJECT_SOURCE_DIR}/src)
+  add_test(NAME test_gaussian_backward COMMAND test_gaussian_backward)
+
   add_executable(test_nanovdb_reference
                  ${PROJECT_SOURCE_DIR}/tests/test_nanovdb_reference.c)
   target_link_libraries(test_nanovdb_reference PRIVATE

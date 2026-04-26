@@ -566,6 +566,40 @@ tvdb_status_t tvdb_gaussian_rasterize_forward(
     tvdb_raster_output_t *out,
     tvdb_error_t *err);
 
+/* CPU backward pass for tvdb_gaussian_rasterize_forward. Reverses the
+ * per-tile depth-sorted alpha blend, replaying T and the post-i color
+ * accumulator analytically (no per-pixel intersection list saved).
+ * Caller pre-zeros the accumulator arrays in grad_out (or calls
+ * tvdb_gaussian_grad_init); this routine accumulates contributions. */
+typedef struct tvdb_gaussian_grad {
+    float *grad_x;
+    float *grad_y;
+    float *grad_conic_a;
+    float *grad_conic_b;
+    float *grad_conic_c;
+    float *grad_opacity;
+    float *grad_feature;     /* [num_gaussians * num_features] */
+    uint32_t num_gaussians;
+    uint32_t num_features;
+    uint8_t  owns_data;
+} tvdb_gaussian_grad_t;
+
+tvdb_status_t tvdb_gaussian_grad_init(tvdb_gaussian_grad_t *g,
+                                      uint32_t num_gaussians,
+                                      uint32_t num_features);
+void          tvdb_gaussian_grad_destroy(tvdb_gaussian_grad_t *g);
+
+tvdb_status_t tvdb_gaussian_rasterize_backward(
+    const tvdb_projected_gaussian_t *gaussians,
+    uint32_t num_gaussians,
+    const tvdb_raster_output_t *forward_out,
+    const float *dL_dC,
+    const float *dL_dA,
+    float background[3],
+    float alpha_threshold,
+    tvdb_gaussian_grad_t *grad_out,
+    tvdb_error_t *err);
+
 void tvdb_projected_gaussian_destroy(tvdb_projected_gaussian_t *gaussians);
 
 #ifdef __cplusplus
@@ -2382,12 +2416,12 @@ void tvdb_gaussian_splat_get(const tvdb_gaussian_splat_t *splat,
 /*  Gaussian Splat Rasterization Implementation                               */
 /* ========================================================================== */
 
-/* Math helpers */
+/* Math helpers — note that despite the legacy name, this is now a
+   correctness-first single-precision exp2 (delegating to libm).
+   The earlier hand-rolled bit-twiddle was numerically broken and
+   produced ±inf for typical Gaussian sigma values. */
 static float tvdb__fast_exp2(float x) {
-    union { uint32_t i; float f; } u;
-    u.f = x + 127.0f;
-    u.i = (u.i & 0xFF800000) | (126 << 23);
-    return u.f;
+    return exp2f(x);
 }
 
 static float tvdb__fast_sigmoid(float x) {
@@ -2765,7 +2799,9 @@ tvdb_status_t tvdb_gaussian_rasterize_forward(
                 float sigma = 0.5f * (conic_a * dx * dx + 2.0f * conic_b * dx * dy + conic_c * dy * dy);
                 if (sigma > 10.0f) continue;
 
-                float gaussian_alpha = alpha * tvdb__fast_exp2(-sigma);
+                /* α = opacity · exp(-σ): natural exp matches the standard
+                   Gaussian-splatting density; the backward uses the same. */
+                float gaussian_alpha = alpha * expf(-sigma);
                 if (gaussian_alpha < alpha_threshold) continue;
 
                 size_t pixel_idx = (size_t)py * width + px;
@@ -2794,6 +2830,246 @@ void tvdb_raster_output_destroy(tvdb_raster_output_t *out) {
         if (out->last_ids) free(out->last_ids);
     }
     memset(out, 0, sizeof(*out));
+}
+
+/* ----- Gaussian-splat rasterizer backward (CPU autograd) ----- */
+
+tvdb_status_t tvdb_gaussian_grad_init(tvdb_gaussian_grad_t *g,
+                                      uint32_t num_gaussians,
+                                      uint32_t num_features) {
+    if (!g) return TVDB_ERROR_INVALID_ARGUMENT;
+    memset(g, 0, sizeof(*g));
+    if (num_gaussians == 0) return TVDB_OK;
+    if (num_features == 0) num_features = 3;
+    g->num_gaussians = num_gaussians;
+    g->num_features = num_features;
+    g->grad_x       = (float *)calloc(num_gaussians, sizeof(float));
+    g->grad_y       = (float *)calloc(num_gaussians, sizeof(float));
+    g->grad_conic_a = (float *)calloc(num_gaussians, sizeof(float));
+    g->grad_conic_b = (float *)calloc(num_gaussians, sizeof(float));
+    g->grad_conic_c = (float *)calloc(num_gaussians, sizeof(float));
+    g->grad_opacity = (float *)calloc(num_gaussians, sizeof(float));
+    g->grad_feature = (float *)calloc((size_t)num_gaussians * num_features,
+                                       sizeof(float));
+    g->owns_data = 1;
+    if (!g->grad_x || !g->grad_y || !g->grad_conic_a || !g->grad_conic_b ||
+        !g->grad_conic_c || !g->grad_opacity || !g->grad_feature) {
+        tvdb_gaussian_grad_destroy(g);
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    return TVDB_OK;
+}
+
+void tvdb_gaussian_grad_destroy(tvdb_gaussian_grad_t *g) {
+    if (!g) return;
+    if (g->owns_data) {
+        free(g->grad_x);
+        free(g->grad_y);
+        free(g->grad_conic_a);
+        free(g->grad_conic_b);
+        free(g->grad_conic_c);
+        free(g->grad_opacity);
+        free(g->grad_feature);
+    }
+    memset(g, 0, sizeof(*g));
+}
+
+tvdb_status_t tvdb_gaussian_rasterize_backward(
+    const tvdb_projected_gaussian_t *gaussians,
+    uint32_t num_gaussians,
+    const tvdb_raster_output_t *fwd,
+    const float *dL_dC,
+    const float *dL_dA,
+    float background[3],
+    float alpha_threshold,
+    tvdb_gaussian_grad_t *grad_out,
+    tvdb_error_t *err) {
+
+    if (!gaussians || !fwd || !dL_dC || !grad_out) {
+        if (err) snprintf(err->message, sizeof(err->message), "Invalid argument");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+    if (grad_out->num_gaussians != num_gaussians ||
+        grad_out->num_features != fwd->num_features) {
+        if (err) snprintf(err->message, sizeof(err->message),
+                          "grad_out shape mismatch");
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+
+    uint32_t width  = fwd->width;
+    uint32_t height = fwd->height;
+    uint32_t F      = fwd->num_features;
+    if (alpha_threshold <= 0) alpha_threshold = TVDB_GAUSSIAN_RASTER_DEFAULT_ALPHA_THRESHOLD;
+
+    /* Re-derive the same per-tile, depth-sorted entry list as the forward
+       pass. We must traverse it in REVERSE order. */
+    uint32_t tile_size = TVDB_GAUSSIAN_RASTER_TILE_SIZE;
+    uint32_t num_tiles_x = (width + tile_size - 1) / tile_size;
+    uint32_t num_tiles_y = (height + tile_size - 1) / tile_size;
+
+    typedef struct {
+        uint32_t gaussian_id;
+        float    depth;
+        int32_t  tile_x, tile_y;
+    } tile_entry_t;
+
+    size_t max_entries = (size_t)num_gaussians * 16;
+    tile_entry_t *entries = (tile_entry_t *)malloc(max_entries * sizeof(*entries));
+    if (!entries) {
+        if (err) snprintf(err->message, sizeof(err->message), "OOM");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    size_t num_entries = 0;
+    for (uint32_t i = 0; i < num_gaussians; ++i) {
+        if (gaussians[i].radius <= 0.0f || gaussians[i].opacity <= 0.0f) continue;
+        int32_t cx = (int32_t)gaussians[i].x;
+        int32_t cy = (int32_t)gaussians[i].y;
+        int32_t r  = (int32_t)(gaussians[i].radius + 0.5f);
+        int32_t tx0 = cx / (int32_t)tile_size, ty0 = cy / (int32_t)tile_size;
+        int32_t tx1 = (cx + r) / (int32_t)tile_size;
+        int32_t ty1 = (cy + r) / (int32_t)tile_size;
+        for (int32_t ty = ty0; ty <= ty1; ++ty) {
+            for (int32_t tx = tx0; tx <= tx1; ++tx) {
+                if (tx < 0 || ty < 0 || (uint32_t)tx >= num_tiles_x ||
+                    (uint32_t)ty >= num_tiles_y) continue;
+                if (num_entries >= max_entries) continue;
+                entries[num_entries].gaussian_id = i;
+                entries[num_entries].depth = gaussians[i].depth;
+                entries[num_entries].tile_x = tx;
+                entries[num_entries].tile_y = ty;
+                ++num_entries;
+            }
+        }
+    }
+    /* Same naive O(N²) sort as forward (so order matches). */
+    for (size_t e = 0; e < num_entries; ++e) {
+        for (size_t k = e + 1; k < num_entries; ++k) {
+            int swap =
+                (entries[e].tile_x > entries[k].tile_x) ||
+                (entries[e].tile_x == entries[k].tile_x &&
+                 entries[e].tile_y > entries[k].tile_y) ||
+                (entries[e].tile_x == entries[k].tile_x &&
+                 entries[e].tile_y == entries[k].tile_y &&
+                 entries[e].depth > entries[k].depth);
+            if (swap) {
+                tile_entry_t tmp = entries[e];
+                entries[e] = entries[k];
+                entries[k] = tmp;
+            }
+        }
+    }
+
+    size_t pixel_count = (size_t)width * height;
+    float *T_curr = (float *)malloc(pixel_count * sizeof(float));
+    float *S_curr = (float *)calloc(pixel_count * F, sizeof(float));
+    if (!T_curr || !S_curr) {
+        free(entries); free(T_curr); free(S_curr);
+        if (err) snprintf(err->message, sizeof(err->message), "OOM");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    /* Initialize: T_curr[p] = T_final = 1 - alpha_final.
+     *             S_curr[p,f] = T_final * bg[f] (post-all-gaussians color). */
+    for (size_t p = 0; p < pixel_count; ++p) {
+        float Tfin = 1.0f - fwd->alpha[p];
+        if (Tfin < 0.0f) Tfin = 0.0f;
+        T_curr[p] = Tfin;
+        for (uint32_t f = 0; f < F; ++f) {
+            S_curr[p * F + f] = Tfin * (background ? background[f] : 0.0f);
+        }
+    }
+
+    /* Walk entries in REVERSE forward order. */
+    for (size_t e = num_entries; e > 0; --e) {
+        const tile_entry_t *en = &entries[e - 1];
+        const tvdb_projected_gaussian_t *g = &gaussians[en->gaussian_id];
+        uint32_t gid = en->gaussian_id;
+
+        uint32_t px0 = (uint32_t)(en->tile_x * (int32_t)tile_size);
+        uint32_t py0 = (uint32_t)(en->tile_y * (int32_t)tile_size);
+        uint32_t px1 = px0 + tile_size;
+        uint32_t py1 = py0 + tile_size;
+        if (px1 > width)  px1 = width;
+        if (py1 > height) py1 = height;
+
+        float a_c = g->conic_a, b_c = g->conic_b, c_c = g->conic_c;
+        float gx = g->x, gy = g->y;
+        float opac = g->opacity;
+
+        for (uint32_t py = py0; py < py1; ++py) {
+            for (uint32_t px = px0; px < px1; ++px) {
+                float dx = (float)px - gx;
+                float dy = (float)py - gy;
+                float sigma = 0.5f * (a_c*dx*dx + 2.0f*b_c*dx*dy + c_c*dy*dy);
+                if (sigma > 10.0f) continue;
+                float G = (float)exp(-(double)sigma);
+                float alpha = opac * G;
+                if (alpha < alpha_threshold) continue;
+
+                /* T_pre is the transmittance entering this gaussian during
+                 * the forward pass (i.e. what the forward called `T`). The
+                 * forward skipped if T_pre < 0.001, so we replicate that
+                 * test on T_pre, not T_curr. */
+                float one_m_alpha = 1.0f - alpha;
+                if (one_m_alpha < 1e-7f) one_m_alpha = 1e-7f;
+                float T_pre = T_curr[(size_t)py * width + px] / one_m_alpha;
+                if (T_pre < 0.001f) continue;
+
+                size_t pidx = (size_t)py * width + px;
+
+                /* dL/df_i [p] += dL/dC[p] * (T_pre * alpha) */
+                float w = T_pre * alpha;
+                /* Also compute:
+                 *   dotCf  = Σ_f dL/dC[p,f] * f_i[f]  (for dα via C)
+                 *   dotCS  = Σ_f dL/dC[p,f] * S_curr[p,f]  (for dα via C)
+                 * dα/dα = T_pre*f_i - S_curr/(1-α). */
+                float dotCf = 0.0f, dotCS = 0.0f;
+                for (uint32_t f = 0; f < F; ++f) {
+                    float dLdCf = dL_dC[pidx * F + f];
+                    float feat  = (f < 3) ? g->feature[f] : 0.0f;
+                    dotCf += dLdCf * feat;
+                    dotCS += dLdCf * S_curr[pidx * F + f];
+                    grad_out->grad_feature[(size_t)gid * F + f] += dLdCf * w;
+                }
+                float Tfin = 1.0f - fwd->alpha[pidx];
+                if (Tfin < 0.0f) Tfin = 0.0f;
+                float dL_dalpha = T_pre * dotCf - dotCS / one_m_alpha;
+                if (dL_dA) {
+                    /* dA_final/dα_i = T_N / (1 - α_i) */
+                    dL_dalpha += dL_dA[pidx] * Tfin / one_m_alpha;
+                }
+
+                /* α = opacity * G  →  dα/dopacity = G, dα/dG = opacity,
+                 * G = exp(-σ) → dG/dσ = -G → dα/dσ = -α. */
+                grad_out->grad_opacity[gid] += dL_dalpha * G;
+                float dL_dsigma = -alpha * dL_dalpha;
+
+                /* σ-grads:
+                 *   ∂σ/∂gx = -(a*dx + b*dy)
+                 *   ∂σ/∂gy = -(b*dx + c*dy)
+                 *   ∂σ/∂a  = 0.5 * dx²
+                 *   ∂σ/∂b  = dx * dy
+                 *   ∂σ/∂c  = 0.5 * dy² */
+                grad_out->grad_x[gid]       += dL_dsigma * -(a_c*dx + b_c*dy);
+                grad_out->grad_y[gid]       += dL_dsigma * -(b_c*dx + c_c*dy);
+                grad_out->grad_conic_a[gid] += dL_dsigma * 0.5f * dx * dx;
+                grad_out->grad_conic_b[gid] += dL_dsigma * dx * dy;
+                grad_out->grad_conic_c[gid] += dL_dsigma * 0.5f * dy * dy;
+
+                /* Update running state: S_curr[p,f] += w * f_i[f];
+                 *                       T_curr[p]    = T_pre. */
+                for (uint32_t f = 0; f < F; ++f) {
+                    float feat = (f < 3) ? g->feature[f] : 0.0f;
+                    S_curr[pidx * F + f] += w * feat;
+                }
+                T_curr[pidx] = T_pre;
+            }
+        }
+    }
+
+    free(entries);
+    free(T_curr);
+    free(S_curr);
+    return TVDB_OK;
 }
 
 #endif /* TINYVDB_NANOVDB_IMPLEMENTATION */
