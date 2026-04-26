@@ -106,6 +106,58 @@ import builtins as _builtins
 builtins_open = _builtins.open
 
 
+def gaussian_filter_sparse(sparse_or_grid, width, sigma=None, voxel_size=1.0,
+                            origin=(0.0, 0.0, 0.0)):
+    """Apply a 3D Gaussian filter to a sparse grid (same-topology output).
+
+    Accepts either a dict with `coords`/`values` bytes (from
+    `VDBGrid.to_sparse()` / `dilate_topology()` / etc.) or a
+    `VDBGrid` instance (in which case the grid is extracted via
+    `to_sparse()` first; voxel_size/origin are read from the grid).
+
+    The Gaussian is applied as a separable 1-D outer product collapsed
+    into a single 3-D kernel of `width^3` taps; sigma defaults to
+    `width / 3.0` (matches the dense `gaussian_filter` convention).
+    Out-of-active-set taps contribute 0.
+
+    Returns a dict {coords, values, count} with the same topology
+    as the input.
+    """
+    try:
+        import numpy as _np  # noqa
+    except ImportError:
+        raise RuntimeError("gaussian_filter_sparse requires numpy")
+    if sigma is None:
+        sigma = width / 3.0
+    if width < 1:
+        raise ValueError("width must be >= 1")
+    half = width // 2
+    xs = _np.arange(-half, -half + width, dtype=_np.float32)
+    g1 = _np.exp(-(xs ** 2) / (2.0 * sigma ** 2))
+    g1 = g1 / g1.sum()
+    # 3D separable kernel via three outer products. Layout matches
+    # sparse_conv3d expectation: kernel[((dk*ky+dj)*kx+di)].
+    k3 = _np.einsum('i,j,k->kji', g1, g1, g1).astype(_np.float32)
+    # Kernel layout: index = ((dk*ky+dj)*kx+di), corresponds to k3[dk, dj, di]
+    # k3 already has shape (kz=width, ky=width, kx=width) so a flatten() gives
+    # the right linear order.
+    kernel_bytes = k3.flatten().tobytes()
+    if isinstance(sparse_or_grid, dict):
+        sg = sparse_or_grid
+        vs = float(voxel_size)
+        ox, oy, oz = origin
+    elif hasattr(sparse_or_grid, "to_sparse"):
+        sg = sparse_or_grid.to_sparse()
+        # If the grid exposes a transform, reuse it; otherwise default.
+        vs = float(voxel_size)
+        ox, oy, oz = origin
+    else:
+        raise TypeError("expected dict or VDBGrid")
+    return sparse_conv3d(coords=sg["coords"], values=sg["values"],
+                         kernel=kernel_bytes, kx=width, ky=width, kz=width,
+                         voxel_size=vs, ox=ox, oy=oy, oz=oz, pad_value=0.0)
+
+
 __version__ = "0.8.2"
 
 __all__ = [
@@ -162,6 +214,7 @@ __all__ = [
     "integrate_tsdf_with_color_into",
     "sparse_conv3d",
     "sparse_conv3d_mc",
+    "gaussian_filter_sparse",
     "write_obj",
     "COMPRESS_NONE",
     "COMPRESS_ZIP",

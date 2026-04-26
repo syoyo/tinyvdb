@@ -207,23 +207,25 @@ worth knowing.
   into existing leaves; coords outside any leaf are skipped. A combined
   "merge sparse into existing tree, adding new leaves where needed"
   primitive would avoid the rebuild path for incremental updates.
-- [ ] **Multi-channel sparse convolution.** `tvdb_sparse_conv3d` is
-  single-channel. Adding `n_in_channels` / `n_out_channels` (with
-  values laid out as `coord_i × n_channels`) would cover the
-  deep-learning use case. Modest implementation effort.
-- [ ] **F16C wiring inside `tinyvdb_io.h` half-precision path.**
-  `tvdb_simd_f16_to_f32` / `tvdb_simd_f32_to_f16` exist as standalone
-  helpers but `tinyvdb_io.h`'s `tvdb__demote_float_to_half` /
-  `tvdb__promote_half_to_float` still use scalar code. Wiring would
-  bring 3× speedup to half-precision .vdb load/save.
-- [ ] **Splat parallelization.** `tvdb_splat_trilinear_dense` is the only
-  hot loop deliberately left scalar in the OpenMP build (write-write
-  hazard on the output grid). Per-thread accumulation buffers + a
-  reduce step would let it parallelize.
-- [ ] **Sparse-tree variants of dense filters (Gaussian/mean/laplacian).**
-  Currently only morphology and CSG have sparse-tree variants. Adding
-  filter variants would let large SDFs be processed without
-  materializing full bboxes.
+- [x] **Multi-channel sparse convolution.** `tvdb_sparse_conv3d_mc`:
+  c_in input channels, c_out output channels, kernel laid out
+  `kernel[(((dk*ky+dj)*kx+di)*c_out+co)*c_in+ci]`. Wired to Python as
+  `tinyvdb.sparse_conv3d_mc`. Verified with identity + channel-mix
+  kernels.
+- [x] **F16C wiring inside `tinyvdb_io.h` half-precision path.**
+  `tvdb__demote_float_to_half` and `tvdb__promote_half_to_float` now
+  use AVX2/F16C 8-wide intrinsics when `TINYVDB_SIMD` is on, with
+  scalar fallback. Brings the ~3× SIMD speedup to all half-precision
+  .vdb load/save paths.
+- [x] **Splat parallelization.** `tvdb_splat_trilinear_dense` now
+  uses `#pragma omp parallel for` with `omp atomic update` on per-tap
+  scatter writes. Bit-identical to scalar when OpenMP is off; safe
+  under contention when on.
+- [x] **Gaussian filter on sparse grids (Python).**
+  `tinyvdb.gaussian_filter_sparse(sparse_or_grid, width, sigma=...)`
+  builds a separable 3-D Gaussian kernel and calls `sparse_conv3d`.
+  Same-topology output. (Mean/laplacian filters trivially compose
+  via `sparse_conv3d`; not yet wrapped, but doable in user code.)
 - [ ] **fp64 dense grid type.** Only the Poisson solver has a fp64 path
   (`tvdb_solve_poisson_d`); the dense grid storage is fp32. A parallel
   `tvdb_dense_grid_d` for full fp64 ops is a much larger surface-area

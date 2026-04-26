@@ -100,7 +100,12 @@ void tvdb_splat_trilinear_dense(tvdb_dense_grid* g,
                                 size_t n,
                                 float* weights) {
   if (!g->data) return;
-  for (size_t p = 0; p < n; ++p) {
+  // Multiple points may scatter to the same voxel (write-write hazard).
+  // Under OpenMP we use `omp atomic update` per-tap; with no parallelism
+  // the omp pragmas vanish and we get the original scalar path.
+  #pragma omp parallel for schedule(static)
+  for (long long pp = 0; pp < (long long)n; ++pp) {
+    size_t p = (size_t)pp;
     float vx, vy, vz;
     tvdb_world_to_voxel_index(g, pts[p].x, pts[p].y, pts[p].z, &vx, &vy, &vz);
     int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);
@@ -123,8 +128,13 @@ void tvdb_splat_trilinear_dense(tvdb_dense_grid* g,
           float wx = (dx == 0) ? (1.0f - fx) : fx;
           float w = wx * wy * wz;
           size_t idx = tvdb_idx(g, x, y, z);
-          g->data[idx] += w * v;
-          if (weights) weights[idx] += w;
+          float wv = w * v;
+          #pragma omp atomic update
+          g->data[idx] += wv;
+          if (weights) {
+            #pragma omp atomic update
+            weights[idx] += w;
+          }
         }
       }
     }
