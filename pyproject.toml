@@ -4,8 +4,8 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "tinyvdb"
-version = "0.8.2"
-description = "Lightweight OpenVDB file I/O, mesh-to-SDF, and grid operations"
+version = "0.9.0"
+description = "Lightweight OpenVDB and NanoVDB I/O (cross-validated against libopenvdb 13 / libnanovdb 32), mesh-to-SDF, dense/sparse grid ops, CPU autograd, Gaussian-splat rasterizer (forward+backward)"
 readme = "python/README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"

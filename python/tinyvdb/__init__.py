@@ -219,7 +219,7 @@ def laplacian_filter_sparse(sparse_or_grid, voxel_size=1.0,
                          pad_value=0.0)
 
 
-__version__ = "0.8.2"
+__version__ = "0.9.0"
 
 __all__ = [
     "VDBError",

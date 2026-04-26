@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
 
-project(tinyvdb C CXX)
+project(tinyvdb VERSION 0.9.0 LANGUAGES C CXX)
 
 # options
 option(TINYVDB_USE_CCACHE "Use ccache for faster recompile." ON)

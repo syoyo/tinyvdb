@@ -8,7 +8,7 @@ import tinyvdb
 
 def test_version():
     assert hasattr(tinyvdb, "__version__")
-    assert tinyvdb.__version__ == "0.8.2"
+    assert tinyvdb.__version__ == "0.9.0"
 
 
 def test_constants():
