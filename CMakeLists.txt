@@ -206,6 +206,11 @@ if(TINYVDB_BUILD_TESTS)
   target_link_libraries(test_nanovdb_transform PRIVATE tinyvdb_nanovdb m)
   add_test(NAME test_nanovdb_transform COMMAND test_nanovdb_transform)
 
+  add_executable(test_scalar_writer_audit ${PROJECT_SOURCE_DIR}/tests/test_scalar_writer_audit.c)
+  target_link_libraries(test_scalar_writer_audit PRIVATE tinyvdb_mesh_ops tinyvdb)
+  add_test(NAME test_scalar_writer_audit
+           COMMAND test_scalar_writer_audit ${PROJECT_SOURCE_DIR}/sphere.vdb ${CMAKE_BINARY_DIR})
+
   if(TINYVDB_BUILD_PYTHON)
     find_program(PYTHON3_EXE NAMES python3 python)
     if(PYTHON3_EXE)

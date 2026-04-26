@@ -1093,11 +1093,8 @@ fail:
     return false;
 }
 
-// Typed builder core. `value_type` selects element size; `values` is a packed
-// array of `count` elements (each `vsize = tvdb_value_type_size(value_type)`
-// bytes). `bg_bytes` points at one element's worth of background. The output
-// grid's root background is filled in by the caller after this returns.
-static bool tvdb__grid_from_sparse_typed_core(const tvdb_grid_t *tmpl,
+// Public typed-builder entry point. See header for documentation.
+bool tvdb_grid_from_sparse_typed_using_template(const tvdb_grid_t *tmpl,
                                               const tvdb_vec3i *coords,
                                               const void *values,
                                               size_t count,
@@ -1120,9 +1117,30 @@ static bool tvdb__grid_from_sparse_typed_core(const tvdb_grid_t *tmpl,
     int leaf_dim_mask = leaf_dim - 1;
     int leaf_bitsize = 1 << (3 * leaf_log2dim);
 
-    // Descriptor: copy grid_type, set new grid_name. Leave unique_name etc empty.
+    // Descriptor: pick grid_type string from value_type (so the writer +
+    // a fresh reader agree on element width). The template's grid_type
+    // is only used as a fallback for FLOAT, since older callers (and the
+    // float-only entry point) inherit the template string verbatim.
     out->descriptor.grid_name = xstrdup_(grid_name ? grid_name : "");
-    out->descriptor.grid_type = xstrdup_(tmpl->descriptor.grid_type ? tmpl->descriptor.grid_type : "Tree_float_5_4_3");
+    const char *type_str = NULL;
+    switch (value_type) {
+        case TVDB_VALUE_FLOAT:
+            type_str = (tmpl->descriptor.grid_type && tmpl->descriptor.grid_type[0])
+                       ? tmpl->descriptor.grid_type : "Tree_float_5_4_3";
+            break;
+        case TVDB_VALUE_DOUBLE: type_str = "Tree_double_5_4_3"; break;
+        case TVDB_VALUE_INT32:  type_str = "Tree_int32_5_4_3";  break;
+        case TVDB_VALUE_INT64:  type_str = "Tree_int64_5_4_3";  break;
+        case TVDB_VALUE_BOOL:   type_str = "Tree_bool_5_4_3";   break;
+        case TVDB_VALUE_VEC3F:
+            type_str = (tmpl->descriptor.grid_type && tmpl->descriptor.grid_type[0])
+                       ? tmpl->descriptor.grid_type : "Tree_vec3s_5_4_3";
+            break;
+        case TVDB_VALUE_VEC3D:  type_str = "Tree_vec3d_5_4_3";  break;
+        case TVDB_VALUE_VEC3I:  type_str = "Tree_vec3i_5_4_3";  break;
+        default:                type_str = "Tree_float_5_4_3";  break;
+    }
+    out->descriptor.grid_type = xstrdup_(type_str);
 
     // Transform: deep-copy (no pointers in tvdb_transform_t).
     out->transform = tmpl->transform;
@@ -1382,7 +1400,7 @@ bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
                                           float background,
                                           tvdb_grid_t *out) {
     if (!sg) return false;
-    return tvdb__grid_from_sparse_typed_core(tmpl, sg->coords, sg->values,
+    return tvdb_grid_from_sparse_typed_using_template(tmpl, sg->coords, sg->values,
                                              sg->count, TVDB_VALUE_FLOAT,
                                              &background, grid_name, out);
 }
@@ -1396,7 +1414,7 @@ bool tvdb_grid_from_sparse_vec3_using_template(const tvdb_grid_t *tmpl,
                                                tvdb_grid_t *out) {
     float bg[3] = {0.0f, 0.0f, 0.0f};
     if (background) { bg[0] = background[0]; bg[1] = background[1]; bg[2] = background[2]; }
-    return tvdb__grid_from_sparse_typed_core(tmpl, coords, values, count,
+    return tvdb_grid_from_sparse_typed_using_template(tmpl, coords, values, count,
                                              TVDB_VALUE_VEC3F, bg, grid_name, out);
 }
 

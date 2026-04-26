@@ -1539,6 +1539,8 @@ static tvdb_status_t tvdb__parse_grid_type(const char *grid_type,
         vtype = TVDB_VALUE_DOUBLE; p += 7;
     } else if (strncmp(p, "int32_", 6) == 0) {
         vtype = TVDB_VALUE_INT32; p += 6;
+    } else if (strncmp(p, "int64_", 6) == 0) {
+        vtype = TVDB_VALUE_INT64; p += 6;
     } else if (strncmp(p, "bool_", 5) == 0) {
         vtype = TVDB_VALUE_BOOL; p += 5;
     } else if (strncmp(p, "vec3s_", 6) == 0) {

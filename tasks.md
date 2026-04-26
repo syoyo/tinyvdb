@@ -164,7 +164,7 @@ Implementations live in `src/tinyvdb_*.{h,c}` and are wired through
 
 ### Test coverage
 
-CTest registers 10 tests under `build/`:
+CTest registers 11 tests under `build/`:
 
 | target | what |
 | --- | --- |
@@ -177,6 +177,7 @@ CTest registers 10 tests under `build/`:
 | `test_dense_d` | fp64 dense grid: lifecycle, fp32↔fp64 round-trip, trilinear sample exactness at lattice points, CSG, lap(x²)=2 interior, sphere volume/area within 5%, fast_sweeping_d to <1×voxel, Poisson_dd recovery to ~3e-15 RMS (machine precision) |
 | `test_autograd` | Per-op VJPs (`tinyvdb_autograd.{h,c}`): trilinear sample VJP w.r.t. grid + points, splat VJP w.r.t. values, CSG union/intersection/difference VJPs, sparse_conv3d VJP w.r.t. values + kernel — every analytic gradient checked against finite differences |
 | `test_nanovdb_transform` | NanoVDB `world_to_index` / `index_to_world` round-trip on uniform-scale + rotation+scale+translation; singular-matrix error path |
+| `test_scalar_writer_audit` | INT32 / INT64 / DOUBLE grids built via the typed sparse-tree builder, saved, reloaded, and verified voxel-by-voxel. Caught two real bugs: wrong `grid_type` descriptor string for non-float values (writer said `Tree_float_5_4_3` regardless of type) and missing `int64_` parser in the reader |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate_active/erode_active/dilate_topology/erode_topology counts, self-CSG idempotence, update_from_sparse → save → reload |
 
 ### Low Priority / Larger Features (fVDB / GPU)
@@ -189,7 +190,18 @@ CTest registers 10 tests under `build/`:
 
 ### Misc Fixes
 
-- [ ] **Audit scalar writer paths for `BOOL` / `INT32` / `INT64` / `DOUBLE` grids.**
+- [x] **Audit scalar writer paths for `INT32` / `INT64` / `DOUBLE` grids.**
+  Built via the public `tvdb_grid_from_sparse_typed_using_template`
+  (typed core promoted from internal); saved with `tvdb_file_save`;
+  reloaded and verified voxel-by-voxel in `test_scalar_writer_audit`.
+  Two bugs found and fixed: (a) typed builder set `descriptor.grid_type`
+  to the template's string regardless of actual value type, so a DOUBLE
+  grid was advertised as `Tree_float_5_4_3` and read back with 4-byte
+  values; (b) reader's grid-type-string parser had no case for `int64_`,
+  so any INT64 grid we wrote refused to reload. BOOL still uses the
+  generic 1-byte-per-voxel path which is *not* OpenVDB's bit-packed
+  format — fixing that needs a reference OpenVDB-produced BOOL .vdb to
+  validate against, deferred.
 - [ ] **Reader: integrate-and-test with delayed-load metadata grids.**
 - [x] **`tvdb_value_type_size(BOOL) = 1` fix.** BOOL grids are now handled as bit-packed masks in leaf nodes, matching OpenVDB's serialization format (dedicated path in `tvdb__read_leaf_buffer` and `tvdb__write_leaf_buffer`).
 - [ ] **`MultiPassIO` ≥ v224** handler.

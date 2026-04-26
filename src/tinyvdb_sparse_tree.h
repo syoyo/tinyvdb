@@ -100,6 +100,21 @@ bool tvdb_grid_from_sparse_using_template(const tvdb_grid_t *tmpl,
                                           float background,
                                           tvdb_grid_t *out);
 
+// Generic typed-value builder. `value_type` selects element size and the
+// expected leaf-level type on the template; `values` is a packed array of
+// `count` elements, each `tvdb_value_type_size(value_type)` bytes wide.
+// `bg_bytes` is one element's worth of background fill (must not be NULL).
+// Currently supports 4-level layouts (`num_levels == 4`, the standard
+// Tree_*_5_4_3 hierarchy) only.
+bool tvdb_grid_from_sparse_typed_using_template(const tvdb_grid_t *tmpl,
+                                                const tvdb_vec3i *coords,
+                                                const void *values,
+                                                size_t count,
+                                                tvdb_value_type_t value_type,
+                                                const void *bg_bytes,
+                                                const char *grid_name,
+                                                tvdb_grid_t *out);
+
 // Vec3 (Tree_vec3s_5_4_3) variant. `coords` and `values` describe `count`
 // active voxels; `values` is `count*3` floats laid out (vx,vy,vz) per voxel.
 // Template grid must be a vec3 grid (leaf level value_type == VEC3F);
