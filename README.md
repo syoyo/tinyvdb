@@ -8,12 +8,21 @@ TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, p
 
 ## Modules
 
-| Header | Language | Description |
-|--------|----------|-------------|
-| `tinyvdb_io.h` | C11 | OpenVDB file I/O with custom memory allocator support |
-| `tinyvdb_nanovdb.h` | C11 | NanoVDB file I/O (read-only), GPU-friendly sparse volume format |
-| `tinyvdb_mesh.h` + `tinyvdb_mesh.cc` | C++11 | Mesh-to-SDF, marching cubes, manifold preprocessing |
-| `tinyvdb_ops.h` + `tinyvdb_ops.cc` | C++11 | Grid operations: morphology, filtering, CSG, differential operators, advection, ray tracing, fracture |
+All public APIs are pure-C11 with `extern "C"` linkage (consumable from
+C and C++).
+
+| Header | Description |
+|--------|-------------|
+| `tinyvdb_io.h` | OpenVDB read/write with custom allocator + mmap support |
+| `tinyvdb_nanovdb.h` | NanoVDB read/write, hierarchical accessor, trilinear sampler, CRC32, Gaussian-splat rasterizer (CPU forward+backward) |
+| `tinyvdb_to_nanovdb.c` | VDB → NanoVDB FloatGrid converter (byte-compatible with libnanovdb) |
+| `tinyvdb_mesh.h` | Mesh ↔ SDF, marching cubes, manifold preprocessing |
+| `tinyvdb_ops.h` | Dense ops: morphology, filtering, CSG, differential operators, Poisson PCG, advection, fast sweeping, fp64 variants |
+| `tinyvdb_sample.h` / `tinyvdb_tsdf.h` | Trilinear sampling/splatting; depth-frame TSDF fusion (single-frame and in-place multi-frame) |
+| `tinyvdb_topology.h` / `tinyvdb_ray.h` | Coarsen / refine / prune / clip / merge / pool; Amanatides–Woo DDA, ray-cast SDF, segments-along-ray, batched marching cubes |
+| `tinyvdb_sparse.h` / `tinyvdb_sparse_tree.h` | Flat sparse-grid representation (hash-based CSG/morphology, sparse 3D conv); operations on a loaded `tvdb_grid_t` (leaf iter, dilate/erode active or topology, tree-aware CSG, from-scratch rebuilders) |
+| `tinyvdb_autograd.h` | Per-op CPU VJPs (sample, splat, CSG, sparse_conv3d) — framework-free |
+| `tinyvdb_simd.h` | Optional SSE4.2/AVX2/F16C primitives gated on `TINYVDB_SIMD` |
 
 ## Features
 
@@ -28,7 +37,7 @@ TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, p
 * [x] Read and write OpenVDB files (version 220 to 225)
 * [x] Multiple grid/tree topologies (not limited to `Tree_float_5_4_3`)
 * [x] ZIP compression (via bundled miniz or system zlib)
-* [x] BLOSC compression (built-in, using bundled LZ4 — no external blosc dependency)
+* [x] BLOSC compression (built-in for OpenVDB `.vdb` files via bundled LZ4; NanoVDB BLOSC needs system libblosc — see `TINYVDB_USE_SYSTEM_BLOSC`)
 * [x] Active mask compression (per-node flags 0-6)
 * [x] Half-float (FP16) grid support
 * [x] PointIndexGrid (`Tree_ptidx32_*`) leaf payload read/write
@@ -36,14 +45,29 @@ TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, p
 
 ### NanoVDB I/O (`tinyvdb_nanovdb.h`)
 
-* [x] Read NanoVDB files (version 32+)
-* [x] Write NanoVDB files (raw data serialization)
-* [x] Support for all grid types (Float, Double, Vec3f, Int32, etc.)
-* [x] Support for compressed files (ZIP, BLOSC)
-* [x] Grid metadata access (voxel size, bounding box, node counts)
-* [x] Endianness handling (little and big endian)
-* [x] Memory buffer I/O support
-* [x] Node size calculation utilities
+* [x] Read and write NanoVDB files (version 32+)
+* [x] All standard grid types (Float, Double, Vec3f, Int32, …)
+* [x] Compressed files: ZIP via miniz/zlib; **BLOSC** via system libblosc
+  (opt-in `TINYVDB_USE_SYSTEM_BLOSC=ON`) — verified on
+  `nanovdb_convert --blosc` output
+* [x] Real Root → Upper → Lower → Leaf hierarchical accessor
+  (`tvdb_nanovdb_get_voxel_f` / `_d`) — backed by vendored
+  `nanovdb::PNanoVDB.h` (Apache-2.0)
+* [x] Trilinear sampler (`tvdb_nanovdb_sample_trilinear_f`,
+  cell-center convention)
+* [x] Active-voxel test (`tvdb_nanovdb_is_voxel_active`) consults the
+  real leaf value mask
+* [x] CRC32 checksum compute / validate
+  (`tvdb_nanovdb_compute_head_checksum`, `_compute_tail_checksum`,
+  `_validate_checksum`) — head + 4KB-blocked tail, matches
+  `nanovdb::tools::GridChecksum` byte-for-byte
+* [x] **VDB → NanoVDB FloatGrid builder** (`tvdb_grid_to_nanovdb_float`)
+  — converts a loaded `Tree_float_5_4_3` `tvdb_grid_t` into an
+  in-memory NanoVDB byte buffer that passes `nanovdb_validate`
+* [x] World ↔ index transforms (`tvdb_nanovdb_index_to_world` /
+  `_world_to_index`) with adjugate-determinant inverse for
+  rotation+scale+translation maps
+* [x] Endianness handling, memory buffer I/O, node-size utilities
 
 ### Mesh (`tinyvdb_mesh.h`)
 
@@ -52,20 +76,68 @@ TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, p
 * [x] Manifold preprocessing (mesh to SDF to mesh round-trip)
 * [x] Configurable sign determination (flood fill or sweep)
 
-### Grid operations (`tinyvdb_ops.h`)
+### Grid operations (`tinyvdb_ops.h` + sibling headers)
 
-* [x] Morphological dilation/erosion, open/close
-* [x] Gaussian, mean, and Laplacian SDF filtering
-* [x] CSG operations (union, intersection, difference)
+* [x] Morphological dilation / erosion / open / close (dense, sparse,
+  and tree-aware variants — `dilate_active` / `dilate_topology`)
+* [x] Gaussian, mean, and Laplacian SDF filtering (dense + sparse)
+* [x] CSG union / intersection / difference (dense, sparse, tree-aware)
 * [x] Surface area and volume measurement
-* [x] Differential operators (gradient, divergence, Laplacian, curl)
-* [x] Finite difference stencils (central, forward, backward)
+* [x] Differential operators: gradient, divergence, Laplacian, curl
+* [x] Finite-difference stencils: central / forward / backward
 * [x] Semi-Lagrangian advection (RK2)
-* [x] Poisson solver (preconditioned conjugate gradient)
-* [x] Ray-SDF intersection (sphere tracing)
+* [x] Poisson solver (preconditioned conjugate gradient; fp32 + fp64)
+* [x] Fast sweeping (Eikonal redistance, sign-preserving)
+* [x] Ray-SDF intersection (sphere tracing); voxel-walk DDA;
+  segments-along-ray; uniform ray samples
+* [x] Trilinear sampling and splatting (single + batched, world↔voxel
+  transforms); TSDF fusion (depth + RGB)
+* [x] Topology ops: coarsen / refine / prune / clip / merge / max-pool /
+  avg-pool
+* [x] Sparse 3D convolution (single + multi-channel, hash-based O(1)
+  neighbor lookup)
 * [x] Volume to spheres (greedy adaptive sphere packing)
 * [x] Particles to SDF (sphere stamping)
-* [x] Level set fracture (cutter-based volume splitting)
+* [x] Level-set fracture (cutter-based volume splitting)
+* [x] CPU autograd: per-op VJPs for sample, splat, CSG, and
+  sparse_conv3d — gradient-checked against finite differences
+
+### Gaussian-splat rasterizer (`tinyvdb_nanovdb.h`)
+
+* [x] CPU forward (`tvdb_gaussian_rasterize_forward`): per-tile
+  depth-sorted alpha blend with fast tile binning
+* [x] CPU backward (`tvdb_gaussian_rasterize_backward`): analytic
+  gradients w.r.t. each gaussian's projected x/y, conic_a/b/c,
+  opacity, and per-feature color — reverses the alpha blend without
+  saving per-pixel intersection lists. Gradient-checked against
+  central FD for all parameters
+* [x] PLY I/O for splat scenes (load + save)
+
+## Validation
+
+tinyvdb is cross-validated against libopenvdb 13.0 + libnanovdb 32.9 in
+the test suite (build with `-DTINYVDB_BUILD_TESTS=ON` and run `ctest`):
+
+* **VDB**: 6-type reference corpus generated by libopenvdb
+  (`scripts/gen_openvdb_reference.cc`) — `bool`, `float`, `double`,
+  `int32`, `int64`, `vec3s` — round-trips through tinyvdb's
+  reader/writer and the tinyvdb-written output reads back successfully
+  in libopenvdb's `vdb_print`. Real `.vdb` corpus (sphere v224 BLOSC,
+  bunny/cube/smoke v222 half-precision FLOAT) round-trips bit-exact
+  (drift < 1e-10 for 5.5M-voxel bunny).
+* **NanoVDB**: corpus generated by `nanovdb_convert` round-trips
+  through tinyvdb's hierarchical accessor, trilinear sampler, and
+  CRC32 head + 4KB-blocked tail validator (matches
+  `nanovdb::tools::GridChecksum` byte-for-byte).
+* **VDB → NanoVDB**: `tvdb_grid_to_nanovdb_float` produces NanoVDB
+  buffers that `nanovdb_validate` accepts (exit 0) and
+  `nanovdb_convert` reads back into a valid `Tree_float_5_4_3` `.vdb`
+  with matching topology and value range.
+* **Gaussian-splat rasterizer**: backward-pass gradients are
+  gradient-checked against central finite differences for every
+  parameter.
+
+The test suite has 15 ctest targets — see `tasks.md` for the full table.
 
 ## Supported VDB versions
 
@@ -176,7 +248,7 @@ The allocator passes `old_size` to `realloc_fn` and `size` to `free_fn`, enablin
 
 ### Mesh library
 
-Include `tinyvdb_mesh.h` and compile/link `src/tinyvdb_mesh.cc`.
+Include `tinyvdb_mesh.h` and compile/link `src/tinyvdb_mesh.c`.
 
 ```cpp
 // Mesh to SDF
@@ -193,7 +265,9 @@ tvdb_mesh::MakeManifold(input, resolution, isovalue, &output);
 
 ### Grid operations
 
-Include `tinyvdb_ops.h` and compile/link `src/tinyvdb_ops.cc`.
+Include `tinyvdb_ops.h` and compile/link `src/tinyvdb_ops.c` (plus the
+sibling `.c` files for the ops you use; see CMake's
+`tinyvdb_mesh_ops` target for the canonical list).
 
 ```cpp
 // CSG union of two SDF grids
@@ -209,12 +283,14 @@ if (tvdb_ops::RayCastSDF(grid, origin, dir, max_t, &hit)) {
 }
 ```
 
-## Compile flags
+## Compile-time defines
 
-| Flag | Description |
-|------|-------------|
+| Define | Description |
+|--------|-------------|
 | `TVDB_USE_SYSTEM_ZLIB` | Use system zlib instead of bundled miniz |
-| `TVDB_NO_MMAP` | Disable mmap, always read into heap buffer |
+| `TVDB_HAVE_BLOSC` | Route NanoVDB BLOSC decompression through system libblosc (set automatically by `TINYVDB_USE_SYSTEM_BLOSC=ON`) |
+| `TVDB_USE_ZSTD` | Enable ZSTD inside BLOSC frames |
+| `TVDB_NO_MMAP` | Disable mmap; always read into heap buffer |
 
 ## CMake build
 
@@ -239,10 +315,16 @@ $ make
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `TINYVDB_USE_SYSTEM_ZLIB` | `OFF` | Use system zlib instead of bundled miniz |
-| `TINYVDB_BUILD_EXAMPLES` | `ON` | Build vdbdump and nanovdbdump examples |
+| `TINYVDB_BUILD_TESTS` | `OFF` | Build the 15-target ctest suite |
+| `TINYVDB_BUILD_EXAMPLES` | `ON` | Build `vdbdump`, `nanovdbdump`, etc. |
 | `TINYVDB_BUILD_VDBRENDER` | `ON` | Build the vdbrender volume path tracer |
 | `TINYVDB_BUILD_PYTHON` | `OFF` | Build Python extension |
+| `TINYVDB_USE_SYSTEM_ZLIB` | `OFF` | Use system zlib instead of bundled miniz |
+| `TINYVDB_USE_ZSTD` | `ON` | Enable ZSTD inside BLOSC frames (bundled or system) |
+| `TINYVDB_USE_SYSTEM_ZSTD` | `OFF` | Link system libzstd instead of `deps/zstd.c` |
+| `TINYVDB_USE_SYSTEM_BLOSC` | `OFF` | Link system libblosc — required to read NanoVDB BLOSC files produced by libnanovdb |
+| `TINYVDB_OPENMP` | `OFF` | Enable OpenMP parallelism in dense ops, Poisson CG, sparse conv, sample batches, TSDF fusion |
+| `TINYVDB_SIMD` | `ON` | Enable SSE4.2/AVX2/F16C (x86-64 only; scalar fallback otherwise) |
 
 ## vdbdump example
 
