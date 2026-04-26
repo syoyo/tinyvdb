@@ -164,7 +164,7 @@ Implementations live in `src/tinyvdb_*.{h,c}` and are wired through
 
 ### Test coverage
 
-CTest registers 9 tests under `build/`:
+CTest registers 10 tests under `build/`:
 
 | target | what |
 | --- | --- |
@@ -176,6 +176,7 @@ CTest registers 9 tests under `build/`:
 | `test_vec3_extend` | Vec3 builder via `tvdb_grid_from_sparse_vec3_using_template` (round-trip 8-voxel leaf, root background type-tagged VEC3F); `tvdb_grid_extend_from_sparse` topology growth (sphere + 4 far-off coords → +3 leaves, +4 active) |
 | `test_dense_d` | fp64 dense grid: lifecycle, fp32↔fp64 round-trip, trilinear sample exactness at lattice points, CSG, lap(x²)=2 interior, sphere volume/area within 5%, fast_sweeping_d to <1×voxel, Poisson_dd recovery to ~3e-15 RMS (machine precision) |
 | `test_autograd` | Per-op VJPs (`tinyvdb_autograd.{h,c}`): trilinear sample VJP w.r.t. grid + points, splat VJP w.r.t. values, CSG union/intersection/difference VJPs, sparse_conv3d VJP w.r.t. values + kernel — every analytic gradient checked against finite differences |
+| `test_nanovdb_transform` | NanoVDB `world_to_index` / `index_to_world` round-trip on uniform-scale + rotation+scale+translation; singular-matrix error path |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate_active/erode_active/dilate_topology/erode_topology counts, self-CSG idempotence, update_from_sparse → save → reload |
 
 ### Low Priority / Larger Features (fVDB / GPU)
@@ -269,6 +270,42 @@ worth knowing.
   bindings exposed for sparse_conv VJPs (`tinyvdb.sparse_conv3d_vjp_values`
   / `_vjp_kernel`); dense VJPs are C-only for now. Every analytic gradient
   is gradient-checked against finite differences in `test_autograd`.
+
+- [x] **NanoVDB world↔index transform helpers.**
+  `tvdb_nanovdb_index_to_world` / `tvdb_nanovdb_world_to_index` apply
+  the grid's 3x4 row-major affine `map[12]` (now exposed on the
+  user-facing `tvdb_nanovdb_grid_t`). Inverse is computed by adjugate /
+  determinant for general 3x3 (uniform-scale, rotation+scale+translation
+  all handled). Singular matrices return `TVDB_ERROR_INVALID_DATA`.
+  Loaded grids inherit the map from `gd.map`; freshly-created grids get
+  identity. Verified: round-trip preserves coords to 1e-10 on rotated +
+  non-uniformly scaled + translated grids.
+
+### NanoVDB gaps still open (need reference `.nvdb` files)
+
+The rest of the NanoVDB punch list cannot land cleanly without a real
+`.nvdb` produced by official OpenVDB tools to validate against. Without
+that, any implementation is self-consistent but can't be confirmed
+byte-compatible with Houdini / the official `nanovdb::validateGrid`. The
+gaps:
+
+- [ ] Real `tvdb_nanovdb_get_voxel_f` (Root → Upper → Lower → Leaf
+      traversal). Today it reads `leaf_data_offset+64` as a flat array,
+      which only works for the synthetic test grid.
+- [ ] VDB → NanoVDB Float SDF builder. `tvdb_nanovdb_create_grid` builds
+      metadata only; `examples/openvdb2nanovdb/openvdb2nanovdb.cc` is
+      empty.
+- [ ] `tvdb_nanovdb_sample_trilinear_f`. Trivial once the accessor
+      lands.
+- [ ] CRC32 checksum compute / validate. Algorithm is documented but
+      bit-compatibility needs a reference `.nvdb` to verify which byte
+      ranges are hashed.
+- [ ] Real BLOSC framing (replace fake LZ4-with-fake-header).
+- [ ] Backward pass for the Gaussian-splat rasterizer.
+
+To unblock: add a small `data/*.nvdb` corpus produced by
+`openvdb_print --addnv` or NanoVDB's `nanovdb_make_grid_test`, and these
+items become straightforward to implement and test.
 
 ### Out of scope (deferred)
 

@@ -250,6 +250,11 @@ typedef struct tvdb_nanovdb_grid {
     double    world_bbox_max[3];
     int32_t   index_bbox_min[3];
     int32_t   index_bbox_max[3];
+    /* 3x4 row-major affine: [m00 m01 m02 tx, m10 m11 m12 ty, m20 m21 m22 tz].
+     * Populated at load time from the grid's GridData.map; for grids built
+     * by tvdb_nanovdb_create_grid the caller may need to populate this
+     * before calling tvdb_nanovdb_world_to_index / _index_to_world. */
+    double    map[12];
     uint64_t  active_voxel_count;
     uint32_t  node_count[4];
     uint32_t  tile_count[3];
@@ -386,6 +391,25 @@ double        tvdb_nanovdb_grid_voxel_size(const tvdb_nanovdb_file_t *file, size
 float   tvdb_nanovdb_get_voxel_f(const tvdb_nanovdb_grid_t *grid, int x, int y, int z);
 double  tvdb_nanovdb_get_voxel_d(const tvdb_nanovdb_grid_t *grid, int x, int y, int z);
 int     tvdb_nanovdb_is_voxel_active(const tvdb_nanovdb_grid_t *grid, int x, int y, int z);
+
+/* World <-> index space transforms.
+ *
+ * The grid stores a 3x4 row-major affine `map`: [m00 m01 m02 tx, m10 m11
+ * m12 ty, m20 m21 m22 tz]. World coordinates are obtained from index
+ * coordinates as `world = M * index + t`. The inverse is computed via
+ * adjugate / determinant for general 3x3 matrices; uniform-scale grids
+ * (the common case) reduce to a per-axis divide.
+ *
+ * `out` is set to the transformed point. Returns TVDB_OK on success,
+ * TVDB_ERROR_INVALID_ARGUMENT on null inputs, or
+ * TVDB_ERROR_INVALID_DATA if the matrix is singular (determinant ~ 0).
+ */
+tvdb_status_t tvdb_nanovdb_index_to_world(const tvdb_nanovdb_grid_t *grid,
+                                          double ix, double iy, double iz,
+                                          double out[3]);
+tvdb_status_t tvdb_nanovdb_world_to_index(const tvdb_nanovdb_grid_t *grid,
+                                          double wx, double wy, double wz,
+                                          double out[3]);
 
 /* Writing API */
 tvdb_status_t tvdb_nanovdb_write_to_memory(const tvdb_nanovdb_file_t *file,
@@ -1170,6 +1194,7 @@ tvdb_status_t tvdb_nanovdb_file_open_memory(tvdb_nanovdb_file_t *file,
         file->grids[i].lower_data_offset = td.node_offset[1];
         file->grids[i].upper_data_offset = td.node_offset[2];
         file->grids[i].root_data_offset = td.node_offset[3];
+        for (int m = 0; m < 12; ++m) file->grids[i].map[m] = gd.map[m];
     }
 
     return TVDB_OK;
@@ -1252,6 +1277,47 @@ double tvdb_nanovdb_get_voxel_d(const tvdb_nanovdb_grid_t *grid,
                                int x, int y, int z) {
     if (!grid || grid->grid_type != TVDB_NANOVDB_GRID_TYPE_DOUBLE) return 0.0;
     return 0.0;
+}
+
+tvdb_status_t tvdb_nanovdb_index_to_world(const tvdb_nanovdb_grid_t *grid,
+                                          double ix, double iy, double iz,
+                                          double out[3]) {
+    if (!grid || !out) return TVDB_ERROR_INVALID_ARGUMENT;
+    /* world = M * index + t. Row-major 3x4. */
+    out[0] = grid->map[0] * ix + grid->map[1] * iy + grid->map[2]  * iz + grid->map[3];
+    out[1] = grid->map[4] * ix + grid->map[5] * iy + grid->map[6]  * iz + grid->map[7];
+    out[2] = grid->map[8] * ix + grid->map[9] * iy + grid->map[10] * iz + grid->map[11];
+    return TVDB_OK;
+}
+
+tvdb_status_t tvdb_nanovdb_world_to_index(const tvdb_nanovdb_grid_t *grid,
+                                          double wx, double wy, double wz,
+                                          double out[3]) {
+    if (!grid || !out) return TVDB_ERROR_INVALID_ARGUMENT;
+    const double *m = grid->map;
+    /* Cofactor expansion of the 3x3 linear part. */
+    double a = m[0], b = m[1], c = m[2];
+    double d = m[4], e = m[5], f = m[6];
+    double g = m[8], h = m[9], i = m[10];
+    double det = a*(e*i - f*h) - b*(d*i - f*g) + c*(d*h - e*g);
+    if (det == 0.0 || (det > -1e-30 && det < 1e-30))
+        return TVDB_ERROR_INVALID_DATA;
+    double inv = 1.0 / det;
+    /* Adjugate-transpose / det. */
+    double inv00 = (e*i - f*h) * inv;
+    double inv01 = (c*h - b*i) * inv;
+    double inv02 = (b*f - c*e) * inv;
+    double inv10 = (f*g - d*i) * inv;
+    double inv11 = (a*i - c*g) * inv;
+    double inv12 = (c*d - a*f) * inv;
+    double inv20 = (d*h - e*g) * inv;
+    double inv21 = (b*g - a*h) * inv;
+    double inv22 = (a*e - b*d) * inv;
+    double dx = wx - m[3], dy = wy - m[7], dz = wz - m[11];
+    out[0] = inv00 * dx + inv01 * dy + inv02 * dz;
+    out[1] = inv10 * dx + inv11 * dy + inv12 * dz;
+    out[2] = inv20 * dx + inv21 * dy + inv22 * dz;
+    return TVDB_OK;
 }
 
 int tvdb_nanovdb_is_voxel_active(const tvdb_nanovdb_grid_t *grid,
@@ -1721,6 +1787,10 @@ tvdb_status_t tvdb_nanovdb_create_grid(tvdb_nanovdb_grid_t *grid,
         grid->world_bbox_min[i] = (double)min_coord[i];
         grid->world_bbox_max[i] = (double)max_coord[i];
     }
+    /* Default map = identity affine (voxel_size = 1, origin at 0). */
+    grid->map[0] = 1.0; grid->map[1] = 0.0; grid->map[2] = 0.0; grid->map[3] = 0.0;
+    grid->map[4] = 0.0; grid->map[5] = 1.0; grid->map[6] = 0.0; grid->map[7] = 0.0;
+    grid->map[8] = 0.0; grid->map[9] = 0.0; grid->map[10] = 1.0; grid->map[11] = 0.0;
 
     grid->node_count[0] = 0;
     grid->node_count[1] = 0;

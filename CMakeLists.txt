@@ -202,6 +202,10 @@ if(TINYVDB_BUILD_TESTS)
   target_link_libraries(test_autograd PRIVATE tinyvdb_mesh_ops m)
   add_test(NAME test_autograd COMMAND test_autograd)
 
+  add_executable(test_nanovdb_transform ${PROJECT_SOURCE_DIR}/tests/test_nanovdb_transform.c)
+  target_link_libraries(test_nanovdb_transform PRIVATE tinyvdb_nanovdb m)
+  add_test(NAME test_nanovdb_transform COMMAND test_nanovdb_transform)
+
   if(TINYVDB_BUILD_PYTHON)
     find_program(PYTHON3_EXE NAMES python3 python)
     if(PYTHON3_EXE)
