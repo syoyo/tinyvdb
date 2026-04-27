@@ -16,6 +16,13 @@ set(TINYVDB_C_SOURCES
     ${TINYVDB_ROOT}/src/tinyvdb_io.c
     ${TINYVDB_ROOT}/src/lz4.c
     ${TINYVDB_ROOT}/src/miniz.c
+    # v0.9.0: the formerly-single-header mesh / ops C++ wrappers became
+    # standalone C TUs. Bind them in so the embind module can call the
+    # new C API directly (tvdb_make_manifold_vdb, tvdb_dilate, …).
+    ${TINYVDB_ROOT}/src/tinyvdb_lifecycle.c
+    ${TINYVDB_ROOT}/src/tinyvdb_mesh.c
+    ${TINYVDB_ROOT}/src/tinyvdb_ops.c
+    ${TINYVDB_ROOT}/src/tvdb_memory.c
 )
 
 add_library(tinyvdb_c STATIC ${TINYVDB_C_SOURCES})
