@@ -18,7 +18,14 @@ endif()
 
 set(TVDBVIEW_SOURCES
   main.cc
-  ../common/glad/src/glad.c)
+  ../common/glad/src/glad.c
+  ../common/imgui/imgui.cpp
+  ../common/imgui/imgui_demo.cpp
+  ../common/imgui/imgui_draw.cpp
+  ../common/imgui/imgui_tables.cpp
+  ../common/imgui/imgui_widgets.cpp
+  ../common/imgui/imgui_impl_glfw.cpp
+  ../common/imgui/imgui_impl_opengl3.cpp)
 
 add_executable(${EXAMPLE_TARGET} ${TVDBVIEW_SOURCES})
 set_target_properties(${EXAMPLE_TARGET} PROPERTIES
@@ -26,7 +33,9 @@ set_target_properties(${EXAMPLE_TARGET} PROPERTIES
 
 target_compile_definitions(${EXAMPLE_TARGET} PRIVATE GLFW_INCLUDE_NONE)
 target_include_directories(${EXAMPLE_TARGET} PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/../common/glad/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/../common/glad/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/../common/glfw-3.4/deps
+  ${CMAKE_CURRENT_SOURCE_DIR}/../common/imgui)
 target_link_libraries(${EXAMPLE_TARGET} PRIVATE
   tinyvdb
   glfw

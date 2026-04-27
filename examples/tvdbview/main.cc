@@ -1,8 +1,22 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+
 #if defined(TVDBVIEW_ENABLE_NFD)
 #include <nfd.h>
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
 #endif
 
 #include "tinyvdb_io.h"
@@ -259,7 +273,9 @@ struct GpuVolume {
   GLuint vbo = 0;
   GLuint ebo = 0;
   GLsizei index_count = 0;
-  LineMesh grid_lines;
+  LineMesh internal_lines;
+  LineMesh leaf_lines;
+  LineMesh dense_bounds_lines;
   Bounds world_bounds;
   float value_offset = 0.0f;
   float value_scale = 1.0f;
@@ -302,8 +318,23 @@ struct AppState {
   double last_cursor_y = 0.0;
   VolumeRenderMode render_mode = VolumeRenderMode::VolumeWithGrid;
   VolumeColorMode color_mode = VolumeColorMode::Density;
+  std::size_t active_volume = 0;
   float density_gain = 2.0f;
   bool sdf_fog_mode = false;
+  bool show_internal_boxes = true;
+  bool show_leaf_boxes = true;
+  bool show_dense_bounds = true;
+  bool show_hud = true;
+  bool show_control_panel = true;
+  int slice_axis = 0;  // 0=off, 1=x, 2=y, 3=z
+  float slice_pos = 0.5f;
+  float slice_thickness = 1.0f;
+  bool clip_enabled = false;
+  float clip_min[3] = {0.0f, 0.0f, 0.0f};
+  float clip_max[3] = {1.0f, 1.0f, 1.0f};
+  OrbitCamera camera_bookmarks[3];
+  bool has_camera_bookmark[3] = {false, false, false};
+  int screenshot_counter = 0;
   std::string current_path;
 #if defined(TVDBVIEW_ENABLE_NFD)
   bool nfd_initialized = false;
@@ -347,6 +378,11 @@ uniform float uDensityGain;
 uniform int uFogFromSdf;
 uniform float uSdfBandScale;
 uniform int uColorMode;
+uniform vec3 uClipMin;
+uniform vec3 uClipMax;
+uniform int uSliceAxis;
+uniform float uSlicePos;
+uniform float uSliceThickness;
 
 out vec4 FragColor;
 
@@ -393,6 +429,15 @@ void main() {
     float t = tEnter + (float(i) + 0.5) * dt;
     vec3 p = ro + rd * t;
     vec3 uvw = (p - uVolumeMin) / extent;
+    if (any(lessThan(uvw, uClipMin)) || any(greaterThan(uvw, uClipMax))) {
+      continue;
+    }
+    if (uSliceAxis > 0) {
+      float s = (uSliceAxis == 1) ? uvw.x : ((uSliceAxis == 2) ? uvw.y : uvw.z);
+      if (abs(s - uSlicePos) > uSliceThickness * 0.5) {
+        continue;
+      }
+    }
     float raw = texture(uVolume, uvw).r;
     float norm = (uFogFromSdf == 1)
         ? clamp(-raw * uSdfBandScale, 0.0, 1.0)
@@ -500,13 +545,34 @@ void PrintControls() {
       << "  middle/right drag pan\n"
       << "  wheel            zoom\n"
       << "  O                open VDB\n"
+      << "  0-9              select VDB attribute/grid\n"
+      << "  X/Y/Z, \\         slice axis x/y/z/off\n"
+      << "  , / .            move slice\n"
+      << "  - / =            slice thickness down/up\n"
+      << "  K                toggle clip box\n"
+      << "  U / J            tighten/loosen clip box\n"
+      << "  I / L / B        toggle internal/leaf/dense bboxes\n"
       << "  V                cycle volume/grid display\n"
       << "  C                cycle color mode\n"
       << "  [ / ]            density gain down/up\n"
+      << "  P                save PNG screenshot\n"
+      << "  F                frame selected grid\n"
+      << "  F1/F2/F3         front/top/side camera\n"
+      << "  Ctrl+F1..F3      save camera bookmark\n"
+      << "  Shift+F1..F3     load camera bookmark\n"
       << "  S                toggle SDF fog mode\n"
       << "  R                reset camera\n"
       << "  H                print controls\n"
       << "  Esc              quit\n";
+}
+
+const char* SliceAxisLabel(int axis) {
+  switch (axis) {
+    case 1: return "x";
+    case 2: return "y";
+    case 3: return "z";
+    default: return "off";
+  }
 }
 
 bool CheckShader(GLuint shader, const char* label) {
@@ -1116,7 +1182,6 @@ bool LoadVdbScene(const std::string& filepath, SceneData* scene, std::string* er
           }
           volume.emission_min = emin;
           volume.emission_max = emax;
-          handled[j] = true;
           scene->notes.push_back("emission: " + volume.emission_name);
           break;
         }
@@ -1209,36 +1274,79 @@ LineMesh UploadLineMesh(const std::vector<float>& vertices, const std::vector<ui
   return mesh;
 }
 
-LineMesh BuildVolumeGridLineMesh(const VolumeData& volume) {
+void AppendLineBox(const Vec3& mn, const Vec3& mx, const Vec3& color,
+                   std::vector<float>* vertices, std::vector<uint32_t>* indices) {
+  static const uint32_t edge_offsets[24] = {
+      0, 1, 1, 2, 2, 3, 3, 0,
+      4, 5, 5, 6, 6, 7, 7, 4,
+      0, 4, 1, 5, 2, 6, 3, 7};
+  const Vec3 corners[8] = {
+      {mn.x, mn.y, mn.z}, {mx.x, mn.y, mn.z}, {mx.x, mx.y, mn.z}, {mn.x, mx.y, mn.z},
+      {mn.x, mn.y, mx.z}, {mx.x, mn.y, mx.z}, {mx.x, mx.y, mx.z}, {mn.x, mx.y, mx.z}};
+  const uint32_t base = static_cast<uint32_t>(vertices->size() / 6);
+  for (int c = 0; c < 8; ++c) {
+    vertices->push_back(corners[c].x);
+    vertices->push_back(corners[c].y);
+    vertices->push_back(corners[c].z);
+    vertices->push_back(color.x);
+    vertices->push_back(color.y);
+    vertices->push_back(color.z);
+  }
+  for (int e = 0; e < 24; ++e) indices->push_back(base + edge_offsets[e]);
+}
+
+LineMesh BuildVolumeNodeLineMesh(const VolumeData& volume, bool leaves) {
   std::vector<float> vertices;
   std::vector<uint32_t> indices;
   vertices.reserve(volume.node_boxes.size() * 8 * 6);
   indices.reserve(volume.node_boxes.size() * 24);
   const int max_level = std::max(volume.max_level, 1);
-  static const uint32_t edge_offsets[24] = {
-      0, 1, 1, 2, 2, 3, 3, 0,
-      4, 5, 5, 6, 6, 7, 7, 4,
-      0, 4, 1, 5, 2, 6, 3, 7};
 
   for (std::size_t b = 0; b < volume.node_boxes.size(); ++b) {
     const VolumeNodeBox& box = volume.node_boxes[b];
+    const bool is_leaf = box.level >= volume.max_level;
+    if (is_leaf != leaves) continue;
     const float t = static_cast<float>(box.level) / static_cast<float>(max_level);
     const Vec3 color{1.0f - t, 0.2f + 0.8f * t, 0.25f + 0.6f * (1.0f - t)};
-    const Vec3 mn = box.min;
-    const Vec3 mx = box.max;
-    const Vec3 corners[8] = {
-        {mn.x, mn.y, mn.z}, {mx.x, mn.y, mn.z}, {mx.x, mx.y, mn.z}, {mn.x, mx.y, mn.z},
-        {mn.x, mn.y, mx.z}, {mx.x, mn.y, mx.z}, {mx.x, mx.y, mx.z}, {mn.x, mx.y, mx.z}};
-    const uint32_t base = static_cast<uint32_t>(vertices.size() / 6);
-    for (int c = 0; c < 8; ++c) {
-      vertices.push_back(corners[c].x);
-      vertices.push_back(corners[c].y);
-      vertices.push_back(corners[c].z);
-      vertices.push_back(color.x);
-      vertices.push_back(color.y);
-      vertices.push_back(color.z);
-    }
-    for (int e = 0; e < 24; ++e) indices.push_back(base + edge_offsets[e]);
+    AppendLineBox(box.min, box.max, color, &vertices, &indices);
+  }
+  return UploadLineMesh(vertices, indices);
+}
+
+LineMesh BuildDenseBoundsLineMesh(const VolumeData& volume) {
+  if (!volume.world_bounds.valid) return LineMesh{};
+  std::vector<float> vertices;
+  std::vector<uint32_t> indices;
+  AppendLineBox(volume.world_bounds.min, volume.world_bounds.max,
+                Vec3{0.95f, 0.95f, 1.0f}, &vertices, &indices);
+  return UploadLineMesh(vertices, indices);
+}
+
+LineMesh BuildSliceLineMesh(const Bounds& bounds, int axis, float pos) {
+  if (!bounds.valid || axis <= 0) return LineMesh{};
+  const Vec3 mn = bounds.min;
+  const Vec3 mx = bounds.max;
+  Vec3 p[4];
+  if (axis == 1) {
+    const float x = mn.x + (mx.x - mn.x) * pos;
+    p[0] = {x, mn.y, mn.z}; p[1] = {x, mx.y, mn.z}; p[2] = {x, mx.y, mx.z}; p[3] = {x, mn.y, mx.z};
+  } else if (axis == 2) {
+    const float y = mn.y + (mx.y - mn.y) * pos;
+    p[0] = {mn.x, y, mn.z}; p[1] = {mx.x, y, mn.z}; p[2] = {mx.x, y, mx.z}; p[3] = {mn.x, y, mx.z};
+  } else {
+    const float z = mn.z + (mx.z - mn.z) * pos;
+    p[0] = {mn.x, mn.y, z}; p[1] = {mx.x, mn.y, z}; p[2] = {mx.x, mx.y, z}; p[3] = {mn.x, mx.y, z};
+  }
+  std::vector<float> vertices;
+  std::vector<uint32_t> indices = {0, 1, 1, 2, 2, 3, 3, 0};
+  const Vec3 color{1.0f, 0.85f, 0.2f};
+  for (int i = 0; i < 4; ++i) {
+    vertices.push_back(p[i].x);
+    vertices.push_back(p[i].y);
+    vertices.push_back(p[i].z);
+    vertices.push_back(color.x);
+    vertices.push_back(color.y);
+    vertices.push_back(color.z);
   }
   return UploadLineMesh(vertices, indices);
 }
@@ -1330,7 +1438,9 @@ GpuVolume UploadVolume(const VolumeData& volume) {
   glBindVertexArray(0);
   gpu.index_count = static_cast<GLsizei>(sizeof(kCubeIndices) / sizeof(kCubeIndices[0]));
 
-  gpu.grid_lines = BuildVolumeGridLineMesh(volume);
+  gpu.internal_lines = BuildVolumeNodeLineMesh(volume, false);
+  gpu.leaf_lines = BuildVolumeNodeLineMesh(volume, true);
+  gpu.dense_bounds_lines = BuildDenseBoundsLineMesh(volume);
   return gpu;
 }
 
@@ -1350,7 +1460,9 @@ void DestroyVolume(GpuVolume* volume) {
   if (volume->ebo) glDeleteBuffers(1, &volume->ebo);
   if (volume->vbo) glDeleteBuffers(1, &volume->vbo);
   if (volume->vao) glDeleteVertexArrays(1, &volume->vao);
-  DestroyLineMesh(&volume->grid_lines);
+  DestroyLineMesh(&volume->internal_lines);
+  DestroyLineMesh(&volume->leaf_lines);
+  DestroyLineMesh(&volume->dense_bounds_lines);
   *volume = GpuVolume{};
 }
 
@@ -1359,6 +1471,113 @@ void ClearGpuVolumes(AppState* app) {
     DestroyVolume(&app->gpu_volumes[i]);
   }
   app->gpu_volumes.clear();
+}
+
+bool ActiveVolumeHasDensity(const AppState& app) {
+  return app.active_volume < app.gpu_volumes.size() &&
+         app.gpu_volumes[app.active_volume].has_density;
+}
+
+void PrintVolumeList(const AppState& app) {
+  for (std::size_t i = 0; i < app.scene.volumes.size(); ++i) {
+    const VolumeData& volume = app.scene.volumes[i];
+    std::cout << "  [" << i << "] " << volume.name;
+    if (!volume.density.empty()) {
+      std::cout << " dim=" << volume.dim[0] << "x" << volume.dim[1] << "x" << volume.dim[2]
+                << " range=[" << volume.min_value << ", " << volume.max_value << "]";
+    } else {
+      std::cout << " topology";
+    }
+    if (i == app.active_volume) std::cout << " *";
+    std::cout << "\n";
+  }
+}
+
+bool SelectVolume(AppState* app, std::size_t index) {
+  if (index >= app->gpu_volumes.size()) {
+    std::cerr << "No VDB attribute/grid at index " << index << "\n";
+    return false;
+  }
+  app->active_volume = index;
+  if (!ActiveVolumeHasDensity(*app) && app->render_mode == VolumeRenderMode::Volume) {
+    app->render_mode = VolumeRenderMode::GridOnly;
+  }
+  std::cout << "selected [" << index << "] " << app->scene.volumes[index].name << "\n";
+  return true;
+}
+
+Bounds ActiveVolumeBounds(const AppState& app) {
+  if (app.active_volume < app.scene.volumes.size()) {
+    return app.scene.volumes[app.active_volume].world_bounds;
+  }
+  return app.scene.bounds;
+}
+
+void FrameSelectedVolume(AppState* app) {
+  const Bounds bounds = ActiveVolumeBounds(*app);
+  if (bounds.valid) app->camera.resetToBounds(bounds);
+}
+
+void SetCameraPreset(AppState* app, int preset) {
+  const Bounds bounds = ActiveVolumeBounds(*app);
+  app->camera.resetToBounds(bounds);
+  if (preset == 0) {
+    app->camera.longitude = 0.0f;
+    app->camera.latitude = 0.0f;
+  } else if (preset == 1) {
+    app->camera.longitude = 0.0f;
+    app->camera.latitude = 89.0f;
+  } else {
+    app->camera.longitude = 90.0f;
+    app->camera.latitude = 0.0f;
+  }
+}
+
+void ClampClipBox(AppState* app) {
+  for (int a = 0; a < 3; ++a) {
+    app->clip_min[a] = std::max(0.0f, std::min(0.98f, app->clip_min[a]));
+    app->clip_max[a] = std::max(0.02f, std::min(1.0f, app->clip_max[a]));
+    if (app->clip_min[a] > app->clip_max[a] - 0.02f) {
+      const float center = (app->clip_min[a] + app->clip_max[a]) * 0.5f;
+      app->clip_min[a] = std::max(0.0f, center - 0.01f);
+      app->clip_max[a] = std::min(1.0f, center + 0.01f);
+    }
+  }
+}
+
+void AdjustClipBox(AppState* app, float delta) {
+  for (int a = 0; a < 3; ++a) {
+    app->clip_min[a] += delta;
+    app->clip_max[a] -= delta;
+  }
+  ClampClipBox(app);
+  app->clip_enabled = true;
+  std::cout << "clip box: [" << app->clip_min[0] << ", " << app->clip_min[1] << ", "
+            << app->clip_min[2] << "] - [" << app->clip_max[0] << ", "
+            << app->clip_max[1] << ", " << app->clip_max[2] << "]\n";
+}
+
+void SaveScreenshot(AppState* app) {
+  const int w = app->framebuffer_width;
+  const int h = app->framebuffer_height;
+  if (w <= 0 || h <= 0) return;
+  std::vector<uint8_t> rgba(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
+  std::vector<uint8_t> flipped(rgba.size());
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+  const std::size_t row_bytes = static_cast<std::size_t>(w) * 4;
+  for (int y = 0; y < h; ++y) {
+    std::memcpy(flipped.data() + static_cast<std::size_t>(y) * row_bytes,
+                rgba.data() + static_cast<std::size_t>(h - 1 - y) * row_bytes,
+                row_bytes);
+  }
+  char filename[64];
+  std::snprintf(filename, sizeof(filename), "tvdbview_%04d.png", app->screenshot_counter++);
+  if (stbi_write_png(filename, w, h, 4, flipped.data(), w * 4)) {
+    std::cout << "saved screenshot: " << filename << "\n";
+  } else {
+    std::cerr << "failed to save screenshot: " << filename << "\n";
+  }
 }
 
 bool LoadSceneIntoApp(AppState* app, const std::string& path) {
@@ -1375,6 +1594,7 @@ bool LoadSceneIntoApp(AppState* app, const std::string& path) {
   for (std::size_t i = 0; i < app->scene.volumes.size(); ++i) {
     app->gpu_volumes.push_back(UploadVolume(app->scene.volumes[i]));
   }
+  app->active_volume = 0;
   app->camera.resetToBounds(app->scene.bounds);
   app->current_path = path;
   if (!app->scene.volumes.empty()) {
@@ -1384,12 +1604,20 @@ bool LoadSceneIntoApp(AppState* app, const std::string& path) {
     }
     app->render_mode = has_density ? VolumeRenderMode::VolumeWithGrid
                                    : VolumeRenderMode::GridOnly;
+    for (std::size_t i = 0; i < app->gpu_volumes.size(); ++i) {
+      if (app->gpu_volumes[i].has_density) {
+        app->active_volume = i;
+        break;
+      }
+    }
   }
 
   std::cout << "Loaded " << path << "\n";
   for (std::size_t i = 0; i < app->scene.notes.size(); ++i) {
     std::cout << "  " << app->scene.notes[i] << "\n";
   }
+  std::cout << "Attributes/grids:\n";
+  PrintVolumeList(*app);
   return true;
 }
 
@@ -1425,9 +1653,164 @@ void OpenVdbDialog(AppState*) {
 void UpdateWindowTitle(AppState* app) {
   std::string title = "tvdbview";
   if (!app->current_path.empty()) title += " - " + app->current_path;
+  if (app->active_volume < app->scene.volumes.size()) {
+    title += " <" + std::to_string(app->active_volume) + ":" +
+             app->scene.volumes[app->active_volume].name + ">";
+  }
   title += " [" + std::string(RenderModeLabel(app->render_mode)) +
            ", " + ColorModeLabel(app->color_mode) + "]";
   glfwSetWindowTitle(app->window, title.c_str());
+}
+
+void DrawHud(AppState* app) {
+  if (!app->show_hud) return;
+  const ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+      ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+  ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
+  ImGui::SetNextWindowBgAlpha(0.35f);
+  if (!ImGui::Begin("tvdbview HUD", nullptr, flags)) {
+    ImGui::End();
+    return;
+  }
+  ImGui::TextUnformatted("tvdbview");
+  if (!app->current_path.empty()) ImGui::Text("file: %s", app->current_path.c_str());
+  if (app->active_volume < app->scene.volumes.size()) {
+    const VolumeData& v = app->scene.volumes[app->active_volume];
+    ImGui::Text("grid: [%zu] %s", app->active_volume, v.name.c_str());
+    if (!v.density.empty()) {
+      ImGui::Text("dim: %dx%dx%d stride: %d", v.dim[0], v.dim[1], v.dim[2],
+                  v.downsample_stride);
+      ImGui::Text("range: %.6g .. %.6g", v.min_value, v.max_value);
+    } else {
+      ImGui::TextUnformatted("topology-only grid");
+    }
+  }
+  ImGui::Text("mode: %s / %s", RenderModeLabel(app->render_mode),
+              ColorModeLabel(app->color_mode));
+  ImGui::Text("gain: %.3f", app->density_gain);
+  ImGui::Text("slice: %s pos %.3f width %.4f", SliceAxisLabel(app->slice_axis),
+              app->slice_pos, app->slice_thickness);
+  ImGui::Text("clip: %s", app->clip_enabled ? "on" : "off");
+  ImGui::End();
+}
+
+void DrawControlPanel(AppState* app) {
+  if (!app->show_control_panel) return;
+  ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_FirstUseEver);
+  if (!ImGui::Begin("tvdbview controls", &app->show_control_panel)) {
+    ImGui::End();
+    return;
+  }
+
+  if (ImGui::Button("Open")) OpenVdbDialog(app);
+  ImGui::SameLine();
+  if (ImGui::Button("Screenshot")) SaveScreenshot(app);
+  ImGui::SameLine();
+  if (ImGui::Button("Frame")) FrameSelectedVolume(app);
+
+  ImGui::SeparatorText("Attribute");
+  std::string active_label = "(none)";
+  if (app->active_volume < app->scene.volumes.size()) {
+    active_label = "[" + std::to_string(app->active_volume) + "] " +
+                   app->scene.volumes[app->active_volume].name;
+  }
+  if (ImGui::BeginCombo("Grid", active_label.c_str())) {
+    for (std::size_t i = 0; i < app->scene.volumes.size(); ++i) {
+      const VolumeData& v = app->scene.volumes[i];
+      std::string label = "[" + std::to_string(i) + "] " + v.name;
+      if (v.density.empty()) label += " (topology)";
+      const bool selected = (i == app->active_volume);
+      if (ImGui::Selectable(label.c_str(), selected)) {
+        SelectVolume(app, i);
+        UpdateWindowTitle(app);
+      }
+      if (selected) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+  if (app->active_volume < app->scene.volumes.size()) {
+    const VolumeData& v = app->scene.volumes[app->active_volume];
+    if (!v.density.empty()) {
+      ImGui::Text("dim %dx%dx%d, stride %d", v.dim[0], v.dim[1], v.dim[2],
+                  v.downsample_stride);
+      ImGui::Text("range %.6g .. %.6g", v.min_value, v.max_value);
+    }
+  }
+
+  ImGui::SeparatorText("Rendering");
+  const char* render_items[] = {"volume", "volume+grid", "grid"};
+  int render_mode = static_cast<int>(app->render_mode);
+  if (ImGui::Combo("Display", &render_mode, render_items, 3)) {
+    app->render_mode = static_cast<VolumeRenderMode>(render_mode);
+    UpdateWindowTitle(app);
+  }
+  const char* color_items[] = {"density", "jet", "blackbody", "vector"};
+  int color_mode = static_cast<int>(app->color_mode);
+  if (ImGui::Combo("Color", &color_mode, color_items, 4)) {
+    app->color_mode = static_cast<VolumeColorMode>(color_mode);
+    UpdateWindowTitle(app);
+  }
+  ImGui::SliderFloat("Density gain", &app->density_gain, 0.05f, 200.0f, "%.3f",
+                     ImGuiSliderFlags_Logarithmic);
+  ImGui::Checkbox("SDF fog", &app->sdf_fog_mode);
+  ImGui::Checkbox("HUD", &app->show_hud);
+
+  ImGui::SeparatorText("Slice / Clip");
+  const char* slice_items[] = {"off", "x", "y", "z"};
+  ImGui::Combo("Slice axis", &app->slice_axis, slice_items, 4);
+  ImGui::SliderFloat("Slice position", &app->slice_pos, 0.0f, 1.0f, "%.3f");
+  ImGui::SliderFloat("Slice thickness", &app->slice_thickness, 0.0025f, 1.0f, "%.4f",
+                     ImGuiSliderFlags_Logarithmic);
+  ImGui::Checkbox("Clip box", &app->clip_enabled);
+  if (app->clip_enabled) {
+    if (ImGui::SliderFloat3("Clip min", app->clip_min, 0.0f, 1.0f, "%.3f")) {
+      ClampClipBox(app);
+    }
+    if (ImGui::SliderFloat3("Clip max", app->clip_max, 0.0f, 1.0f, "%.3f")) {
+      ClampClipBox(app);
+    }
+  }
+
+  ImGui::SeparatorText("Bounding Boxes");
+  ImGui::Checkbox("Dense bounds", &app->show_dense_bounds);
+  ImGui::Checkbox("Internal nodes", &app->show_internal_boxes);
+  ImGui::Checkbox("Leaf nodes", &app->show_leaf_boxes);
+
+  ImGui::SeparatorText("Camera");
+  if (ImGui::Button("Front")) SetCameraPreset(app, 0);
+  ImGui::SameLine();
+  if (ImGui::Button("Top")) SetCameraPreset(app, 1);
+  ImGui::SameLine();
+  if (ImGui::Button("Side")) SetCameraPreset(app, 2);
+  for (int i = 0; i < 3; ++i) {
+    char save_label[32];
+    char load_label[32];
+    std::snprintf(save_label, sizeof(save_label), "Save %d", i + 1);
+    std::snprintf(load_label, sizeof(load_label), "Load %d", i + 1);
+    if (i > 0) ImGui::SameLine();
+    if (ImGui::Button(save_label)) {
+      app->camera_bookmarks[i] = app->camera;
+      app->has_camera_bookmark[i] = true;
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!app->has_camera_bookmark[i]);
+    if (ImGui::Button(load_label)) app->camera = app->camera_bookmarks[i];
+    ImGui::EndDisabled();
+  }
+
+  ImGui::End();
+}
+
+void DrawImGui(AppState* app) {
+  ImGui_ImplOpenGL3_NewFrame();
+  ImGui_ImplGlfw_NewFrame();
+  ImGui::NewFrame();
+  DrawHud(app);
+  DrawControlPanel(app);
+  ImGui::Render();
+  ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
 void Draw(AppState* app) {
@@ -1451,69 +1834,86 @@ void Draw(AppState* app) {
     glDisable(GL_CULL_FACE);
     glDepthMask(GL_FALSE);
     glUseProgram(app->volume_program);
-    for (std::size_t i = 0; i < app->gpu_volumes.size(); ++i) {
-      const GpuVolume& volume = app->gpu_volumes[i];
-      if (!volume.world_bounds.valid || !volume.has_density) continue;
-      const Vec3 mn = volume.world_bounds.min;
-      const Vec3 ex = volume.world_bounds.max - volume.world_bounds.min;
-      Mat4 model = Mat4::Identity();
-      model.at(0, 0) = ex.x;
-      model.at(1, 1) = ex.y;
-      model.at(2, 2) = ex.z;
-      model.at(3, 0) = mn.x;
-      model.at(3, 1) = mn.y;
-      model.at(3, 2) = mn.z;
-      SetMat4(app->volume_program, "uModel", model);
-      SetMat4(app->volume_program, "uVP", vp);
-      glUniform3f(glGetUniformLocation(app->volume_program, "uCameraPos"),
-                  eye.x, eye.y, eye.z);
-      glUniform3f(glGetUniformLocation(app->volume_program, "uVolumeMin"),
-                  volume.world_bounds.min.x, volume.world_bounds.min.y,
-                  volume.world_bounds.min.z);
-      glUniform3f(glGetUniformLocation(app->volume_program, "uVolumeMax"),
-                  volume.world_bounds.max.x, volume.world_bounds.max.y,
-                  volume.world_bounds.max.z);
-      glUniform1f(glGetUniformLocation(app->volume_program, "uValueOffset"),
-                  volume.value_offset);
-      glUniform1f(glGetUniformLocation(app->volume_program, "uValueScale"),
-                  volume.value_scale);
-      const float max_extent = std::max(ex.x, std::max(ex.y, ex.z));
-      glUniform1f(glGetUniformLocation(app->volume_program, "uDensityGain"),
-                  app->density_gain / std::max(max_extent, 1.0e-4f));
-      glUniform1i(glGetUniformLocation(app->volume_program, "uFogFromSdf"),
-                  app->sdf_fog_mode ? 1 : 0);
-      glUniform1f(glGetUniformLocation(app->volume_program, "uSdfBandScale"),
-                  volume.sdf_band_scale);
-      glUniform1i(glGetUniformLocation(app->volume_program, "uColorMode"),
-                  static_cast<int>(app->color_mode));
+    if (app->active_volume < app->gpu_volumes.size()) {
+      const GpuVolume& volume = app->gpu_volumes[app->active_volume];
+      if (volume.world_bounds.valid && volume.has_density) {
+        const Vec3 mn = volume.world_bounds.min;
+        const Vec3 ex = volume.world_bounds.max - volume.world_bounds.min;
+        Mat4 model = Mat4::Identity();
+        model.at(0, 0) = ex.x;
+        model.at(1, 1) = ex.y;
+        model.at(2, 2) = ex.z;
+        model.at(3, 0) = mn.x;
+        model.at(3, 1) = mn.y;
+        model.at(3, 2) = mn.z;
+        SetMat4(app->volume_program, "uModel", model);
+        SetMat4(app->volume_program, "uVP", vp);
+        glUniform3f(glGetUniformLocation(app->volume_program, "uCameraPos"),
+                    eye.x, eye.y, eye.z);
+        glUniform3f(glGetUniformLocation(app->volume_program, "uVolumeMin"),
+                    volume.world_bounds.min.x, volume.world_bounds.min.y,
+                    volume.world_bounds.min.z);
+        glUniform3f(glGetUniformLocation(app->volume_program, "uVolumeMax"),
+                    volume.world_bounds.max.x, volume.world_bounds.max.y,
+                    volume.world_bounds.max.z);
+        glUniform1f(glGetUniformLocation(app->volume_program, "uValueOffset"),
+                    volume.value_offset);
+        glUniform1f(glGetUniformLocation(app->volume_program, "uValueScale"),
+                    volume.value_scale);
+        const float max_extent = std::max(ex.x, std::max(ex.y, ex.z));
+        glUniform1f(glGetUniformLocation(app->volume_program, "uDensityGain"),
+                    app->density_gain / std::max(max_extent, 1.0e-4f));
+        glUniform1i(glGetUniformLocation(app->volume_program, "uFogFromSdf"),
+                    app->sdf_fog_mode ? 1 : 0);
+        glUniform1f(glGetUniformLocation(app->volume_program, "uSdfBandScale"),
+                    volume.sdf_band_scale);
+        glUniform1i(glGetUniformLocation(app->volume_program, "uColorMode"),
+                    static_cast<int>(app->color_mode));
+        const float* clip_min = app->clip_enabled ? app->clip_min : nullptr;
+        const float* clip_max = app->clip_enabled ? app->clip_max : nullptr;
+        glUniform3f(glGetUniformLocation(app->volume_program, "uClipMin"),
+                    clip_min ? clip_min[0] : 0.0f,
+                    clip_min ? clip_min[1] : 0.0f,
+                    clip_min ? clip_min[2] : 0.0f);
+        glUniform3f(glGetUniformLocation(app->volume_program, "uClipMax"),
+                    clip_max ? clip_max[0] : 1.0f,
+                    clip_max ? clip_max[1] : 1.0f,
+                    clip_max ? clip_max[2] : 1.0f);
+        glUniform1i(glGetUniformLocation(app->volume_program, "uSliceAxis"),
+                    app->slice_axis);
+        glUniform1f(glGetUniformLocation(app->volume_program, "uSlicePos"),
+                    app->slice_pos);
+        glUniform1f(glGetUniformLocation(app->volume_program, "uSliceThickness"),
+                    app->slice_axis ? app->slice_thickness : 1.0f);
 
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_3D, volume.texture);
-      glUniform1i(glGetUniformLocation(app->volume_program, "uVolume"), 0);
-      glUniform1i(glGetUniformLocation(app->volume_program, "uHasEmission"),
-                  volume.has_emission ? 1 : 0);
-      glUniform1f(glGetUniformLocation(app->volume_program, "uEmissionOffset"),
-                  volume.emission_offset);
-      glUniform1f(glGetUniformLocation(app->volume_program, "uEmissionScale"),
-                  volume.emission_scale);
-      if (volume.has_emission) {
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_3D, volume.emission_texture);
-        glUniform1i(glGetUniformLocation(app->volume_program, "uEmission"), 1);
-      }
-      glUniform1i(glGetUniformLocation(app->volume_program, "uHasVector"),
-                  volume.has_vector ? 1 : 0);
-      glUniform1f(glGetUniformLocation(app->volume_program, "uVectorLenScale"),
-                  volume.vector_len_scale);
-      if (volume.has_vector) {
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_3D, volume.vector_texture);
-        glUniform1i(glGetUniformLocation(app->volume_program, "uVectorTex"), 2);
-      }
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_3D, volume.texture);
+        glUniform1i(glGetUniformLocation(app->volume_program, "uVolume"), 0);
+        glUniform1i(glGetUniformLocation(app->volume_program, "uHasEmission"),
+                    volume.has_emission ? 1 : 0);
+        glUniform1f(glGetUniformLocation(app->volume_program, "uEmissionOffset"),
+                    volume.emission_offset);
+        glUniform1f(glGetUniformLocation(app->volume_program, "uEmissionScale"),
+                    volume.emission_scale);
+        if (volume.has_emission) {
+          glActiveTexture(GL_TEXTURE1);
+          glBindTexture(GL_TEXTURE_3D, volume.emission_texture);
+          glUniform1i(glGetUniformLocation(app->volume_program, "uEmission"), 1);
+        }
+        glUniform1i(glGetUniformLocation(app->volume_program, "uHasVector"),
+                    volume.has_vector ? 1 : 0);
+        glUniform1f(glGetUniformLocation(app->volume_program, "uVectorLenScale"),
+                    volume.vector_len_scale);
+        if (volume.has_vector) {
+          glActiveTexture(GL_TEXTURE2);
+          glBindTexture(GL_TEXTURE_3D, volume.vector_texture);
+          glUniform1i(glGetUniformLocation(app->volume_program, "uVectorTex"), 2);
+        }
 
-      glActiveTexture(GL_TEXTURE0);
-      glBindVertexArray(volume.vao);
-      glDrawElements(GL_TRIANGLES, volume.index_count, GL_UNSIGNED_INT, nullptr);
+        glActiveTexture(GL_TEXTURE0);
+        glBindVertexArray(volume.vao);
+        glDrawElements(GL_TRIANGLES, volume.index_count, GL_UNSIGNED_INT, nullptr);
+      }
     }
     glDepthMask(GL_TRUE);
     glEnable(GL_CULL_FACE);
@@ -1523,15 +1923,26 @@ void Draw(AppState* app) {
   if (draw_grid) {
     glUseProgram(app->line_program);
     SetMat4(app->line_program, "uVP", vp);
-    for (std::size_t i = 0; i < app->gpu_volumes.size(); ++i) {
-      const LineMesh& lines = app->gpu_volumes[i].grid_lines;
-      if (lines.index_count == 0) continue;
-      glBindVertexArray(lines.vao);
-      glDrawElements(GL_LINES, lines.index_count, GL_UNSIGNED_INT, nullptr);
+    if (app->active_volume < app->gpu_volumes.size()) {
+      const GpuVolume& volume = app->gpu_volumes[app->active_volume];
+      auto draw_lines = [](const LineMesh& lines) {
+        if (lines.index_count == 0) return;
+        glBindVertexArray(lines.vao);
+        glDrawElements(GL_LINES, lines.index_count, GL_UNSIGNED_INT, nullptr);
+      };
+      if (app->show_dense_bounds) draw_lines(volume.dense_bounds_lines);
+      if (app->show_internal_boxes) draw_lines(volume.internal_lines);
+      if (app->show_leaf_boxes) draw_lines(volume.leaf_lines);
+      if (app->slice_axis > 0) {
+        LineMesh slice = BuildSliceLineMesh(volume.world_bounds, app->slice_axis, app->slice_pos);
+        draw_lines(slice);
+        DestroyLineMesh(&slice);
+      }
     }
   }
 
   glBindVertexArray(0);
+  DrawImGui(app);
 }
 
 AppState* GetApp(GLFWwindow* window) {
@@ -1550,6 +1961,7 @@ void CursorPosCallback(GLFWwindow* window, double x, double y) {
   const double dy = y - app->last_cursor_y;
   app->last_cursor_x = x;
   app->last_cursor_y = y;
+  if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse) return;
 
   if (app->left_mouse_down) {
     app->camera.longitude += static_cast<float>(dx) * 0.35f;
@@ -1567,6 +1979,10 @@ void CursorPosCallback(GLFWwindow* window, double x, double y) {
 
 void MouseButtonCallback(GLFWwindow* window, int button, int action, int) {
   AppState* app = GetApp(window);
+  if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse) {
+    glfwGetCursorPos(window, &app->last_cursor_x, &app->last_cursor_y);
+    return;
+  }
   if (button == GLFW_MOUSE_BUTTON_LEFT) app->left_mouse_down = action == GLFW_PRESS;
   if (button == GLFW_MOUSE_BUTTON_MIDDLE) app->middle_mouse_down = action == GLFW_PRESS;
   if (button == GLFW_MOUSE_BUTTON_RIGHT) app->right_mouse_down = action == GLFW_PRESS;
@@ -1575,23 +1991,109 @@ void MouseButtonCallback(GLFWwindow* window, int button, int action, int) {
 
 void ScrollCallback(GLFWwindow* window, double, double yoffset) {
   AppState* app = GetApp(window);
+  if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureMouse) return;
   app->camera.distance *= std::pow(0.88f, static_cast<float>(yoffset));
   app->camera.distance = std::max(app->camera.distance, 0.01f);
 }
 
-void KeyCallback(GLFWwindow* window, int key, int, int action, int) {
+void KeyCallback(GLFWwindow* window, int key, int, int action, int mods) {
   if (action != GLFW_PRESS) return;
   AppState* app = GetApp(window);
+  if (ImGui::GetCurrentContext() && ImGui::GetIO().WantCaptureKeyboard &&
+      key != GLFW_KEY_ESCAPE) {
+    return;
+  }
+  if (key >= GLFW_KEY_F1 && key <= GLFW_KEY_F3) {
+    const int idx = key - GLFW_KEY_F1;
+    if (mods & GLFW_MOD_CONTROL) {
+      app->camera_bookmarks[idx] = app->camera;
+      app->has_camera_bookmark[idx] = true;
+      std::cout << "saved camera bookmark " << (idx + 1) << "\n";
+    } else if (mods & GLFW_MOD_SHIFT) {
+      if (app->has_camera_bookmark[idx]) {
+        app->camera = app->camera_bookmarks[idx];
+        std::cout << "loaded camera bookmark " << (idx + 1) << "\n";
+      } else {
+        std::cerr << "camera bookmark " << (idx + 1) << " is empty\n";
+      }
+    } else {
+      SetCameraPreset(app, idx);
+    }
+    return;
+  }
   switch (key) {
     case GLFW_KEY_ESCAPE:
       glfwSetWindowShouldClose(window, GLFW_TRUE);
       break;
     case GLFW_KEY_H:
       PrintControls();
+      PrintVolumeList(*app);
       break;
     case GLFW_KEY_O:
       OpenVdbDialog(app);
       UpdateWindowTitle(app);
+      break;
+    case GLFW_KEY_X:
+      app->slice_axis = 1;
+      app->slice_thickness = std::min(app->slice_thickness, 0.04f);
+      std::cout << "slice axis: x\n";
+      break;
+    case GLFW_KEY_Y:
+      app->slice_axis = 2;
+      app->slice_thickness = std::min(app->slice_thickness, 0.04f);
+      std::cout << "slice axis: y\n";
+      break;
+    case GLFW_KEY_Z:
+      app->slice_axis = 3;
+      app->slice_thickness = std::min(app->slice_thickness, 0.04f);
+      std::cout << "slice axis: z\n";
+      break;
+    case GLFW_KEY_BACKSLASH:
+      app->slice_axis = 0;
+      app->slice_thickness = 1.0f;
+      std::cout << "slice: off\n";
+      break;
+    case GLFW_KEY_COMMA:
+      app->slice_pos = std::max(0.0f, app->slice_pos - 0.025f);
+      std::cout << "slice position: " << app->slice_pos << "\n";
+      break;
+    case GLFW_KEY_PERIOD:
+      app->slice_pos = std::min(1.0f, app->slice_pos + 0.025f);
+      std::cout << "slice position: " << app->slice_pos << "\n";
+      break;
+    case GLFW_KEY_MINUS:
+      app->slice_thickness = std::max(0.0025f, app->slice_thickness * 0.75f);
+      std::cout << "slice thickness: " << app->slice_thickness << "\n";
+      break;
+    case GLFW_KEY_EQUAL:
+      app->slice_thickness = std::min(1.0f, app->slice_thickness * 1.3333334f);
+      std::cout << "slice thickness: " << app->slice_thickness << "\n";
+      break;
+    case GLFW_KEY_K:
+      app->clip_enabled = !app->clip_enabled;
+      if (app->clip_enabled) {
+        app->clip_min[0] = app->clip_min[1] = app->clip_min[2] = 0.1f;
+        app->clip_max[0] = app->clip_max[1] = app->clip_max[2] = 0.9f;
+      }
+      std::cout << "clip box: " << (app->clip_enabled ? "on" : "off") << "\n";
+      break;
+    case GLFW_KEY_U:
+      AdjustClipBox(app, 0.05f);
+      break;
+    case GLFW_KEY_J:
+      AdjustClipBox(app, -0.05f);
+      break;
+    case GLFW_KEY_I:
+      app->show_internal_boxes = !app->show_internal_boxes;
+      std::cout << "internal boxes: " << (app->show_internal_boxes ? "on" : "off") << "\n";
+      break;
+    case GLFW_KEY_L:
+      app->show_leaf_boxes = !app->show_leaf_boxes;
+      std::cout << "leaf boxes: " << (app->show_leaf_boxes ? "on" : "off") << "\n";
+      break;
+    case GLFW_KEY_B:
+      app->show_dense_bounds = !app->show_dense_bounds;
+      std::cout << "dense bounds: " << (app->show_dense_bounds ? "on" : "off") << "\n";
       break;
     case GLFW_KEY_V:
       app->render_mode = NextRenderMode(app->render_mode);
@@ -1602,6 +2104,10 @@ void KeyCallback(GLFWwindow* window, int key, int, int action, int) {
       app->color_mode = NextColorMode(app->color_mode);
       std::cout << "color mode: " << ColorModeLabel(app->color_mode) << "\n";
       UpdateWindowTitle(app);
+      break;
+    case GLFW_KEY_P:
+      Draw(app);
+      SaveScreenshot(app);
       break;
     case GLFW_KEY_LEFT_BRACKET:
       app->density_gain = std::max(0.05f, app->density_gain / 1.3f);
@@ -1618,7 +2124,14 @@ void KeyCallback(GLFWwindow* window, int key, int, int action, int) {
     case GLFW_KEY_R:
       app->camera.resetToBounds(app->scene.bounds);
       break;
+    case GLFW_KEY_F:
+      FrameSelectedVolume(app);
+      break;
     default:
+      if (key >= GLFW_KEY_0 && key <= GLFW_KEY_9) {
+        const std::size_t index = static_cast<std::size_t>(key - GLFW_KEY_0);
+        if (SelectVolume(app, index)) UpdateWindowTitle(app);
+      }
       break;
   }
 }
@@ -1663,6 +2176,12 @@ bool InitGlfwAndGl(AppState* app) {
     return false;
   }
 
+  IMGUI_CHECKVERSION();
+  ImGui::CreateContext();
+  ImGui::StyleColorsDark();
+  ImGui_ImplGlfw_InitForOpenGL(app->window, true);
+  ImGui_ImplOpenGL3_Init("#version 330 core");
+
   glEnable(GL_DEPTH_TEST);
   glEnable(GL_CULL_FACE);
   glLineWidth(1.0f);
@@ -1671,6 +2190,11 @@ bool InitGlfwAndGl(AppState* app) {
 
 void Shutdown(AppState* app) {
   ClearGpuVolumes(app);
+  if (ImGui::GetCurrentContext()) {
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+  }
   if (app->volume_program) glDeleteProgram(app->volume_program);
   if (app->line_program) glDeleteProgram(app->line_program);
 #if defined(TVDBVIEW_ENABLE_NFD)
