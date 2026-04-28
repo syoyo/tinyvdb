@@ -30,6 +30,7 @@ Useful command-line options:
 ./build-tvdbview/tvdbview smoke.vdb --ray mip --color jet
 ./build-tvdbview/tvdbview smoke.vdb --ray iso --iso 0.35 --color blackbody --shade-strength 0.8
 ./build-tvdbview/tvdbview smoke.vdb --ray pathtrace --pt-backend vulkan --pt-scale 2 --sun 35:45 --pt-depth 2
+./build-tvdbview/tvdbview smoke.vdb --ray pathtrace --pt-backend cpu --pt-spp 8 --hide-hud --hide-panel --capture pt.png --quit
 ./build-tvdbview/tvdbview smoke.vdb --window-percentile 1:99 --clip-active
 ./build-tvdbview/tvdbview smoke.vdb --slice z:0.5:0.03 --clip 0,0,0:1,1,0.6
 ./build-tvdbview/tvdbview smoke.vdb --size 1920x1080 --hide-hud --hide-panel --capture frame.png --quit
@@ -45,13 +46,15 @@ shape the rendered result. `--ray pathtrace` enables the progressive volumetric
 path tracer with sun/sky lighting. It can use a runtime-loaded Vulkan compute
 backend, an OpenGL compute backend, or the CPU renderer; use
 `--pt-backend auto|gpu|vulkan|cpu`, `--pt-scale`, `--pt-rows`, `--pt-depth`,
-`--sun`, `--sun-strength`, `--sky-strength`, and `--pt-albedo` to control
+`--pt-spp`, `--sun`, `--sun-strength`, `--sky-strength`, and `--pt-albedo` to control
 quality and lighting. Vulkan is resolved at runtime from `libvulkan` and is not
 linked through CMake; the Vulkan compute shader source is kept in
-`vulkan_pathtrace.comp` and its embedded SPIR-V blob is in
-`vulkan_pathtrace_spv.inc`. The control panel includes a `Copy command` button
-to recreate the current display state, including camera and window size, from
-the command line.
+`vulkan_pathtrace.comp`. CMake regenerates the SPIR-V include when
+`glslangValidator` and `xxd` are available, otherwise it uses the checked-in
+`vulkan_pathtrace_spv.inc` fallback. Path-trace captures with hidden HUD/panel
+save the progressive render buffer directly. The tabbed control panel includes a
+`Copy command` button to recreate the current display state, including camera,
+window size, and capture settings, from the command line.
 
 ## Controls
 
@@ -71,6 +74,7 @@ the command line.
 - `I` / `L` / `B`: toggle internal boxes, leaf boxes, dense bounds
 - `V`: cycle volume/grid display
 - `C`: cycle color mode
+- `M`: cycle ray/pathtrace mode
 - `[` / `]`: decrease/increase density gain
 - `P`: save a PNG screenshot
 - `F`: frame selected grid

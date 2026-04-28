@@ -7,6 +7,8 @@ project(${EXAMPLE_TARGET} C CXX)
 option(TVDBVIEW_ENABLE_NFD "Enable native file dialog support" ON)
 
 find_package(OpenGL REQUIRED)
+find_program(GLSLANG_VALIDATOR glslangValidator)
+find_program(XXD_EXECUTABLE xxd)
 
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -27,12 +29,42 @@ set(TVDBVIEW_SOURCES
   ../common/imgui/imgui_impl_glfw.cpp
   ../common/imgui/imgui_impl_opengl3.cpp)
 
+set(TVDBVIEW_VULKAN_SPV_INC
+    ${CMAKE_CURRENT_BINARY_DIR}/generated_vulkan_pathtrace_spv.inc)
+if(GLSLANG_VALIDATOR AND XXD_EXECUTABLE)
+  add_custom_command(
+    OUTPUT ${TVDBVIEW_VULKAN_SPV_INC}
+    COMMAND ${GLSLANG_VALIDATOR} -V
+            ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_pathtrace.comp
+            -o ${CMAKE_CURRENT_BINARY_DIR}/vulkan_pathtrace.spv
+    COMMAND ${XXD_EXECUTABLE} -i
+            ${CMAKE_CURRENT_BINARY_DIR}/vulkan_pathtrace.spv
+            ${CMAKE_CURRENT_BINARY_DIR}/vulkan_pathtrace_spv.tmp
+    COMMAND ${CMAKE_COMMAND}
+            -DINPUT=${CMAKE_CURRENT_BINARY_DIR}/vulkan_pathtrace_spv.tmp
+            -DOUTPUT=${TVDBVIEW_VULKAN_SPV_INC}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/make_spv_include.cmake
+    DEPENDS
+      ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_pathtrace.comp
+      ${CMAKE_CURRENT_SOURCE_DIR}/make_spv_include.cmake
+    VERBATIM)
+else()
+  configure_file(${CMAKE_CURRENT_SOURCE_DIR}/vulkan_pathtrace_spv.inc
+                 ${TVDBVIEW_VULKAN_SPV_INC} COPYONLY)
+endif()
+set_source_files_properties(${TVDBVIEW_VULKAN_SPV_INC}
+  PROPERTIES GENERATED TRUE HEADER_FILE_ONLY TRUE)
+list(APPEND TVDBVIEW_SOURCES ${TVDBVIEW_VULKAN_SPV_INC})
+
 add_executable(${EXAMPLE_TARGET} ${TVDBVIEW_SOURCES})
+add_custom_target(tvdbview_vulkan_spv DEPENDS ${TVDBVIEW_VULKAN_SPV_INC})
+add_dependencies(${EXAMPLE_TARGET} tvdbview_vulkan_spv)
 set_target_properties(${EXAMPLE_TARGET} PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 target_compile_definitions(${EXAMPLE_TARGET} PRIVATE GLFW_INCLUDE_NONE)
 target_include_directories(${EXAMPLE_TARGET} PRIVATE
+  ${CMAKE_CURRENT_BINARY_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/../common/glad/include
   ${CMAKE_CURRENT_SOURCE_DIR}/../common/glfw-3.4/deps
   ${CMAKE_CURRENT_SOURCE_DIR}/../common/imgui)
