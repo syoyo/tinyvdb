@@ -5,7 +5,8 @@ Minimal OpenGL viewer for TinyVDB `.vdb` files.
 The viewer has an on-screen HUD and an ImGui control panel for selecting grids,
 changing render/color modes, adjusting density gain, controlling slice/clip
 settings, toggling bounding boxes, saving screenshots, and managing camera
-presets/bookmarks.
+presets/bookmarks. It also supports value-window controls, per-grid histogram
+stats, command-line startup state, and Ctrl-click value probing.
 
 ## Build
 
@@ -17,14 +18,48 @@ cmake --build build-tvdbview --target tvdbview
 ## Run
 
 ```sh
-./build-tvdbview/examples/tvdbview/tvdbview smoke.vdb
+./build-tvdbview/tvdbview smoke.vdb
 ```
+
+Useful command-line options:
+
+```sh
+./build-tvdbview/tvdbview smoke.vdb --grid density --color blackbody --gain 4
+./build-tvdbview/tvdbview smoke.vdb --display grid --no-internal-boxes
+./build-tvdbview/tvdbview smoke.vdb --window 0.01:1.5 --gamma 0.8 --steps 256
+./build-tvdbview/tvdbview smoke.vdb --ray mip --color jet
+./build-tvdbview/tvdbview smoke.vdb --ray iso --iso 0.35 --color blackbody --shade-strength 0.8
+./build-tvdbview/tvdbview smoke.vdb --ray pathtrace --pt-backend vulkan --pt-scale 2 --sun 35:45 --pt-depth 2
+./build-tvdbview/tvdbview smoke.vdb --window-percentile 1:99 --clip-active
+./build-tvdbview/tvdbview smoke.vdb --slice z:0.5:0.03 --clip 0,0,0:1,1,0.6
+./build-tvdbview/tvdbview smoke.vdb --size 1920x1080 --hide-hud --hide-panel --capture frame.png --quit
+```
+
+`--grid` accepts a grid index or exact grid name. `--color` accepts `density`,
+`jet`, `blackbody`, or `vector`. `--window min:max` enables manual value
+windowing, while `--window-percentile lo:hi` derives a value window from the
+selected grid. `--clip-active` clips to non-background dense cells. `--invert`,
+`--opacity-power`, `--steps`, `--ray composite|mip|iso|pathtrace`, and the
+shading flags (`--shade`, `--no-shade`, `--shade-strength`, `--light`) further
+shape the rendered result. `--ray pathtrace` enables the progressive volumetric
+path tracer with sun/sky lighting. It can use a runtime-loaded Vulkan compute
+backend, an OpenGL compute backend, or the CPU renderer; use
+`--pt-backend auto|gpu|vulkan|cpu`, `--pt-scale`, `--pt-rows`, `--pt-depth`,
+`--sun`, `--sun-strength`, `--sky-strength`, and `--pt-albedo` to control
+quality and lighting. Vulkan is resolved at runtime from `libvulkan` and is not
+linked through CMake; the Vulkan compute shader source is kept in
+`vulkan_pathtrace.comp` and its embedded SPIR-V blob is in
+`vulkan_pathtrace_spv.inc`. The control panel includes a `Copy command` button
+to recreate the current display state, including camera and window size, from
+the command line.
 
 ## Controls
 
 - Left drag: orbit camera
 - Middle or right drag: pan camera
 - Mouse wheel: zoom
+- Ctrl+left click: probe selected grid value; the panel can use midpoint or
+  strongest visible sample along the clicked ray
 - `O`: open a VDB file with native file dialog
 - `0`-`9`: select VDB attribute/grid by index
 - `X` / `Y` / `Z`: enable slice view along the selected axis

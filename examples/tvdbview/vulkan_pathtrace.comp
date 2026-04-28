@@ -1,0 +1,31 @@
+#version 450
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer DensityBuffer { float density[]; };
+layout(std430, set = 0, binding = 1) buffer AccumBuffer { vec4 accum[]; };
+layout(std430, set = 0, binding = 2) buffer OutputBuffer { uint rgba[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  vec4 camera_pos;
+  vec4 camera_forward;
+  vec4 camera_right;
+  vec4 camera_up;
+  vec4 volume_min;
+  vec4 volume_max;
+  vec4 clip_min;
+  vec4 clip_max;
+  vec4 settings0; // value_offset, value_scale, density_gain, value_gamma
+  vec4 settings1; // opacity_power, tan_half_fov, sun_elevation, sun_azimuth
+  vec4 settings2; // sun_strength, sky_strength, albedo, sample_index
+  ivec4 settings_i0; // width, height, steps, invert
+  ivec4 settings_i1; // dimx, dimy, dimz, unused
+  ivec4 settings_i2; // slice_axis, unused
+  vec4 settings3; // slice_pos, slice_thickness, unused
+} u;
+uint hash_u32(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
+float rand(inout uint s) { s = hash_u32(s + 0x9e3779b9u); return float(s & 0x00ffffffu) / float(0x01000000u); }
+vec3 sunDir() { float elev = radians(u.settings1.z); float az = radians(u.settings1.w); float ce = cos(elev); return normalize(vec3(ce * sin(az), sin(elev), ce * cos(az))); }
+vec3 env(vec3 d) { vec3 sd = sunDir(); float up = clamp(d.y * 0.5 + 0.5, 0.0, 1.0); vec3 sky = mix(vec3(0.78,0.86,1.0), vec3(0.10,0.32,0.85), up) * u.settings2.y; float disk = pow(max(dot(normalize(d), sd), 0.0), 900.0); return sky + vec3(1.0,0.86,0.62) * disk * u.settings2.x; }
+bool box(vec3 ro, vec3 rd, out float te, out float tx) { vec3 inv = 1.0 / rd; vec3 t0 = (u.volume_min.xyz - ro) * inv; vec3 t1 = (u.volume_max.xyz - ro) * inv; vec3 mn = min(t0,t1); vec3 mx = max(t0,t1); te = max(max(mn.x,mn.y),mn.z); tx = min(min(mx.x,mx.y),mx.z); te = max(te, 0.0); return te < tx; }
+float sampleNorm(vec3 uvw) { if (any(lessThan(uvw, u.clip_min.xyz)) || any(greaterThan(uvw, u.clip_max.xyz))) return 0.0; int axis = u.settings_i2.x; if (axis > 0) { float s = axis == 1 ? uvw.x : (axis == 2 ? uvw.y : uvw.z); if (abs(s - u.settings3.x) > u.settings3.y * 0.5) return 0.0; } ivec3 dim = max(u.settings_i1.xyz, ivec3(1)); ivec3 p = clamp(ivec3(uvw * vec3(dim)), ivec3(0), dim - ivec3(1)); uint idx = uint(p.x + dim.x * (p.y + dim.y * p.z)); float n = clamp((density[idx] - u.settings0.x) * u.settings0.y, 0.0, 1.0); if (u.settings_i0.w == 1) n = 1.0 - n; return pow(n, max(u.settings0.w, 1e-4)); }
+uint packRGBA(vec3 c) { c = clamp(pow(max(c, vec3(0.0)), vec3(1.0/2.2)), 0.0, 1.0); uint r = uint(c.r * 255.0 + 0.5); uint g = uint(c.g * 255.0 + 0.5); uint b = uint(c.b * 255.0 + 0.5); return r | (g << 8) | (b << 16) | (255u << 24); }
+void main() {
+  uvec2 pix = gl_GlobalInvocationID.xy; uint w = uint(u.settings_i0.x); uint h = uint(u.settings_i0.y); if (pix.x >= w || pix.y >= h) return; uint index = pix.x + w * pix.y; uint rng = hash_u32((pix.x + 1u) * 1973u ^ (pix.y + 1u) * 9277u ^ (uint(u.settings2.w) + 1u) * 26699u); vec2 jitter = vec2(rand(rng), rand(rng)); vec2 p = (vec2(pix) + jitter) / vec2(w,h); vec2 ndc = vec2(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0); float aspect = float(w) / max(float(h), 1.0); vec3 rd = normalize(u.camera_forward.xyz + u.camera_right.xyz * (ndc.x * aspect * u.settings1.y) + u.camera_up.xyz * (ndc.y * u.settings1.y)); vec3 ro = u.camera_pos.xyz; float te, tx; vec3 color = vec3(0.0); if (box(ro, rd, te, tx)) { int steps = clamp(u.settings_i0.z, 8, 512); float dt = (tx - te) / float(steps); vec3 extent = u.volume_max.xyz - u.volume_min.xyz; float max_extent = max(extent.x, max(extent.y, extent.z)); float tr = 1.0; vec3 sund = sunDir(); for (int i = 0; i < 512; ++i) { if (i >= steps) break; float t = te + (float(i) + rand(rng)) * dt; vec3 pos = ro + rd * t; vec3 uvw = (pos - u.volume_min.xyz) / extent; float n = sampleNorm(uvw); float sigma = pow(n, max(u.settings1.x, 1e-4)) * u.settings0.z / max(max_extent, 1e-4); float alpha = 1.0 - exp(-sigma * dt); vec3 direct = vec3(1.0,0.86,0.62) * u.settings2.x * max(dot(rd, sund) * 0.25 + 0.75, 0.0) + env(vec3(0,1,0)) * 0.18; color += tr * alpha * u.settings2.z * vec3(n) * direct; tr *= 1.0 - alpha; if (tr < 0.003) break; } color += tr * env(rd); } else { color = env(rd); } vec3 avg = (accum[index].rgb * u.settings2.w + max(color, vec3(0.0))) / (u.settings2.w + 1.0); accum[index] = vec4(avg, 1.0); rgba[index] = packRGBA(avg); }
