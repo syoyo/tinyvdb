@@ -2,8 +2,12 @@
  * tinyvdb_embind.cc — Emscripten/Embind bindings for TinyVDB.
  *
  * Exposes: VDB file I/O (from memory), mesh-to-SDF, SDF-to-mesh, CSG,
- *          morphology, filtering, measurement, differential operators,
- *          ray casting, and more.
+ *          morphology, filtering, measurement.
+ *
+ * Updated for tinyvdb v0.9.0: the legacy C++ wrapper namespaces
+ * (`tvdb_mesh::`, `tvdb_ops::`) were dropped; this file now binds the
+ * C API directly. DenseGridWrap / TriangleMeshWrap are thin C++ shells
+ * around the C structs so embind can hold them by value.
  *
  * Build with Emscripten: emcmake cmake .. && emmake make
  */
@@ -13,24 +17,15 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-/* C I/O library */
 #include "tinyvdb_io.h"
-
-/* C++ mesh & ops (include implementations here) */
-#define TINYVDB_MESH_IMPLEMENTATION
 #include "tinyvdb_mesh.h"
-
-#define TINYVDB_OPS_IMPLEMENTATION
 #include "tinyvdb_ops.h"
 
 using namespace emscripten;
-
-/* ======================================================================== */
-/*  Helper: typed_memory_view for returning data to JS without copy          */
-/* ======================================================================== */
 
 /* ======================================================================== */
 /*  VDB File I/O wrapper (memory-based, no filesystem)                      */
@@ -43,47 +38,38 @@ public:
 
     void openMemory(const std::string &data) {
         close();
-        tvdb_error_t err;
-        memset(&err, 0, sizeof(err));
+        tvdb_error_t err; memset(&err, 0, sizeof(err));
         buf_ = data;
         tvdb_status_t st = tvdb_file_open_memory(
             &file_, reinterpret_cast<const uint8_t *>(buf_.data()),
             buf_.size(), NULL, &err);
         if (st != TVDB_OK)
-            throw std::runtime_error(
-                std::string("openMemory failed: ") + err.message);
+            throw std::runtime_error(std::string("openMemory failed: ") + err.message);
         is_open_ = true;
     }
 
-    /* Accept Uint8Array from JS (avoids String.fromCharCode limits) */
     void openMemoryFromArray(const val &arr) {
         close();
         unsigned len = arr["length"].as<unsigned>();
         buf_.resize(len);
-        /* Copy from JS typed array into C++ buffer */
         val memview = val(typed_memory_view(len,
             reinterpret_cast<uint8_t *>(&buf_[0])));
         memview.call<void>("set", arr);
-
-        tvdb_error_t err;
-        memset(&err, 0, sizeof(err));
+        tvdb_error_t err; memset(&err, 0, sizeof(err));
         tvdb_status_t st = tvdb_file_open_memory(
             &file_, reinterpret_cast<const uint8_t *>(buf_.data()),
             buf_.size(), NULL, &err);
         if (st != TVDB_OK)
-            throw std::runtime_error(
-                std::string("openMemory failed: ") + err.message);
+            throw std::runtime_error(std::string("openMemory failed: ") + err.message);
         is_open_ = true;
     }
 
     void readGrids() {
         checkOpen();
-        tvdb_error_t err;
-        memset(&err, 0, sizeof(err));
+        tvdb_error_t err; memset(&err, 0, sizeof(err));
         tvdb_status_t st = tvdb_read_all_grids(&file_, &err);
         if (st != TVDB_OK)
-            throw std::runtime_error(
-                std::string("readGrids failed: ") + err.message);
+            throw std::runtime_error(std::string("readGrids failed: ") + err.message);
     }
 
     void close() {
@@ -91,9 +77,7 @@ public:
         buf_.clear();
     }
 
-    int gridCount() const {
-        return is_open_ ? (int)tvdb_grid_count(&file_) : 0;
-    }
+    int gridCount() const { return is_open_ ? (int)tvdb_grid_count(&file_) : 0; }
 
     std::string gridName(int idx) const {
         checkOpen();
@@ -109,36 +93,29 @@ public:
 
     val toBytes(int compression, int level) const {
         checkOpen();
-        tvdb_error_t err;
-        memset(&err, 0, sizeof(err));
-        uint8_t *out = NULL;
-        size_t out_sz = 0;
+        tvdb_error_t err; memset(&err, 0, sizeof(err));
+        uint8_t *out = NULL; size_t out_sz = 0;
         tvdb_status_t st = tvdb_write_to_memory(
             &file_, (uint32_t)compression, level, &out, &out_sz, &err);
-        if (st != TVDB_OK) {
-            throw std::runtime_error(
-                std::string("toBytes failed: ") + err.message);
-        }
-        val result = val(typed_memory_view(out_sz, out));
-        /* Copy into JS Uint8Array so we can free */
-        val js_arr = val::global("Uint8Array").new_(result);
+        if (st != TVDB_OK)
+            throw std::runtime_error(std::string("toBytes failed: ") + err.message);
+        val view = val(typed_memory_view(out_sz, out));
+        val js_arr = val::global("Uint8Array").new_(view);
         free(out);
         return js_arr;
     }
 
-    /* Header as JS object */
     val header() const {
         checkOpen();
         val h = val::object();
-        h.set("fileVersion", (int)file_.header.file_version);
-        h.set("majorVersion", (int)file_.header.major_version);
-        h.set("minorVersion", (int)file_.header.minor_version);
+        h.set("fileVersion",      (int)file_.header.file_version);
+        h.set("majorVersion",     (int)file_.header.major_version);
+        h.set("minorVersion",     (int)file_.header.minor_version);
         h.set("compressionFlags", (int)file_.header.compression_flags);
-        h.set("uuid", std::string(file_.header.uuid));
+        h.set("uuid",             std::string(file_.header.uuid));
         return h;
     }
 
-    /* Grid metadata as JS object */
     val gridMetadata(int idx) const {
         checkOpen();
         if ((size_t)idx >= file_.num_grids)
@@ -165,7 +142,6 @@ public:
         return d;
     }
 
-    /* Grid transform as JS object */
     val gridTransform(int idx) const {
         checkOpen();
         if ((size_t)idx >= file_.num_grids)
@@ -185,7 +161,6 @@ public:
         return d;
     }
 
-    /* Tree info for a grid */
     int treeNodeCount(int idx) const {
         checkOpen();
         if ((size_t)idx >= file_.num_grids) return 0;
@@ -202,7 +177,7 @@ public:
         const tvdb_tree_node_t &n = tree.nodes[nodeIdx];
         val d = val::object();
         const char *types[] = {"root", "internal", "leaf"};
-        d.set("type", std::string(types[n.type]));
+        d.set("type",  std::string(types[n.type]));
         d.set("level", n.level);
         val origin = val::array();
         origin.call<void>("push", n.origin[0]);
@@ -219,99 +194,167 @@ public:
 
 private:
     void checkOpen() const {
-        if (!is_open_)
-            throw std::runtime_error("VDB file is not open");
+        if (!is_open_) throw std::runtime_error("VDB file is not open");
     }
-
     tvdb_file_t file_;
     bool is_open_;
-    std::string buf_;  /* keep data alive for open_memory */
+    std::string buf_;
 };
 
 /* ======================================================================== */
-/*  DenseGrid wrapper                                                       */
+/*  DenseGrid wrapper (RAII over the C tvdb_dense_grid)                     */
 /* ======================================================================== */
 
 class DenseGridWrap {
 public:
-    tvdb_mesh::DenseGrid grid;
+    tvdb_dense_grid grid;
 
-    DenseGridWrap() { grid.nx = grid.ny = grid.nz = 0; grid.voxel_size = 1; }
-
-    DenseGridWrap(int nx, int ny, int nz, float vs)  {
-        grid.nx = nx; grid.ny = ny; grid.nz = nz;
-        grid.ox = grid.oy = grid.oz = 0;
-        grid.voxel_size = vs;
-        grid.data.assign((size_t)nx * ny * nz, 0.0f);
+    DenseGridWrap() {
+        std::memset(&grid, 0, sizeof(grid));
+        grid.voxel_size = 1.0f;
     }
 
-    int getNx() const { return grid.nx; }
-    int getNy() const { return grid.ny; }
-    int getNz() const { return grid.nz; }
+    DenseGridWrap(int nx, int ny, int nz, float vs) {
+        tvdb_dense_grid_init(&grid, nx, ny, nz);
+        grid.voxel_size = vs;
+    }
+
+    DenseGridWrap(const DenseGridWrap& other) {
+        tvdb_dense_grid_init(&grid, other.grid.nx, other.grid.ny, other.grid.nz);
+        grid.ox = other.grid.ox; grid.oy = other.grid.oy; grid.oz = other.grid.oz;
+        grid.voxel_size = other.grid.voxel_size;
+        const size_t n = (size_t)grid.nx * grid.ny * grid.nz;
+        if (grid.data && other.grid.data && n)
+            std::memcpy(grid.data, other.grid.data, n * sizeof(float));
+    }
+
+    DenseGridWrap& operator=(const DenseGridWrap& other) {
+        if (this != &other) {
+            tvdb_dense_grid_free(&grid);
+            tvdb_dense_grid_init(&grid, other.grid.nx, other.grid.ny, other.grid.nz);
+            grid.ox = other.grid.ox; grid.oy = other.grid.oy; grid.oz = other.grid.oz;
+            grid.voxel_size = other.grid.voxel_size;
+            const size_t n = (size_t)grid.nx * grid.ny * grid.nz;
+            if (grid.data && other.grid.data && n)
+                std::memcpy(grid.data, other.grid.data, n * sizeof(float));
+        }
+        return *this;
+    }
+
+    ~DenseGridWrap() { tvdb_dense_grid_free(&grid); }
+
+    int  getNx() const { return grid.nx; }
+    int  getNy() const { return grid.ny; }
+    int  getNz() const { return grid.nz; }
     float getOx() const { return grid.ox; }
     float getOy() const { return grid.oy; }
     float getOz() const { return grid.oz; }
     float getVoxelSize() const { return grid.voxel_size; }
-    int size() const { return (int)grid.data.size(); }
+    int   size() const { return grid.nx * grid.ny * grid.nz; }
 
-    float get(int x, int y, int z) const { return grid.at(x, y, z); }
-    void set(int x, int y, int z, float v) { grid.at(x, y, z) = v; }
-
-    /* Return data as JS Float32Array (copy) */
-    val getData() const {
-        return val(typed_memory_view(grid.data.size(), grid.data.data()));
+    float get(int x, int y, int z) const {
+        return grid.data[((size_t)z * grid.ny + y) * grid.nx + x];
+    }
+    void set(int x, int y, int z, float v) {
+        grid.data[((size_t)z * grid.ny + y) * grid.nx + x] = v;
     }
 
-    /* Set data from JS Float32Array */
+    val getData() const {
+        const size_t n = (size_t)grid.nx * grid.ny * grid.nz;
+        return val(typed_memory_view(n, grid.data));
+    }
+
     void setData(const val &arr) {
-        size_t n = (size_t)grid.nx * grid.ny * grid.nz;
-        grid.data.resize(n);
-        val memview = val(typed_memory_view(n, grid.data.data()));
+        const size_t n = (size_t)grid.nx * grid.ny * grid.nz;
+        val memview = val(typed_memory_view(n, grid.data));
         memview.call<void>("set", arr);
     }
 };
 
 /* ======================================================================== */
-/*  TriangleMesh wrapper                                                    */
+/*  TriangleMesh wrapper (RAII over tvdb_triangle_mesh)                     */
 /* ======================================================================== */
 
 class TriangleMeshWrap {
 public:
-    tvdb_mesh::TriangleMesh mesh;
+    tvdb_triangle_mesh mesh;
 
-    int numVertices() const { return (int)mesh.vertices.size(); }
-    int numFaces() const { return (int)mesh.faces.size(); }
+    TriangleMeshWrap() { tvdb_triangle_mesh_init(&mesh); }
+    ~TriangleMeshWrap() { tvdb_triangle_mesh_free(&mesh); }
 
-    /* Return vertices as Float32Array (3 * nv floats) */
+    TriangleMeshWrap(const TriangleMeshWrap& other) {
+        tvdb_triangle_mesh_init(&mesh);
+        copyFrom(other.mesh);
+    }
+
+    TriangleMeshWrap& operator=(const TriangleMeshWrap& other) {
+        if (this != &other) {
+            tvdb_triangle_mesh_free(&mesh);
+            tvdb_triangle_mesh_init(&mesh);
+            copyFrom(other.mesh);
+        }
+        return *this;
+    }
+
+    int numVertices() const { return (int)mesh.vertex_count; }
+    int numFaces()    const { return (int)mesh.face_count; }
+
     val getVertices() const {
         return val(typed_memory_view(
-            mesh.vertices.size() * 3,
-            reinterpret_cast<const float *>(mesh.vertices.data())));
+            mesh.vertex_count * 3,
+            reinterpret_cast<const float *>(mesh.vertices)));
     }
 
-    /* Return faces as Uint32Array (3 * nf uint32) */
     val getFaces() const {
         return val(typed_memory_view(
-            mesh.faces.size() * 3,
-            reinterpret_cast<const uint32_t *>(mesh.faces.data())));
+            mesh.face_count * 3,
+            reinterpret_cast<const uint32_t *>(mesh.faces)));
     }
 
-    /* Set vertices from Float32Array (3N floats) */
     void setVertices(const val &arr) {
         unsigned len = arr["length"].as<unsigned>();
-        mesh.vertices.resize(len / 3);
+        const size_t V = len / 3;
+        ensureVertexCap(V);
+        mesh.vertex_count = V;
         val memview = val(typed_memory_view(
-            len, reinterpret_cast<float *>(mesh.vertices.data())));
+            len, reinterpret_cast<float *>(mesh.vertices)));
         memview.call<void>("set", arr);
     }
 
-    /* Set faces from Uint32Array (3N uint32) */
     void setFaces(const val &arr) {
         unsigned len = arr["length"].as<unsigned>();
-        mesh.faces.resize(len / 3);
+        const size_t F = len / 3;
+        ensureFaceCap(F);
+        mesh.face_count = F;
         val memview = val(typed_memory_view(
-            len, reinterpret_cast<uint32_t *>(mesh.faces.data())));
+            len, reinterpret_cast<uint32_t *>(mesh.faces)));
         memview.call<void>("set", arr);
+    }
+
+private:
+    void ensureVertexCap(size_t cap) {
+        if (mesh.vertex_capacity < cap) {
+            mesh.vertices = (tvdb_vec3f*)std::realloc(
+                mesh.vertices, cap * sizeof(tvdb_vec3f));
+            mesh.vertex_capacity = cap;
+        }
+    }
+    void ensureFaceCap(size_t cap) {
+        if (mesh.face_capacity < cap) {
+            mesh.faces = (tvdb_triangle*)std::realloc(
+                mesh.faces, cap * sizeof(tvdb_triangle));
+            mesh.face_capacity = cap;
+        }
+    }
+    void copyFrom(const tvdb_triangle_mesh& src) {
+        ensureVertexCap(src.vertex_count);
+        mesh.vertex_count = src.vertex_count;
+        if (src.vertex_count) std::memcpy(mesh.vertices, src.vertices,
+                                          src.vertex_count * sizeof(tvdb_vec3f));
+        ensureFaceCap(src.face_count);
+        mesh.face_count = src.face_count;
+        if (src.face_count) std::memcpy(mesh.faces, src.faces,
+                                        src.face_count * sizeof(tvdb_triangle));
     }
 };
 
@@ -319,123 +362,79 @@ public:
 /*  Free functions                                                          */
 /* ======================================================================== */
 
-/* --- Mesh --- */
-
 DenseGridWrap meshToSDF(TriangleMeshWrap &m, float voxelSize,
                         float bandWidth, int signMethod) {
     DenseGridWrap result;
-    bool ok = tvdb_mesh::MeshToSDF_VDB(
-        m.mesh, voxelSize, bandWidth, &result.grid,
-        static_cast<tvdb_mesh::SignMethod>(signMethod));
-    if (!ok) throw std::runtime_error("MeshToSDF_VDB failed");
+    tvdb_sign_method sm = (signMethod == 1) ? TVDB_SIGN_SWEEP
+                                              : TVDB_SIGN_FLOOD_FILL;
+    bool ok = tvdb_mesh_to_sdf_vdb(&m.mesh, voxelSize, bandWidth,
+                                    &result.grid, sm, /*arena=*/nullptr);
+    if (!ok) throw std::runtime_error("tvdb_mesh_to_sdf_vdb failed");
     return result;
 }
 
 TriangleMeshWrap sdfToMesh(const DenseGridWrap &g, float isovalue) {
     TriangleMeshWrap result;
-    bool ok = tvdb_mesh::SDFToMesh(g.grid, isovalue, &result.mesh);
-    if (!ok) throw std::runtime_error("SDFToMesh failed");
+    bool ok = tvdb_sdf_to_mesh(&g.grid, isovalue, &result.mesh,
+                                /*arena=*/nullptr);
+    if (!ok) throw std::runtime_error("tvdb_sdf_to_mesh failed");
     return result;
 }
 
 TriangleMeshWrap makeManifold(TriangleMeshWrap &m, double resolution,
                               double isovalue, int signMethod) {
     TriangleMeshWrap result;
-    bool ok = tvdb_mesh::MakeManifold_VDB(
-        m.mesh, resolution, isovalue, &result.mesh,
-        static_cast<tvdb_mesh::SignMethod>(signMethod));
-    if (!ok) throw std::runtime_error("MakeManifold_VDB failed");
+    tvdb_sign_method sm = (signMethod == 1) ? TVDB_SIGN_SWEEP
+                                              : TVDB_SIGN_FLOOD_FILL;
+    bool ok = tvdb_make_manifold_vdb(&m.mesh, resolution, isovalue,
+                                      &result.mesh, sm, /*arena=*/nullptr);
+    if (!ok) throw std::runtime_error("tvdb_make_manifold_vdb failed");
     return result;
 }
 
-/* --- Morphology --- */
+/* --- Morphology / filtering / CSG / measurement: thin wrappers ---------- */
 
 DenseGridWrap dilate(const DenseGridWrap &g, int iterations) {
-    DenseGridWrap r; r.grid = g.grid;
-    tvdb_ops::Dilate(&r.grid, iterations);
-    return r;
+    DenseGridWrap r(g); tvdb_dilate(&r.grid, iterations); return r;
 }
 DenseGridWrap erode(const DenseGridWrap &g, int iterations) {
-    DenseGridWrap r; r.grid = g.grid;
-    tvdb_ops::Erode(&r.grid, iterations);
-    return r;
+    DenseGridWrap r(g); tvdb_erode(&r.grid, iterations); return r;
 }
 DenseGridWrap morphOpen(const DenseGridWrap &g, int iterations) {
-    DenseGridWrap r; r.grid = g.grid;
-    tvdb_ops::Open(&r.grid, iterations);
-    return r;
+    DenseGridWrap r(g); tvdb_open(&r.grid, iterations); return r;
 }
 DenseGridWrap morphClose(const DenseGridWrap &g, int iterations) {
-    DenseGridWrap r; r.grid = g.grid;
-    tvdb_ops::Close(&r.grid, iterations);
-    return r;
+    DenseGridWrap r(g); tvdb_close(&r.grid, iterations); return r;
 }
-
-/* --- Filtering --- */
 
 DenseGridWrap gaussianFilter(const DenseGridWrap &g, int width, int iterations) {
-    DenseGridWrap r; r.grid = g.grid;
-    tvdb_ops::GaussianFilter(&r.grid, width, iterations);
-    return r;
+    DenseGridWrap r(g); tvdb_gaussian_filter(&r.grid, width, iterations); return r;
 }
 DenseGridWrap meanFilter(const DenseGridWrap &g, int width, int iterations) {
-    DenseGridWrap r; r.grid = g.grid;
-    tvdb_ops::MeanFilter(&r.grid, width, iterations);
-    return r;
+    DenseGridWrap r(g); tvdb_mean_filter(&r.grid, width, iterations); return r;
 }
 DenseGridWrap laplacianFilter(const DenseGridWrap &g, int iterations) {
-    DenseGridWrap r; r.grid = g.grid;
-    tvdb_ops::LaplacianFilter(&r.grid, iterations);
-    return r;
+    DenseGridWrap r(g); tvdb_laplacian_filter(&r.grid, iterations); return r;
 }
 
-/* --- CSG --- */
-
 DenseGridWrap csgUnion(const DenseGridWrap &a, const DenseGridWrap &b) {
-    DenseGridWrap r;
-    tvdb_ops::CSGUnion(a.grid, b.grid, &r.grid);
+    DenseGridWrap r(a);
+    tvdb_csg_union(&a.grid, &b.grid, &r.grid);
     return r;
 }
 DenseGridWrap csgIntersection(const DenseGridWrap &a, const DenseGridWrap &b) {
-    DenseGridWrap r;
-    tvdb_ops::CSGIntersection(a.grid, b.grid, &r.grid);
+    DenseGridWrap r(a);
+    tvdb_csg_intersection(&a.grid, &b.grid, &r.grid);
     return r;
 }
 DenseGridWrap csgDifference(const DenseGridWrap &a, const DenseGridWrap &b) {
-    DenseGridWrap r;
-    tvdb_ops::CSGDifference(a.grid, b.grid, &r.grid);
+    DenseGridWrap r(a);
+    tvdb_csg_difference(&a.grid, &b.grid, &r.grid);
     return r;
 }
 
-/* --- Measurement --- */
-
-float surfaceArea(const DenseGridWrap &g) { return tvdb_ops::SurfaceArea(g.grid); }
-float volume(const DenseGridWrap &g) { return tvdb_ops::Volume(g.grid); }
-
-/* --- Ray casting --- */
-
-val rayCastSDF(const DenseGridWrap &g,
-               float ox, float oy, float oz,
-               float dx, float dy, float dz, float maxT) {
-    tvdb_mesh::Vec3f origin = {ox, oy, oz};
-    tvdb_mesh::Vec3f dir = {dx, dy, dz};
-    tvdb_ops::RayHit hit;
-    bool ok = tvdb_ops::RayCastSDF(g.grid, origin, dir, maxT, &hit);
-    if (!ok) return val::null();
-    val r = val::object();
-    r.set("t", hit.t);
-    val pos = val::array();
-    pos.call<void>("push", hit.position.x);
-    pos.call<void>("push", hit.position.y);
-    pos.call<void>("push", hit.position.z);
-    r.set("position", pos);
-    val norm = val::array();
-    norm.call<void>("push", hit.normal.x);
-    norm.call<void>("push", hit.normal.y);
-    norm.call<void>("push", hit.normal.z);
-    r.set("normal", norm);
-    return r;
-}
+float surfaceArea(const DenseGridWrap &g) { return tvdb_surface_area(&g.grid); }
+float volume(const DenseGridWrap &g)      { return tvdb_volume(&g.grid); }
 
 /* ======================================================================== */
 /*  Embind registration                                                     */
@@ -448,28 +447,26 @@ EMSCRIPTEN_BINDINGS(tinyvdb) {
     constant("COMPRESS_ZIP",         (int)TVDB_COMPRESS_ZIP);
     constant("COMPRESS_ACTIVE_MASK", (int)TVDB_COMPRESS_ACTIVE_MASK);
     constant("COMPRESS_BLOSC",       (int)TVDB_COMPRESS_BLOSC);
-    constant("SIGN_FLOOD_FILL",      0);
-    constant("SIGN_SWEEP",           1);
+    constant("SIGN_FLOOD_FILL",      (int)TVDB_SIGN_FLOOD_FILL);
+    constant("SIGN_SWEEP",           (int)TVDB_SIGN_SWEEP);
 
-    /* --- VDBFile --- */
     class_<VDBFile>("VDBFile")
         .constructor<>()
         .function("openMemory",          &VDBFile::openMemory)
         .function("openMemoryFromArray", &VDBFile::openMemoryFromArray)
-        .function("readGrids",     &VDBFile::readGrids)
-        .function("close",         &VDBFile::close)
-        .function("gridCount",     &VDBFile::gridCount)
-        .function("gridName",      &VDBFile::gridName)
-        .function("gridTypeName",  &VDBFile::gridTypeName)
-        .function("toBytes",       &VDBFile::toBytes)
-        .function("header",        &VDBFile::header)
-        .function("gridMetadata",  &VDBFile::gridMetadata)
-        .function("gridTransform", &VDBFile::gridTransform)
-        .function("treeNodeCount", &VDBFile::treeNodeCount)
-        .function("treeNodeInfo",  &VDBFile::treeNodeInfo)
+        .function("readGrids",           &VDBFile::readGrids)
+        .function("close",               &VDBFile::close)
+        .function("gridCount",           &VDBFile::gridCount)
+        .function("gridName",            &VDBFile::gridName)
+        .function("gridTypeName",        &VDBFile::gridTypeName)
+        .function("toBytes",             &VDBFile::toBytes)
+        .function("header",              &VDBFile::header)
+        .function("gridMetadata",        &VDBFile::gridMetadata)
+        .function("gridTransform",       &VDBFile::gridTransform)
+        .function("treeNodeCount",       &VDBFile::treeNodeCount)
+        .function("treeNodeInfo",        &VDBFile::treeNodeInfo)
         ;
 
-    /* --- DenseGrid --- */
     class_<DenseGridWrap>("DenseGrid")
         .constructor<>()
         .constructor<int, int, int, float>()
@@ -487,42 +484,33 @@ EMSCRIPTEN_BINDINGS(tinyvdb) {
         .function("setData", &DenseGridWrap::setData)
         ;
 
-    /* --- TriangleMesh --- */
     class_<TriangleMeshWrap>("TriangleMesh")
         .constructor<>()
-        .function("numVertices",  &TriangleMeshWrap::numVertices)
-        .function("numFaces",     &TriangleMeshWrap::numFaces)
-        .function("getVertices",  &TriangleMeshWrap::getVertices)
-        .function("getFaces",     &TriangleMeshWrap::getFaces)
-        .function("setVertices",  &TriangleMeshWrap::setVertices)
-        .function("setFaces",     &TriangleMeshWrap::setFaces)
+        .function("numVertices", &TriangleMeshWrap::numVertices)
+        .function("numFaces",    &TriangleMeshWrap::numFaces)
+        .function("getVertices", &TriangleMeshWrap::getVertices)
+        .function("getFaces",    &TriangleMeshWrap::getFaces)
+        .function("setVertices", &TriangleMeshWrap::setVertices)
+        .function("setFaces",    &TriangleMeshWrap::setFaces)
         ;
 
-    /* --- Mesh functions --- */
     function("meshToSDF",     &meshToSDF);
     function("sdfToMesh",     &sdfToMesh);
     function("makeManifold",  &makeManifold);
 
-    /* --- Morphology --- */
-    function("dilate",     &dilate);
-    function("erode",      &erode);
-    function("morphOpen",  &morphOpen);
-    function("morphClose", &morphClose);
+    function("dilate",        &dilate);
+    function("erode",         &erode);
+    function("morphOpen",     &morphOpen);
+    function("morphClose",    &morphClose);
 
-    /* --- Filtering --- */
     function("gaussianFilter",  &gaussianFilter);
     function("meanFilter",      &meanFilter);
     function("laplacianFilter", &laplacianFilter);
 
-    /* --- CSG --- */
     function("csgUnion",        &csgUnion);
     function("csgIntersection", &csgIntersection);
     function("csgDifference",   &csgDifference);
 
-    /* --- Measurement --- */
     function("surfaceArea", &surfaceArea);
     function("volume",      &volume);
-
-    /* --- Ray casting --- */
-    function("rayCastSDF",  &rayCastSDF);
 }
