@@ -18,7 +18,7 @@ jobs:
         with:
           submodules: recursive
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DTINYVDB_BUILD_TVDBVIEW=OFF
       - name: Build
         run: cmake --build build -j$(nproc)
       - name: Verify binaries
@@ -58,6 +58,7 @@ jobs:
       - name: Configure
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DTINYVDB_BUILD_TVDBVIEW=OFF \
             -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
             -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
             -DCMAKE_SYSTEM_NAME=Linux \
