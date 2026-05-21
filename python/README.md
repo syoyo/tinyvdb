@@ -110,6 +110,30 @@ mesh = tinyvdb.sdf_to_mesh(sdf, isovalue=0.0)
 print(mesh.num_vertices, mesh.num_faces)
 ```
 
+### Write a dense grid / SDF to `.vdb`
+
+Write an existing dense scalar field (e.g. an SDF you already computed) to a fresh `.vdb`
+file. `world = voxel_size * index + origin` (per-axis `ScaleTranslateMap`).
+
+```python
+import numpy as np
+import tinyvdb
+
+sdf = np.random.randn(32, 32, 24).astype(np.float32)   # your dense (nx, ny, nz) field
+
+# numpy convenience (round-trips bit-exactly):
+tinyvdb.write_dense_grid("sdf.vdb", sdf, voxel_size=(0.05, 0.06, 0.07),
+                         origin=(1.0, 2.0, 3.0), name="sdf")
+arr, voxel_size, origin = tinyvdb.read_dense_grid("sdf.vdb")
+assert np.array_equal(arr, sdf)
+
+# numpy-free raw API (values is an nx*ny*nz float32 buffer in C order):
+import struct
+buf = struct.pack("24f", *range(24))
+tinyvdb.write_float_grid("grid.vdb", buf, 2, 3, 4,
+                         voxel_size=(0.1, 0.1, 0.1), origin=(0.0, 0.0, 0.0))
+```
+
 ### CSG operations
 
 ```python

@@ -14,6 +14,7 @@ from tinyvdb._tinyvdb import (
     # I/O
     open,
     from_bytes,
+    write_float_grid,
     # Mesh
     mesh_to_sdf,
     sdf_to_mesh,
@@ -219,6 +220,74 @@ def laplacian_filter_sparse(sparse_or_grid, voxel_size=1.0,
                          pad_value=0.0)
 
 
+def write_dense_grid(path, array, voxel_size=1.0, origin=(0.0, 0.0, 0.0),
+                     name="sdf", background=0.0, compression=COMPRESS_ZIP, level=5):
+    """Write a dense 3D numpy float array (e.g. an SDF / level set) to a ``.vdb`` file.
+
+    Parameters
+    ----------
+    path : str
+        Output ``.vdb`` path.
+    array : numpy.ndarray
+        A 3D array of shape ``(nx, ny, nz)``; cast to float32.
+    voxel_size : float or (3,) sequence
+        World size of one voxel (scalar = isotropic, or per-axis).
+    origin : (3,) sequence
+        World position of voxel index ``(0, 0, 0)``. ``world = voxel_size * index + origin``.
+    name : str
+        Grid name stored in the file.
+    background : float
+        Background value for inactive voxels (all voxels are active here).
+    compression, level :
+        Passed through to the writer (``COMPRESS_NONE``/``COMPRESS_ZIP``/``COMPRESS_BLOSC``).
+    """
+    try:
+        import numpy as _np
+    except ImportError:
+        raise RuntimeError("write_dense_grid requires numpy")
+    a = _np.ascontiguousarray(array, dtype=_np.float32)
+    if a.ndim != 3:
+        raise ValueError(f"array must be 3D (nx, ny, nz), got shape {a.shape}")
+    nx, ny, nz = (int(d) for d in a.shape)
+    vs = (float(voxel_size),) * 3 if _np.isscalar(voxel_size) else tuple(float(v) for v in voxel_size)
+    org = tuple(float(v) for v in origin)
+    write_float_grid(path, a.reshape(-1), nx, ny, nz, voxel_size=vs, origin=org,
+                     name=name, background=float(background),
+                     compression=int(compression), level=int(level))
+
+
+def read_dense_grid(path, index=0):
+    """Read a float grid from a ``.vdb`` file back into a dense 3D numpy array.
+
+    Inverse of :func:`write_dense_grid`. Returns ``(array, voxel_size, origin)`` where ``array`` has
+    shape ``(nx, ny, nz)`` spanning the grid's active voxels, ``voxel_size`` is a 3-tuple and
+    ``origin`` is the world position of the array's first voxel. ``world = voxel_size*index + origin``.
+    """
+    try:
+        import numpy as _np
+    except ImportError:
+        raise RuntimeError("read_dense_grid requires numpy")
+    with open(path) as f:
+        f.read_grids()
+        g = f.grid(index)
+        sparse = g.to_sparse()
+        coords = _np.frombuffer(sparse["coords"], dtype=_np.int32).reshape(-1, 3)
+        if coords.size == 0:
+            return _np.empty((0, 0, 0), dtype=_np.float32), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+        cmin = coords.min(axis=0)
+        cmax = coords.max(axis=0)
+        shape = tuple(int(v) for v in (cmax - cmin + 1))
+        dense = g.materialize_dense(tuple(int(v) for v in cmin), tuple(int(v) for v in (cmax + 1)))
+        # DenseGrid.to_bytes is x-fastest (Fortran order).
+        arr = _np.frombuffer(dense.to_bytes(), dtype=_np.float32).reshape(shape, order="F").copy()
+        tr = g.transform
+        voxel_size = tuple(float(v) for v in tr.get("voxel_size", (1.0, 1.0, 1.0)))
+        translation = tuple(float(v) for v in tr.get("translation", (0.0, 0.0, 0.0)))
+        # Account for a non-zero active-voxel min: origin of arr[0,0,0].
+        origin = tuple(translation[i] + voxel_size[i] * float(cmin[i]) for i in range(3))
+        return arr, voxel_size, origin
+
+
 __version__ = "0.9.0"
 
 __all__ = [
@@ -232,6 +301,9 @@ __all__ = [
     "TriangleMesh",
     "open",
     "from_bytes",
+    "write_float_grid",
+    "write_dense_grid",
+    "read_dense_grid",
     "mesh_to_sdf",
     "sdf_to_mesh",
     "make_manifold",

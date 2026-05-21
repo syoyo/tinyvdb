@@ -63,6 +63,14 @@ extern int tvdb_py_make_manifold(const float *verts, size_t nv,
                                  float **out_verts, size_t *out_nv,
                                  uint32_t **out_tris, size_t *out_nt);
 
+extern int tvdb_py_write_float_grid_dense(const char *path,
+                                          const float *values, size_t count,
+                                          int nx, int ny, int nz,
+                                          double vsx, double vsy, double vsz,
+                                          double ox, double oy, double oz,
+                                          const char *grid_name, float background,
+                                          unsigned int compression, int level);
+
 extern int tvdb_py_dilate(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_erode(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_open(float *, int, int, int, float, float, float, float, int);
@@ -1595,6 +1603,46 @@ static PyObject *mod_mesh_to_sdf(PyObject *module, PyObject *args, PyObject *kw)
     return DenseGrid_from_c(get_state(module)->DenseGridType, out_data, nx, ny, nz, out_vs, ox, oy, oz);
 }
 
+static PyObject *mod_write_float_grid(PyObject *module, PyObject *args, PyObject *kw) {
+    (void)module;
+    const char *path;
+    PyObject *values_obj;
+    int nx, ny, nz;
+    double vsx = 1.0, vsy = 1.0, vsz = 1.0;
+    double ox = 0.0, oy = 0.0, oz = 0.0;
+    const char *name = "sdf";
+    float background = 0.0f;
+    unsigned int compression = 0;
+    int level = 0;
+    static char *kwlist[] = {"path", "values", "nx", "ny", "nz",
+                             "voxel_size", "origin", "name", "background",
+                             "compression", "level", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "sOiii|(ddd)(ddd)sfIi", kwlist,
+                                     &path, &values_obj, &nx, &ny, &nz,
+                                     &vsx, &vsy, &vsz, &ox, &oy, &oz,
+                                     &name, &background, &compression, &level))
+        return NULL;
+
+    Py_ssize_t nfloats;
+    float *vals = extract_floats(values_obj, &nfloats);
+    if (!vals) return NULL;
+    if (nfloats != (Py_ssize_t)nx * ny * nz) {
+        free(vals);
+        PyErr_SetString(PyExc_ValueError, "values length must equal nx*ny*nz");
+        return NULL;
+    }
+
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_write_float_grid_dense(path, vals, (size_t)nfloats, nx, ny, nz,
+                                        vsx, vsy, vsz, ox, oy, oz,
+                                        name, background, compression, level);
+    Py_END_ALLOW_THREADS
+    free(vals);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    Py_RETURN_NONE;
+}
+
 static PyObject *mod_sdf_to_mesh(PyObject *module, PyObject *args, PyObject *kw) {
     PyObject *grid_obj; float isovalue = 0.0f;
     static char *kwlist[] = {"grid", "isovalue", NULL};
@@ -2701,6 +2749,11 @@ static PyMethodDef module_methods[] = {
     {"open", mod_open, METH_VARARGS, "Open a VDB file by path"},
     {"from_bytes", mod_from_bytes, METH_VARARGS, "Open VDB from bytes"},
     {"mesh_to_sdf", (PyCFunction)mod_mesh_to_sdf, METH_VARARGS | METH_KEYWORDS, "Mesh to SDF"},
+    {"write_float_grid", (PyCFunction)mod_write_float_grid, METH_VARARGS | METH_KEYWORDS,
+     "Write a dense float grid (e.g. SDF) to a .vdb file. "
+     "write_float_grid(path, values, nx, ny, nz, voxel_size=(sx,sy,sz), origin=(ox,oy,oz), "
+     "name='sdf', background=0.0, compression=0, level=0); values is an nx*ny*nz float32 buffer "
+     "in C order, world = voxel_size*index + origin."},
     {"sdf_to_mesh", (PyCFunction)mod_sdf_to_mesh, METH_VARARGS | METH_KEYWORDS, "SDF to mesh"},
     {"make_manifold", (PyCFunction)mod_make_manifold, METH_VARARGS | METH_KEYWORDS, "Make manifold"},
     {"dilate", (PyCFunction)mod_dilate, METH_VARARGS | METH_KEYWORDS, "Dilate SDF"},
