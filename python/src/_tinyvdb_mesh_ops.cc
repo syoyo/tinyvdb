@@ -867,6 +867,27 @@ int tvdb_py_refine_grid(const float *data, int nx, int ny, int nz,
                         float *out_vs, float *out_ox_, float *out_oy_, float *out_oz_) {
     RUN_RESIZE(tvdb_refine_grid);
 }
+
+int tvdb_py_resample_grid(const float *data, int nx, int ny, int nz,
+                          float voxel_size, float ox, float oy, float oz,
+                          float new_voxel_size, int order,
+                          float **out_data, int *out_nx, int *out_ny, int *out_nz,
+                          float *out_vs, float *out_ox_, float *out_oy_, float *out_oz_) {
+    tvdb_dense_grid in = make_grid(data, nx, ny, nz, voxel_size, ox, oy, oz);
+    tvdb_dense_grid out; tvdb_dense_grid_init(&out, 0, 0, 0);
+    if (!tvdb_resample_grid(&in, new_voxel_size, order, &out, NULL)) {
+        tvdb_dense_grid_free(&in); tvdb_dense_grid_free(&out);
+        snprintf(s_error_msg, sizeof(s_error_msg), "resample_grid failed");
+        return -1;
+    }
+    *out_nx = out.nx; *out_ny = out.ny; *out_nz = out.nz;
+    *out_vs = out.voxel_size; *out_ox_ = out.ox; *out_oy_ = out.oy; *out_oz_ = out.oz;
+    size_t N = (size_t)out.nx * out.ny * out.nz;
+    *out_data = (float *)malloc(N * sizeof(float));
+    if (*out_data) memcpy(*out_data, out.data, N * sizeof(float));
+    tvdb_dense_grid_free(&in); tvdb_dense_grid_free(&out);
+    return *out_data ? 0 : -1;
+}
 #undef RUN_RESIZE
 
 #define RUN_POOL(FN)                                                          \

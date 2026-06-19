@@ -219,6 +219,10 @@ if(TINYVDB_BUILD_TESTS)
   target_link_libraries(test_stats_ops PRIVATE tinyvdb_mesh_ops m)
   add_test(NAME test_stats_ops COMMAND test_stats_ops)
 
+  add_executable(test_resample_advect ${PROJECT_SOURCE_DIR}/tests/test_resample_advect.c)
+  target_link_libraries(test_resample_advect PRIVATE tinyvdb_mesh_ops m)
+  add_test(NAME test_resample_advect COMMAND test_resample_advect)
+
   add_executable(test_vec3_extend ${PROJECT_SOURCE_DIR}/tests/test_vec3_extend.c)
   target_link_libraries(test_vec3_extend PRIVATE tinyvdb_mesh_ops tinyvdb)
   add_test(NAME test_vec3_extend

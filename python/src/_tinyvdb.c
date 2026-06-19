@@ -202,6 +202,9 @@ extern int tvdb_py_coarsen_grid(const float *, int, int, int, float, float, floa
 extern int tvdb_py_refine_grid(const float *, int, int, int, float, float, float, float,
                                int, float **, int *, int *, int *,
                                float *, float *, float *, float *);
+extern int tvdb_py_resample_grid(const float *, int, int, int, float, float, float, float,
+                                 float, int, float **, int *, int *, int *,
+                                 float *, float *, float *, float *);
 extern int tvdb_py_max_pool(const float *, int, int, int, float, float, float, float,
                             int, int, int, float **, int *, int *, int *,
                             float *, float *, float *, float *);
@@ -2966,6 +2969,24 @@ static PyObject *mod_refine_grid(PyObject *module, PyObject *args, PyObject *kw)
     return mod_resize_op(module, args, kw, tvdb_py_refine_grid);
 }
 
+static PyObject *mod_resample_grid(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double voxel_size; int order = 1;
+    static char *kwlist[] = {"grid", "voxel_size", "order", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "Od|i", kwlist, &grid_obj, &voxel_size, &order))
+        return NULL;
+    module_state *st = get_state(module);
+    PyDenseGrid *g = as_dense_grid(module, grid_obj);
+    if (!g) return NULL;
+    float *out = NULL; int onx, ony, onz; float ovs, oox, ooy, ooz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_resample_grid(g->data, g->nx, g->ny, g->nz, g->voxel_size, g->ox, g->oy, g->oz,
+                               (float)voxel_size, order, &out, &onx, &ony, &onz, &ovs, &oox, &ooy, &ooz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, onx, ony, onz, ovs, oox, ooy, ooz);
+}
+
 static PyObject *mod_pool_op(PyObject *module, PyObject *args, PyObject *kw,
                              int (*fn)(const float *, int, int, int, float, float, float, float,
                                        int, int, int, float **, int *, int *, int *,
@@ -3583,6 +3604,9 @@ static PyMethodDef module_methods[] = {
     {"integrate_tsdf", (PyCFunction)mod_integrate_tsdf, METH_VARARGS | METH_KEYWORDS, "TSDF fusion from a depth frame; returns (tsdf, weights)"},
     {"coarsen_grid", (PyCFunction)mod_coarsen_grid, METH_VARARGS | METH_KEYWORDS, "Coarsen by integer factor (block average)"},
     {"refine_grid", (PyCFunction)mod_refine_grid, METH_VARARGS | METH_KEYWORDS, "Refine by integer factor (trilinear upsample)"},
+    {"resample_grid", (PyCFunction)mod_resample_grid, METH_VARARGS | METH_KEYWORDS,
+     "resample_grid(grid, voxel_size, order=1) -> DenseGrid; resample to an arbitrary voxel "
+     "size over the same world AABB. order: 0 nearest, 1 trilinear, 2 triquadratic."},
     {"max_pool", (PyCFunction)mod_max_pool, METH_VARARGS | METH_KEYWORDS, "Max pool over kxxky*kz blocks"},
     {"avg_pool", (PyCFunction)mod_avg_pool, METH_VARARGS | METH_KEYWORDS, "Average pool over kxxky*kz blocks"},
     {"splat_trilinear", (PyCFunction)mod_splat_trilinear, METH_VARARGS | METH_KEYWORDS, "Trilinear splat of point values into a DenseGrid"},
