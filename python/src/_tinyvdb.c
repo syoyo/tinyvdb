@@ -1807,19 +1807,20 @@ static PyObject *mod_write_grid(PyObject *module, PyObject *args, PyObject *kw) 
     double vsx = 1.0, vsy = 1.0, vsz = 1.0;
     double ox = 0.0, oy = 0.0, oz = 0.0;
     const char *name = "grid";
-    Py_buffer bg_buf;
+    Py_buffer bg_buf = {0};   /* optional: obj==NULL => not provided (zero bg) */
     unsigned int compression = 0;
     int level = 0;
     static char *kwlist[] = {"path", "values", "nx", "ny", "nz", "dtype",
                              "voxel_size", "origin", "name", "background",
                              "compression", "level", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "sy*iiis(ddd)(ddd)sy*Ii", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "sy*iiis|(ddd)(ddd)sy*Ii", kwlist,
                                      &path, &values_buf, &nx, &ny, &nz, &dtype,
                                      &vsx, &vsy, &vsz, &ox, &oy, &oz,
                                      &name, &bg_buf, &compression, &level))
         return NULL;
 
     int vt;
+    uint8_t zero_bg[24] = {0};       /* default background = zeros (max element = vec3d) */
     if (tvdb_py__dtype_to_vt(dtype, &vt) != 0) {
         PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
         PyErr_Format(PyExc_ValueError, "unsupported dtype '%s'", dtype);
@@ -1837,17 +1838,21 @@ static PyObject *mod_write_grid(PyObject *module, PyObject *args, PyObject *kw) 
         PyErr_SetString(PyExc_ValueError, "values buffer size must equal nx*ny*nz*element_size");
         return NULL;
     }
-    if ((size_t)bg_buf.len != vsize) {
-        PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
-        PyErr_SetString(PyExc_ValueError, "background buffer size must equal element_size");
-        return NULL;
+    const void *bg_ptr = zero_bg;
+    if (bg_buf.buf != NULL) {
+        if ((size_t)bg_buf.len != vsize) {
+            PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+            PyErr_SetString(PyExc_ValueError, "background buffer size must equal element_size");
+            return NULL;
+        }
+        bg_ptr = bg_buf.buf;
     }
 
     int rc;
     Py_BEGIN_ALLOW_THREADS
     rc = tvdb_py_write_grid_dense_typed(path, values_buf.buf, count, vt, nx, ny, nz,
                                         vsx, vsy, vsz, ox, oy, oz,
-                                        name, bg_buf.buf, compression, level);
+                                        name, bg_ptr, compression, level);
     Py_END_ALLOW_THREADS
     PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
@@ -1864,19 +1869,20 @@ static PyObject *mod_write_sparse_grid(PyObject *module, PyObject *args, PyObjec
     double vsx = 1.0, vsy = 1.0, vsz = 1.0;
     double ox = 0.0, oy = 0.0, oz = 0.0;
     const char *name = "grid";
-    Py_buffer bg_buf;
+    Py_buffer bg_buf = {0};   /* optional: obj==NULL => not provided (zero bg) */
     unsigned int compression = 0;
     int level = 0;
     static char *kwlist[] = {"path", "coords", "values", "dtype",
                              "voxel_size", "origin", "name", "background",
                              "compression", "level", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "sy*y*s(ddd)(ddd)sy*Ii", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "sy*y*s|(ddd)(ddd)sy*Ii", kwlist,
                                      &path, &coords_buf, &values_buf, &dtype,
                                      &vsx, &vsy, &vsz, &ox, &oy, &oz,
                                      &name, &bg_buf, &compression, &level))
         return NULL;
 
     int vt;
+    uint8_t zero_bg[24] = {0};       /* default background = zeros (max element = vec3d) */
     if (tvdb_py__dtype_to_vt(dtype, &vt) != 0) {
         PyBuffer_Release(&coords_buf); PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
         PyErr_Format(PyExc_ValueError, "unsupported dtype '%s'", dtype);
@@ -1894,10 +1900,14 @@ static PyObject *mod_write_sparse_grid(PyObject *module, PyObject *args, PyObjec
         PyErr_SetString(PyExc_ValueError, "values buffer size must equal count*element_size");
         return NULL;
     }
-    if ((size_t)bg_buf.len != vsize) {
-        PyBuffer_Release(&coords_buf); PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
-        PyErr_SetString(PyExc_ValueError, "background buffer size must equal element_size");
-        return NULL;
+    const void *bg_ptr = zero_bg;
+    if (bg_buf.buf != NULL) {
+        if ((size_t)bg_buf.len != vsize) {
+            PyBuffer_Release(&coords_buf); PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+            PyErr_SetString(PyExc_ValueError, "background buffer size must equal element_size");
+            return NULL;
+        }
+        bg_ptr = bg_buf.buf;
     }
 
     int rc;

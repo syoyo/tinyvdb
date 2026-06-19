@@ -355,7 +355,7 @@ def write_dense_grid(path, array, voxel_size=1.0, origin=(0.0, 0.0, 0.0),
                compression=int(compression), level=int(level))
 
 
-def read_dense_grid(path, index=0):
+def read_dense_grid(path, index=0, fill=0.0):
     """Read a grid from a ``.vdb`` file back into a dense numpy array.
 
     Inverse of :func:`write_dense_grid`. Returns ``(array, voxel_size, origin)``
@@ -363,6 +363,13 @@ def read_dense_grid(path, index=0):
     (scalar grids) or ``(nx, ny, nz, 3)`` (vec3f), and dtype matching the grid's
     value type. ``voxel_size`` is a 3-tuple and ``origin`` is the world position
     of the array's first voxel. ``world = voxel_size*index + origin``.
+
+    Only the grid's *active* voxels are reconstructed; any inactive voxel that
+    falls inside the active bounding box is set to ``fill`` (default 0). For a
+    grid written by :func:`write_dense_grid` every voxel is active, so the
+    round-trip is exact. For a foreign narrow-band level set the inactive
+    interior/exterior tiles are not represented by a single value — pass an
+    appropriate ``fill`` or use the lower-level tree/materialize APIs.
     """
     try:
         import numpy as _np
@@ -388,7 +395,7 @@ def read_dense_grid(path, index=0):
         cmax = coords.max(axis=0)
         shape = tuple(int(v) for v in (cmax - cmin + 1))
         out_shape = shape + (3,) if ncomp == 3 else shape
-        arr = _np.zeros(out_shape, dtype=np_dtype)
+        arr = _np.full(out_shape, fill, dtype=np_dtype)
         idx = tuple((coords[:, d] - cmin[d]) for d in range(3))
         arr[idx] = values
         tr = g.transform
@@ -616,12 +623,21 @@ def scatter_points_in_sdf(sdf_grid, n, seed=0, isovalue=0.0):
     hi = _np.array([ox + nx * vs, oy + ny * vs, oz + nz * vs], dtype=_np.float32)
     kept = []
     total = 0
-    while total < n:
+    # Cap attempts so an empty / all-exterior / inverted interior can't spin
+    # forever; bail with a clear error rather than hanging.
+    max_batches = 256
+    for _ in range(max_batches):
+        if total >= n:
+            break
         batch = rng.uniform(lo, hi, size=(max(2 * n, 1024), 3)).astype(_np.float32)
         vals = _np.frombuffer(sample_trilinear(sdf_grid, batch.tobytes()), dtype=_np.float32)
         keep = batch[vals < isovalue]
         kept.append(keep)
         total += keep.shape[0]
+    if total < n:
+        raise RuntimeError(
+            "scatter_points_in_sdf: could not find enough interior points "
+            f"({total}/{n}); the SDF interior (sdf < {isovalue}) may be empty or tiny")
     return _np.concatenate(kept, axis=0)[:n]
 
 

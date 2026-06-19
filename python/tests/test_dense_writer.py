@@ -289,6 +289,19 @@ def test_dense_grid_unsupported_dtype(tmp_path):
                                  np.zeros((3, 3, 3), dtype=np.uint16))
 
 
+def test_write_grid_optional_args(tmp_path):
+    """Low-level write_grid honors its documented-optional args (regression: the
+    format string was missing `|`, making them mandatory)."""
+    np = pytest.importorskip("numpy")
+    a = np.arange(2 * 3 * 4, dtype=np.float32).reshape(2, 3, 4)
+    path = str(tmp_path / "wg.vdb")
+    # Omit voxel_size / origin / name / background / compression / level -> defaults.
+    tinyvdb.write_grid(path, a.reshape(-1).tobytes(), 2, 3, 4, "float32")
+    arr, vs, org = tinyvdb.read_dense_grid(path)
+    assert arr.shape == (2, 3, 4) and np.array_equal(arr, a)
+    assert tuple(round(v, 6) for v in vs) == (1.0, 1.0, 1.0)   # default voxel size
+
+
 # ------------------------------------------------------------------- sparse grids
 #
 # write_sparse_grid / read_sparse_grid: explicit (coords, values) active voxels,

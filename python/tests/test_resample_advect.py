@@ -100,6 +100,77 @@ def test_advect_shifts_linear_field(scheme):
     assert np.max(np.abs(r[:, :, 2:nx-2] - ref)) < 1e-3
 
 
+def _linear_field_grid(nx, ny, nz, vs, origin, nvec):
+    """DenseGrid whose value at each voxel equals nvec . (world voxel center)."""
+    np = pytest.importorskip("numpy")
+    xc = origin[0] + (np.arange(nx) + 0.5) * vs
+    yc = origin[1] + (np.arange(ny) + 0.5) * vs
+    zc = origin[2] + (np.arange(nz) + 0.5) * vs
+    Z, Y, X = np.meshgrid(zc, yc, xc, indexing="ij")          # (nz, ny, nx) = view order
+    field = (nvec[0] * X + nvec[1] * Y + nvec[2] * Z).astype(np.float32)
+    return _dense(field, voxel_size=vs, origin=origin)
+
+
+def test_sample_and_resample_all_axes():
+    """Sampling and resampling reproduce a field that varies in x, y AND z, so a
+    transposed or mis-weighted y/z stencil (invisible to the x-only tests) fails."""
+    np = pytest.importorskip("numpy")
+    nx, ny, nz, vs = 16, 14, 12, 0.1
+    org = (-0.3, 0.1, -0.5)
+    nvec = np.array([1.0, -2.0, 3.0], dtype=np.float32)
+    g = _linear_field_grid(nx, ny, nz, vs, org, nvec)
+
+    # (a) Both dense samplers (tinyvdb_sample.c) at random interior points.
+    rng = np.random.default_rng(0)
+    lo = np.array([org[a] + 2 * vs for a in range(3)], dtype=np.float32)
+    hi = np.array([org[0] + (nx - 2) * vs, org[1] + (ny - 2) * vs, org[2] + (nz - 2) * vs],
+                  dtype=np.float32)
+    pts = rng.uniform(lo, hi, size=(300, 3)).astype(np.float32)
+    expect = pts @ nvec
+    for fn in (tinyvdb.sample_trilinear, tinyvdb.sample_quadratic):
+        got = np.frombuffer(fn(g, pts.tobytes()), dtype=np.float32)
+        assert np.allclose(got, expect, atol=2e-3), fn.__name__
+
+    # (b) resample_grid (topology.c samplers) order 1/2, checked where the
+    #     stencil stays inside the source on every axis.
+    new_vs = 0.07
+    for order in (1, 2):
+        r = tinyvdb.resample_grid(g, new_vs, order=order)
+        arr = np.asarray(r, copy=False)
+        rnz, rny, rnx = arr.shape
+        rxc = org[0] + (np.arange(rnx) + 0.5) * new_vs
+        ryc = org[1] + (np.arange(rny) + 0.5) * new_vs
+        rzc = org[2] + (np.arange(rnz) + 0.5) * new_vs
+        RZ, RY, RX = np.meshgrid(rzc, ryc, rxc, indexing="ij")
+        ref = nvec[0] * RX + nvec[1] * RY + nvec[2] * RZ
+        def inside(c, o, n):
+            return (c >= o + 1.5 * vs) & (c <= o + (n - 1.5) * vs)
+        mx = inside(rxc, org[0], nx); my = inside(ryc, org[1], ny); mz = inside(rzc, org[2], nz)
+        mask = mz[:, None, None] & my[None, :, None] & mx[None, None, :]
+        assert mask.any()
+        assert np.max(np.abs(arr[mask] - ref[mask])) < 2e-3
+
+
+def test_advect_all_axes():
+    """Advect a 3D-varying linear field by a non-axis-aligned velocity: the
+    backtrace must move correctly in y and z, not just x."""
+    np = pytest.importorskip("numpy")
+    nx, ny, nz, vs = 16, 14, 12, 0.1
+    org = (-0.3, 0.1, -0.5)
+    nvec = np.array([1.0, -2.0, 3.0], dtype=np.float32)
+    g = _linear_field_grid(nx, ny, nz, vs, org, nvec)
+    vel = _uniform_velocity(nx, ny, nz, (1.0, -1.0, 2.0), voxel_size=vs, origin=org)
+    field = np.array(g, copy=True)
+    dt = 0.05
+    shift = float(np.dot(np.array([1.0, -1.0, 2.0]), nvec)) * dt   # result = field - v.n*dt
+    for scheme in (tinyvdb.ADVECT_RK1, tinyvdb.ADVECT_RK2, tinyvdb.ADVECT_RK4,
+                   tinyvdb.ADVECT_MACCORMACK, tinyvdb.ADVECT_BFECC):
+        r = np.asarray(tinyvdb.advect(g, vel, dt, scheme=scheme, clamp=1), copy=False)
+        # Interior region (2 voxels from every border) where the backtrace stays in-bounds.
+        gi, ri = field[2:-2, 2:-2, 2:-2], r[2:-2, 2:-2, 2:-2]
+        assert np.max(np.abs(ri - (gi - shift))) < 2e-3
+
+
 def test_advect_maccormack_less_diffusive_than_rk1():
     np = pytest.importorskip("numpy")
     n, vs = 24, 0.1
