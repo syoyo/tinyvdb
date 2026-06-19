@@ -16,6 +16,7 @@ from tinyvdb._tinyvdb import (
     from_bytes,
     write_float_grid,
     write_grid,
+    write_sparse_grid as _write_sparse_grid_c,
     # Mesh
     mesh_to_sdf,
     sdf_to_mesh,
@@ -354,6 +355,95 @@ def read_dense_grid(path, index=0):
         return arr, voxel_size, origin
 
 
+def write_sparse_grid(path, coords, values, voxel_size=1.0, origin=(0.0, 0.0, 0.0),
+                      name="grid", background=0.0, compression=COMPRESS_ZIP, level=5):
+    """Write a sparse grid (explicit active voxels) to a ``.vdb`` file from scratch.
+
+    The grid value type is selected from ``values`` exactly as in
+    :func:`write_dense_grid`: a 1D array of ``float32`` / ``float64`` / ``int32`` /
+    ``int64`` / ``bool`` writes the matching scalar grid, and a ``(N, 3)``
+    ``float32`` array writes a ``Tree_vec3s`` (vec3f) grid.
+
+    Parameters
+    ----------
+    path : str
+        Output ``.vdb`` path.
+    coords : numpy.ndarray
+        ``(N, 3)`` integer array of world-voxel indices (cast to int32).
+    values : numpy.ndarray
+        ``(N,)`` scalar array, or ``(N, 3)`` ``float32`` for vec3f. ``len(values)``
+        must equal ``len(coords)``. Paired with ``coords`` by position.
+    voxel_size, origin, name, background, compression, level :
+        As in :func:`write_dense_grid`. ``world = voxel_size * index + origin``.
+
+    Notes
+    -----
+    The ``bool`` caveat from :func:`write_dense_grid` applies here too.
+    """
+    try:
+        import numpy as _np
+    except ImportError:
+        raise RuntimeError("write_sparse_grid requires numpy")
+    c = _np.ascontiguousarray(coords, dtype=_np.int32)
+    if c.ndim != 2 or c.shape[1] != 3:
+        raise ValueError(f"coords must be (N, 3), got shape {c.shape}")
+    v = _np.ascontiguousarray(values)
+
+    if v.ndim == 2 and v.shape[1] == 3:
+        v = _np.ascontiguousarray(v, dtype=_np.float32)
+        dtype_name = "vec3f"
+        bg = _np.broadcast_to(_np.asarray(background, dtype=_np.float32), (3,)).astype(_np.float32, copy=True)
+    elif v.ndim == 1:
+        dtype_name = _DTYPE_TO_NAME.get(v.dtype.name)
+        if dtype_name is None:
+            raise ValueError(
+                f"unsupported values dtype {v.dtype}; expected one of "
+                f"{sorted(_DTYPE_TO_NAME)} (or an (N,3) float32 array for vec3f)")
+        bg = _np.asarray(background, dtype=v.dtype)
+    else:
+        raise ValueError(f"values must be 1D (N,) or 2D (N, 3) for vec3f, got shape {v.shape}")
+
+    if c.shape[0] != v.shape[0]:
+        raise ValueError(f"coords and values length mismatch: {c.shape[0]} vs {v.shape[0]}")
+
+    vs = (float(voxel_size),) * 3 if _np.isscalar(voxel_size) else tuple(float(x) for x in voxel_size)
+    org = tuple(float(x) for x in origin)
+    _write_sparse_grid_c(path, c.reshape(-1).tobytes(), v.reshape(-1).tobytes(), dtype_name,
+                         voxel_size=vs, origin=org, name=name, background=bg.tobytes(),
+                         compression=int(compression), level=int(level))
+
+
+def read_sparse_grid(path, index=0):
+    """Read a grid's active voxels from a ``.vdb`` file as a sparse array.
+
+    Inverse of :func:`write_sparse_grid`. Returns ``(coords, values, voxel_size, origin)``
+    where ``coords`` is an ``(N, 3)`` int32 array of world-voxel indices and ``values`` is
+    ``(N,)`` (scalar grids) or ``(N, 3)`` (vec3f) with dtype matching the grid's value type.
+    ``world = voxel_size * index + origin``.
+    """
+    try:
+        import numpy as _np
+    except ImportError:
+        raise RuntimeError("read_sparse_grid requires numpy")
+    with open(path) as f:
+        f.read_grids()
+        g = f.grid(index)
+        sparse = g.to_sparse_typed()
+        name = sparse["dtype"]
+        np_dtype = _NAME_TO_NPDTYPE.get(name)
+        if np_dtype is None:
+            raise ValueError(f"read_sparse_grid: unsupported grid dtype '{name}'")
+        coords = _np.frombuffer(sparse["coords"], dtype=_np.int32).reshape(-1, 3).copy()
+        values = _np.frombuffer(sparse["values"], dtype=np_dtype)
+        if name == "vec3f":
+            values = values.reshape(-1, 3)
+        values = values.copy()
+        tr = g.transform
+        voxel_size = tuple(float(v) for v in tr.get("voxel_size", (1.0, 1.0, 1.0)))
+        origin = tuple(float(v) for v in tr.get("translation", (0.0, 0.0, 0.0)))
+        return coords, values, voxel_size, origin
+
+
 __version__ = "0.9.0"
 
 __all__ = [
@@ -371,6 +461,8 @@ __all__ = [
     "write_grid",
     "write_dense_grid",
     "read_dense_grid",
+    "write_sparse_grid",
+    "read_sparse_grid",
     "mesh_to_sdf",
     "sdf_to_mesh",
     "make_manifold",

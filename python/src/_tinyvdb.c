@@ -80,6 +80,14 @@ extern int tvdb_py_write_grid_dense_typed(const char *path,
                                           const char *grid_name, const void *bg_bytes,
                                           unsigned int compression, int level);
 
+extern int tvdb_py_write_grid_sparse_typed(const char *path,
+                                           const int32_t *coords, const void *values,
+                                           size_t count, int value_type,
+                                           double vsx, double vsy, double vsz,
+                                           double ox, double oy, double oz,
+                                           const char *grid_name, const void *bg_bytes,
+                                           unsigned int compression, int level);
+
 extern int tvdb_py_dilate(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_erode(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_open(float *, int, int, int, float, float, float, float, int);
@@ -1764,6 +1772,64 @@ static PyObject *mod_write_grid(PyObject *module, PyObject *args, PyObject *kw) 
     Py_RETURN_NONE;
 }
 
+/* Typed sparse writer: coords is an int32 xyz-triple buffer, values/background
+   are raw element-byte buffers, and dtype selects the grid value type. */
+static PyObject *mod_write_sparse_grid(PyObject *module, PyObject *args, PyObject *kw) {
+    (void)module;
+    const char *path;
+    Py_buffer coords_buf, values_buf;
+    const char *dtype;
+    double vsx = 1.0, vsy = 1.0, vsz = 1.0;
+    double ox = 0.0, oy = 0.0, oz = 0.0;
+    const char *name = "grid";
+    Py_buffer bg_buf;
+    unsigned int compression = 0;
+    int level = 0;
+    static char *kwlist[] = {"path", "coords", "values", "dtype",
+                             "voxel_size", "origin", "name", "background",
+                             "compression", "level", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "sy*y*s(ddd)(ddd)sy*Ii", kwlist,
+                                     &path, &coords_buf, &values_buf, &dtype,
+                                     &vsx, &vsy, &vsz, &ox, &oy, &oz,
+                                     &name, &bg_buf, &compression, &level))
+        return NULL;
+
+    int vt;
+    if (tvdb_py__dtype_to_vt(dtype, &vt) != 0) {
+        PyBuffer_Release(&coords_buf); PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+        PyErr_Format(PyExc_ValueError, "unsupported dtype '%s'", dtype);
+        return NULL;
+    }
+    size_t vsize = tvdb_py__vt_size(vt);
+    if (coords_buf.len % (3 * (Py_ssize_t)sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&coords_buf); PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+        PyErr_SetString(PyExc_ValueError, "coords buffer must be int32 xyz triples");
+        return NULL;
+    }
+    size_t count = (size_t)coords_buf.len / (3 * sizeof(int32_t));
+    if ((size_t)values_buf.len != count * vsize) {
+        PyBuffer_Release(&coords_buf); PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+        PyErr_SetString(PyExc_ValueError, "values buffer size must equal count*element_size");
+        return NULL;
+    }
+    if ((size_t)bg_buf.len != vsize) {
+        PyBuffer_Release(&coords_buf); PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+        PyErr_SetString(PyExc_ValueError, "background buffer size must equal element_size");
+        return NULL;
+    }
+
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_write_grid_sparse_typed(path, (const int32_t *)coords_buf.buf,
+                                         values_buf.buf, count, vt,
+                                         vsx, vsy, vsz, ox, oy, oz,
+                                         name, bg_buf.buf, compression, level);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&coords_buf); PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    Py_RETURN_NONE;
+}
+
 static PyObject *mod_sdf_to_mesh(PyObject *module, PyObject *args, PyObject *kw) {
     PyObject *grid_obj; float isovalue = 0.0f;
     static char *kwlist[] = {"grid", "isovalue", NULL};
@@ -2881,6 +2947,13 @@ static PyMethodDef module_methods[] = {
      "name='grid', background=<element bytes>, compression=0, level=0); dtype is one of "
      "'float32','float64','int32','int64','bool','vec3f'. values is a raw byte buffer of "
      "nx*ny*nz elements in C order; background is one element's worth of bytes; "
+     "world = voxel_size*index + origin."},
+    {"write_sparse_grid", (PyCFunction)mod_write_sparse_grid, METH_VARARGS | METH_KEYWORDS,
+     "Write a sparse typed grid to a .vdb file from scratch. "
+     "write_sparse_grid(path, coords, values, dtype, voxel_size=(sx,sy,sz), origin=(ox,oy,oz), "
+     "name='grid', background=<element bytes>, compression=0, level=0); coords is an int32 "
+     "xyz-triple byte buffer, values is a raw byte buffer of one element per coord (paired by "
+     "position), dtype is one of 'float32','float64','int32','int64','bool','vec3f'; "
      "world = voxel_size*index + origin."},
     {"sdf_to_mesh", (PyCFunction)mod_sdf_to_mesh, METH_VARARGS | METH_KEYWORDS, "SDF to mesh"},
     {"make_manifold", (PyCFunction)mod_make_manifold, METH_VARARGS | METH_KEYWORDS, "Make manifold"},

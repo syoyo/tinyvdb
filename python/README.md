@@ -156,6 +156,23 @@ tinyvdb.write_float_grid("grid.vdb", buf, 2, 3, 4,
 > through `read_dense_grid` but are **not** byte-compatible with OpenVDB and will
 > not load in DCCs (Houdini/Blender/etc).
 
+### Write a sparse grid to `.vdb`
+
+When you only have a set of active voxels (not a full dense block), write them
+directly with `write_sparse_grid` — same dtype rules as `write_dense_grid`
+(scalar `(N,)` arrays, or `(N, 3)` `float32` for vec3f). Coords are world-voxel
+indices and need not be contiguous.
+
+```python
+import numpy as np, tinyvdb
+
+coords = np.array([[0, 0, 0], [10, 2, 3], [100, 100, 100]], dtype=np.int32)
+values = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+tinyvdb.write_sparse_grid("sparse.vdb", coords, values, voxel_size=0.1, name="pts")
+
+coords_out, values_out, voxel_size, origin = tinyvdb.read_sparse_grid("sparse.vdb")
+```
+
 ### CSG operations
 
 ```python

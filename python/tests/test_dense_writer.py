@@ -4,7 +4,8 @@ Covers the raw C-backed API (``write_float_grid``, numpy-free via ``struct``) an
 conveniences (``write_dense_grid`` / ``read_dense_grid``): geometry/value round-trips, the
 ``world = voxel_size*index + origin`` transform, compression modes, multi-leaf grids, an analytic
 sphere SDF, error handling, and the typed paths (``float64`` / ``int32`` / ``int64`` / ``vec3f`` /
-``bool``) where the grid value type is chosen from the array dtype.
+``bool``) where the grid value type is chosen from the array dtype. Also covers the sparse
+writer/reader (``write_sparse_grid`` / ``read_sparse_grid``) over the same dtype set.
 """
 
 import math
@@ -271,3 +272,107 @@ def test_dense_grid_unsupported_dtype(tmp_path):
     with pytest.raises(ValueError):
         tinyvdb.write_dense_grid(str(tmp_path / "u.vdb"),
                                  np.zeros((3, 3, 3), dtype=np.uint16))
+
+
+# ------------------------------------------------------------------- sparse grids
+#
+# write_sparse_grid / read_sparse_grid: explicit (coords, values) active voxels,
+# value type chosen from the values dtype. Coords need not be contiguous.
+
+
+def _sorted_pairs(coords, values):
+    """Sort (coords, values) by coord for order-independent comparison."""
+    import numpy as np
+    order = np.lexsort(coords.T)
+    return coords[order], values[order]
+
+
+@pytest.mark.parametrize("dtype, type_name", [
+    ("float32", "Tree_float_5_4_3"),
+    ("float64", "Tree_double_5_4_3"),
+    ("int32", "Tree_int32_5_4_3"),
+    ("int64", "Tree_int64_5_4_3"),
+])
+def test_sparse_grid_scalar_roundtrip(tmp_path, dtype, type_name):
+    np = pytest.importorskip("numpy")
+    # Coords spanning several leaves, deliberately unordered and sparse.
+    coords = np.array([[0, 0, 0], [10, 2, 3], [100, 100, 100], [5, 5, 5], [8, 0, 0]],
+                      dtype=np.int32)
+    values = (np.arange(len(coords)) * 7 - 3).astype(dtype)
+    path = str(tmp_path / f"sparse_{dtype}.vdb")
+    tinyvdb.write_sparse_grid(path, coords, values, voxel_size=(0.1, 0.2, 0.3),
+                              origin=(1.0, -2.0, 3.0), name="sp")
+    rc, rv, vs, org = tinyvdb.read_sparse_grid(path)
+    assert rv.dtype == np.dtype(dtype)
+    assert len(rc) == len(coords)
+    ic, iv = _sorted_pairs(coords, values)
+    oc, ov = _sorted_pairs(rc, rv)
+    assert np.array_equal(oc, ic)
+    assert np.array_equal(ov, iv)
+    assert tuple(round(v, 6) for v in vs) == (0.1, 0.2, 0.3)
+    assert tuple(round(v, 6) for v in org) == (1.0, -2.0, 3.0)
+    with tinyvdb.open(path) as f:
+        f.read_grids()
+        assert f.grid(0).type_name == type_name
+        assert f.grid(0).name == "sp"
+
+
+def test_sparse_grid_vec3f_roundtrip(tmp_path):
+    np = pytest.importorskip("numpy")
+    coords = np.array([[0, 0, 0], [9, 9, 9], [40, 1, 2]], dtype=np.int32)
+    values = np.random.default_rng(3).standard_normal((len(coords), 3)).astype(np.float32)
+    path = str(tmp_path / "sparse_vec3f.vdb")
+    tinyvdb.write_sparse_grid(path, coords, values, voxel_size=0.25)
+    rc, rv, _, _ = tinyvdb.read_sparse_grid(path)
+    assert rv.shape == values.shape and rv.dtype == np.float32
+    order_in = np.lexsort(coords.T)
+    order_out = np.lexsort(rc.T)
+    assert np.array_equal(rc[order_out], coords[order_in])
+    assert np.array_equal(rv[order_out], values[order_in])
+    with tinyvdb.open(path) as f:
+        f.read_grids()
+        assert f.grid(0).type_name == "Tree_vec3s_5_4_3"
+
+
+def test_sparse_grid_bool_roundtrip(tmp_path):
+    np = pytest.importorskip("numpy")
+    coords = np.array([[0, 0, 0], [1, 2, 3], [16, 16, 16]], dtype=np.int32)
+    values = np.array([True, False, True])
+    path = str(tmp_path / "sparse_bool.vdb")
+    tinyvdb.write_sparse_grid(path, coords, values)
+    rc, rv, _, _ = tinyvdb.read_sparse_grid(path)
+    assert rv.dtype == np.bool_
+    order_in = np.lexsort(coords.T)
+    order_out = np.lexsort(rc.T)
+    assert np.array_equal(rv[order_out], values[order_in])
+
+
+def test_sparse_grid_length_mismatch(tmp_path):
+    np = pytest.importorskip("numpy")
+    with pytest.raises(ValueError):
+        tinyvdb.write_sparse_grid(str(tmp_path / "m.vdb"),
+                                  np.zeros((4, 3), dtype=np.int32),
+                                  np.zeros((3,), dtype=np.float32))
+
+
+def test_sparse_grid_bad_coords_shape(tmp_path):
+    np = pytest.importorskip("numpy")
+    with pytest.raises(ValueError):
+        tinyvdb.write_sparse_grid(str(tmp_path / "m.vdb"),
+                                  np.zeros((4, 2), dtype=np.int32),
+                                  np.zeros((4,), dtype=np.float32))
+
+
+def test_sparse_dense_consistency(tmp_path):
+    """A dense grid materialized to sparse coords/values writes the same file."""
+    np = pytest.importorskip("numpy")
+    field = np.arange(6 * 5 * 4, dtype=np.float32).reshape(6, 5, 4)
+    # Build the explicit (coords, values) for every voxel in C order.
+    ii, jj, kk = np.meshgrid(np.arange(6), np.arange(5), np.arange(4), indexing="ij")
+    coords = np.stack([ii.ravel(), jj.ravel(), kk.ravel()], axis=1).astype(np.int32)
+    values = field.ravel()
+    sp = str(tmp_path / "sp.vdb")
+    tinyvdb.write_sparse_grid(sp, coords, values, voxel_size=0.5)
+    arr, _, _ = tinyvdb.read_dense_grid(sp)   # read back densely
+    assert arr.shape == field.shape
+    assert np.array_equal(arr, field)

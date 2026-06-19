@@ -1338,6 +1338,68 @@ static const char *tvdb_py__grid_type_str(tvdb_value_type_t vt) {
     }
 }
 
+/* Shared core: synthesize a Tree_<type>_5_4_3 template (layout + per-axis
+   ScaleTranslateMap transform), build the grid tree from (coords, values), and
+   save it as a one-grid .vdb file. `coords` are world-voxel indices; the
+   transform maps world = voxel_size * index + origin. `bg_bytes` is one element
+   worth of background fill. Returns 0 on success, -1 on error. */
+static int tvdb_py__build_save_typed(const char *path,
+                                     const tvdb_vec3i *coords, const void *values,
+                                     size_t count, tvdb_value_type_t vt,
+                                     double vsx, double vsy, double vsz,
+                                     double ox, double oy, double oz,
+                                     const char *grid_name, const void *bg_bytes,
+                                     uint32_t compression, int level) {
+    /* 1) Synthetic template (Tree_<type>_5_4_3) carrying only the layout, grid
+          type and transform — its (empty) tree is unused by the builder. */
+    tvdb_grid_t tmpl;
+    memset(&tmpl, 0, sizeof(tmpl));
+    char grid_type[32];
+    snprintf(grid_type, sizeof(grid_type), "%s", tvdb_py__grid_type_str(vt));
+    tmpl.descriptor.grid_type = grid_type;  /* builder duplicates this string */
+    tmpl.tree.layout.num_levels = 4;
+    tmpl.tree.layout.levels[0].node_type = TVDB_NODE_ROOT;
+    tmpl.tree.layout.levels[1].node_type = TVDB_NODE_INTERNAL;
+    tmpl.tree.layout.levels[2].node_type = TVDB_NODE_INTERNAL;
+    tmpl.tree.layout.levels[3].node_type = TVDB_NODE_LEAF;
+    tmpl.tree.layout.levels[0].log2dim = 0;
+    tmpl.tree.layout.levels[1].log2dim = 5;
+    tmpl.tree.layout.levels[2].log2dim = 4;
+    tmpl.tree.layout.levels[3].log2dim = 3;
+    for (int lv = 0; lv < 4; ++lv) tmpl.tree.layout.levels[lv].value_type = vt;
+    tmpl.transform.type = TVDB_TRANSFORM_SCALE_TRANSLATE;
+    tmpl.transform.scale_values[0] = vsx; tmpl.transform.scale_values[1] = vsy; tmpl.transform.scale_values[2] = vsz;
+    tmpl.transform.voxel_size[0] = vsx;   tmpl.transform.voxel_size[1] = vsy;   tmpl.transform.voxel_size[2] = vsz;
+    tmpl.transform.translation[0] = ox;   tmpl.transform.translation[1] = oy;   tmpl.transform.translation[2] = oz;
+
+    /* 2) Build the grid tree from the (coord, value) pairs. */
+    tvdb_grid_t built;
+    bool ok = tvdb_grid_from_sparse_typed_using_template(&tmpl, coords, values, count,
+                                                         vt, bg_bytes,
+                                                         grid_name ? grid_name : "grid", &built);
+    if (!ok) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid: grid build failed");
+        return -1;
+    }
+
+    /* 3) Assemble a one-grid file (zeroed header -> writer defaults to v224) and save. */
+    tvdb_file_t out;
+    memset(&out, 0, sizeof(out));
+    out.alloc = tvdb_py__sys_allocator();
+    out.num_grids = 1;
+    out.grids = &built;
+    tvdb_error_t err;
+    memset(&err, 0, sizeof(err));
+    tvdb_status_t st = tvdb_file_save(&out, path, compression, level, /*use_mmap=*/0, &err);
+    tvdb_grid_destroy_owned(&built);
+    if (st != TVDB_OK) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid: save failed: %s",
+                 err.message[0] ? err.message : "unknown");
+        return -1;
+    }
+    return 0;
+}
+
 /* Write a dense grid of arbitrary value type (e.g. an SDF / level set, an int
    label field, or a vec3 velocity field) to a .vdb file from scratch. `values`
    holds `count` elements (= nx*ny*nz voxels), each tvdb_value_type_size(vt)
@@ -1366,29 +1428,7 @@ int tvdb_py_write_grid_dense_typed(const char *path,
         return -1;
     }
 
-    /* 1) Synthetic template (Tree_<type>_5_4_3) carrying only the layout, grid
-          type and transform — its (empty) tree is unused by the builder. */
-    tvdb_grid_t tmpl;
-    memset(&tmpl, 0, sizeof(tmpl));
-    char grid_type[32];
-    snprintf(grid_type, sizeof(grid_type), "%s", tvdb_py__grid_type_str(vt));
-    tmpl.descriptor.grid_type = grid_type;  /* builder duplicates this string */
-    tmpl.tree.layout.num_levels = 4;
-    tmpl.tree.layout.levels[0].node_type = TVDB_NODE_ROOT;
-    tmpl.tree.layout.levels[1].node_type = TVDB_NODE_INTERNAL;
-    tmpl.tree.layout.levels[2].node_type = TVDB_NODE_INTERNAL;
-    tmpl.tree.layout.levels[3].node_type = TVDB_NODE_LEAF;
-    tmpl.tree.layout.levels[0].log2dim = 0;
-    tmpl.tree.layout.levels[1].log2dim = 5;
-    tmpl.tree.layout.levels[2].log2dim = 4;
-    tmpl.tree.layout.levels[3].log2dim = 3;
-    for (int lv = 0; lv < 4; ++lv) tmpl.tree.layout.levels[lv].value_type = vt;
-    tmpl.transform.type = TVDB_TRANSFORM_SCALE_TRANSLATE;
-    tmpl.transform.scale_values[0] = vsx; tmpl.transform.scale_values[1] = vsy; tmpl.transform.scale_values[2] = vsz;
-    tmpl.transform.voxel_size[0] = vsx;   tmpl.transform.voxel_size[1] = vsy;   tmpl.transform.voxel_size[2] = vsz;
-    tmpl.transform.translation[0] = ox;   tmpl.transform.translation[1] = oy;   tmpl.transform.translation[2] = oz;
-
-    /* 2) Dense -> sparse: one active voxel per cell at integer coords (0..n-1). */
+    /* Dense -> sparse: one active voxel per cell at integer coords (0..n-1). */
     tvdb_vec3i *coords = (tvdb_vec3i *)malloc(count * sizeof(tvdb_vec3i));
     if (!coords) {
         snprintf(s_error_msg, sizeof(s_error_msg), "write_grid_dense: alloc failed");
@@ -1401,33 +1441,53 @@ int tvdb_py_write_grid_dense_typed(const char *path,
                 coords[idx].x = i; coords[idx].y = j; coords[idx].z = k; ++idx;
             }
 
-    /* 3) Build the grid tree from the dense values. */
-    tvdb_grid_t built;
-    bool ok = tvdb_grid_from_sparse_typed_using_template(&tmpl, coords, values, count,
-                                                         vt, bg_bytes,
-                                                         grid_name ? grid_name : "sdf", &built);
+    int rc = tvdb_py__build_save_typed(path, coords, values, count, vt,
+                                       vsx, vsy, vsz, ox, oy, oz,
+                                       grid_name ? grid_name : "sdf", bg_bytes,
+                                       compression, level);
     free(coords);
-    if (!ok) {
-        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid_dense: grid build failed");
-        return -1;
-    }
+    return rc;
+}
 
-    /* 4) Assemble a one-grid file (zeroed header -> writer defaults to v224) and save. */
-    tvdb_file_t out;
-    memset(&out, 0, sizeof(out));
-    out.alloc = tvdb_py__sys_allocator();
-    out.num_grids = 1;
-    out.grids = &built;
-    tvdb_error_t err;
-    memset(&err, 0, sizeof(err));
-    tvdb_status_t st = tvdb_file_save(&out, path, compression, level, /*use_mmap=*/0, &err);
-    tvdb_grid_destroy_owned(&built);
-    if (st != TVDB_OK) {
-        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid_dense: save failed: %s",
-                 err.message[0] ? err.message : "unknown");
+/* Write a sparse grid of arbitrary value type from scratch. `coords` is
+   `count` world-voxel index triples (int32 x,y,z); `values` is `count` elements
+   each tvdb_value_type_size(vt) bytes wide, paired with `coords` by position.
+   Same transform / background semantics as the dense writer. Coordinates that
+   collide are resolved by the builder (last writer wins per the builder's leaf
+   grouping). Returns 0 on success, -1 on error. */
+int tvdb_py_write_grid_sparse_typed(const char *path,
+                                    const int32_t *coords, const void *values,
+                                    size_t count, int value_type,
+                                    double vsx, double vsy, double vsz,
+                                    double ox, double oy, double oz,
+                                    const char *grid_name, const void *bg_bytes,
+                                    uint32_t compression, int level) {
+    if (!path || !bg_bytes || (count > 0 && (!coords || !values))) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid_sparse: NULL argument");
         return -1;
     }
-    return 0;
+    tvdb_value_type_t vt = (tvdb_value_type_t)value_type;
+
+    /* Repack int32 triples into tvdb_vec3i (same layout, but be explicit). */
+    tvdb_vec3i *cv = NULL;
+    if (count > 0) {
+        cv = (tvdb_vec3i *)malloc(count * sizeof(tvdb_vec3i));
+        if (!cv) {
+            snprintf(s_error_msg, sizeof(s_error_msg), "write_grid_sparse: alloc failed");
+            return -1;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            cv[i].x = coords[3 * i + 0];
+            cv[i].y = coords[3 * i + 1];
+            cv[i].z = coords[3 * i + 2];
+        }
+    }
+    int rc = tvdb_py__build_save_typed(path, cv, values, count, vt,
+                                       vsx, vsy, vsz, ox, oy, oz,
+                                       grid_name ? grid_name : "grid", bg_bytes,
+                                       compression, level);
+    free(cv);
+    return rc;
 }
 
 /* Back-compat float entry point: packs the float background and delegates. */
