@@ -6,10 +6,87 @@ what's covered).
 
 ## Open
 
-The remaining items all require a tensor framework + CUDA and are
-fundamentally out of tinyvdb's "header-first, dependency-free, pure-C
-public API" design. They are listed for visibility but not on the
-near-term roadmap.
+### In-scope (pure-C, CPU, dependency-free)
+
+Gap analysis vs OpenVDB `openvdb/tools/` and fvdb-core ops (reviewed
+2026-06-19). All items below are algorithmically CPU-portable and
+consistent with tinyvdb's header-first, no-CUDA design; each was
+grep-verified absent from `src/*.h`. Ordered high→low value within
+each theme. Notes point at the nearest existing primitive to reuse.
+
+**A. Level-set primitives & SDF utilities**
+
+- [ ] **Level-set primitive generators.** `create_level_set_sphere/box/
+      torus/capsule` + platonic solids (parallels OpenVDB
+      `LevelSetSphere`/`LevelSetPlatonic`/`LevelSetTubes`). Analytic
+      narrow-band SDF builders — tinyvdb only has an analytic sphere
+      inside `tests/`. Emit via `tvdb_grid_from_sparse_typed_using_template`.
+- [ ] **SDF↔fog & masks.** `sdf_to_fog_volume`, `sdf_interior_mask`,
+      `sdf_segmentation`, `extract_enclosed_regions` (parallels OpenVDB
+      `LevelSetUtil`).
+- [ ] **Level-set measure extensions.** Euler characteristic & genus
+      (parallels OpenVDB `LevelSetMeasure`); `tvdb_surface_area` /
+      `tvdb_volume` already exist.
+- [ ] **Level-set rebuild from isosurface.** `level_set_rebuild` with
+      custom bandwidth (parallels OpenVDB `LevelSetRebuild`); build on
+      the `tvdb_fast_sweeping` redistance primitive.
+
+**B. Statistics, diagnostics & operators**
+
+- [ ] **Active-voxel statistics.** min/max/mean/stddev/extrema +
+      histogram over active voxels (parallels OpenVDB
+      `Statistics`/`Extrema`/`Histogram`). Walk via `tvdb_grid_visit_leaves`.
+- [ ] **Diagnostics / validators.** `check_level_set`, `check_fog_volume`
+      (parallels OpenVDB `Diagnostics`).
+- [ ] **Vector-grid operators.** `magnitude`, `normalize`,
+      closest-point-transform `cpt` (parallels OpenVDB `GridOperators`);
+      gradient/divergence/laplacian/curl already done.
+- [ ] **Additional filters.** Median filter, mean-curvature flow
+      (parallels OpenVDB `Filter`/`LevelSetFilter`); gaussian/mean/
+      laplacian already done.
+- [ ] **General composite.** `comp_max`/`comp_min`/`comp_sum`/`comp_mult`
+      over value grids (parallels OpenVDB `Composite`); SDF CSG min/max
+      already done.
+
+**C. Resampling & advection**
+
+- [ ] **Arbitrary-transform resampling.** `resample_to_match` with
+      point/box/quadratic sampler order (parallels OpenVDB
+      `GridTransformer::resampleToMatch`); only integer `coarsen_grid` /
+      `refine_grid` exist today.
+- [ ] **Higher-order advection.** RK3/RK4, MacCormack, BFECC + flux
+      limiters (CLAMP/REVERT) (parallels OpenVDB `VolumeAdvect`); RK2
+      semi-Lagrangian already done.
+- [ ] **Signed flood fill.** Narrow-band sign propagation (parallels
+      OpenVDB `SignedFloodFill`); currently only implicit inside the
+      `mesh_to_sdf` sign methods.
+
+**D. fvdb-style spatial queries & sampling**
+
+- [ ] **Coordinate utilities.** `ijk_to_index` (active-set linear index),
+      world↔voxel batch transforms, morton/hilbert codes (parallels fvdb
+      `IjkToIndex`, `MortonHilbertFromIjk`); `tvdb_apply_xform` is the
+      existing transform primitive.
+- [ ] **Spatial queries.** `points_in_grid`, `coords_in_grid`,
+      `cubes_in_grid`, neighbor enumeration (parallels fvdb
+      `PointsInGrid`/`CoordsInGrid`/`NeighborIndexes`).
+- [ ] **Grid-from-points voxelization.** Occupancy grid from a point
+      cloud (parallels fvdb `from_points` /
+      `from_nearest_voxels_to_points`); `mesh_to_sdf` done, point-cloud
+      voxelization not.
+- [ ] **Higher-order sampling.** Bezier/quadratic sample + splat with
+      VJPs (parallels fvdb `SampleBezier`, OpenVDB `QuadraticSampler`);
+      trilinear sample/splat + VJPs already done.
+- [ ] **Volume-render helper.** Alpha-compositing ray-march as a library
+      function (parallels fvdb `VolumeRender`); currently lives only in
+      the `vdbrender` example.
+- [ ] **Point rasterization & scatter.** `points_to_mask`, uniform point
+      scatter inside an SDF (parallels OpenVDB `PointsToMask`/`PointScatter`).
+
+### Out of scope (CUDA / tensor framework)
+
+Fundamentally outside tinyvdb's "header-first, dependency-free, pure-C
+public API" design — listed for visibility, not on the near-term roadmap.
 
 - [ ] **Jagged Tensor API.** Sparse variable-length data container
       (parallels `fvdb::JaggedTensor`).
