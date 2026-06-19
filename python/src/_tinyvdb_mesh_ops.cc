@@ -1453,7 +1453,7 @@ static int tvdb_py__build_save_typed(const char *path,
     tvdb_status_t st = tvdb_file_save(&out, path, compression, level, /*use_mmap=*/0, &err);
     tvdb_grid_destroy_owned(&built);
     if (st != TVDB_OK) {
-        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid: save failed: %s",
+        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid: save failed: %.480s",
                  err.message[0] ? err.message : "unknown");
         return -1;
     }
