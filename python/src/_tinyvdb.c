@@ -165,6 +165,7 @@ extern int tvdb_py_cpt(const float *, int, int, int, float, float, float, float,
 extern int tvdb_py_composite(const float *, const float *, int, int, int, int, float **);
 extern int tvdb_py_median_filter(const float *, int, int, int, int, int, float **);
 extern int tvdb_py_mean_curvature_flow(const float *, int, int, int, float, float, int, float **);
+extern int tvdb_py_signed_flood_fill(const float *, int, int, int, float, float **);
 
 extern int tvdb_py_gradient(const float *, int, int, int, float, float, float, float, float **);
 extern int tvdb_py_divergence(const float *, int, int, int, float, float, float, float, float **);
@@ -2647,6 +2648,24 @@ static PyObject *mod_mean_curvature_flow(PyObject *module, PyObject *args, PyObj
                             g->voxel_size, g->ox, g->oy, g->oz);
 }
 
+static PyObject *mod_signed_flood_fill(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double band_world;
+    static char *kwlist[] = {"grid", "band_width", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "Od", kwlist, &grid_obj, &band_world))
+        return NULL;
+    module_state *st = get_state(module);
+    PyDenseGrid *g = as_dense_grid(module, grid_obj);
+    if (!g) return NULL;
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_signed_flood_fill(g->data, g->nx, g->ny, g->nz, (float)band_world, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, g->nx, g->ny, g->nz,
+                            g->voxel_size, g->ox, g->oy, g->oz);
+}
+
 /* ======================================================================== */
 /*  Advection & Poisson                                                     */
 /* ======================================================================== */
@@ -3590,6 +3609,9 @@ static PyMethodDef module_methods[] = {
      "median_filter(grid, radius=1, iterations=1) -> DenseGrid; (2r+1)^3 window median."},
     {"mean_curvature_flow", (PyCFunction)mod_mean_curvature_flow, METH_VARARGS | METH_KEYWORDS,
      "mean_curvature_flow(grid, dt, iterations=1) -> DenseGrid; level-set curvature smoothing."},
+    {"signed_flood_fill", (PyCFunction)mod_signed_flood_fill, METH_VARARGS | METH_KEYWORDS,
+     "signed_flood_fill(grid, band_width) -> DenseGrid; set far voxels (|value|>=band) to "
+     "+band (exterior, reaches the boundary) or -band (interior). Restores interior signs."},
     {"advect", (PyCFunction)mod_advect, METH_VARARGS | METH_KEYWORDS, "Advection"},
     {"solve_poisson", (PyCFunction)mod_solve_poisson, METH_VARARGS | METH_KEYWORDS, "Poisson solver (fp32 internals)"},
     {"solve_poisson_d", (PyCFunction)mod_solve_poisson_d, METH_VARARGS | METH_KEYWORDS,

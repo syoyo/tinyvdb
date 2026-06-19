@@ -72,9 +72,10 @@ each theme. Notes point at the nearest existing primitive to reuse.
 - [ ] **Higher-order advection.** RK3/RK4, MacCormack, BFECC + flux
       limiters (CLAMP/REVERT) (parallels OpenVDB `VolumeAdvect`); RK2
       semi-Lagrangian already done.
-- [ ] **Signed flood fill.** Narrow-band sign propagation (parallels
-      OpenVDB `SignedFloodFill`); currently only implicit inside the
-      `mesh_to_sdf` sign methods.
+- [x] **Signed flood fill.** `tvdb_signed_flood_fill` (parallels OpenVDB
+      `SignedFloodFill`): flood far voxels (|value|>=band) from the grid
+      boundary → +band exterior / -band interior, restoring interior signs.
+      Python `signed_flood_fill`. Covered by `test_resample_advect` (C + py).
 
 **D. fvdb-style spatial queries & sampling**
 

@@ -68,6 +68,7 @@ from tinyvdb._tinyvdb import (
     comp_mult,
     median_filter,
     mean_curvature_flow,
+    signed_flood_fill,
     # Advection & Poisson
     advect,
     solve_poisson,
@@ -567,6 +568,7 @@ __all__ = [
     "comp_mult",
     "median_filter",
     "mean_curvature_flow",
+    "signed_flood_fill",
     "advect",
     "solve_poisson",
     "solve_poisson_d",

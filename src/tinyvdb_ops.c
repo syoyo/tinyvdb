@@ -564,6 +564,48 @@ void tvdb_mean_curvature_flow(tvdb_dense_grid* grid, float dt, int iterations) {
 }
 
 // -------------------------------------------------------------------------
+// Signed flood fill
+// -------------------------------------------------------------------------
+
+void tvdb_signed_flood_fill(tvdb_dense_grid* grid, float band_world) {
+  if (!grid->data || band_world <= 0.0f) return;
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  const size_t n = (size_t)nx * ny * nz, sl = (size_t)nx * ny;
+  const float thresh = band_world - 1e-5f;          // |value| >= thresh => "far"
+  uint8_t* vis = (uint8_t*)calloc(n, 1);
+  size_t* stack = (size_t*)malloc(n * sizeof(size_t));
+  if (!vis || !stack) { free(vis); free(stack); return; }
+
+  // Seed: far voxels on the grid boundary (connected to "infinity" = exterior).
+  size_t sp = 0;
+  for (int k = 0; k < nz; ++k)
+    for (int j = 0; j < ny; ++j)
+      for (int i = 0; i < nx; ++i) {
+        if (i != 0 && i != nx-1 && j != 0 && j != ny-1 && k != 0 && k != nz-1) continue;
+        size_t idx = ((size_t)k * ny + j) * nx + i;
+        if (fabsf(grid->data[idx]) >= thresh && !vis[idx]) { vis[idx] = 1; stack[sp++] = idx; }
+      }
+  // Flood the exterior through far voxels only (the band blocks it).
+  while (sp > 0) {
+    size_t v = stack[--sp];
+    int vi = (int)(v % nx), vj = (int)((v / nx) % ny), vk = (int)(v / sl);
+    const int off[6][3] = { {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1} };
+    for (int t = 0; t < 6; ++t) {
+      int ni = vi+off[t][0], nj = vj+off[t][1], nk = vk+off[t][2];
+      if (ni<0||ni>=nx||nj<0||nj>=ny||nk<0||nk>=nz) continue;
+      size_t nidx = ((size_t)nk * ny + nj) * nx + ni;
+      if (fabsf(grid->data[nidx]) >= thresh && !vis[nidx]) { vis[nidx] = 1; stack[sp++] = nidx; }
+    }
+  }
+  // Assign signs: reached far = exterior (+band), unreached far = interior (-band).
+  for (size_t i = 0; i < n; ++i)
+    if (fabsf(grid->data[i]) >= thresh)
+      grid->data[i] = vis[i] ? band_world : -band_world;
+
+  free(vis); free(stack);
+}
+
+// -------------------------------------------------------------------------
 // Phase 2: trilinear sampler in voxel space (used by advection)
 // -------------------------------------------------------------------------
 

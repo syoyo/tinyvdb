@@ -69,6 +69,14 @@ void tvdb_comp_mult(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_den
 void tvdb_median_filter(tvdb_dense_grid* grid, int radius, int iterations);
 void tvdb_mean_curvature_flow(tvdb_dense_grid* grid, float dt, int iterations);
 
+// Signed flood fill (parallels OpenVDB SignedFloodFill). Given a level set whose
+// narrow band (|value| < band_world) carries correct signed distances but whose
+// far voxels may have the wrong sign, set every far voxel (|value| >=
+// band_world) to +band_world if it connects to the grid boundary through far
+// voxels (exterior) or -band_world otherwise (interior). In-place; the band is
+// left untouched. Use to restore interior signs after an unsigned operation.
+void tvdb_signed_flood_fill(tvdb_dense_grid* grid, float band_world);
+
 // Phase 2: Advection
 void tvdb_advect_semi_lagrangian(const tvdb_dense_grid* field,
                                  const tvdb_dense_vec_grid* velocity,

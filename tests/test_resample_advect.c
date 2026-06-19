@@ -86,6 +86,30 @@ int main(void) {
     tvdb_dense_grid_free(&s); tvdb_dense_grid_free(&r);
   }
 
+  // ---- Signed flood fill restores interior sign ----
+  {
+    float c[3] = { 0, 0, 0 };
+    tvdb_dense_grid s; tvdb_level_set_sphere(1.0f, c, 0.05f, 3.0f, &s);
+    float band = 3.0f * 0.05f;                        // 0.15
+    size_t n = (size_t)s.nx * s.ny * s.nz;
+    // Corrupt: wipe the interior sign (all far voxels -> +band).
+    for (size_t i = 0; i < n; ++i)
+      if (fabsf(s.data[i]) >= band - 1e-5f) s.data[i] = band;
+    int ci = (int)lroundf((0 - s.ox)/0.05f - 0.5f);
+    int cj = (int)lroundf((0 - s.oy)/0.05f - 0.5f);
+    int ck = (int)lroundf((0 - s.oz)/0.05f - 0.5f);
+    EXPECT(at3(&s, ci, cj, ck) > 0.0f, "corrupted interior is +band");
+
+    tvdb_signed_flood_fill(&s, band);
+    EXPECT(fabsf(at3(&s, ci, cj, ck) + band) < 1e-5f, "flood restores interior -band");
+    EXPECT(fabsf(s.data[0] - band) < 1e-5f, "exterior corner stays +band");
+    // The narrow band (|value| < band) is untouched: still both signs present.
+    int neg = 0, pos = 0;
+    for (size_t i = 0; i < n; ++i) { if (s.data[i] < 0) ++neg; else ++pos; }
+    EXPECT(neg > 0 && pos > 0, "flood keeps interior + exterior");
+    tvdb_dense_grid_free(&s);
+  }
+
   if (fails) { fprintf(stderr, "%d FAILURES\n", fails); return 1; }
   printf("All resample/advect tests passed.\n");
   return 0;

@@ -2152,6 +2152,18 @@ int tvdb_py_mean_curvature_flow(const float *data, int nx, int ny, int nz,
     return 0;
 }
 
+int tvdb_py_signed_flood_fill(const float *data, int nx, int ny, int nz,
+                              float band_world, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "flood alloc"); return -1; }
+    memcpy(*out, data, nvox * sizeof(float));
+    tvdb_dense_grid g; g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
+    g.ox = g.oy = g.oz = 0.0f; g.data = *out;
+    tvdb_signed_flood_fill(&g, band_world);
+    return 0;
+}
+
 /* Rebuild a clean SDF from the isosurface. The output has its own dims and
    transform (sized by mesh-to-SDF), so report all of them; out_data is the
    transferred malloc'd buffer. Returns 0 on success, -1 on error. */

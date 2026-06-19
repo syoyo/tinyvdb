@@ -53,3 +53,21 @@ def test_resample_sphere_keeps_radius():
     arr = np.asarray(r, copy=False)
     assert arr.min() < 0.0 and arr.max() > 0.0
     assert tinyvdb.level_set_euler_characteristic(r) == 2.0
+
+
+# ----------------------------------------------------------- signed flood fill
+
+def test_signed_flood_fill_restores_interior():
+    np = pytest.importorskip("numpy")
+    band = 0.15
+    s = tinyvdb.level_set_sphere(1.0, center=(0, 0, 0), voxel_size=0.05, half_width=3.0)
+    a = np.asarray(s, copy=False)
+    far = np.abs(a) >= band - 1e-5
+    a[far] = band                                    # wipe the far interior sign
+    # Far -band voxels are gone; only the narrow band's negatives remain (> -band).
+    assert a.min() > -band + 1e-5
+    out = tinyvdb.signed_flood_fill(s, band)
+    o = np.asarray(out, copy=False)
+    assert o.min() >= -band - 1e-5 and o.max() <= band + 1e-5
+    # The deep interior is restored to exactly -band.
+    assert o.min() == pytest.approx(-band, abs=1e-5)
