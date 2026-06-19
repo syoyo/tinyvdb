@@ -91,6 +91,7 @@ from tinyvdb._tinyvdb import (
     fracture,
     # Sampling / TSDF / topology / pooling
     sample_trilinear,
+    sample_quadratic,
     integrate_tsdf,
     coarsen_grid,
     refine_grid,
@@ -564,6 +565,50 @@ def neighbor_counts(active, connectivity=6):
     return _np.frombuffer(_neighbor_counts(a.tobytes(), connectivity=int(connectivity)), dtype=_np.int32)
 
 
+def points_to_mask(points, voxel_size, origin=(0.0, 0.0, 0.0)):
+    """Rasterize a world point cloud to a dense occupancy ``DenseGrid`` (1.0 where a
+    point lands, 0.0 elsewhere), sized to the occupied voxels' bounding box
+    (parallels OpenVDB PointsToMask). ``voxel_size`` is a scalar."""
+    import numpy as _np
+    vs = float(voxel_size)
+    coords = voxelize_points(points, vs, origin)
+    if coords.shape[0] == 0:
+        return DenseGrid(nx=1, ny=1, nz=1, voxel_size=vs,
+                         ox=float(origin[0]), oy=float(origin[1]), oz=float(origin[2]))
+    cmin = coords.min(axis=0)
+    nx, ny, nz = (int(v) for v in (coords.max(axis=0) - cmin + 1))
+    dg = DenseGrid(nx=nx, ny=ny, nz=nz, voxel_size=vs,
+                   ox=float(origin[0]) + int(cmin[0]) * vs,
+                   oy=float(origin[1]) + int(cmin[1]) * vs,
+                   oz=float(origin[2]) + int(cmin[2]) * vs)
+    arr = _np.asarray(dg)                 # view shape (nz, ny, nx)
+    lc = coords - cmin
+    arr[lc[:, 2], lc[:, 1], lc[:, 0]] = 1.0
+    return dg
+
+
+def scatter_points_in_sdf(sdf_grid, n, seed=0, isovalue=0.0):
+    """Scatter ``n`` random world points uniformly inside an SDF's interior
+    (``sdf < isovalue``) by rejection sampling (parallels OpenVDB PointScatter).
+    Returns an ``(n, 3)`` float32 array."""
+    import numpy as _np
+    rng = _np.random.default_rng(seed)
+    nx, ny, nz = sdf_grid.shape
+    vs = sdf_grid.voxel_size
+    ox, oy, oz = sdf_grid.origin
+    lo = _np.array([ox, oy, oz], dtype=_np.float32)
+    hi = _np.array([ox + nx * vs, oy + ny * vs, oz + nz * vs], dtype=_np.float32)
+    kept = []
+    total = 0
+    while total < n:
+        batch = rng.uniform(lo, hi, size=(max(2 * n, 1024), 3)).astype(_np.float32)
+        vals = _np.frombuffer(sample_trilinear(sdf_grid, batch.tobytes()), dtype=_np.float32)
+        keep = batch[vals < isovalue]
+        kept.append(keep)
+        total += keep.shape[0]
+    return _np.concatenate(kept, axis=0)[:n]
+
+
 # Named platonic-solid convenience wrappers around level_set_platonic. `radius`
 # is the circumradius (center-to-vertex distance).
 def level_set_tetrahedron(radius, center=(0.0, 0.0, 0.0), voxel_size=0.1, half_width=3.0):
@@ -679,6 +724,9 @@ __all__ = [
     "volume_to_spheres",
     "fracture",
     "sample_trilinear",
+    "sample_quadratic",
+    "points_to_mask",
+    "scatter_points_in_sdf",
     "integrate_tsdf",
     "coarsen_grid",
     "refine_grid",

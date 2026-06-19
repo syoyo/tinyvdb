@@ -202,6 +202,8 @@ extern int tvdb_py_volume_to_spheres(const float *, int, int, int, float, float,
 extern int tvdb_py_fracture(const float *, int, int, int, float, float, float, float,
                             const float **, int, float ***, int *);
 
+extern int tvdb_py_sample_quadratic(const float *, int, int, int, float, float, float, float,
+                                    const float *, size_t, float **);
 extern int tvdb_py_sample_trilinear(const float *, int, int, int, float, float, float, float,
                                     const float *, size_t, float **);
 extern int tvdb_py_integrate_tsdf(const float *, int, int, float, float, float, float,
@@ -3077,6 +3079,32 @@ static PyObject *mod_sample_trilinear(PyObject *module, PyObject *args, PyObject
     return bytes;
 }
 
+static PyObject *mod_sample_quadratic(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj, *pts_obj;
+    static char *kwlist[] = {"grid", "points", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OO", kwlist, &grid_obj, &pts_obj)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    Py_ssize_t nfloats;
+    float *pts = extract_floats(pts_obj, &nfloats);
+    if (!pts) return NULL;
+    size_t npts = (size_t)(nfloats / 3);
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_sample_quadratic(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                                  g->ox, g->oy, g->oz, pts, npts, &out);
+    Py_END_ALLOW_THREADS
+    free(pts);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *bytes = PyBytes_FromStringAndSize((const char *)out, (Py_ssize_t)(npts * sizeof(float)));
+    free(out);
+    return bytes;
+}
+
 static PyObject *mod_integrate_tsdf(PyObject *module, PyObject *args, PyObject *kw) {
     PyObject *depth_obj, *pose_obj;
     int W, H, nx, ny, nz;
@@ -3790,6 +3818,7 @@ static PyMethodDef module_methods[] = {
     {"volume_to_spheres", (PyCFunction)mod_volume_to_spheres, METH_VARARGS | METH_KEYWORDS, "Volume to spheres"},
     {"fracture", mod_fracture, METH_VARARGS, "Fracture"},
     {"sample_trilinear", (PyCFunction)mod_sample_trilinear, METH_VARARGS | METH_KEYWORDS, "Trilinear sampling at world points; returns bytes of float32 values"},
+    {"sample_quadratic", (PyCFunction)mod_sample_quadratic, METH_VARARGS | METH_KEYWORDS, "Triquadratic sampling at world points; returns bytes of float32 values"},
     {"integrate_tsdf", (PyCFunction)mod_integrate_tsdf, METH_VARARGS | METH_KEYWORDS, "TSDF fusion from a depth frame; returns (tsdf, weights)"},
     {"coarsen_grid", (PyCFunction)mod_coarsen_grid, METH_VARARGS | METH_KEYWORDS, "Coarsen by integer factor (block average)"},
     {"refine_grid", (PyCFunction)mod_refine_grid, METH_VARARGS | METH_KEYWORDS, "Refine by integer factor (trilinear upsample)"},

@@ -188,6 +188,23 @@ out = tinyvdb.advect(field, velocity, dt, scheme=tinyvdb.ADVECT_MACCORMACK, clam
 #   scheme: ADVECT_RK1..ADVECT_RK4, ADVECT_MACCORMACK, ADVECT_BFECC
 ```
 
+### Points & coordinate queries
+
+```python
+# Point cloud -> unique occupied voxel coords / occupancy mask.
+coords = tinyvdb.voxelize_points(points, voxel_size=0.05)
+mask   = tinyvdb.points_to_mask(points, 0.05)            # DenseGrid
+
+# Membership / index queries against an active coord set.
+inside = tinyvdb.points_in_grid(points, coords, 0.05)
+idx    = tinyvdb.ijk_to_index(coords, query_coords)      # -1 if absent
+codes  = tinyvdb.morton_encode(coords)                   # Z-order
+
+# Higher-order sampling and point scatter.
+vals = tinyvdb.sample_quadratic(grid, pts.tobytes())     # smoother than trilinear
+pts  = tinyvdb.scatter_points_in_sdf(sdf, n=1000)         # uniform interior points
+```
+
 ### Operators & filters
 
 ```python

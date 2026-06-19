@@ -50,6 +50,44 @@ void tvdb_sample_trilinear_dense_batch(const tvdb_dense_grid* g,
   }
 }
 
+// 3-point parabola through (val[0],val[1],val[2]) at offsets (-1,0,1) at `w`.
+static inline float tvdb_quad1_s(const float* val, float w) {
+  float a = 0.5f * (val[0] + val[2]) - val[1];
+  float b = 0.5f * (val[2] - val[0]);
+  return w * (w * a + b) + val[1];
+}
+
+float tvdb_sample_quadratic_dense(const tvdb_dense_grid* g,
+                                  float wx, float wy, float wz) {
+  float cx = (wx - g->ox) / g->voxel_size - 0.5f;   // cell-center voxel coord
+  float cy = (wy - g->oy) / g->voxel_size - 0.5f;
+  float cz = (wz - g->oz) / g->voxel_size - 0.5f;
+  int ix = (int)floorf(cx), iy = (int)floorf(cy), iz = (int)floorf(cz);
+  float u = cx - ix, v = cy - iy, w = cz - iz;
+  float vx[3];
+  for (int dx = 0; dx < 3; ++dx) {
+    float vy[3];
+    for (int dy = 0; dy < 3; ++dy) {
+      float vz[3];
+      for (int dz = 0; dz < 3; ++dz)
+        vz[dz] = tvdb_at(g, ix - 1 + dx, iy - 1 + dy, iz - 1 + dz);  // clamped
+      vy[dy] = tvdb_quad1_s(vz, w);
+    }
+    vx[dx] = tvdb_quad1_s(vy, v);
+  }
+  return tvdb_quad1_s(vx, u);
+}
+
+void tvdb_sample_quadratic_dense_batch(const tvdb_dense_grid* g,
+                                       const tvdb_vec3f* pts,
+                                       size_t n,
+                                       float* out) {
+  #pragma omp parallel for schedule(static)
+  for (long long i = 0; i < (long long)n; ++i) {
+    out[i] = tvdb_sample_quadratic_dense(g, pts[i].x, pts[i].y, pts[i].z);
+  }
+}
+
 void tvdb_sample_trilinear_vec_dense(const tvdb_dense_vec_grid* g,
                                      float wx, float wy, float wz,
                                      tvdb_vec3f* out) {

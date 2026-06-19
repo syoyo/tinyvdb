@@ -59,3 +59,35 @@ def test_neighbor_counts():
     assert tinyvdb.neighbor_counts(blk, 26).tolist() == [7] * 8
     # An isolated voxel has no neighbors.
     assert tinyvdb.neighbor_counts(np.array([[100, 100, 100]], dtype=np.int32)).tolist() == [0]
+
+
+def test_sample_quadratic_reproduces_linear():
+    np = pytest.importorskip("numpy")
+    nx, ny, nz, vs = 20, 8, 8, 0.1
+    g = tinyvdb.DenseGrid(nx=nx, ny=ny, nz=nz, voxel_size=vs, ox=-1.0)
+    wx = -1.0 + (np.arange(nx) + 0.5) * vs
+    np.asarray(g)[:] = np.broadcast_to(wx[None, None, :], (nz, ny, nx))
+    # Sample away from the border (the 3-wide stencil clamps at the outer cell).
+    pts = np.array([[-0.5, 0.2, 0.3], [0.3, 0.1, 0.4], [0.0, 0.3, 0.2]], dtype=np.float32)
+    q = np.frombuffer(tinyvdb.sample_quadratic(g, pts.tobytes()), dtype=np.float32)
+    assert np.allclose(q, pts[:, 0], atol=1e-4)
+
+
+def test_points_to_mask():
+    np = pytest.importorskip("numpy")
+    pts = np.array([[0.05, 0.05, 0.05], [0.35, 0.05, 0.05], [0.05, 0.05, 0.05]],
+                   dtype=np.float32)
+    mask = tinyvdb.points_to_mask(pts, 0.1)
+    arr = np.asarray(mask, copy=False)
+    assert arr.shape == (1, 1, 4)             # (nz, ny, nx); x spans voxels 0..3
+    assert arr.sum() == 2.0                   # two distinct occupied voxels
+    assert arr[0, 0, 0] == 1.0 and arr[0, 0, 3] == 1.0
+
+
+def test_scatter_points_in_sdf():
+    np = pytest.importorskip("numpy")
+    s = tinyvdb.level_set_sphere(1.0, center=(0, 0, 0), voxel_size=0.1)
+    pts = tinyvdb.scatter_points_in_sdf(s, 400, seed=3)
+    assert pts.shape == (400, 3)
+    # All points lie inside the sphere (within a voxel of the surface).
+    assert np.all(np.linalg.norm(pts, axis=1) < 1.0 + 0.1)

@@ -22,6 +22,16 @@ void tvdb_sample_trilinear_dense_batch(const tvdb_dense_grid* g,
                                        size_t n,
                                        float* out);
 
+// Triquadratic sampling (parallels OpenVDB QuadraticSampler / fvdb higher-order
+// sample): smoother than trilinear via a 3x3x3 stencil, per-axis 3-point
+// parabola. Out-of-range queries clamp to the grid edge.
+float tvdb_sample_quadratic_dense(const tvdb_dense_grid* g,
+                                  float wx, float wy, float wz);
+void tvdb_sample_quadratic_dense_batch(const tvdb_dense_grid* g,
+                                       const tvdb_vec3f* pts,
+                                       size_t n,
+                                       float* out);
+
 // Sample a 3-component vector grid at world-space point.
 void tvdb_sample_trilinear_vec_dense(const tvdb_dense_vec_grid* g,
                                      float wx, float wy, float wz,

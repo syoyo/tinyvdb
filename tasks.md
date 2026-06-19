@@ -93,14 +93,18 @@ each theme. Notes point at the nearest existing primitive to reuse.
 - [x] **Grid-from-points voxelization.** `tvdb_voxelize_points` — world point
       cloud → unique occupied voxel coords (parallels fvdb `from_points`).
       Python `voxelize_points`.
-- [ ] **Higher-order sampling.** Bezier/quadratic sample + splat with
-      VJPs (parallels fvdb `SampleBezier`, OpenVDB `QuadraticSampler`);
-      trilinear sample/splat + VJPs already done.
+- [x] **Higher-order sampling.** `tvdb_sample_quadratic_dense` (+ batch)
+      triquadratic sampling (parallels OpenVDB `QuadraticSampler`); Python
+      `sample_quadratic`. Covered by `test_grid_index` (py). *Still open:*
+      quadratic splat + sampling VJPs (trilinear sample/splat + VJPs done).
 - [ ] **Volume-render helper.** Alpha-compositing ray-march as a library
       function (parallels fvdb `VolumeRender`); currently lives only in
       the `vdbrender` example.
-- [ ] **Point rasterization & scatter.** `points_to_mask`, uniform point
-      scatter inside an SDF (parallels OpenVDB `PointsToMask`/`PointScatter`).
+- [x] **Point rasterization & scatter.** `points_to_mask` (rasterize a point
+      cloud to a dense occupancy grid) and `scatter_points_in_sdf` (rejection-
+      sample points inside an SDF interior) — Python helpers over
+      `voxelize_points` / `sample_trilinear` (parallels OpenVDB
+      `PointsToMask`/`PointScatter`). Covered by `test_grid_index` (py).
 
 ### Out of scope (CUDA / tensor framework)
 

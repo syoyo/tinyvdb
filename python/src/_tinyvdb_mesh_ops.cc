@@ -753,6 +753,22 @@ int tvdb_py_sample_trilinear(const float *data, int nx, int ny, int nz,
     return 0;
 }
 
+int tvdb_py_sample_quadratic(const float *data, int nx, int ny, int nz,
+                             float voxel_size, float ox, float oy, float oz,
+                             const float *points, size_t npts,
+                             float **out_vals) {
+    tvdb_dense_grid g = make_grid(data, nx, ny, nz, voxel_size, ox, oy, oz);
+    *out_vals = (float *)malloc(npts * sizeof(float));
+    if (!*out_vals) {
+        tvdb_dense_grid_free(&g);
+        snprintf(s_error_msg, sizeof(s_error_msg), "sample_quadratic: malloc failed");
+        return -1;
+    }
+    tvdb_sample_quadratic_dense_batch(&g, (const tvdb_vec3f *)points, npts, *out_vals);
+    tvdb_dense_grid_free(&g);
+    return 0;
+}
+
 // Update an existing pair of (tsdf, weights) DenseGrid buffers with a new
 // depth frame. Caller-provided buffers must already be initialized
 // (typically tsdf = trunc_distance, weights = 0 on the first call).
