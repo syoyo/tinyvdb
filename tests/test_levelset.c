@@ -234,6 +234,85 @@ int main(void) {
     }
   }
 
+  // ---- Segmentation: two separated spheres -> two components ----
+  {
+    tvdb_dense_grid g;
+    int nx = 70, ny = 32, nz = 32;
+    tvdb_dense_grid_init(&g, nx, ny, nz);
+    g.voxel_size = 0.1f; g.ox = 0.0f; g.oy = 0.0f; g.oz = 0.0f;
+    float ca[3] = { 1.5f, 1.6f, 1.6f }, cb[3] = { 5.5f, 1.6f, 1.6f }, r = 0.7f;
+    int in_neg = 0;
+    for (int k = 0; k < nz; ++k)
+      for (int j = 0; j < ny; ++j)
+        for (int i = 0; i < nx; ++i) {
+          float x, y, z; wc(&g, i, j, k, &x, &y, &z);
+          float da = sqrtf((x-ca[0])*(x-ca[0])+(y-ca[1])*(y-ca[1])+(z-ca[2])*(z-ca[2])) - r;
+          float db = sqrtf((x-cb[0])*(x-cb[0])+(y-cb[1])*(y-cb[1])+(z-cb[2])*(z-cb[2])) - r;
+          float d = da < db ? da : db;
+          g.data[(size_t)(k*ny+j)*nx+i] = d;
+          if (d < 0.0f) ++in_neg;
+        }
+    tvdb_dense_grid* segs = NULL; int nseg = 0;
+    EXPECT(tvdb_sdf_segmentation(&g, 0.0f, 6, &segs, &nseg), "segmentation ok");
+    EXPECT(nseg == 2, "two separated spheres -> 2 components");
+    int tot_neg = 0;
+    for (int c = 0; c < nseg; ++c) {
+      int neg = 0; float xmin = 1e9f, xmax = -1e9f;
+      for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+          for (int i = 0; i < nx; ++i)
+            if (segs[c].data[(size_t)(k*ny+j)*nx+i] < 0.0f) {
+              ++neg; float x = g.ox + (i+0.5f)*g.voxel_size;
+              if (x < xmin) xmin = x; if (x > xmax) xmax = x;
+            }
+      tot_neg += neg;
+      EXPECT(neg > 0, "each segment has interior");
+      EXPECT(xmax - xmin < 2.0f, "each segment's interior is one localized blob");
+    }
+    EXPECT(tot_neg == in_neg, "segments partition the interior exactly");
+    for (int c = 0; c < nseg; ++c) tvdb_dense_grid_free(&segs[c]);
+    free(segs);
+    tvdb_dense_grid_free(&g);
+  }
+
+  // ---- Enclosed regions: spherical shell cavity ----
+  {
+    tvdb_dense_grid g;
+    int nx = 40, ny = 40, nz = 40;
+    tvdb_dense_grid_init(&g, nx, ny, nz);
+    g.voxel_size = 0.1f; g.ox = -2.0f; g.oy = -2.0f; g.oz = -2.0f;
+    float R = 1.2f, ri = 0.7f;   // shell between ri and R, cavity for |p| < ri
+    for (int k = 0; k < nz; ++k)
+      for (int j = 0; j < ny; ++j)
+        for (int i = 0; i < nx; ++i) {
+          float x, y, z; wc(&g, i, j, k, &x, &y, &z);
+          float rr = sqrtf(x*x + y*y + z*z);
+          float d = (rr - R) > (ri - rr) ? (rr - R) : (ri - rr);  // shell SDF
+          g.data[(size_t)(k*ny+j)*nx+i] = d;
+        }
+    tvdb_dense_grid mask;
+    EXPECT(tvdb_sdf_extract_enclosed_regions(&g, 0.0f, 6, &mask), "enclosed ok");
+    int marked = 0, bad = 0;
+    for (int k = 0; k < nz; ++k)
+      for (int j = 0; j < ny; ++j)
+        for (int i = 0; i < nx; ++i) {
+          float x, y, z; wc(&g, i, j, k, &x, &y, &z);
+          float rr = sqrtf(x*x + y*y + z*z);
+          float m = mask.data[(size_t)(k*ny+j)*nx+i];
+          if (m != 0.0f && m != 1.0f) ++bad;
+          if (m == 1.0f) {
+            ++marked;
+            if (rr > ri + 1e-4f) ++bad;        // marked must be inside the cavity
+          } else {
+            if (rr < ri - g.voxel_size) ++bad; // deep cavity must be marked
+          }
+        }
+    EXPECT(bad == 0, "enclosed mask matches the cavity |p|<ri");
+    EXPECT(marked > 0, "cavity should be found");
+    tvdb_dense_grid_free(&g);
+    tvdb_dense_grid_free(&mask);
+  }
+
   // ---- Error paths ----
   {
     tvdb_dense_grid g;

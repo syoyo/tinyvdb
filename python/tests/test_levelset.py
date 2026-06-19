@@ -159,6 +159,82 @@ def test_platonic_composes_and_roundtrips(tmp_path):
     assert np.array_equal(a, b)
 
 
+def _dense_from_array(arr, voxel_size=0.1, origin=(0.0, 0.0, 0.0)):
+    """Wrap a 3D float32 numpy array in a DenseGrid whose numpy view equals it.
+
+    DenseGrid stores data x-fastest, so its numpy view has shape ``(nz, ny, nx)``;
+    we size the grid accordingly so ``np.asarray(dg) == arr``.
+    """
+    np = pytest.importorskip("numpy")
+    a = np.ascontiguousarray(arr, dtype=np.float32)
+    nz, ny, nx = (int(d) for d in a.shape)
+    dg = tinyvdb.DenseGrid(nx=nx, ny=ny, nz=nz, voxel_size=float(voxel_size),
+                           ox=float(origin[0]), oy=float(origin[1]), oz=float(origin[2]))
+    np.asarray(dg)[:] = a
+    return dg
+
+
+def test_sdf_segmentation_two_spheres():
+    np = pytest.importorskip("numpy")
+    # SDF union (min) of two well-separated spheres in one dense grid.
+    nx, ny, nz, vs = 70, 32, 32, 0.1
+    ii, jj, kk = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
+    x, y, z = (ii + 0.5) * vs, (jj + 0.5) * vs, (kk + 0.5) * vs
+    da = np.sqrt((x - 1.5) ** 2 + (y - 1.6) ** 2 + (z - 1.6) ** 2) - 0.7
+    db = np.sqrt((x - 5.5) ** 2 + (y - 1.6) ** 2 + (z - 1.6) ** 2) - 0.7
+    field = np.minimum(da, db).astype(np.float32)
+    grid = _dense_from_array(field, voxel_size=vs)
+
+    segs = tinyvdb.sdf_segmentation(grid, isovalue=0.0)
+    assert len(segs) == 2
+    total_neg = 0
+    centroids = []
+    for s in segs:
+        arr = np.array(s, copy=False)
+        assert arr.shape == field.shape
+        neg = arr < 0.0
+        assert neg.any()
+        total_neg += int(neg.sum())
+        xs = np.argwhere(neg)[:, 0]
+        assert xs.max() - xs.min() < nx * 0.5      # one localized blob
+        centroids.append(xs.mean())
+    assert total_neg == int((field < 0.0).sum())    # exact partition
+    assert abs(centroids[0] - centroids[1]) > 20    # the two blobs are far apart in x
+
+
+def test_sdf_segmentation_single_component():
+    np = pytest.importorskip("numpy")
+    g = tinyvdb.level_set_sphere(1.0, voxel_size=0.1)
+    segs = tinyvdb.sdf_segmentation(g)
+    assert len(segs) == 1
+    assert np.array_equal(np.array(segs[0], copy=False), np.array(g, copy=False))
+
+
+def test_sdf_extract_enclosed_regions_shell():
+    np = pytest.importorskip("numpy")
+    # Spherical shell SDF: solid between ri and R, hollow cavity for |p| < ri.
+    n, vs = 40, 0.1
+    R, ri = 1.2, 0.7
+    c = np.arange(n) * vs - 2.0 + 0.5 * vs
+    X, Y, Z = np.meshgrid(c, c, c, indexing="ij")
+    rr = np.sqrt(X ** 2 + Y ** 2 + Z ** 2)
+    shell = np.maximum(rr - R, ri - rr).astype(np.float32)
+    dg = _dense_from_array(shell, voxel_size=vs, origin=(-2.0, -2.0, -2.0))
+
+    mask = np.array(tinyvdb.sdf_extract_enclosed_regions(dg, isovalue=0.0), copy=False)
+    assert set(np.unique(mask).tolist()) <= {0.0, 1.0}
+    marked = mask == 1.0
+    assert marked.any()
+    # Everything marked is inside the cavity; deep cavity is marked; open air isn't.
+    assert np.all(rr[marked] <= ri + 1e-4)
+    assert np.all(mask[rr < ri - vs] == 1.0)
+    assert mask[0, 0, 0] == 0.0                    # corner = open exterior
+
+    # A solid sphere has no enclosed regions.
+    solid = tinyvdb.level_set_sphere(1.0, voxel_size=0.1)
+    assert np.array(tinyvdb.sdf_extract_enclosed_regions(solid), copy=False).sum() == 0.0
+
+
 def test_error_paths():
     with pytest.raises((ValueError, tinyvdb.VDBError)):
         tinyvdb.level_set_sphere(-1.0)              # negative radius

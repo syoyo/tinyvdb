@@ -1915,4 +1915,49 @@ int tvdb_py_sdf_interior_mask(const float *data, int nx, int ny, int nz,
     return 0;
 }
 
+/* Segment the interior into connected components. The output grids all share
+   the input's dims/transform, so we hand back just their data buffers in
+   *out_list (a malloc'd array of *out_count float*, each owned by the caller).
+   Returns 0 on success, -1 on error. */
+int tvdb_py_sdf_segmentation(const float *data, int nx, int ny, int nz,
+                             float isovalue, int connectivity,
+                             float ***out_list, int *out_count) {
+    *out_list = NULL; *out_count = 0;
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = 1.0f;
+    in.ox = in.oy = in.oz = 0.0f; in.data = (float *)data;
+    tvdb_dense_grid *segs = NULL; int count = 0;
+    if (!tvdb_sdf_segmentation(&in, isovalue, connectivity, &segs, &count)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "sdf_segmentation failed");
+        return -1;
+    }
+    *out_count = count;
+    if (count == 0) return 0;
+    float **list = (float **)malloc((size_t)count * sizeof(float *));
+    if (!list) {
+        for (int c = 0; c < count; ++c) tvdb_dense_grid_free(&segs[c]);
+        free(segs);
+        snprintf(s_error_msg, sizeof(s_error_msg), "sdf_segmentation: alloc failed");
+        return -1;
+    }
+    for (int c = 0; c < count; ++c) list[c] = segs[c].data;  /* transfer */
+    free(segs);  /* struct array only; data buffers transferred */
+    *out_list = list;
+    return 0;
+}
+
+int tvdb_py_sdf_extract_enclosed(const float *data, int nx, int ny, int nz,
+                                 float isovalue, int connectivity, float **out) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = 1.0f;
+    in.ox = in.oy = in.oz = 0.0f; in.data = (float *)data;
+    tvdb_dense_grid mask;
+    if (!tvdb_sdf_extract_enclosed_regions(&in, isovalue, connectivity, &mask)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "sdf_extract_enclosed_regions failed");
+        return -1;
+    }
+    *out = mask.data;  /* transfer ownership */
+    return 0;
+}
+
 } /* extern "C" */

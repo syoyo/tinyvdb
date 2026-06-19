@@ -324,3 +324,132 @@ bool tvdb_sdf_interior_mask(const tvdb_dense_grid* sdf, float isovalue,
     out->data[i] = (sdf->data[i] < isovalue) ? 1.0f : 0.0f;
   return true;
 }
+
+// ---- Connected-component helpers (segmentation / enclosed regions) ---------
+
+// Fill `off` with the neighbor offsets for the connectivity (6 = face, 26 =
+// face+edge+vertex; anything else falls back to 6). Returns the offset count.
+static int lvl_neighbor_offsets(int connectivity, int off[26][3]) {
+  if (connectivity == 26) {
+    int n = 0;
+    for (int dz = -1; dz <= 1; ++dz)
+      for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx) {
+          if (dx == 0 && dy == 0 && dz == 0) continue;
+          off[n][0] = dx; off[n][1] = dy; off[n][2] = dz; ++n;
+        }
+    return 26;
+  }
+  static const int o6[6][3] = { {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1} };
+  for (int i = 0; i < 6; ++i) { off[i][0]=o6[i][0]; off[i][1]=o6[i][1]; off[i][2]=o6[i][2]; }
+  return 6;
+}
+
+bool tvdb_sdf_segmentation(const tvdb_dense_grid* sdf, float isovalue,
+                           int connectivity, tvdb_dense_grid** out_grids,
+                           int* out_count) {
+  if (out_grids) *out_grids = NULL;
+  if (out_count) *out_count = 0;
+  if (!sdf || !sdf->data || !out_grids || !out_count) return false;
+  int nx = sdf->nx, ny = sdf->ny, nz = sdf->nz;
+  size_t n = (size_t)nx * ny * nz;
+  if (n == 0) return true;  // no components
+
+  int off[26][3];
+  int noff = lvl_neighbor_offsets(connectivity, off);
+
+  // Background fill (largest value = the exterior clamp for a narrow band).
+  float bg = -3.4e38f;
+  for (size_t i = 0; i < n; ++i) if (sdf->data[i] > bg) bg = sdf->data[i];
+
+  int32_t* labels = (int32_t*)calloc(n, sizeof(int32_t));
+  size_t* stack = (size_t*)malloc(n * sizeof(size_t));
+  if (!labels || !stack) { free(labels); free(stack); return false; }
+
+  int count = 0;
+  for (size_t s = 0; s < n; ++s) {
+    if (sdf->data[s] >= isovalue || labels[s] != 0) continue;
+    ++count;
+    size_t sp = 0;
+    stack[sp++] = s; labels[s] = count;
+    while (sp > 0) {
+      size_t v = stack[--sp];
+      int vi = (int)(v % nx), vj = (int)((v / nx) % ny), vk = (int)(v / ((size_t)nx * ny));
+      for (int t = 0; t < noff; ++t) {
+        int ni = vi + off[t][0], nj = vj + off[t][1], nk = vk + off[t][2];
+        if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || nk < 0 || nk >= nz) continue;
+        size_t nidx = ((size_t)nk * ny + nj) * nx + ni;
+        if (sdf->data[nidx] < isovalue && labels[nidx] == 0) {
+          labels[nidx] = count;
+          stack[sp++] = nidx;
+        }
+      }
+    }
+  }
+  free(stack);
+
+  if (count == 0) { free(labels); return true; }
+
+  tvdb_dense_grid* grids = (tvdb_dense_grid*)malloc((size_t)count * sizeof(tvdb_dense_grid));
+  if (!grids) { free(labels); return false; }
+  for (int c = 1; c <= count; ++c) {
+    tvdb_dense_grid* g = &grids[c - 1];
+    tvdb_dense_grid_init(g, nx, ny, nz);
+    if (!g->data) {  // OOM: tear down what we built
+      for (int p = 0; p < c - 1; ++p) tvdb_dense_grid_free(&grids[p]);
+      free(grids); free(labels);
+      return false;
+    }
+    g->voxel_size = sdf->voxel_size; g->ox = sdf->ox; g->oy = sdf->oy; g->oz = sdf->oz;
+    for (size_t i = 0; i < n; ++i) {
+      if (labels[i] == 0 || labels[i] == c) g->data[i] = sdf->data[i];  // exterior or this object
+      else g->data[i] = bg;                                              // fill other objects solid
+    }
+  }
+  free(labels);
+  *out_grids = grids;
+  *out_count = count;
+  return true;
+}
+
+bool tvdb_sdf_extract_enclosed_regions(const tvdb_dense_grid* sdf, float isovalue,
+                                       int connectivity, tvdb_dense_grid* out) {
+  if (!lvl_clone_shape(sdf, out)) return false;
+  int nx = sdf->nx, ny = sdf->ny, nz = sdf->nz;
+  size_t n = (size_t)nx * ny * nz;
+  if (n == 0) return true;
+
+  int off[26][3];
+  int noff = lvl_neighbor_offsets(connectivity, off);
+
+  uint8_t* vis = (uint8_t*)calloc(n, 1);
+  size_t* stack = (size_t*)malloc(n * sizeof(size_t));
+  if (!vis || !stack) { free(vis); free(stack); tvdb_dense_grid_free(out); return false; }
+
+  // Seed: every exterior voxel on the grid boundary (connected to "infinity").
+  size_t sp = 0;
+  for (int k = 0; k < nz; ++k)
+    for (int j = 0; j < ny; ++j)
+      for (int i = 0; i < nx; ++i) {
+        if (i != 0 && i != nx - 1 && j != 0 && j != ny - 1 && k != 0 && k != nz - 1) continue;
+        size_t idx = ((size_t)k * ny + j) * nx + i;
+        if (sdf->data[idx] >= isovalue && !vis[idx]) { vis[idx] = 1; stack[sp++] = idx; }
+      }
+  // Flood the open exterior.
+  while (sp > 0) {
+    size_t v = stack[--sp];
+    int vi = (int)(v % nx), vj = (int)((v / nx) % ny), vk = (int)(v / ((size_t)nx * ny));
+    for (int t = 0; t < noff; ++t) {
+      int ni = vi + off[t][0], nj = vj + off[t][1], nk = vk + off[t][2];
+      if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || nk < 0 || nk >= nz) continue;
+      size_t nidx = ((size_t)nk * ny + nj) * nx + ni;
+      if (sdf->data[nidx] >= isovalue && !vis[nidx]) { vis[nidx] = 1; stack[sp++] = nidx; }
+    }
+  }
+  // Enclosed = exterior voxels the boundary flood never reached.
+  for (size_t i = 0; i < n; ++i)
+    out->data[i] = (sdf->data[i] >= isovalue && !vis[i]) ? 1.0f : 0.0f;
+
+  free(vis); free(stack);
+  return true;
+}

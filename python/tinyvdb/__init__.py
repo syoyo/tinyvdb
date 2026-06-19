@@ -29,6 +29,8 @@ from tinyvdb._tinyvdb import (
     level_set_platonic,
     sdf_to_fog_volume,
     sdf_interior_mask,
+    sdf_segmentation,
+    sdf_extract_enclosed_regions,
     # Morphology
     dilate,
     erode,
@@ -514,6 +516,8 @@ __all__ = [
     "level_set_icosahedron",
     "sdf_to_fog_volume",
     "sdf_interior_mask",
+    "sdf_segmentation",
+    "sdf_extract_enclosed_regions",
     "dilate",
     "erode",
     "open_op",

@@ -118,6 +118,11 @@ extern int tvdb_py_sdf_to_fog_volume(const float *data, int nx, int ny, int nz,
 extern int tvdb_py_sdf_interior_mask(const float *data, int nx, int ny, int nz,
                                      float vs, float ox, float oy, float oz,
                                      float isovalue, float **out_data);
+extern int tvdb_py_sdf_segmentation(const float *data, int nx, int ny, int nz,
+                                    float isovalue, int connectivity,
+                                    float ***out_list, int *out_count);
+extern int tvdb_py_sdf_extract_enclosed(const float *data, int nx, int ny, int nz,
+                                        float isovalue, int connectivity, float **out);
 
 extern int tvdb_py_dilate(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_erode(float *, int, int, int, float, float, float, float, int);
@@ -2008,6 +2013,68 @@ static PyObject *mod_sdf_interior_mask(PyObject *module, PyObject *args, PyObjec
                             g->voxel_size, g->ox, g->oy, g->oz);
 }
 
+static PyObject *mod_sdf_segmentation(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double isovalue = 0.0; int connectivity = 6;
+    static char *kwlist[] = {"grid", "isovalue", "connectivity", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|di", kwlist,
+                                     &grid_obj, &isovalue, &connectivity))
+        return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
+    float **list = NULL; int count = 0;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_sdf_segmentation(g->data, g->nx, g->ny, g->nz,
+                                  (float)isovalue, connectivity, &list, &count);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *result = PyList_New(count);
+    if (!result) {
+        for (int c = 0; c < count; ++c) free(list[c]);
+        free(list);
+        return NULL;
+    }
+    for (int c = 0; c < count; ++c) {
+        PyObject *dg = DenseGrid_from_c(st->DenseGridType, list[c], g->nx, g->ny, g->nz,
+                                        g->voxel_size, g->ox, g->oy, g->oz);
+        if (!dg) {  // DenseGrid_from_c freed list[c]; free the rest and bail.
+            for (int p = c + 1; p < count; ++p) free(list[p]);
+            free(list); Py_DECREF(result);
+            return NULL;
+        }
+        PyList_SetItem(result, c, dg);  // steals reference (abi3-safe)
+    }
+    free(list);
+    return result;
+}
+
+static PyObject *mod_sdf_extract_enclosed_regions(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double isovalue = 0.0; int connectivity = 6;
+    static char *kwlist[] = {"grid", "isovalue", "connectivity", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|di", kwlist,
+                                     &grid_obj, &isovalue, &connectivity))
+        return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_sdf_extract_enclosed(g->data, g->nx, g->ny, g->nz,
+                                      (float)isovalue, connectivity, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, g->nx, g->ny, g->nz,
+                            g->voxel_size, g->ox, g->oy, g->oz);
+}
+
 static PyObject *mod_sdf_to_mesh(PyObject *module, PyObject *args, PyObject *kw) {
     PyObject *grid_obj; float isovalue = 0.0f;
     static char *kwlist[] = {"grid", "isovalue", NULL};
@@ -3154,6 +3221,12 @@ static PyMethodDef module_methods[] = {
      "sdf_to_fog_volume(grid, half_width=3.0) -> DenseGrid; density = clamp(-sdf/(half_width*voxel), 0, 1)."},
     {"sdf_interior_mask", (PyCFunction)mod_sdf_interior_mask, METH_VARARGS | METH_KEYWORDS,
      "sdf_interior_mask(grid, isovalue=0.0) -> DenseGrid; 1.0 where sdf<isovalue else 0.0."},
+    {"sdf_segmentation", (PyCFunction)mod_sdf_segmentation, METH_VARARGS | METH_KEYWORDS,
+     "sdf_segmentation(grid, isovalue=0.0, connectivity=6) -> list[DenseGrid]; one SDF grid per "
+     "connected interior component (other components filled solid). connectivity is 6 or 26."},
+    {"sdf_extract_enclosed_regions", (PyCFunction)mod_sdf_extract_enclosed_regions, METH_VARARGS | METH_KEYWORDS,
+     "sdf_extract_enclosed_regions(grid, isovalue=0.0, connectivity=6) -> DenseGrid; mask (1.0) of "
+     "cavities: exterior voxels sealed off from the grid boundary."},
     {"sdf_to_mesh", (PyCFunction)mod_sdf_to_mesh, METH_VARARGS | METH_KEYWORDS, "SDF to mesh"},
     {"make_manifold", (PyCFunction)mod_make_manifold, METH_VARARGS | METH_KEYWORDS, "Make manifold"},
     {"dilate", (PyCFunction)mod_dilate, METH_VARARGS | METH_KEYWORDS, "Dilate SDF"},

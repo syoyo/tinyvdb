@@ -74,6 +74,28 @@ bool tvdb_sdf_to_fog_volume(const tvdb_dense_grid* sdf, float half_width,
 bool tvdb_sdf_interior_mask(const tvdb_dense_grid* sdf, float isovalue,
                             tvdb_dense_grid* out);
 
+// Segment the interior (sdf < isovalue) into connected components (parallels
+// OpenVDB LevelSetUtil::sdfSegmentation). `connectivity` is 6 (face) or 26
+// (face+edge+vertex). Returns one SDF grid per component via `*out_grids` (a
+// malloc'd array of `*out_count` tvdb_dense_grid, each owning its data and
+// inheriting `sdf`'s transform): grid i is a copy of `sdf` with every *other*
+// component's interior filled to the background (its largest value), so only
+// component i remains a distinct object. Free each grid's data with
+// tvdb_dense_grid_free, then free(*out_grids). `*out_count` may be 0 (no
+// interior), in which case `*out_grids` is NULL. Returns false on error.
+bool tvdb_sdf_segmentation(const tvdb_dense_grid* sdf, float isovalue,
+                           int connectivity, tvdb_dense_grid** out_grids,
+                           int* out_count);
+
+// Extract enclosed regions / cavities (parallels OpenVDB
+// LevelSetUtil::extractEnclosedRegions): exterior voxels (sdf >= isovalue) that
+// are not connected to the grid boundary by a path of exterior voxels — i.e.
+// voids sealed inside the surface. `out` is a mask grid (1.0 inside a cavity,
+// 0.0 elsewhere) inheriting `sdf`'s transform. `connectivity` is 6 or 26.
+// Returns true on success.
+bool tvdb_sdf_extract_enclosed_regions(const tvdb_dense_grid* sdf, float isovalue,
+                                       int connectivity, tvdb_dense_grid* out);
+
 #ifdef __cplusplus
 }
 #endif
