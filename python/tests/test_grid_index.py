@@ -91,6 +91,16 @@ def test_scatter_points_in_sdf():
     assert pts.shape == (400, 3)
     # All points lie inside the sphere (within a voxel of the surface).
     assert np.all(np.linalg.norm(pts, axis=1) < 1.0 + 0.1)
+    # Re-sample the SDF: every scattered point is genuinely interior (sdf < 0).
+    vals = np.frombuffer(tinyvdb.sample_trilinear(s, pts.astype(np.float32).tobytes()),
+                         dtype=np.float32)
+    assert np.all(vals < 1e-4)
+
+    # An all-exterior SDF raises rather than hanging.
+    allpos = tinyvdb.DenseGrid(nx=8, ny=8, nz=8, voxel_size=0.1)
+    np.asarray(allpos)[:] = 1.0
+    with pytest.raises((RuntimeError, tinyvdb.VDBError)):
+        tinyvdb.scatter_points_in_sdf(allpos, 50)
 
 
 def test_volume_render():

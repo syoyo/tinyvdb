@@ -134,7 +134,7 @@ def test_sample_and_resample_all_axes():
     # (b) resample_grid (topology.c samplers) order 1/2, checked where the
     #     stencil stays inside the source on every axis.
     new_vs = 0.07
-    for order in (1, 2):
+    for order in (0, 1, 2):                # 0 nearest, 1 trilinear, 2 triquadratic
         r = tinyvdb.resample_grid(g, new_vs, order=order)
         arr = np.asarray(r, copy=False)
         rnz, rny, rnx = arr.shape
@@ -148,7 +148,8 @@ def test_sample_and_resample_all_axes():
         mx = inside(rxc, org[0], nx); my = inside(ryc, org[1], ny); mz = inside(rzc, org[2], nz)
         mask = mz[:, None, None] & my[None, :, None] & mx[None, None, :]
         assert mask.any()
-        assert np.max(np.abs(arr[mask] - ref[mask])) < 2e-3
+        tol = 2e-3 if order != 0 else 0.5 * vs * float(np.abs(nvec).sum()) + 2e-3
+        assert np.max(np.abs(arr[mask] - ref[mask])) < tol
 
 
 def test_advect_all_axes():
