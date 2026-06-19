@@ -81,17 +81,18 @@ each theme. Notes point at the nearest existing primitive to reuse.
 
 **D. fvdb-style spatial queries & sampling**
 
-- [ ] **Coordinate utilities.** `ijk_to_index` (active-set linear index),
-      world↔voxel batch transforms, morton/hilbert codes (parallels fvdb
-      `IjkToIndex`, `MortonHilbertFromIjk`); `tvdb_apply_xform` is the
-      existing transform primitive.
-- [ ] **Spatial queries.** `points_in_grid`, `coords_in_grid`,
-      `cubes_in_grid`, neighbor enumeration (parallels fvdb
-      `PointsInGrid`/`CoordsInGrid`/`NeighborIndexes`).
-- [ ] **Grid-from-points voxelization.** Occupancy grid from a point
-      cloud (parallels fvdb `from_points` /
-      `from_nearest_voxels_to_points`); `mesh_to_sdf` done, point-cloud
-      voxelization not.
+- [x] **Coordinate utilities.** `world_to_ijk`/`ijk_to_world` batch
+      transforms, `morton_encode`/`morton_decode` (Z-order), and `ijk_to_index`
+      (index into an active coord set) in `tinyvdb_grid_index.{h,c}` (parallels
+      fvdb `IjkToIndex`/`MortonHilbertFromIjk`). Covered by `test_grid_index`
+      (C + py). (Hilbert codes not implemented.)
+- [x] **Spatial queries.** `coords_in_grid`, `points_in_grid`, and
+      `neighbor_counts` (6/26) via an int3→index hash (parallels fvdb
+      `PointsInGrid`/`CoordsInGrid`/`NeighborIndexes`). Python `coords_in_grid`
+      / `points_in_grid` / `neighbor_counts`.
+- [x] **Grid-from-points voxelization.** `tvdb_voxelize_points` — world point
+      cloud → unique occupied voxel coords (parallels fvdb `from_points`).
+      Python `voxelize_points`.
 - [ ] **Higher-order sampling.** Bezier/quadratic sample + splat with
       VJPs (parallels fvdb `SampleBezier`, OpenVDB `QuadraticSampler`);
       trilinear sample/splat + VJPs already done.
@@ -125,11 +126,12 @@ public API" design — listed for visibility, not on the near-term roadmap.
 
 ## Test coverage (current)
 
-18 ctests register under `build/`:
+19 ctests register under `build/`:
 
 | target | what |
 | --- | --- |
 | `test_ops` | Phase 1-6 dense ops smoke (volume, surface_area, dilate, csg, gradient, Poisson recovery, advection, sampling, TSDF, topology, ray, sparse) |
+| `test_grid_index` | Coordinate utilities (`world_to_ijk`/`ijk_to_world` and `morton_encode`/`decode` round-trips incl. negatives) and spatial queries (`voxelize_points` dedup; `coords_in_grid`/`points_in_grid`/`ijk_to_index`; `neighbor_counts` on a 2³ block = 3 face / 7 vertex) |
 | `test_resample_advect` | Resampling (`resample_grid` reproduces a linear field exactly for trilinear/triquadratic; preserves a sphere SDF zero-crossing), signed flood fill (restores a wiped sphere interior to -band), and advection (all schemes RK1-4/MacCormack/BFECC shift a linear field exactly; MacCormack less diffusive than RK1 on a bump round-trip) |
 | `test_stats_ops` | Statistics (`grid_statistics`/`grid_histogram` on a known linear field), diagnostics (`check_level_set` clean ≈1 vs damaged ≈3; `check_fog_volume` fog-valid vs raw-SDF-invalid), vector operators (`magnitude`=5 on (3,4,0); `normalize`; `cpt` maps a sphere band onto the sphere), composite (`comp_max/min/sum/mult`), and filters (`median_filter` removes an impulse; `mean_curvature_flow` shrinks a sphere) |
 | `test_levelset` | Level-set primitive generators (sphere/box/torus/capsule): analytic SDF recomputed and matched at every voxel; platonic solids (tetra/cube/octa/dodeca/icosa) bracketed between inscribed/circumscribed spheres; `sdf_to_fog_volume` range/empty-exterior, `sdf_interior_mask` sign-consistency, `sdf_segmentation` (two spheres → exact 2-way interior partition), `sdf_extract_enclosed_regions` (spherical-shell cavity mask) and `level_set_euler_characteristic`/`level_set_genus` (sphere 2/0, torus 0/1, two spheres 4/0, two tori 0/2) and `level_set_rebuild` (damaged sphere renormalized: euler 2, zero crossing ~R; torus resampled keeps genus 1) |

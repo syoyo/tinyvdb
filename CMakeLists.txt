@@ -65,6 +65,7 @@ add_library(tinyvdb_mesh_ops STATIC
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_autograd.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_levelset.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_stats.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_grid_index.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_lifecycle.c
   ${PROJECT_SOURCE_DIR}/src/tvdb_memory.c)
 if(NOT WIN32)
@@ -222,6 +223,10 @@ if(TINYVDB_BUILD_TESTS)
   add_executable(test_resample_advect ${PROJECT_SOURCE_DIR}/tests/test_resample_advect.c)
   target_link_libraries(test_resample_advect PRIVATE tinyvdb_mesh_ops m)
   add_test(NAME test_resample_advect COMMAND test_resample_advect)
+
+  add_executable(test_grid_index ${PROJECT_SOURCE_DIR}/tests/test_grid_index.c)
+  target_link_libraries(test_grid_index PRIVATE tinyvdb_mesh_ops m)
+  add_test(NAME test_grid_index COMMAND test_grid_index)
 
   add_executable(test_vec3_extend ${PROJECT_SOURCE_DIR}/tests/test_vec3_extend.c)
   target_link_libraries(test_vec3_extend PRIVATE tinyvdb_mesh_ops tinyvdb)

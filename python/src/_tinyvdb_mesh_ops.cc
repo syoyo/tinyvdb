@@ -15,6 +15,7 @@
 #include "tinyvdb_autograd.h"
 #include "tinyvdb_levelset.h"
 #include "tinyvdb_stats.h"
+#include "tinyvdb_grid_index.h"
 
 #include <cmath>
 #include <cstring>
@@ -2178,6 +2179,87 @@ int tvdb_py_signed_flood_fill(const float *data, int nx, int ny, int nz,
     tvdb_dense_grid g; g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
     g.ox = g.oy = g.oz = 0.0f; g.data = *out;
     tvdb_signed_flood_fill(&g, band_world);
+    return 0;
+}
+
+/* ---- Coordinate utilities & spatial queries (tinyvdb_grid_index.h) ---- */
+
+int tvdb_py_morton_encode(const int32_t *ijk, size_t n, uint64_t **out) {
+    *out = (uint64_t *)malloc(n * sizeof(uint64_t));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "morton alloc"); return -1; }
+    for (size_t i = 0; i < n; ++i)
+        (*out)[i] = tvdb_morton_encode(ijk[3*i], ijk[3*i+1], ijk[3*i+2]);
+    return 0;
+}
+
+int tvdb_py_morton_decode(const uint64_t *codes, size_t n, int32_t **out) {
+    *out = (int32_t *)malloc(n * 3 * sizeof(int32_t));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "morton alloc"); return -1; }
+    for (size_t i = 0; i < n; ++i)
+        tvdb_morton_decode(codes[i], &(*out)[3*i], &(*out)[3*i+1], &(*out)[3*i+2]);
+    return 0;
+}
+
+int tvdb_py_voxelize_points(const float *pts, size_t n,
+                            float vsx, float vsy, float vsz,
+                            float ox, float oy, float oz,
+                            int32_t **out, size_t *out_count) {
+    float vs[3] = { vsx, vsy, vsz }, org[3] = { ox, oy, oz };
+    if (!tvdb_voxelize_points(pts, n, vs, org, out, out_count)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "voxelize_points failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_coords_in_set(const int32_t *active, size_t na,
+                          const int32_t *query, size_t nq, uint8_t **out) {
+    *out = (uint8_t *)malloc(nq ? nq : 1);
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "coords_in_set alloc"); return -1; }
+    if (!tvdb_coords_in_set(active, na, query, nq, *out)) {
+        free(*out); *out = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "coords_in_set failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_points_in_set(const float *pts, size_t np,
+                          float vsx, float vsy, float vsz,
+                          float ox, float oy, float oz,
+                          const int32_t *active, size_t na, uint8_t **out) {
+    float vs[3] = { vsx, vsy, vsz }, org[3] = { ox, oy, oz };
+    *out = (uint8_t *)malloc(np ? np : 1);
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "points_in_set alloc"); return -1; }
+    if (!tvdb_points_in_set(pts, np, vs, org, active, na, *out)) {
+        free(*out); *out = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "points_in_set failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_ijk_to_index(const int32_t *active, size_t na,
+                         const int32_t *query, size_t nq, int64_t **out) {
+    *out = (int64_t *)malloc((nq ? nq : 1) * sizeof(int64_t));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "ijk_to_index alloc"); return -1; }
+    if (!tvdb_ijk_to_index(active, na, query, nq, *out)) {
+        free(*out); *out = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "ijk_to_index failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_neighbor_counts(const int32_t *active, size_t na,
+                            int connectivity, int32_t **out) {
+    *out = (int32_t *)malloc((na ? na : 1) * sizeof(int32_t));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "neighbor_counts alloc"); return -1; }
+    if (!tvdb_neighbor_counts(active, na, connectivity, *out)) {
+        free(*out); *out = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "neighbor_counts failed");
+        return -1;
+    }
     return 0;
 }
 

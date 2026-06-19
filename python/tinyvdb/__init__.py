@@ -54,6 +54,14 @@ from tinyvdb._tinyvdb import (
     grid_histogram,
     check_level_set,
     check_fog_volume,
+    # Coordinate utilities & spatial queries (raw byte-buffer level)
+    _morton_encode,
+    _morton_decode,
+    _voxelize_points,
+    _coords_in_set,
+    _points_in_set,
+    _ijk_to_index,
+    _neighbor_counts,
     # Differential operators
     gradient,
     divergence,
@@ -478,6 +486,84 @@ def read_sparse_grid(path, index=0):
         return coords, values, voxel_size, origin
 
 
+def _vs3(voxel_size):
+    import numpy as _np
+    return (float(voxel_size),) * 3 if _np.isscalar(voxel_size) else tuple(float(v) for v in voxel_size)
+
+
+def world_to_ijk(points, voxel_size, origin=(0.0, 0.0, 0.0)):
+    """World xyz points -> the integer voxel (cell) each falls in: floor((p-origin)/vs)."""
+    import numpy as _np
+    p = _np.ascontiguousarray(points, dtype=_np.float32).reshape(-1, 3)
+    vs = _np.asarray(_vs3(voxel_size), dtype=_np.float32)
+    org = _np.asarray(origin, dtype=_np.float32)
+    return _np.floor((p - org) / vs).astype(_np.int32)
+
+
+def ijk_to_world(ijk, voxel_size, origin=(0.0, 0.0, 0.0)):
+    """Integer voxel coords -> world voxel-center positions: origin + (ijk+0.5)*vs."""
+    import numpy as _np
+    c = _np.ascontiguousarray(ijk, dtype=_np.int32).reshape(-1, 3).astype(_np.float32)
+    vs = _np.asarray(_vs3(voxel_size), dtype=_np.float32)
+    org = _np.asarray(origin, dtype=_np.float32)
+    return org + (c + 0.5) * vs
+
+
+def morton_encode(ijk):
+    """(N,3) int voxel coords -> (N,) uint64 Z-order codes (coords in [-2^20, 2^20-1])."""
+    import numpy as _np
+    a = _np.ascontiguousarray(ijk, dtype=_np.int32).reshape(-1, 3)
+    return _np.frombuffer(_morton_encode(a.tobytes()), dtype=_np.uint64)
+
+
+def morton_decode(codes):
+    """(N,) uint64 Z-order codes -> (N,3) int32 voxel coords."""
+    import numpy as _np
+    c = _np.ascontiguousarray(codes, dtype=_np.uint64).reshape(-1)
+    return _np.frombuffer(_morton_decode(c.tobytes()), dtype=_np.int32).reshape(-1, 3)
+
+
+def voxelize_points(points, voxel_size, origin=(0.0, 0.0, 0.0)):
+    """World point cloud -> (M,3) int32 unique occupied voxel coords (first-seen order)."""
+    import numpy as _np
+    p = _np.ascontiguousarray(points, dtype=_np.float32).reshape(-1, 3)
+    b = _voxelize_points(p.tobytes(), voxel_size=_vs3(voxel_size), origin=tuple(float(v) for v in origin))
+    return _np.frombuffer(b, dtype=_np.int32).reshape(-1, 3)
+
+
+def coords_in_grid(active, query):
+    """Boolean membership of each `query` (N,3) int coord in the `active` (M,3) coord set."""
+    import numpy as _np
+    a = _np.ascontiguousarray(active, dtype=_np.int32).reshape(-1, 3)
+    q = _np.ascontiguousarray(query, dtype=_np.int32).reshape(-1, 3)
+    return _np.frombuffer(_coords_in_set(a.tobytes(), q.tobytes()), dtype=_np.uint8).astype(bool)
+
+
+def points_in_grid(points, active, voxel_size, origin=(0.0, 0.0, 0.0)):
+    """Boolean: is each world point's voxel in the `active` (M,3) coord set?"""
+    import numpy as _np
+    p = _np.ascontiguousarray(points, dtype=_np.float32).reshape(-1, 3)
+    a = _np.ascontiguousarray(active, dtype=_np.int32).reshape(-1, 3)
+    b = _points_in_set(p.tobytes(), a.tobytes(), voxel_size=_vs3(voxel_size),
+                       origin=tuple(float(v) for v in origin))
+    return _np.frombuffer(b, dtype=_np.uint8).astype(bool)
+
+
+def ijk_to_index(active, query):
+    """First-seen index of each `query` coord in `active` (0..M-1), or -1 if absent."""
+    import numpy as _np
+    a = _np.ascontiguousarray(active, dtype=_np.int32).reshape(-1, 3)
+    q = _np.ascontiguousarray(query, dtype=_np.int32).reshape(-1, 3)
+    return _np.frombuffer(_ijk_to_index(a.tobytes(), q.tobytes()), dtype=_np.int64)
+
+
+def neighbor_counts(active, connectivity=6):
+    """For each active voxel, the number of its 6- or 26-neighbors that are also active."""
+    import numpy as _np
+    a = _np.ascontiguousarray(active, dtype=_np.int32).reshape(-1, 3)
+    return _np.frombuffer(_neighbor_counts(a.tobytes(), connectivity=int(connectivity)), dtype=_np.int32)
+
+
 # Named platonic-solid convenience wrappers around level_set_platonic. `radius`
 # is the circumradius (center-to-vertex distance).
 def level_set_tetrahedron(radius, center=(0.0, 0.0, 0.0), voxel_size=0.1, half_width=3.0):
@@ -561,6 +647,15 @@ __all__ = [
     "grid_histogram",
     "check_level_set",
     "check_fog_volume",
+    "world_to_ijk",
+    "ijk_to_world",
+    "morton_encode",
+    "morton_decode",
+    "voxelize_points",
+    "coords_in_grid",
+    "points_in_grid",
+    "ijk_to_index",
+    "neighbor_counts",
     "gradient",
     "divergence",
     "laplacian",

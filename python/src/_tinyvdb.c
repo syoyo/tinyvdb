@@ -159,6 +159,16 @@ extern int tvdb_py_check_level_set(const float *, int, int, int, float,
 extern int tvdb_py_check_fog_volume(const float *, int, int, int,
                                     double, int *, double *, double *);
 
+extern int tvdb_py_morton_encode(const int32_t *, size_t, uint64_t **);
+extern int tvdb_py_morton_decode(const uint64_t *, size_t, int32_t **);
+extern int tvdb_py_voxelize_points(const float *, size_t, float, float, float,
+                                   float, float, float, int32_t **, size_t *);
+extern int tvdb_py_coords_in_set(const int32_t *, size_t, const int32_t *, size_t, uint8_t **);
+extern int tvdb_py_points_in_set(const float *, size_t, float, float, float, float, float, float,
+                                 const int32_t *, size_t, uint8_t **);
+extern int tvdb_py_ijk_to_index(const int32_t *, size_t, const int32_t *, size_t, int64_t **);
+extern int tvdb_py_neighbor_counts(const int32_t *, size_t, int, int32_t **);
+
 extern int tvdb_py_magnitude(const float *, int, int, int, float **);
 extern int tvdb_py_normalize_vec(const float *, int, int, int, float **);
 extern int tvdb_py_cpt(const float *, int, int, int, float, float, float, float, float **);
@@ -2459,6 +2469,147 @@ static PyObject *mod_check_fog_volume(PyObject *module, PyObject *args, PyObject
 }
 
 /* ======================================================================== */
+/*  Coordinate utilities & spatial queries                                  */
+/* ======================================================================== */
+
+static PyObject *mod_morton_encode(PyObject *module, PyObject *args) {
+    (void)module;
+    Py_buffer ijk;
+    if (!PyArg_ParseTuple(args, "y*", &ijk)) return NULL;
+    size_t n = (size_t)ijk.len / (3 * sizeof(int32_t));
+    uint64_t *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_morton_encode((const int32_t *)ijk.buf, n, &out);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&ijk);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *b = PyBytes_FromStringAndSize((const char *)out, (Py_ssize_t)(n * sizeof(uint64_t)));
+    free(out);
+    return b;
+}
+
+static PyObject *mod_morton_decode(PyObject *module, PyObject *args) {
+    (void)module;
+    Py_buffer codes;
+    if (!PyArg_ParseTuple(args, "y*", &codes)) return NULL;
+    size_t n = (size_t)codes.len / sizeof(uint64_t);
+    int32_t *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_morton_decode((const uint64_t *)codes.buf, n, &out);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&codes);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *b = PyBytes_FromStringAndSize((const char *)out, (Py_ssize_t)(n * 3 * sizeof(int32_t)));
+    free(out);
+    return b;
+}
+
+static PyObject *mod_voxelize_points(PyObject *module, PyObject *args, PyObject *kw) {
+    (void)module;
+    Py_buffer pts;
+    double vsx = 1.0, vsy = 1.0, vsz = 1.0, ox = 0.0, oy = 0.0, oz = 0.0;
+    static char *kwlist[] = {"points", "voxel_size", "origin", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "y*|(ddd)(ddd)", kwlist,
+                                     &pts, &vsx, &vsy, &vsz, &ox, &oy, &oz))
+        return NULL;
+    size_t n = (size_t)pts.len / (3 * sizeof(float));
+    int32_t *out = NULL; size_t cnt = 0;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_voxelize_points((const float *)pts.buf, n, (float)vsx, (float)vsy, (float)vsz,
+                                 (float)ox, (float)oy, (float)oz, &out, &cnt);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&pts);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *b = PyBytes_FromStringAndSize((const char *)out, (Py_ssize_t)(cnt * 3 * sizeof(int32_t)));
+    free(out);
+    return b;
+}
+
+static PyObject *mod_coords_in_set(PyObject *module, PyObject *args) {
+    (void)module;
+    Py_buffer active, query;
+    if (!PyArg_ParseTuple(args, "y*y*", &active, &query)) return NULL;
+    size_t na = (size_t)active.len / (3 * sizeof(int32_t));
+    size_t nq = (size_t)query.len / (3 * sizeof(int32_t));
+    uint8_t *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_coords_in_set((const int32_t *)active.buf, na,
+                               (const int32_t *)query.buf, nq, &out);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&active); PyBuffer_Release(&query);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *b = PyBytes_FromStringAndSize((const char *)out, (Py_ssize_t)nq);
+    free(out);
+    return b;
+}
+
+static PyObject *mod_points_in_set(PyObject *module, PyObject *args, PyObject *kw) {
+    (void)module;
+    Py_buffer pts, active;
+    double vsx = 1.0, vsy = 1.0, vsz = 1.0, ox = 0.0, oy = 0.0, oz = 0.0;
+    static char *kwlist[] = {"points", "active", "voxel_size", "origin", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "y*y*|(ddd)(ddd)", kwlist,
+                                     &pts, &active, &vsx, &vsy, &vsz, &ox, &oy, &oz))
+        return NULL;
+    size_t np = (size_t)pts.len / (3 * sizeof(float));
+    size_t na = (size_t)active.len / (3 * sizeof(int32_t));
+    uint8_t *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_points_in_set((const float *)pts.buf, np, (float)vsx, (float)vsy, (float)vsz,
+                               (float)ox, (float)oy, (float)oz,
+                               (const int32_t *)active.buf, na, &out);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&pts); PyBuffer_Release(&active);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *b = PyBytes_FromStringAndSize((const char *)out, (Py_ssize_t)np);
+    free(out);
+    return b;
+}
+
+static PyObject *mod_ijk_to_index(PyObject *module, PyObject *args) {
+    (void)module;
+    Py_buffer active, query;
+    if (!PyArg_ParseTuple(args, "y*y*", &active, &query)) return NULL;
+    size_t na = (size_t)active.len / (3 * sizeof(int32_t));
+    size_t nq = (size_t)query.len / (3 * sizeof(int32_t));
+    int64_t *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_ijk_to_index((const int32_t *)active.buf, na,
+                              (const int32_t *)query.buf, nq, &out);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&active); PyBuffer_Release(&query);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *b = PyBytes_FromStringAndSize((const char *)out, (Py_ssize_t)(nq * sizeof(int64_t)));
+    free(out);
+    return b;
+}
+
+static PyObject *mod_neighbor_counts(PyObject *module, PyObject *args, PyObject *kw) {
+    (void)module;
+    Py_buffer active; int connectivity = 6;
+    static char *kwlist[] = {"active", "connectivity", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "y*|i", kwlist, &active, &connectivity))
+        return NULL;
+    size_t na = (size_t)active.len / (3 * sizeof(int32_t));
+    int32_t *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_neighbor_counts((const int32_t *)active.buf, na, connectivity, &out);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&active);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *b = PyBytes_FromStringAndSize((const char *)out, (Py_ssize_t)(na * sizeof(int32_t)));
+    free(out);
+    return b;
+}
+
+/* ======================================================================== */
 /*  Differential operators                                                  */
 /* ======================================================================== */
 
@@ -3599,6 +3750,16 @@ static PyMethodDef module_methods[] = {
      "bad_fraction, band_count}; a clean SDF has mean_grad_mag ~ 1."},
     {"check_fog_volume", (PyCFunction)mod_check_fog_volume, METH_VARARGS | METH_KEYWORDS,
      "check_fog_volume(grid, eps=1e-5) -> {valid, min, max}; valid if all values in [0,1]."},
+    {"_morton_encode", mod_morton_encode, METH_VARARGS, "int32 ijk-triple bytes -> uint64 code bytes."},
+    {"_morton_decode", mod_morton_decode, METH_VARARGS, "uint64 code bytes -> int32 ijk-triple bytes."},
+    {"_voxelize_points", (PyCFunction)mod_voxelize_points, METH_VARARGS | METH_KEYWORDS,
+     "float xyz-triple bytes -> unique int32 ijk-triple bytes (occupied voxels)."},
+    {"_coords_in_set", mod_coords_in_set, METH_VARARGS, "(active, query) int32 bytes -> uint8 membership."},
+    {"_points_in_set", (PyCFunction)mod_points_in_set, METH_VARARGS | METH_KEYWORDS,
+     "(points float bytes, active int32 bytes) -> uint8 membership of each point's voxel."},
+    {"_ijk_to_index", mod_ijk_to_index, METH_VARARGS, "(active, query) int32 bytes -> int64 index (or -1)."},
+    {"_neighbor_counts", (PyCFunction)mod_neighbor_counts, METH_VARARGS | METH_KEYWORDS,
+     "active int32 bytes -> int32 active-neighbor count per voxel."},
     {"gradient", mod_gradient, METH_VARARGS, "Gradient"},
     {"divergence", mod_divergence, METH_VARARGS, "Divergence"},
     {"laplacian", mod_laplacian_op, METH_VARARGS, "Laplacian"},
