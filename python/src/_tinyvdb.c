@@ -168,6 +168,9 @@ extern int tvdb_py_points_in_set(const float *, size_t, float, float, float, flo
                                  const int32_t *, size_t, uint8_t **);
 extern int tvdb_py_ijk_to_index(const int32_t *, size_t, const int32_t *, size_t, int64_t **);
 extern int tvdb_py_neighbor_counts(const int32_t *, size_t, int, int32_t **);
+extern int tvdb_py_volume_render(const float *, int, int, int, float, float, float, float,
+                                 float, float, float, float, float, float, float, float, float,
+                                 float, int, int, float, float, float, float **);
 
 extern int tvdb_py_magnitude(const float *, int, int, int, float **);
 extern int tvdb_py_normalize_vec(const float *, int, int, int, float **);
@@ -2611,6 +2614,36 @@ static PyObject *mod_neighbor_counts(PyObject *module, PyObject *args, PyObject 
     return b;
 }
 
+static PyObject *mod_volume_render(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj;
+    double ex, ey, ez, cx, cy, cz;
+    double ux = 0.0, uy = 1.0, uz = 0.0, fov_y = 0.785398, sigma = 1.0, step = 0.0, bg = 0.0;
+    int width = 256, height = 256;
+    static char *kwlist[] = {"grid", "eye", "center", "up", "fov_y",
+                             "width", "height", "sigma", "step", "background", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O(ddd)(ddd)|(ddd)diiddd", kwlist,
+                                     &grid_obj, &ex, &ey, &ez, &cx, &cy, &cz,
+                                     &ux, &uy, &uz, &fov_y, &width, &height, &sigma, &step, &bg))
+        return NULL;
+    module_state *st = get_state(module);
+    PyDenseGrid *g = as_dense_grid(module, grid_obj);
+    if (!g) return NULL;
+    if (step <= 0.0) step = g->voxel_size;
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_volume_render(g->data, g->nx, g->ny, g->nz, g->voxel_size, g->ox, g->oy, g->oz,
+                               (float)ex, (float)ey, (float)ez, (float)cx, (float)cy, (float)cz,
+                               (float)ux, (float)uy, (float)uz, (float)fov_y, width, height,
+                               (float)sigma, (float)step, (float)bg, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *b = PyBytes_FromStringAndSize((const char *)out,
+                                            (Py_ssize_t)((size_t)width * height * sizeof(float)));
+    free(out);
+    return b;
+}
+
 /* ======================================================================== */
 /*  Differential operators                                                  */
 /* ======================================================================== */
@@ -3788,6 +3821,9 @@ static PyMethodDef module_methods[] = {
     {"_ijk_to_index", mod_ijk_to_index, METH_VARARGS, "(active, query) int32 bytes -> int64 index (or -1)."},
     {"_neighbor_counts", (PyCFunction)mod_neighbor_counts, METH_VARARGS | METH_KEYWORDS,
      "active int32 bytes -> int32 active-neighbor count per voxel."},
+    {"_volume_render", (PyCFunction)mod_volume_render, METH_VARARGS | METH_KEYWORDS,
+     "Emission-absorption volume render of a density grid -> float32 grayscale image bytes "
+     "(width*height, row-major)."},
     {"gradient", mod_gradient, METH_VARARGS, "Gradient"},
     {"divergence", mod_divergence, METH_VARARGS, "Divergence"},
     {"laplacian", mod_laplacian_op, METH_VARARGS, "Laplacian"},

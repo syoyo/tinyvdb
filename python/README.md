@@ -203,6 +203,10 @@ codes  = tinyvdb.morton_encode(coords)                   # Z-order
 # Higher-order sampling and point scatter.
 vals = tinyvdb.sample_quadratic(grid, pts.tobytes())     # smoother than trilinear
 pts  = tinyvdb.scatter_points_in_sdf(sdf, n=1000)         # uniform interior points
+
+# Emission-absorption volume render (pinhole camera) -> (H, W) float image.
+img = tinyvdb.volume_render(density, eye=(0, 0, 4), center=(0, 0, 0),
+                            width=256, height=256, sigma=20.0)
 ```
 
 ### Operators & filters

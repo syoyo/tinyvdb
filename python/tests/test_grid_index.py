@@ -91,3 +91,18 @@ def test_scatter_points_in_sdf():
     assert pts.shape == (400, 3)
     # All points lie inside the sphere (within a voxel of the surface).
     assert np.all(np.linalg.norm(pts, axis=1) < 1.0 + 0.1)
+
+
+def test_volume_render():
+    np = pytest.importorskip("numpy")
+    fog = tinyvdb.sdf_to_fog_volume(tinyvdb.level_set_sphere(1.0, voxel_size=0.05))
+    img = tinyvdb.volume_render(fog, eye=(0, 0, 4), center=(0, 0, 0), fov_y=0.7,
+                                width=48, height=48, sigma=20.0, step=0.02, background=0.0)
+    assert img.shape == (48, 48)
+    assert img.min() >= 0.0 and img.max() <= 1.0
+    assert img[24, 24] > img[2, 2]                    # denser at the center
+    # Empty grid renders the flat background everywhere.
+    empty = tinyvdb.DenseGrid(nx=8, ny=8, nz=8, voxel_size=0.1)
+    img2 = tinyvdb.volume_render(empty, eye=(0, 0, 2), center=(0.4, 0.4, 0.4),
+                                 width=16, height=16, background=0.25)
+    assert np.allclose(img2, 0.25)

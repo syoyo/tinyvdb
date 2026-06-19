@@ -62,6 +62,7 @@ from tinyvdb._tinyvdb import (
     _points_in_set,
     _ijk_to_index,
     _neighbor_counts,
+    _volume_render,
     # Differential operators
     gradient,
     divergence,
@@ -565,6 +566,21 @@ def neighbor_counts(active, connectivity=6):
     return _np.frombuffer(_neighbor_counts(a.tobytes(), connectivity=int(connectivity)), dtype=_np.int32)
 
 
+def volume_render(grid, eye, center, up=(0.0, 1.0, 0.0), fov_y=0.785398,
+                  width=256, height=256, sigma=1.0, step=0.0, background=0.0):
+    """Emission-absorption volume render of a density (fog) ``DenseGrid`` with a
+    pinhole camera. Returns a ``(height, width)`` float32 grayscale image of
+    accumulated opacity composited over ``background``. ``step`` defaults to the
+    grid's voxel size. (Parallels fvdb VolumeRender / the vdbrender example.)"""
+    import numpy as _np
+    b = _volume_render(grid, eye=tuple(float(v) for v in eye),
+                       center=tuple(float(v) for v in center),
+                       up=tuple(float(v) for v in up), fov_y=float(fov_y),
+                       width=int(width), height=int(height), sigma=float(sigma),
+                       step=float(step), background=float(background))
+    return _np.frombuffer(b, dtype=_np.float32).reshape(int(height), int(width))
+
+
 def points_to_mask(points, voxel_size, origin=(0.0, 0.0, 0.0)):
     """Rasterize a world point cloud to a dense occupancy ``DenseGrid`` (1.0 where a
     point lands, 0.0 elsewhere), sized to the occupied voxels' bounding box
@@ -727,6 +743,7 @@ __all__ = [
     "sample_quadratic",
     "points_to_mask",
     "scatter_points_in_sdf",
+    "volume_render",
     "integrate_tsdf",
     "coarsen_grid",
     "refine_grid",

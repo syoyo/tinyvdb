@@ -1,6 +1,9 @@
 // Theme D: coordinate utilities and point/coordinate spatial queries.
 
 #include "tinyvdb_grid_index.h"
+#include "tinyvdb_render.h"
+#include "tinyvdb_levelset.h"
+#include "tinyvdb_mesh.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -85,6 +88,32 @@ int main(void) {
     tvdb_neighbor_counts(&blk[0][0], 8, 26, cnt26);
     int allseven = 1; for (int i=0;i<8;++i) if (cnt26[i]!=7) allseven=0;
     EXPECT(allseven, "2x2x2 block: 7 26-neighbors each");
+  }
+
+  // ---- Volume render: dense sphere is brighter at center than corner ----
+  {
+    float c[3] = { 0, 0, 0 };
+    tvdb_dense_grid s; tvdb_level_set_sphere(1.0f, c, 0.05f, 3.0f, &s);
+    tvdb_dense_grid fog; tvdb_sdf_to_fog_volume(&s, 3.0f, &fog);  // density 1 inside
+    int W = 48, H = 48;
+    float* img = (float*)malloc((size_t)W * H * sizeof(float));
+    float eye[3] = { 0, 0, 4 }, ctr[3] = { 0, 0, 0 }, up[3] = { 0, 1, 0 };
+    EXPECT(tvdb_volume_render(&fog, eye, ctr, up, 0.7f, W, H, 20.0f, 0.02f, 0.0f, img),
+           "volume_render ok");
+    int bad = 0; for (int i = 0; i < W*H; ++i) if (img[i] < -1e-5f || img[i] > 1.0f + 1e-5f) ++bad;
+    EXPECT(bad == 0, "render opacity in [0,1]");
+    EXPECT(img[(H/2)*W + W/2] > img[2*W + 2], "sphere center brighter than corner");
+    free(img);
+
+    // Empty grid -> every pixel is the background.
+    tvdb_dense_grid e; tvdb_dense_grid_init(&e, 8, 8, 8); e.voxel_size = 0.1f;
+    float* img2 = (float*)malloc(16 * 16 * sizeof(float));
+    float c2[3] = { 0.4f, 0.4f, 0.4f }, eye2[3] = { 0, 0, 2 };
+    tvdb_volume_render(&e, eye2, c2, up, 0.7f, 16, 16, 1.0f, 0.05f, 0.25f, img2);
+    int allbg = 1; for (int i = 0; i < 256; ++i) if (fabsf(img2[i] - 0.25f) > 1e-5f) allbg = 0;
+    EXPECT(allbg, "empty grid renders the background");
+    free(img2);
+    tvdb_dense_grid_free(&s); tvdb_dense_grid_free(&fog); tvdb_dense_grid_free(&e);
   }
 
   if (fails) { fprintf(stderr, "%d FAILURES\n", fails); return 1; }

@@ -97,9 +97,11 @@ each theme. Notes point at the nearest existing primitive to reuse.
       triquadratic sampling (parallels OpenVDB `QuadraticSampler`); Python
       `sample_quadratic`. Covered by `test_grid_index` (py). *Still open:*
       quadratic splat + sampling VJPs (trilinear sample/splat + VJPs done).
-- [ ] **Volume-render helper.** Alpha-compositing ray-march as a library
-      function (parallels fvdb `VolumeRender`); currently lives only in
-      the `vdbrender` example.
+- [x] **Volume-render helper.** `tvdb_volume_render` in `tinyvdb_render.{h,c}`:
+      emission-absorption alpha compositing of a density grid with a pinhole
+      camera (ray-AABB clip + front-to-back march), parallels fvdb
+      `VolumeRender`. Python `volume_render` -> (H,W) float image. Covered by
+      `test_grid_index` (C + py).
 - [x] **Point rasterization & scatter.** `points_to_mask` (rasterize a point
       cloud to a dense occupancy grid) and `scatter_points_in_sdf` (rejection-
       sample points inside an SDF interior) — Python helpers over
@@ -135,7 +137,7 @@ public API" design — listed for visibility, not on the near-term roadmap.
 | target | what |
 | --- | --- |
 | `test_ops` | Phase 1-6 dense ops smoke (volume, surface_area, dilate, csg, gradient, Poisson recovery, advection, sampling, TSDF, topology, ray, sparse) |
-| `test_grid_index` | Coordinate utilities (`world_to_ijk`/`ijk_to_world` and `morton_encode`/`decode` round-trips incl. negatives) and spatial queries (`voxelize_points` dedup; `coords_in_grid`/`points_in_grid`/`ijk_to_index`; `neighbor_counts` on a 2³ block = 3 face / 7 vertex) |
+| `test_grid_index` | Coordinate utilities (`world_to_ijk`/`ijk_to_world` and `morton_encode`/`decode` round-trips incl. negatives), spatial queries (`voxelize_points` dedup; `coords_in_grid`/`points_in_grid`/`ijk_to_index`; `neighbor_counts` on a 2³ block = 3 face / 7 vertex), quadratic sampling (exact on a linear field), point rasterization/scatter, and `volume_render` (sphere-fog center brighter than corner; empty grid = background) |
 | `test_resample_advect` | Resampling (`resample_grid` reproduces a linear field exactly for trilinear/triquadratic; preserves a sphere SDF zero-crossing), signed flood fill (restores a wiped sphere interior to -band), and advection (all schemes RK1-4/MacCormack/BFECC shift a linear field exactly; MacCormack less diffusive than RK1 on a bump round-trip) |
 | `test_stats_ops` | Statistics (`grid_statistics`/`grid_histogram` on a known linear field), diagnostics (`check_level_set` clean ≈1 vs damaged ≈3; `check_fog_volume` fog-valid vs raw-SDF-invalid), vector operators (`magnitude`=5 on (3,4,0); `normalize`; `cpt` maps a sphere band onto the sphere), composite (`comp_max/min/sum/mult`), and filters (`median_filter` removes an impulse; `mean_curvature_flow` shrinks a sphere) |
 | `test_levelset` | Level-set primitive generators (sphere/box/torus/capsule): analytic SDF recomputed and matched at every voxel; platonic solids (tetra/cube/octa/dodeca/icosa) bracketed between inscribed/circumscribed spheres; `sdf_to_fog_volume` range/empty-exterior, `sdf_interior_mask` sign-consistency, `sdf_segmentation` (two spheres → exact 2-way interior partition), `sdf_extract_enclosed_regions` (spherical-shell cavity mask) and `level_set_euler_characteristic`/`level_set_genus` (sphere 2/0, torus 0/1, two spheres 4/0, two tori 0/2) and `level_set_rebuild` (damaged sphere renormalized: euler 2, zero crossing ~R; torus resampled keeps genus 1) |

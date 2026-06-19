@@ -16,6 +16,7 @@
 #include "tinyvdb_levelset.h"
 #include "tinyvdb_stats.h"
 #include "tinyvdb_grid_index.h"
+#include "tinyvdb_render.h"
 
 #include <cmath>
 #include <cstring>
@@ -2262,6 +2263,29 @@ int tvdb_py_ijk_to_index(const int32_t *active, size_t na,
     if (!tvdb_ijk_to_index(active, na, query, nq, *out)) {
         free(*out); *out = NULL;
         snprintf(s_error_msg, sizeof(s_error_msg), "ijk_to_index failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_volume_render(const float *data, int nx, int ny, int nz, float vs,
+                          float ox, float oy, float oz,
+                          float ex, float ey, float ez,
+                          float cx, float cy, float cz,
+                          float ux, float uy, float uz,
+                          float fov_y, int width, int height,
+                          float sigma, float step, float background,
+                          float **out_img) {
+    tvdb_dense_grid g;
+    g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = vs;
+    g.ox = ox; g.oy = oy; g.oz = oz; g.data = (float *)data;
+    *out_img = (float *)malloc((size_t)width * height * sizeof(float));
+    if (!*out_img) { snprintf(s_error_msg, sizeof(s_error_msg), "volume_render alloc"); return -1; }
+    float eye[3] = { ex, ey, ez }, center[3] = { cx, cy, cz }, up[3] = { ux, uy, uz };
+    if (!tvdb_volume_render(&g, eye, center, up, fov_y, width, height,
+                            sigma, step, background, *out_img)) {
+        free(*out_img); *out_img = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "volume_render failed");
         return -1;
     }
     return 0;

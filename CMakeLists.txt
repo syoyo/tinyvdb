@@ -66,6 +66,7 @@ add_library(tinyvdb_mesh_ops STATIC
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_levelset.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_stats.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_grid_index.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_render.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_lifecycle.c
   ${PROJECT_SOURCE_DIR}/src/tvdb_memory.c)
 if(NOT WIN32)
