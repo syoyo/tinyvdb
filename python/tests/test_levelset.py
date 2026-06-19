@@ -235,6 +235,34 @@ def test_sdf_extract_enclosed_regions_shell():
     assert np.array(tinyvdb.sdf_extract_enclosed_regions(solid), copy=False).sum() == 0.0
 
 
+@pytest.mark.parametrize("maker, euler, genus", [
+    (lambda: tinyvdb.level_set_sphere(1.0, voxel_size=0.06), 2.0, 0),
+    (lambda: tinyvdb.level_set_box((0.6, 0.5, 0.7), voxel_size=0.06), 2.0, 0),
+    (lambda: tinyvdb.level_set_icosahedron(1.0, voxel_size=0.06), 2.0, 0),
+    (lambda: tinyvdb.level_set_torus(1.0, 0.35, voxel_size=0.06), 0.0, 1),
+])
+def test_level_set_euler_genus(maker, euler, genus):
+    g = maker()
+    assert tinyvdb.level_set_euler_characteristic(g) == euler
+    assert tinyvdb.level_set_genus(g) == genus
+
+
+def test_level_set_genus_multi_component():
+    np = pytest.importorskip("numpy")
+    # Two separated tori -> euler 0, total genus 2.
+    nx, ny, nz, vs = 100, 34, 34, 0.1
+    ii, jj, kk = np.meshgrid(np.arange(nx), np.arange(ny), np.arange(nz), indexing="ij")
+    x, y, z = (ii + 0.5) * vs, (jj + 0.5) * vs, (kk + 0.5) * vs
+    R, r = 1.0, 0.35
+    def torus(cx):
+        q = np.sqrt((x - cx) ** 2 + (z - 1.7) ** 2) - R
+        return np.sqrt(q ** 2 + (y - 1.7) ** 2) - r
+    field = np.minimum(torus(1.7), torus(6.2)).astype(np.float32)
+    g = _dense_from_array(field, voxel_size=vs)
+    assert tinyvdb.level_set_euler_characteristic(g) == 0.0
+    assert tinyvdb.level_set_genus(g) == 2
+
+
 def test_error_paths():
     with pytest.raises((ValueError, tinyvdb.VDBError)):
         tinyvdb.level_set_sphere(-1.0)              # negative radius

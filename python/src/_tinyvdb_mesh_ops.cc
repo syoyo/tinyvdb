@@ -1960,4 +1960,20 @@ int tvdb_py_sdf_extract_enclosed(const float *data, int nx, int ny, int nz,
     return 0;
 }
 
+double tvdb_py_level_set_euler(const float *data, int nx, int ny, int nz,
+                               float isovalue) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = 1.0f;
+    in.ox = in.oy = in.oz = 0.0f; in.data = (float *)data;
+    return tvdb_level_set_euler_characteristic(&in, isovalue);
+}
+
+int tvdb_py_level_set_genus(const float *data, int nx, int ny, int nz,
+                            float isovalue) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = 1.0f;
+    in.ox = in.oy = in.oz = 0.0f; in.data = (float *)data;
+    return tvdb_level_set_genus(&in, isovalue);
+}
+
 } /* extern "C" */

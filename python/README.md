@@ -146,6 +146,10 @@ mask = tinyvdb.sdf_interior_mask(sphere, isovalue=0.0)  # 1.0 inside, 0.0 outsid
 # Split disjoint objects; extract sealed cavities
 segments = tinyvdb.sdf_segmentation(grid, isovalue=0.0, connectivity=6)  # list[DenseGrid]
 voids    = tinyvdb.sdf_extract_enclosed_regions(grid)  # 1.0 mask of interior cavities
+
+# Topology measures of the isosurface
+chi   = tinyvdb.level_set_euler_characteristic(torus)   # 0.0  (2 for a sphere)
+genus = tinyvdb.level_set_genus(torus)                  # 1    (0 for a sphere)
 ```
 
 All generators take `voxel_size=` and `half_width=` (band width in voxels,

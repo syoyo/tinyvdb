@@ -313,6 +313,68 @@ int main(void) {
     tvdb_dense_grid_free(&mask);
   }
 
+  // ---- Euler characteristic / genus ----
+  {
+    float c0[3] = { 0, 0, 0 };
+    tvdb_dense_grid s;
+    tvdb_level_set_sphere(1.0f, c0, 0.05f, 3.0f, &s);
+    EXPECT(fabs(tvdb_level_set_euler_characteristic(&s, 0.0f) - 2.0) < 1e-9, "sphere euler=2");
+    EXPECT(tvdb_level_set_genus(&s, 0.0f) == 0, "sphere genus=0");
+    tvdb_dense_grid_free(&s);
+
+    tvdb_dense_grid b; float he[3] = { 0.6f, 0.5f, 0.7f };
+    tvdb_level_set_box(he, c0, 0.05f, 3.0f, &b);
+    EXPECT(fabs(tvdb_level_set_euler_characteristic(&b, 0.0f) - 2.0) < 1e-9, "box euler=2");
+    EXPECT(tvdb_level_set_genus(&b, 0.0f) == 0, "box genus=0");
+    tvdb_dense_grid_free(&b);
+
+    tvdb_dense_grid t;
+    tvdb_level_set_torus(1.0f, 0.35f, c0, 0.05f, 3.0f, &t);
+    EXPECT(fabs(tvdb_level_set_euler_characteristic(&t, 0.0f) - 0.0) < 1e-9, "torus euler=0");
+    EXPECT(tvdb_level_set_genus(&t, 0.0f) == 1, "torus genus=1");
+    tvdb_dense_grid_free(&t);
+
+    // Two separated spheres: euler 4, genus 0.
+    {
+      tvdb_dense_grid g; int nx = 80, ny = 34, nz = 34;
+      tvdb_dense_grid_init(&g, nx, ny, nz);
+      g.voxel_size = 0.1f; g.ox = g.oy = g.oz = 0.0f;
+      float a[3] = { 1.7f, 1.7f, 1.7f }, bb[3] = { 5.9f, 1.7f, 1.7f }, r = 0.8f;
+      for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+          for (int i = 0; i < nx; ++i) {
+            float x, y, z; wc(&g, i, j, k, &x, &y, &z);
+            float da = sqrtf((x-a[0])*(x-a[0])+(y-a[1])*(y-a[1])+(z-a[2])*(z-a[2])) - r;
+            float db = sqrtf((x-bb[0])*(x-bb[0])+(y-bb[1])*(y-bb[1])+(z-bb[2])*(z-bb[2])) - r;
+            g.data[(size_t)(k*ny+j)*nx+i] = da < db ? da : db;
+          }
+      EXPECT(fabs(tvdb_level_set_euler_characteristic(&g, 0.0f) - 4.0) < 1e-9, "two spheres euler=4");
+      EXPECT(tvdb_level_set_genus(&g, 0.0f) == 0, "two spheres genus=0");
+      tvdb_dense_grid_free(&g);
+    }
+
+    // Two separated tori: euler 0, total genus 2.
+    {
+      tvdb_dense_grid g; int nx = 100, ny = 34, nz = 34;
+      tvdb_dense_grid_init(&g, nx, ny, nz);
+      g.voxel_size = 0.1f; g.ox = g.oy = g.oz = 0.0f;
+      float ax = 1.7f, bx = 6.2f, cy = 1.7f, cz = 1.7f, R = 1.0f, r = 0.35f;
+      for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+          for (int i = 0; i < nx; ++i) {
+            float x, y, z; wc(&g, i, j, k, &x, &y, &z);
+            float qa = sqrtf((x-ax)*(x-ax)+(z-cz)*(z-cz)) - R;
+            float da = sqrtf(qa*qa + (y-cy)*(y-cy)) - r;
+            float qb = sqrtf((x-bx)*(x-bx)+(z-cz)*(z-cz)) - R;
+            float db = sqrtf(qb*qb + (y-cy)*(y-cy)) - r;
+            g.data[(size_t)(k*ny+j)*nx+i] = da < db ? da : db;
+          }
+      EXPECT(fabs(tvdb_level_set_euler_characteristic(&g, 0.0f) - 0.0) < 1e-9, "two tori euler=0");
+      EXPECT(tvdb_level_set_genus(&g, 0.0f) == 2, "two tori genus=2");
+      tvdb_dense_grid_free(&g);
+    }
+  }
+
   // ---- Error paths ----
   {
     tvdb_dense_grid g;

@@ -96,6 +96,25 @@ bool tvdb_sdf_segmentation(const tvdb_dense_grid* sdf, float isovalue,
 bool tvdb_sdf_extract_enclosed_regions(const tvdb_dense_grid* sdf, float isovalue,
                                        int connectivity, tvdb_dense_grid* out);
 
+// Topological measures of the level set's surface (the isosurface at
+// `isovalue`), parallel to OpenVDB LevelSetMeasure. Computed exactly from the
+// cubical complex of the interior region (sdf < isovalue): chi_solid =
+// V - E + F - cubes over the unit-cube complex, and for a closed surface
+// chi_surface = 2 * chi_solid. These assume the interior does not touch the
+// grid boundary (the surface is closed); for tinyvdb's narrow-band generators
+// that holds. Return 0.0 / 0 on a NULL/empty grid.
+
+// Euler characteristic of the surface: 2 for a sphere, 0 for a torus, 4 for two
+// spheres, -2 for a genus-2 surface, etc.
+double tvdb_level_set_euler_characteristic(const tvdb_dense_grid* sdf,
+                                           float isovalue);
+
+// Total genus of the surface: (number of connected interior components) -
+// chi_solid. 0 for a sphere or any number of disjoint spheres, 1 for a torus,
+// 2 for a double torus. (Components are counted with face-corner / 26-cube
+// adjacency to match the closed-cube complex.)
+int tvdb_level_set_genus(const tvdb_dense_grid* sdf, float isovalue);
+
 #ifdef __cplusplus
 }
 #endif

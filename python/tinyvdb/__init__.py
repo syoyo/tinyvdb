@@ -31,6 +31,8 @@ from tinyvdb._tinyvdb import (
     sdf_interior_mask,
     sdf_segmentation,
     sdf_extract_enclosed_regions,
+    level_set_euler_characteristic,
+    level_set_genus,
     # Morphology
     dilate,
     erode,
@@ -518,6 +520,8 @@ __all__ = [
     "sdf_interior_mask",
     "sdf_segmentation",
     "sdf_extract_enclosed_regions",
+    "level_set_euler_characteristic",
+    "level_set_genus",
     "dilate",
     "erode",
     "open_op",

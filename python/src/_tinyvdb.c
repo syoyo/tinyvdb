@@ -123,6 +123,10 @@ extern int tvdb_py_sdf_segmentation(const float *data, int nx, int ny, int nz,
                                     float ***out_list, int *out_count);
 extern int tvdb_py_sdf_extract_enclosed(const float *data, int nx, int ny, int nz,
                                         float isovalue, int connectivity, float **out);
+extern double tvdb_py_level_set_euler(const float *data, int nx, int ny, int nz,
+                                      float isovalue);
+extern int tvdb_py_level_set_genus(const float *data, int nx, int ny, int nz,
+                                    float isovalue);
 
 extern int tvdb_py_dilate(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_erode(float *, int, int, int, float, float, float, float, int);
@@ -2075,6 +2079,40 @@ static PyObject *mod_sdf_extract_enclosed_regions(PyObject *module, PyObject *ar
                             g->voxel_size, g->ox, g->oy, g->oz);
 }
 
+static PyObject *mod_level_set_euler_characteristic(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double isovalue = 0.0;
+    static char *kwlist[] = {"grid", "isovalue", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|d", kwlist, &grid_obj, &isovalue)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
+    double chi;
+    Py_BEGIN_ALLOW_THREADS
+    chi = tvdb_py_level_set_euler(g->data, g->nx, g->ny, g->nz, (float)isovalue);
+    Py_END_ALLOW_THREADS
+    return PyFloat_FromDouble(chi);
+}
+
+static PyObject *mod_level_set_genus(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double isovalue = 0.0;
+    static char *kwlist[] = {"grid", "isovalue", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|d", kwlist, &grid_obj, &isovalue)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
+    int genus;
+    Py_BEGIN_ALLOW_THREADS
+    genus = tvdb_py_level_set_genus(g->data, g->nx, g->ny, g->nz, (float)isovalue);
+    Py_END_ALLOW_THREADS
+    return PyLong_FromLong(genus);
+}
+
 static PyObject *mod_sdf_to_mesh(PyObject *module, PyObject *args, PyObject *kw) {
     PyObject *grid_obj; float isovalue = 0.0f;
     static char *kwlist[] = {"grid", "isovalue", NULL};
@@ -3227,6 +3265,12 @@ static PyMethodDef module_methods[] = {
     {"sdf_extract_enclosed_regions", (PyCFunction)mod_sdf_extract_enclosed_regions, METH_VARARGS | METH_KEYWORDS,
      "sdf_extract_enclosed_regions(grid, isovalue=0.0, connectivity=6) -> DenseGrid; mask (1.0) of "
      "cavities: exterior voxels sealed off from the grid boundary."},
+    {"level_set_euler_characteristic", (PyCFunction)mod_level_set_euler_characteristic, METH_VARARGS | METH_KEYWORDS,
+     "level_set_euler_characteristic(grid, isovalue=0.0) -> float; Euler characteristic of the "
+     "isosurface (2 for a sphere, 0 for a torus, 4 for two spheres)."},
+    {"level_set_genus", (PyCFunction)mod_level_set_genus, METH_VARARGS | METH_KEYWORDS,
+     "level_set_genus(grid, isovalue=0.0) -> int; total genus of the isosurface "
+     "(0 for a sphere, 1 for a torus, 2 for a double torus)."},
     {"sdf_to_mesh", (PyCFunction)mod_sdf_to_mesh, METH_VARARGS | METH_KEYWORDS, "SDF to mesh"},
     {"make_manifold", (PyCFunction)mod_make_manifold, METH_VARARGS | METH_KEYWORDS, "Make manifold"},
     {"dilate", (PyCFunction)mod_dilate, METH_VARARGS | METH_KEYWORDS, "Dilate SDF"},

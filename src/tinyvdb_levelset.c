@@ -453,3 +453,128 @@ bool tvdb_sdf_extract_enclosed_regions(const tvdb_dense_grid* sdf, float isovalu
   free(vis); free(stack);
   return true;
 }
+
+// ---- Topological measures (Euler characteristic / genus) -------------------
+
+// Count connected components of the interior (sdf < isovalue) with the given
+// connectivity. Returns -1 on OOM.
+static int lvl_count_components(const tvdb_dense_grid* sdf, float isovalue,
+                               int connectivity) {
+  int nx = sdf->nx, ny = sdf->ny, nz = sdf->nz;
+  size_t n = (size_t)nx * ny * nz;
+  if (n == 0) return 0;
+  int off[26][3];
+  int noff = lvl_neighbor_offsets(connectivity, off);
+  uint8_t* seen = (uint8_t*)calloc(n, 1);
+  size_t* stack = (size_t*)malloc(n * sizeof(size_t));
+  if (!seen || !stack) { free(seen); free(stack); return -1; }
+  int comp = 0;
+  for (size_t s = 0; s < n; ++s) {
+    if (sdf->data[s] >= isovalue || seen[s]) continue;
+    ++comp;
+    size_t sp = 0; stack[sp++] = s; seen[s] = 1;
+    while (sp > 0) {
+      size_t v = stack[--sp];
+      int vi = (int)(v % nx), vj = (int)((v / nx) % ny), vk = (int)(v / ((size_t)nx * ny));
+      for (int t = 0; t < noff; ++t) {
+        int ni = vi + off[t][0], nj = vj + off[t][1], nk = vk + off[t][2];
+        if (ni < 0 || ni >= nx || nj < 0 || nj >= ny || nk < 0 || nk >= nz) continue;
+        size_t nidx = ((size_t)nk * ny + nj) * nx + ni;
+        if (sdf->data[nidx] < isovalue && !seen[nidx]) { seen[nidx] = 1; stack[sp++] = nidx; }
+      }
+    }
+  }
+  free(seen); free(stack);
+  return comp;
+}
+
+#define LVL_MARK(arr, idx, cnt) do { if (!(arr)[(idx)]) { (arr)[(idx)] = 1; ++(cnt); } } while (0)
+
+// Euler characteristic of the interior solid (sdf < isovalue) as a cubical
+// complex: chi = V - E + F - cubes over the union of unit cubes. Writes the
+// result to *chi. Returns false on OOM.
+static bool lvl_chi_solid(const tvdb_dense_grid* sdf, float isovalue, long* chi) {
+  int nx = sdf->nx, ny = sdf->ny, nz = sdf->nz;
+  size_t n = (size_t)nx * ny * nz;
+  if (n == 0) { *chi = 0; return true; }
+  size_t vn  = (size_t)(nx+1) * (ny+1) * (nz+1);
+  size_t exn = (size_t)nx     * (ny+1) * (nz+1);
+  size_t eyn = (size_t)(nx+1) * ny     * (nz+1);
+  size_t ezn = (size_t)(nx+1) * (ny+1) * nz;
+  size_t fxn = (size_t)(nx+1) * ny     * nz;
+  size_t fyn = (size_t)nx     * (ny+1) * nz;
+  size_t fzn = (size_t)nx     * ny     * (nz+1);
+  uint8_t* V  = (uint8_t*)calloc(vn, 1);
+  uint8_t* EX = (uint8_t*)calloc(exn, 1);
+  uint8_t* EY = (uint8_t*)calloc(eyn, 1);
+  uint8_t* EZ = (uint8_t*)calloc(ezn, 1);
+  uint8_t* FX = (uint8_t*)calloc(fxn, 1);
+  uint8_t* FY = (uint8_t*)calloc(fyn, 1);
+  uint8_t* FZ = (uint8_t*)calloc(fzn, 1);
+  if (!V || !EX || !EY || !EZ || !FX || !FY || !FZ) {
+    free(V); free(EX); free(EY); free(EZ); free(FX); free(FY); free(FZ);
+    return false;
+  }
+  long nv = 0, ne = 0, nf = 0, nc = 0;
+  for (int k = 0; k < nz; ++k)
+    for (int j = 0; j < ny; ++j)
+      for (int i = 0; i < nx; ++i) {
+        if (sdf->data[((size_t)k*ny + j)*nx + i] >= isovalue) continue;
+        ++nc;
+        for (int dz = 0; dz < 2; ++dz)
+          for (int dy = 0; dy < 2; ++dy)
+            for (int dx = 0; dx < 2; ++dx) {
+              size_t vi = ((size_t)(k+dz)*(ny+1) + (j+dy))*(nx+1) + (i+dx);
+              LVL_MARK(V, vi, nv);
+            }
+        for (int dz = 0; dz < 2; ++dz)
+          for (int dy = 0; dy < 2; ++dy) {
+            size_t e = ((size_t)(k+dz)*(ny+1) + (j+dy))*nx + i;            // x-edge
+            LVL_MARK(EX, e, ne);
+          }
+        for (int dz = 0; dz < 2; ++dz)
+          for (int dx = 0; dx < 2; ++dx) {
+            size_t e = ((size_t)(k+dz)*ny + j)*(nx+1) + (i+dx);            // y-edge
+            LVL_MARK(EY, e, ne);
+          }
+        for (int dy = 0; dy < 2; ++dy)
+          for (int dx = 0; dx < 2; ++dx) {
+            size_t e = ((size_t)k*(ny+1) + (j+dy))*(nx+1) + (i+dx);        // z-edge
+            LVL_MARK(EZ, e, ne);
+          }
+        for (int dx = 0; dx < 2; ++dx) {
+          size_t f = ((size_t)k*ny + j)*(nx+1) + (i+dx);                   // face perp x
+          LVL_MARK(FX, f, nf);
+        }
+        for (int dy = 0; dy < 2; ++dy) {
+          size_t f = ((size_t)k*(ny+1) + (j+dy))*nx + i;                   // face perp y
+          LVL_MARK(FY, f, nf);
+        }
+        for (int dz = 0; dz < 2; ++dz) {
+          size_t f = ((size_t)(k+dz)*ny + j)*nx + i;                       // face perp z
+          LVL_MARK(FZ, f, nf);
+        }
+      }
+  free(V); free(EX); free(EY); free(EZ); free(FX); free(FY); free(FZ);
+  *chi = nv - ne + nf - nc;
+  return true;
+}
+
+#undef LVL_MARK
+
+double tvdb_level_set_euler_characteristic(const tvdb_dense_grid* sdf,
+                                           float isovalue) {
+  if (!sdf || !sdf->data) return 0.0;
+  long chi = 0;
+  if (!lvl_chi_solid(sdf, isovalue, &chi)) return 0.0;
+  return 2.0 * (double)chi;  // chi(surface) = 2 * chi(solid)
+}
+
+int tvdb_level_set_genus(const tvdb_dense_grid* sdf, float isovalue) {
+  if (!sdf || !sdf->data) return 0;
+  long chi = 0;
+  if (!lvl_chi_solid(sdf, isovalue, &chi)) return 0;
+  int comps = lvl_count_components(sdf, isovalue, 26);
+  if (comps < 0) return 0;
+  return comps - (int)chi;  // total genus = components - chi(solid)
+}
