@@ -46,9 +46,16 @@ bool tvdb_volume_render(const tvdb_dense_grid* density,
       step <= 0.0f || fov_y <= 0.0f)
     return false;
 
-  // Camera basis.
+  // Camera basis. If `up` is (nearly) parallel to the view direction, the cross
+  // product collapses — fall back to an alternate up axis.
   float fwd[3]; v_sub(center, eye, fwd); v_norm(fwd);
-  float right[3]; v_cross(fwd, up, right); v_norm(right);
+  float right[3]; v_cross(fwd, up, right);
+  if (right[0]*right[0] + right[1]*right[1] + right[2]*right[2] < 1e-12f) {
+    float alt[3] = { 1.0f, 0.0f, 0.0f };
+    if (fabsf(fwd[0]) > 0.9f) { alt[0] = 0.0f; alt[1] = 1.0f; }   // fwd ~ x -> use y
+    v_cross(fwd, alt, right);
+  }
+  v_norm(right);
   float cup[3]; v_cross(right, fwd, cup);  // already unit
   float tan_half = tanf(0.5f * fov_y);
   float aspect = (float)width / (float)height;

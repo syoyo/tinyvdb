@@ -2491,6 +2491,11 @@ static PyObject *mod_morton_encode(PyObject *module, PyObject *args) {
     (void)module;
     Py_buffer ijk;
     if (!PyArg_ParseTuple(args, "y*", &ijk)) return NULL;
+    if (ijk.len % (Py_ssize_t)(3 * sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&ijk);
+        PyErr_SetString(PyExc_ValueError, "ijk buffer must be int32 xyz triples");
+        return NULL;
+    }
     size_t n = (size_t)ijk.len / (3 * sizeof(int32_t));
     uint64_t *out = NULL;
     int rc;
@@ -2508,6 +2513,11 @@ static PyObject *mod_morton_decode(PyObject *module, PyObject *args) {
     (void)module;
     Py_buffer codes;
     if (!PyArg_ParseTuple(args, "y*", &codes)) return NULL;
+    if (codes.len % (Py_ssize_t)sizeof(uint64_t) != 0) {
+        PyBuffer_Release(&codes);
+        PyErr_SetString(PyExc_ValueError, "codes buffer must be uint64");
+        return NULL;
+    }
     size_t n = (size_t)codes.len / sizeof(uint64_t);
     int32_t *out = NULL;
     int rc;
@@ -2529,6 +2539,11 @@ static PyObject *mod_voxelize_points(PyObject *module, PyObject *args, PyObject 
     if (!PyArg_ParseTupleAndKeywords(args, kw, "y*|(ddd)(ddd)", kwlist,
                                      &pts, &vsx, &vsy, &vsz, &ox, &oy, &oz))
         return NULL;
+    if (pts.len % (Py_ssize_t)(3 * sizeof(float)) != 0) {
+        PyBuffer_Release(&pts);
+        PyErr_SetString(PyExc_ValueError, "points buffer must be float xyz triples");
+        return NULL;
+    }
     size_t n = (size_t)pts.len / (3 * sizeof(float));
     int32_t *out = NULL; size_t cnt = 0;
     int rc;
@@ -2547,6 +2562,12 @@ static PyObject *mod_coords_in_set(PyObject *module, PyObject *args) {
     (void)module;
     Py_buffer active, query;
     if (!PyArg_ParseTuple(args, "y*y*", &active, &query)) return NULL;
+    if (active.len % (Py_ssize_t)(3*sizeof(int32_t)) != 0 ||
+        query.len % (Py_ssize_t)(3*sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&active); PyBuffer_Release(&query);
+        PyErr_SetString(PyExc_ValueError, "coords buffers must be int32 xyz triples");
+        return NULL;
+    }
     size_t na = (size_t)active.len / (3 * sizeof(int32_t));
     size_t nq = (size_t)query.len / (3 * sizeof(int32_t));
     uint8_t *out = NULL;
@@ -2570,6 +2591,12 @@ static PyObject *mod_points_in_set(PyObject *module, PyObject *args, PyObject *k
     if (!PyArg_ParseTupleAndKeywords(args, kw, "y*y*|(ddd)(ddd)", kwlist,
                                      &pts, &active, &vsx, &vsy, &vsz, &ox, &oy, &oz))
         return NULL;
+    if (pts.len % (Py_ssize_t)(3*sizeof(float)) != 0 ||
+        active.len % (Py_ssize_t)(3*sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&pts); PyBuffer_Release(&active);
+        PyErr_SetString(PyExc_ValueError, "points must be float triples; active int32 triples");
+        return NULL;
+    }
     size_t np = (size_t)pts.len / (3 * sizeof(float));
     size_t na = (size_t)active.len / (3 * sizeof(int32_t));
     uint8_t *out = NULL;
@@ -2590,6 +2617,12 @@ static PyObject *mod_ijk_to_index(PyObject *module, PyObject *args) {
     (void)module;
     Py_buffer active, query;
     if (!PyArg_ParseTuple(args, "y*y*", &active, &query)) return NULL;
+    if (active.len % (Py_ssize_t)(3*sizeof(int32_t)) != 0 ||
+        query.len % (Py_ssize_t)(3*sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&active); PyBuffer_Release(&query);
+        PyErr_SetString(PyExc_ValueError, "coords buffers must be int32 xyz triples");
+        return NULL;
+    }
     size_t na = (size_t)active.len / (3 * sizeof(int32_t));
     size_t nq = (size_t)query.len / (3 * sizeof(int32_t));
     int64_t *out = NULL;
@@ -2611,6 +2644,11 @@ static PyObject *mod_neighbor_counts(PyObject *module, PyObject *args, PyObject 
     static char *kwlist[] = {"active", "connectivity", NULL};
     if (!PyArg_ParseTupleAndKeywords(args, kw, "y*|i", kwlist, &active, &connectivity))
         return NULL;
+    if (active.len % (Py_ssize_t)(3*sizeof(int32_t)) != 0) {
+        PyBuffer_Release(&active);
+        PyErr_SetString(PyExc_ValueError, "active buffer must be int32 xyz triples");
+        return NULL;
+    }
     size_t na = (size_t)active.len / (3 * sizeof(int32_t));
     int32_t *out = NULL;
     int rc;
@@ -3105,6 +3143,7 @@ static PyObject *mod_sample_trilinear(PyObject *module, PyObject *args, PyObject
         PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
     }
     PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
     Py_ssize_t nfloats;
     float *pts = extract_floats(pts_obj, &nfloats);
     if (!pts) return NULL;
@@ -3131,6 +3170,7 @@ static PyObject *mod_sample_quadratic(PyObject *module, PyObject *args, PyObject
         PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
     }
     PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
     Py_ssize_t nfloats;
     float *pts = extract_floats(pts_obj, &nfloats);
     if (!pts) return NULL;

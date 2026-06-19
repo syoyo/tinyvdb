@@ -16,7 +16,10 @@ void tvdb_world_to_ijk(const float* points, size_t n,
                        int32_t* out_ijk) {
   for (size_t i = 0; i < n; ++i)
     for (int a = 0; a < 3; ++a)
-      out_ijk[3*i+a] = (int32_t)floorf((points[3*i+a] - origin[a]) / voxel_size[a]);
+      // Guard against a non-positive voxel size: dividing would yield inf/nan
+      // and casting that to int is UB.
+      out_ijk[3*i+a] = voxel_size[a] > 0.0f
+          ? (int32_t)floorf((points[3*i+a] - origin[a]) / voxel_size[a]) : 0;
 }
 
 void tvdb_ijk_to_world(const int32_t* ijk, size_t n,
@@ -121,6 +124,7 @@ bool tvdb_coords_in_set(const int32_t* active, size_t na,
 bool tvdb_points_in_set(const float* points, size_t np,
                         const float voxel_size[3], const float origin[3],
                         const int32_t* active, size_t na, uint8_t* out) {
+  if (voxel_size[0] <= 0.0f || voxel_size[1] <= 0.0f || voxel_size[2] <= 0.0f) return false;
   gi_hash h;
   if (!gi_hash_build(&h, active, na)) return false;
   for (size_t i = 0; i < np; ++i) {
@@ -174,6 +178,7 @@ bool tvdb_voxelize_points(const float* points, size_t n,
                           const float voxel_size[3], const float origin[3],
                           int32_t** out_coords, size_t* out_count) {
   *out_coords = NULL; *out_count = 0;
+  if (voxel_size[0] <= 0.0f || voxel_size[1] <= 0.0f || voxel_size[2] <= 0.0f) return false;
   if (n == 0) return true;
   gi_hash h;
   size_t cap = 16; while (cap < (n + 1) * 2) cap <<= 1;

@@ -32,8 +32,8 @@ void tvdb_dense_vec_grid_free(tvdb_dense_vec_grid* grid) {
 // helpers
 // -------------------------------------------------------------------------
 
-static int tvdb_grid_voxels(const tvdb_dense_grid* g) {
-  return g->nx * g->ny * g->nz;
+static size_t tvdb_grid_voxels(const tvdb_dense_grid* g) {
+  return (size_t)g->nx * g->ny * g->nz;
 }
 
 static int tvdb_grid_same_shape(const tvdb_dense_grid* a, const tvdb_dense_grid* b) {

@@ -383,6 +383,7 @@ int tvdb_py_advect_scheme(const float *field_data, const float *vel_data,
     size_t n = (size_t)nx * ny * nz;
     *out_data = (float *)malloc(n * sizeof(float));
     if (*out_data) memcpy(*out_data, out.data, n * sizeof(float));
+    else snprintf(s_error_msg, sizeof(s_error_msg), "advect: alloc failed");
     tvdb_dense_grid_free(&f); tvdb_dense_vec_grid_free(&v); tvdb_dense_grid_free(&out);
     return *out_data ? 0 : -1;
 }
@@ -920,6 +921,7 @@ int tvdb_py_resample_grid(const float *data, int nx, int ny, int nz,
     size_t N = (size_t)out.nx * out.ny * out.nz;
     *out_data = (float *)malloc(N * sizeof(float));
     if (*out_data) memcpy(*out_data, out.data, N * sizeof(float));
+    else snprintf(s_error_msg, sizeof(s_error_msg), "resample_grid: alloc failed");
     tvdb_dense_grid_free(&in); tvdb_dense_grid_free(&out);
     return *out_data ? 0 : -1;
 }

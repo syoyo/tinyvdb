@@ -56,7 +56,7 @@ static void lvl_fill(tvdb_dense_grid* g, float bg, lvl_sdf_fn fn,
     float wz = g->oz + ((float)k + 0.5f) * vs;
     for (int j = 0; j < g->ny; ++j) {
       float wy = g->oy + ((float)j + 0.5f) * vs;
-      size_t row = (size_t)(k * g->ny + j) * g->nx;
+      size_t row = ((size_t)k * g->ny + j) * g->nx;
       for (int i = 0; i < g->nx; ++i) {
         float wx = g->ox + ((float)i + 0.5f) * vs;
         float d = fn(wx, wy, wz, params);
