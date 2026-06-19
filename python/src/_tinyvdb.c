@@ -88,6 +88,32 @@ extern int tvdb_py_write_grid_sparse_typed(const char *path,
                                            const char *grid_name, const void *bg_bytes,
                                            unsigned int compression, int level);
 
+extern int tvdb_py_level_set_sphere(float radius, float cx, float cy, float cz,
+                                    float voxel_size, float half_width,
+                                    float **out_data, int *nx, int *ny, int *nz,
+                                    float *ovs, float *ox, float *oy, float *oz);
+extern int tvdb_py_level_set_box(float hex, float hey, float hez,
+                                 float cx, float cy, float cz,
+                                 float voxel_size, float half_width,
+                                 float **out_data, int *nx, int *ny, int *nz,
+                                 float *ovs, float *ox, float *oy, float *oz);
+extern int tvdb_py_level_set_torus(float major_radius, float minor_radius,
+                                   float cx, float cy, float cz,
+                                   float voxel_size, float half_width,
+                                   float **out_data, int *nx, int *ny, int *nz,
+                                   float *ovs, float *ox, float *oy, float *oz);
+extern int tvdb_py_level_set_capsule(float p0x, float p0y, float p0z,
+                                     float p1x, float p1y, float p1z, float radius,
+                                     float voxel_size, float half_width,
+                                     float **out_data, int *nx, int *ny, int *nz,
+                                     float *ovs, float *ox, float *oy, float *oz);
+extern int tvdb_py_sdf_to_fog_volume(const float *data, int nx, int ny, int nz,
+                                     float vs, float ox, float oy, float oz,
+                                     float half_width, float **out_data);
+extern int tvdb_py_sdf_interior_mask(const float *data, int nx, int ny, int nz,
+                                     float vs, float ox, float oy, float oz,
+                                     float isovalue, float **out_data);
+
 extern int tvdb_py_dilate(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_erode(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_open(float *, int, int, int, float, float, float, float, int);
@@ -1830,6 +1856,132 @@ static PyObject *mod_write_sparse_grid(PyObject *module, PyObject *args, PyObjec
     Py_RETURN_NONE;
 }
 
+/* ---- Level-set primitive generators -> DenseGrid ---- */
+
+static PyObject *mod_level_set_sphere(PyObject *module, PyObject *args, PyObject *kw) {
+    double radius;
+    double cx = 0.0, cy = 0.0, cz = 0.0, voxel_size = 0.1, half_width = 3.0;
+    static char *kwlist[] = {"radius", "center", "voxel_size", "half_width", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "d|(ddd)dd", kwlist,
+                                     &radius, &cx, &cy, &cz, &voxel_size, &half_width))
+        return NULL;
+    float *out = NULL; int nx, ny, nz; float ovs, ox, oy, oz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_level_set_sphere((float)radius, (float)cx, (float)cy, (float)cz,
+                                  (float)voxel_size, (float)half_width,
+                                  &out, &nx, &ny, &nz, &ovs, &ox, &oy, &oz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(get_state(module)->DenseGridType, out, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+static PyObject *mod_level_set_box(PyObject *module, PyObject *args, PyObject *kw) {
+    double hx, hy, hz;
+    double cx = 0.0, cy = 0.0, cz = 0.0, voxel_size = 0.1, half_width = 3.0;
+    static char *kwlist[] = {"half_extents", "center", "voxel_size", "half_width", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "(ddd)|(ddd)dd", kwlist,
+                                     &hx, &hy, &hz, &cx, &cy, &cz, &voxel_size, &half_width))
+        return NULL;
+    float *out = NULL; int nx, ny, nz; float ovs, ox, oy, oz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_level_set_box((float)hx, (float)hy, (float)hz,
+                               (float)cx, (float)cy, (float)cz,
+                               (float)voxel_size, (float)half_width,
+                               &out, &nx, &ny, &nz, &ovs, &ox, &oy, &oz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(get_state(module)->DenseGridType, out, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+static PyObject *mod_level_set_torus(PyObject *module, PyObject *args, PyObject *kw) {
+    double major_radius, minor_radius;
+    double cx = 0.0, cy = 0.0, cz = 0.0, voxel_size = 0.1, half_width = 3.0;
+    static char *kwlist[] = {"major_radius", "minor_radius", "center",
+                             "voxel_size", "half_width", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "dd|(ddd)dd", kwlist,
+                                     &major_radius, &minor_radius,
+                                     &cx, &cy, &cz, &voxel_size, &half_width))
+        return NULL;
+    float *out = NULL; int nx, ny, nz; float ovs, ox, oy, oz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_level_set_torus((float)major_radius, (float)minor_radius,
+                                 (float)cx, (float)cy, (float)cz,
+                                 (float)voxel_size, (float)half_width,
+                                 &out, &nx, &ny, &nz, &ovs, &ox, &oy, &oz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(get_state(module)->DenseGridType, out, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+static PyObject *mod_level_set_capsule(PyObject *module, PyObject *args, PyObject *kw) {
+    double p0x, p0y, p0z, p1x, p1y, p1z, radius;
+    double voxel_size = 0.1, half_width = 3.0;
+    static char *kwlist[] = {"p0", "p1", "radius", "voxel_size", "half_width", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "(ddd)(ddd)d|dd", kwlist,
+                                     &p0x, &p0y, &p0z, &p1x, &p1y, &p1z,
+                                     &radius, &voxel_size, &half_width))
+        return NULL;
+    float *out = NULL; int nx, ny, nz; float ovs, ox, oy, oz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_level_set_capsule((float)p0x, (float)p0y, (float)p0z,
+                                   (float)p1x, (float)p1y, (float)p1z, (float)radius,
+                                   (float)voxel_size, (float)half_width,
+                                   &out, &nx, &ny, &nz, &ovs, &ox, &oy, &oz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(get_state(module)->DenseGridType, out, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+/* ---- SDF utilities (DenseGrid -> DenseGrid) ---- */
+
+static PyObject *mod_sdf_to_fog_volume(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double half_width = 3.0;
+    static char *kwlist[] = {"grid", "half_width", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|d", kwlist, &grid_obj, &half_width))
+        return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_sdf_to_fog_volume(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                                   g->ox, g->oy, g->oz, (float)half_width, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, g->nx, g->ny, g->nz,
+                            g->voxel_size, g->ox, g->oy, g->oz);
+}
+
+static PyObject *mod_sdf_interior_mask(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double isovalue = 0.0;
+    static char *kwlist[] = {"grid", "isovalue", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|d", kwlist, &grid_obj, &isovalue))
+        return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_sdf_interior_mask(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                                   g->ox, g->oy, g->oz, (float)isovalue, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, g->nx, g->ny, g->nz,
+                            g->voxel_size, g->ox, g->oy, g->oz);
+}
+
 static PyObject *mod_sdf_to_mesh(PyObject *module, PyObject *args, PyObject *kw) {
     PyObject *grid_obj; float isovalue = 0.0f;
     static char *kwlist[] = {"grid", "isovalue", NULL};
@@ -2955,6 +3107,22 @@ static PyMethodDef module_methods[] = {
      "xyz-triple byte buffer, values is a raw byte buffer of one element per coord (paired by "
      "position), dtype is one of 'float32','float64','int32','int64','bool','vec3f'; "
      "world = voxel_size*index + origin."},
+    {"level_set_sphere", (PyCFunction)mod_level_set_sphere, METH_VARARGS | METH_KEYWORDS,
+     "level_set_sphere(radius, center=(0,0,0), voxel_size=0.1, half_width=3.0) -> DenseGrid; "
+     "analytic narrow-band SDF of a sphere."},
+    {"level_set_box", (PyCFunction)mod_level_set_box, METH_VARARGS | METH_KEYWORDS,
+     "level_set_box(half_extents, center=(0,0,0), voxel_size=0.1, half_width=3.0) -> DenseGrid; "
+     "analytic narrow-band SDF of an axis-aligned box."},
+    {"level_set_torus", (PyCFunction)mod_level_set_torus, METH_VARARGS | METH_KEYWORDS,
+     "level_set_torus(major_radius, minor_radius, center=(0,0,0), voxel_size=0.1, half_width=3.0) "
+     "-> DenseGrid; SDF of a torus in the XZ plane (axis Y)."},
+    {"level_set_capsule", (PyCFunction)mod_level_set_capsule, METH_VARARGS | METH_KEYWORDS,
+     "level_set_capsule(p0, p1, radius, voxel_size=0.1, half_width=3.0) -> DenseGrid; "
+     "SDF of a capsule (segment p0->p1 swept by radius)."},
+    {"sdf_to_fog_volume", (PyCFunction)mod_sdf_to_fog_volume, METH_VARARGS | METH_KEYWORDS,
+     "sdf_to_fog_volume(grid, half_width=3.0) -> DenseGrid; density = clamp(-sdf/(half_width*voxel), 0, 1)."},
+    {"sdf_interior_mask", (PyCFunction)mod_sdf_interior_mask, METH_VARARGS | METH_KEYWORDS,
+     "sdf_interior_mask(grid, isovalue=0.0) -> DenseGrid; 1.0 where sdf<isovalue else 0.0."},
     {"sdf_to_mesh", (PyCFunction)mod_sdf_to_mesh, METH_VARARGS | METH_KEYWORDS, "SDF to mesh"},
     {"make_manifold", (PyCFunction)mod_make_manifold, METH_VARARGS | METH_KEYWORDS, "Make manifold"},
     {"dilate", (PyCFunction)mod_dilate, METH_VARARGS | METH_KEYWORDS, "Dilate SDF"},

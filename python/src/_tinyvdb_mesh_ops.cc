@@ -13,6 +13,7 @@
 #include "tinyvdb_topology.h"
 #include "tinyvdb_sparse_tree.h"
 #include "tinyvdb_autograd.h"
+#include "tinyvdb_levelset.h"
 
 #include <cmath>
 #include <cstring>
@@ -1811,6 +1812,97 @@ int tvdb_py_merge_grids(const float *a_data, int a_nx, int a_ny, int a_nz,
     if (*out_data) memcpy(*out_data, out.data, N * sizeof(float));
     tvdb_dense_grid_free(&A); tvdb_dense_grid_free(&B); tvdb_dense_grid_free(&out);
     return *out_data ? 0 : -1;
+}
+
+/* ---- Level-set primitives + SDF utilities (tinyvdb_levelset.h) ----
+   Each bridge transfers ownership of the generated grid's malloc'd data to the
+   caller (the Python DenseGrid wrapper frees it) and reports the grid's dims +
+   transform. Returns 0 on success, -1 on error. */
+static int lvl_transfer(tvdb_dense_grid *g, int ok,
+                        float **out_data, int *nx, int *ny, int *nz,
+                        float *ovs, float *ox, float *oy, float *oz) {
+    if (!ok || !g->data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "level_set: build failed");
+        if (g->data) tvdb_dense_grid_free(g);
+        return -1;
+    }
+    *out_data = g->data;  /* transfer ownership; do NOT free g */
+    *nx = g->nx; *ny = g->ny; *nz = g->nz;
+    *ovs = g->voxel_size; *ox = g->ox; *oy = g->oy; *oz = g->oz;
+    return 0;
+}
+
+int tvdb_py_level_set_sphere(float radius, float cx, float cy, float cz,
+                             float voxel_size, float half_width,
+                             float **out_data, int *nx, int *ny, int *nz,
+                             float *ovs, float *ox, float *oy, float *oz) {
+    tvdb_dense_grid g = {}; float c[3] = { cx, cy, cz };
+    int ok = tvdb_level_set_sphere(radius, c, voxel_size, half_width, &g);
+    return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+int tvdb_py_level_set_box(float hex, float hey, float hez,
+                          float cx, float cy, float cz,
+                          float voxel_size, float half_width,
+                          float **out_data, int *nx, int *ny, int *nz,
+                          float *ovs, float *ox, float *oy, float *oz) {
+    tvdb_dense_grid g = {}; float he[3] = { hex, hey, hez }; float c[3] = { cx, cy, cz };
+    int ok = tvdb_level_set_box(he, c, voxel_size, half_width, &g);
+    return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+int tvdb_py_level_set_torus(float major_radius, float minor_radius,
+                            float cx, float cy, float cz,
+                            float voxel_size, float half_width,
+                            float **out_data, int *nx, int *ny, int *nz,
+                            float *ovs, float *ox, float *oy, float *oz) {
+    tvdb_dense_grid g = {}; float c[3] = { cx, cy, cz };
+    int ok = tvdb_level_set_torus(major_radius, minor_radius, c, voxel_size,
+                                  half_width, &g);
+    return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+int tvdb_py_level_set_capsule(float p0x, float p0y, float p0z,
+                              float p1x, float p1y, float p1z, float radius,
+                              float voxel_size, float half_width,
+                              float **out_data, int *nx, int *ny, int *nz,
+                              float *ovs, float *ox, float *oy, float *oz) {
+    tvdb_dense_grid g = {};
+    float p0[3] = { p0x, p0y, p0z }, p1[3] = { p1x, p1y, p1z };
+    int ok = tvdb_level_set_capsule(p0, p1, radius, voxel_size, half_width, &g);
+    return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+/* SDF utilities: input is an existing dense grid (data + dims + transform);
+   output has the same dims/transform, data malloc'd into *out_data. */
+int tvdb_py_sdf_to_fog_volume(const float *data, int nx, int ny, int nz,
+                              float vs, float ox, float oy, float oz,
+                              float half_width, float **out_data) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = vs;
+    in.ox = ox; in.oy = oy; in.oz = oz; in.data = (float *)data;
+    tvdb_dense_grid out;
+    if (!tvdb_sdf_to_fog_volume(&in, half_width, &out)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "sdf_to_fog_volume failed");
+        return -1;
+    }
+    *out_data = out.data;  /* transfer ownership */
+    return 0;
+}
+
+int tvdb_py_sdf_interior_mask(const float *data, int nx, int ny, int nz,
+                              float vs, float ox, float oy, float oz,
+                              float isovalue, float **out_data) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = vs;
+    in.ox = ox; in.oy = oy; in.oz = oz; in.data = (float *)data;
+    tvdb_dense_grid out;
+    if (!tvdb_sdf_interior_mask(&in, isovalue, &out)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "sdf_interior_mask failed");
+        return -1;
+    }
+    *out_data = out.data;  /* transfer ownership */
+    return 0;
 }
 
 } /* extern "C" */

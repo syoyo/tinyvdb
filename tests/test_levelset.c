@@ -1,0 +1,191 @@
+// Level-set primitive generators + SDF utilities (tinyvdb_levelset.h).
+//
+// Each generator fills a dense narrow-band SDF. We recompute the analytic
+// signed distance independently and compare it (clamped to the background) at
+// every voxel center, then sanity-check the fog/interior-mask utilities.
+
+#include "tinyvdb_levelset.h"
+#include "tinyvdb_mesh.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+static int fails = 0;
+#define EXPECT(cond, msg) do { \
+    if (!(cond)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, msg); ++fails; } \
+} while (0)
+
+static float clampf(float v, float lo, float hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+static float minf(float a, float b) { return a < b ? a : b; }
+static float maxf(float a, float b) { return a > b ? a : b; }
+
+static inline float at(const tvdb_dense_grid* g, int i, int j, int k) {
+  return g->data[(size_t)(k * g->ny + j) * g->nx + i];
+}
+static inline void wc(const tvdb_dense_grid* g, int i, int j, int k,
+                      float* x, float* y, float* z) {
+  *x = g->ox + ((float)i + 0.5f) * g->voxel_size;
+  *y = g->oy + ((float)j + 0.5f) * g->voxel_size;
+  *z = g->oz + ((float)k + 0.5f) * g->voxel_size;
+}
+
+// Compare stored grid vs an analytic SDF, clamped to +/- bg. Returns max abs err.
+typedef float (*ref_fn)(float, float, float, const void*);
+static float check_analytic(const tvdb_dense_grid* g, float bg, ref_fn fn,
+                            const void* p, const char* name) {
+  float maxerr = 0.0f;
+  int neg = 0, pos = 0;
+  for (int k = 0; k < g->nz; ++k)
+    for (int j = 0; j < g->ny; ++j)
+      for (int i = 0; i < g->nx; ++i) {
+        float x, y, z; wc(g, i, j, k, &x, &y, &z);
+        float ref = clampf(fn(x, y, z, p), -bg, bg);
+        float e = fabsf(at(g, i, j, k) - ref);
+        if (e > maxerr) maxerr = e;
+        if (at(g, i, j, k) < 0.0f) ++neg; else ++pos;
+      }
+  printf("[%s] %dx%dx%d maxerr=%.3e neg=%d pos=%d\n",
+         name, g->nx, g->ny, g->nz, (double)maxerr, neg, pos);
+  EXPECT(maxerr < 1e-4f, "analytic SDF mismatch");
+  EXPECT(neg > 0 && pos > 0, "expected both interior and exterior voxels");
+  return maxerr;
+}
+
+typedef struct { float c[3], r; } sph_t;
+static float sph_ref(float x, float y, float z, const void* p) {
+  const sph_t* s = (const sph_t*)p;
+  float dx = x - s->c[0], dy = y - s->c[1], dz = z - s->c[2];
+  return sqrtf(dx*dx + dy*dy + dz*dz) - s->r;
+}
+
+typedef struct { float c[3], he[3]; } box_t;
+static float box_ref(float x, float y, float z, const void* p) {
+  const box_t* b = (const box_t*)p;
+  float qx = fabsf(x-b->c[0]) - b->he[0];
+  float qy = fabsf(y-b->c[1]) - b->he[1];
+  float qz = fabsf(z-b->c[2]) - b->he[2];
+  float ox=maxf(qx,0), oy=maxf(qy,0), oz=maxf(qz,0);
+  return sqrtf(ox*ox+oy*oy+oz*oz) + minf(maxf(qx,maxf(qy,qz)), 0.0f);
+}
+
+typedef struct { float c[3], R, r; } tor_t;
+static float tor_ref(float x, float y, float z, const void* p) {
+  const tor_t* t = (const tor_t*)p;
+  float dx=x-t->c[0], dy=y-t->c[1], dz=z-t->c[2];
+  float qx = sqrtf(dx*dx+dz*dz) - t->R;
+  return sqrtf(qx*qx+dy*dy) - t->r;
+}
+
+typedef struct { float a[3], b[3], r; } cap_t;
+static float cap_ref(float x, float y, float z, const void* p) {
+  const cap_t* c = (const cap_t*)p;
+  float bax=c->b[0]-c->a[0], bay=c->b[1]-c->a[1], baz=c->b[2]-c->a[2];
+  float pax=x-c->a[0], pay=y-c->a[1], paz=z-c->a[2];
+  float baba = bax*bax+bay*bay+baz*baz;
+  float h = baba>0 ? clampf((pax*bax+pay*bay+paz*baz)/baba, 0, 1) : 0;
+  float dx=pax-bax*h, dy=pay-bay*h, dz=paz-baz*h;
+  return sqrtf(dx*dx+dy*dy+dz*dz) - c->r;
+}
+
+int main(void) {
+  const float vs = 0.1f, hw = 3.0f, bg = hw * vs;
+
+  // ---- Sphere ----
+  {
+    float c[3] = { 0.3f, -0.2f, 0.5f };
+    tvdb_dense_grid g;
+    EXPECT(tvdb_level_set_sphere(1.0f, c, vs, hw, &g), "sphere build");
+    sph_t s = { { c[0], c[1], c[2] }, 1.0f };
+    check_analytic(&g, bg, sph_ref, &s, "sphere");
+    // Center voxel deep interior -> clamped to -bg.
+    float cx, cy, cz;
+    int ci = (int)lroundf((c[0]-g.ox)/vs - 0.5f);
+    int cj = (int)lroundf((c[1]-g.oy)/vs - 0.5f);
+    int ck = (int)lroundf((c[2]-g.oz)/vs - 0.5f);
+    wc(&g, ci, cj, ck, &cx, &cy, &cz);
+    EXPECT(fabsf(at(&g, ci, cj, ck) + bg) < 1e-5f, "sphere center == -bg");
+    tvdb_dense_grid_free(&g);
+  }
+
+  // ---- Box ----
+  {
+    float c[3] = { 0.0f, 0.0f, 0.0f }, he[3] = { 0.5f, 0.4f, 0.6f };
+    tvdb_dense_grid g;
+    EXPECT(tvdb_level_set_box(he, c, vs, hw, &g), "box build");
+    box_t b = { { 0,0,0 }, { 0.5f, 0.4f, 0.6f } };
+    check_analytic(&g, bg, box_ref, &b, "box");
+    tvdb_dense_grid_free(&g);
+  }
+
+  // ---- Torus ----
+  {
+    float c[3] = { 0.1f, 0.0f, -0.1f };
+    tvdb_dense_grid g;
+    EXPECT(tvdb_level_set_torus(1.0f, 0.3f, c, vs, hw, &g), "torus build");
+    tor_t t = { { c[0], c[1], c[2] }, 1.0f, 0.3f };
+    check_analytic(&g, bg, tor_ref, &t, "torus");
+    tvdb_dense_grid_free(&g);
+  }
+
+  // ---- Capsule ----
+  {
+    float p0[3] = { -0.5f, 0.1f, 0.0f }, p1[3] = { 0.5f, 0.1f, 0.2f };
+    tvdb_dense_grid g;
+    EXPECT(tvdb_level_set_capsule(p0, p1, 0.25f, vs, hw, &g), "capsule build");
+    cap_t c = { { p0[0],p0[1],p0[2] }, { p1[0],p1[1],p1[2] }, 0.25f };
+    check_analytic(&g, bg, cap_ref, &c, "capsule");
+    tvdb_dense_grid_free(&g);
+  }
+
+  // ---- sdf_to_fog_volume + interior_mask on a sphere ----
+  {
+    float c[3] = { 0,0,0 };
+    tvdb_dense_grid sdf;
+    EXPECT(tvdb_level_set_sphere(1.0f, c, vs, hw, &sdf), "sphere for fog");
+
+    tvdb_dense_grid fog;
+    EXPECT(tvdb_sdf_to_fog_volume(&sdf, hw, &fog), "fog build");
+    EXPECT(fog.nx == sdf.nx && fog.ny == sdf.ny && fog.nz == sdf.nz, "fog shape");
+    int bad = 0; float fmax = 0.0f;
+    size_t n = (size_t)sdf.nx * sdf.ny * sdf.nz;
+    for (size_t i = 0; i < n; ++i) {
+      float f = fog.data[i];
+      if (f < -1e-6f || f > 1.0f + 1e-6f) ++bad;             // range [0,1]
+      if (sdf.data[i] >= 0.0f && f > 1e-6f) ++bad;           // exterior -> 0
+      if (f > fmax) fmax = f;
+    }
+    EXPECT(bad == 0, "fog values out of range / nonzero outside");
+    EXPECT(fmax > 0.99f, "fog deep interior should reach ~1");
+
+    tvdb_dense_grid mask;
+    EXPECT(tvdb_sdf_interior_mask(&sdf, 0.0f, &mask), "mask build");
+    int m1 = 0, mbad = 0;
+    for (size_t i = 0; i < n; ++i) {
+      float mv = mask.data[i];
+      if (mv != 0.0f && mv != 1.0f) ++mbad;
+      if ((mv == 1.0f) != (sdf.data[i] < 0.0f)) ++mbad;
+      if (mv == 1.0f) ++m1;
+    }
+    EXPECT(mbad == 0, "interior mask inconsistent with sdf sign");
+    EXPECT(m1 > 0, "interior mask should mark some voxels");
+
+    tvdb_dense_grid_free(&sdf);
+    tvdb_dense_grid_free(&fog);
+    tvdb_dense_grid_free(&mask);
+  }
+
+  // ---- Error paths ----
+  {
+    tvdb_dense_grid g;
+    float c[3] = { 0,0,0 };
+    EXPECT(!tvdb_level_set_sphere(-1.0f, c, vs, hw, &g), "negative radius rejected");
+    EXPECT(!tvdb_level_set_sphere(1.0f, c, 0.0f, hw, &g), "zero voxel rejected");
+  }
+
+  if (fails) { fprintf(stderr, "%d FAILURES\n", fails); return 1; }
+  printf("All level-set tests passed.\n");
+  return 0;
+}

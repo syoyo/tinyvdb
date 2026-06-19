@@ -110,6 +110,38 @@ mesh = tinyvdb.sdf_to_mesh(sdf, isovalue=0.0)
 print(mesh.num_vertices, mesh.num_faces)
 ```
 
+### Level-set primitives & SDF utilities
+
+Generate analytic narrow-band SDFs (parallels OpenVDB's `LevelSetSphere` /
+`LevelSetPlatonic` / `LevelSetTubes`) as `DenseGrid`s, then operate on them with
+the dense ops (CSG, filters, marching cubes) or write them to `.vdb`. Every voxel
+holds the true signed distance clamped to `±half_width * voxel_size`; negative is
+inside. The grid is sized to enclose the primitive plus the band margin.
+
+```python
+import numpy as np
+import tinyvdb
+
+sphere  = tinyvdb.level_set_sphere(radius=1.0, center=(0, 0, 0), voxel_size=0.05)
+box     = tinyvdb.level_set_box(half_extents=(0.5, 0.4, 0.6))
+torus   = tinyvdb.level_set_torus(major_radius=1.0, minor_radius=0.3)   # XZ plane, axis Y
+capsule = tinyvdb.level_set_capsule(p0=(-0.5, 0, 0), p1=(0.5, 0, 0), radius=0.25)
+
+print(sphere.shape, sphere.voxel_size, sphere.origin)
+arr = np.array(sphere, copy=False)        # zero-copy float32 view
+
+# Combine and re-mesh
+both = tinyvdb.csg_union(sphere, box)
+mesh = tinyvdb.sdf_to_mesh(both, isovalue=0.0)
+
+# SDF utilities
+fog  = tinyvdb.sdf_to_fog_volume(sphere)             # density = clamp(-sdf/(hw*voxel), 0, 1)
+mask = tinyvdb.sdf_interior_mask(sphere, isovalue=0.0)  # 1.0 inside, 0.0 outside
+```
+
+All generators take `voxel_size=` and `half_width=` (band width in voxels,
+default 3, matching OpenVDB's `LEVEL_SET_HALF_WIDTH`).
+
 ### Write a dense grid to `.vdb`
 
 Write an existing dense field (e.g. an SDF you already computed) to a fresh `.vdb`

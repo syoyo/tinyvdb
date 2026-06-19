@@ -16,14 +16,16 @@ each theme. Notes point at the nearest existing primitive to reuse.
 
 **A. Level-set primitives & SDF utilities**
 
-- [ ] **Level-set primitive generators.** `create_level_set_sphere/box/
-      torus/capsule` + platonic solids (parallels OpenVDB
-      `LevelSetSphere`/`LevelSetPlatonic`/`LevelSetTubes`). Analytic
-      narrow-band SDF builders — tinyvdb only has an analytic sphere
-      inside `tests/`. Emit via `tvdb_grid_from_sparse_typed_using_template`.
-- [ ] **SDF↔fog & masks.** `sdf_to_fog_volume`, `sdf_interior_mask`,
-      `sdf_segmentation`, `extract_enclosed_regions` (parallels OpenVDB
-      `LevelSetUtil`).
+- [x] **Level-set primitive generators.** `tvdb_level_set_sphere/box/
+      torus/capsule` (parallels OpenVDB `LevelSetSphere`/`LevelSetTubes`).
+      Analytic narrow-band dense SDFs in `tinyvdb_levelset.{h,c}`; Python
+      `level_set_sphere/box/torus/capsule`. Covered by `test_levelset`
+      (C + py). *Still open:* platonic solids (tetra/octa/dodeca/icosa,
+      OpenVDB `LevelSetPlatonic`).
+- [x] **SDF→fog & interior mask.** `tvdb_sdf_to_fog_volume`,
+      `tvdb_sdf_interior_mask` (parallels OpenVDB `LevelSetUtil`); Python
+      `sdf_to_fog_volume` / `sdf_interior_mask`. *Still open:*
+      `sdf_segmentation`, `extract_enclosed_regions`.
 - [ ] **Level-set measure extensions.** Euler characteristic & genus
       (parallels OpenVDB `LevelSetMeasure`); `tvdb_surface_area` /
       `tvdb_volume` already exist.
@@ -107,11 +109,12 @@ public API" design — listed for visibility, not on the near-term roadmap.
 
 ## Test coverage (current)
 
-15 ctests register under `build/`:
+16 ctests register under `build/`:
 
 | target | what |
 | --- | --- |
 | `test_ops` | Phase 1-6 dense ops smoke (volume, surface_area, dilate, csg, gradient, Poisson recovery, advection, sampling, TSDF, topology, ray, sparse) |
+| `test_levelset` | Level-set primitive generators (sphere/box/torus/capsule): analytic SDF recomputed and matched at every voxel; `sdf_to_fog_volume` range/empty-exterior and `sdf_interior_mask` sign-consistency |
 | `test_sparse_tree` | OpenVDB-tree bridge on `sphere.vdb`: counts, bbox, sparse extraction, dense materialization, leaf-stamp dilate/erode |
 | `test_grid_from_sparse` | Sphere round-trip + synthetic 27-leaf cross-parent test for `tvdb_grid_from_sparse_using_template` |
 | `test_simd` | SIMD vs scalar parity for dot, AXPY, fp16 round-trip, fp16 encoder ≤1 ULP |
