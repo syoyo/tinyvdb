@@ -177,12 +177,70 @@ int main(void) {
     tvdb_dense_grid_free(&mask);
   }
 
+  // ---- Platonic solids ----
+  // Validate geometry without re-deriving face normals: every near-surface
+  // voxel must lie between the inscribed sphere (inradius = R*ratio) and the
+  // circumscribed sphere (circumradius = R), and the band must reach both.
+  {
+    struct { int faces; float ratio; const char* name; } solids[] = {
+      { 4,  1.0f/3.0f,           "tetrahedron" },
+      { 6,  0.57735027f,         "cube" },
+      { 8,  0.57735027f,         "octahedron" },
+      { 12, 0.79465447f,         "dodecahedron" },
+      { 20, 0.79465447f,         "icosahedron" },
+    };
+    const float R = 1.0f, pvs = 0.05f, phw = 3.0f, pbg = phw * pvs;
+    float ctr[3] = { 0.2f, -0.1f, 0.3f };
+    for (size_t si = 0; si < sizeof(solids) / sizeof(solids[0]); ++si) {
+      tvdb_dense_grid g;
+      int ok = tvdb_level_set_platonic(solids[si].faces, R, ctr, pvs, phw, &g);
+      EXPECT(ok, "platonic build");
+      if (!ok) continue;
+      float inrad = R * solids[si].ratio;
+      float band = 2.0f * pvs;
+      float minz = 1e9f, maxz = -1e9f;
+      int neg = 0, pos = 0, outside_circ = 0, near = 0, range_bad = 0;
+      for (int k = 0; k < g.nz; ++k)
+        for (int j = 0; j < g.ny; ++j)
+          for (int i = 0; i < g.nx; ++i) {
+            float x, y, z; wc(&g, i, j, k, &x, &y, &z);
+            float d = at(&g, i, j, k);
+            if (d < -pbg - 1e-5f || d > pbg + 1e-5f) ++range_bad;
+            if (d < 0) ++neg; else ++pos;
+            float dist = sqrtf((x-ctr[0])*(x-ctr[0]) + (y-ctr[1])*(y-ctr[1]) +
+                               (z-ctr[2])*(z-ctr[2]));
+            if (fabsf(d) <= pvs) {                  // near-surface band
+              ++near;
+              if (dist < minz) minz = dist;
+              if (dist > maxz) maxz = dist;
+              if (dist > R + 3.0f * pvs) ++outside_circ;
+            }
+          }
+      printf("[%s] faces=%d inrad=%.3f minz=%.3f maxz=%.3f near=%d\n",
+             solids[si].name, solids[si].faces, (double)inrad,
+             (double)minz, (double)maxz, near);
+      EXPECT(range_bad == 0, "platonic out of [-bg,bg]");
+      EXPECT(neg > 0 && pos > 0, "platonic needs interior+exterior");
+      EXPECT(near > 0, "platonic needs a near-surface band");
+      EXPECT(outside_circ == 0, "near-surface voxel beyond circumradius");
+      EXPECT(minz <= inrad + band && minz >= inrad - band, "min surface ~ inradius");
+      EXPECT(maxz >= R - band, "surface reaches circumradius (vertices)");
+      // Deep interior center clamps to -bg (inradius > bg here).
+      int ci = (int)lroundf((ctr[0]-g.ox)/pvs - 0.5f);
+      int cj = (int)lroundf((ctr[1]-g.oy)/pvs - 0.5f);
+      int ck = (int)lroundf((ctr[2]-g.oz)/pvs - 0.5f);
+      EXPECT(fabsf(at(&g, ci, cj, ck) + pbg) < 1e-5f, "platonic center == -bg");
+      tvdb_dense_grid_free(&g);
+    }
+  }
+
   // ---- Error paths ----
   {
     tvdb_dense_grid g;
     float c[3] = { 0,0,0 };
     EXPECT(!tvdb_level_set_sphere(-1.0f, c, vs, hw, &g), "negative radius rejected");
     EXPECT(!tvdb_level_set_sphere(1.0f, c, 0.0f, hw, &g), "zero voxel rejected");
+    EXPECT(!tvdb_level_set_platonic(5, 1.0f, c, vs, hw, &g), "bad face_count rejected");
   }
 
   if (fails) { fprintf(stderr, "%d FAILURES\n", fails); return 1; }

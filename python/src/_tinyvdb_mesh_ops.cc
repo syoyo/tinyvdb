@@ -1873,6 +1873,16 @@ int tvdb_py_level_set_capsule(float p0x, float p0y, float p0z,
     return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
 }
 
+int tvdb_py_level_set_platonic(int face_count, float radius,
+                               float cx, float cy, float cz,
+                               float voxel_size, float half_width,
+                               float **out_data, int *nx, int *ny, int *nz,
+                               float *ovs, float *ox, float *oy, float *oz) {
+    tvdb_dense_grid g = {}; float c[3] = { cx, cy, cz };
+    int ok = tvdb_level_set_platonic(face_count, radius, c, voxel_size, half_width, &g);
+    return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
+}
+
 /* SDF utilities: input is an existing dense grid (data + dims + transform);
    output has the same dims/transform, data malloc'd into *out_data. */
 int tvdb_py_sdf_to_fog_volume(const float *data, int nx, int ny, int nz,

@@ -127,6 +127,11 @@ box     = tinyvdb.level_set_box(half_extents=(0.5, 0.4, 0.6))
 torus   = tinyvdb.level_set_torus(major_radius=1.0, minor_radius=0.3)   # XZ plane, axis Y
 capsule = tinyvdb.level_set_capsule(p0=(-0.5, 0, 0), p1=(0.5, 0, 0), radius=0.25)
 
+# Platonic solids (radius = circumradius). Either the generic form or a named
+# wrapper; the field is the convex half-space SDF (exact isosurface).
+ico   = tinyvdb.level_set_icosahedron(radius=1.0)
+solid = tinyvdb.level_set_platonic(face_count=12, radius=1.0)   # 4/6/8/12/20
+
 print(sphere.shape, sphere.voxel_size, sphere.origin)
 arr = np.array(sphere, copy=False)        # zero-copy float32 view
 

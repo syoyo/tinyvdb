@@ -26,6 +26,7 @@ from tinyvdb._tinyvdb import (
     level_set_box,
     level_set_torus,
     level_set_capsule,
+    level_set_platonic,
     sdf_to_fog_volume,
     sdf_interior_mask,
     # Morphology
@@ -451,6 +452,34 @@ def read_sparse_grid(path, index=0):
         return coords, values, voxel_size, origin
 
 
+# Named platonic-solid convenience wrappers around level_set_platonic. `radius`
+# is the circumradius (center-to-vertex distance).
+def level_set_tetrahedron(radius, center=(0.0, 0.0, 0.0), voxel_size=0.1, half_width=3.0):
+    """Narrow-band SDF of a regular tetrahedron (4 faces). See :func:`level_set_platonic`."""
+    return level_set_platonic(4, radius, center=center, voxel_size=voxel_size, half_width=half_width)
+
+
+def level_set_cube(radius, center=(0.0, 0.0, 0.0), voxel_size=0.1, half_width=3.0):
+    """Narrow-band SDF of a cube (6 faces); `radius` is the circumradius. For a
+    cube given by half-extents with a true Euclidean SDF, use :func:`level_set_box`."""
+    return level_set_platonic(6, radius, center=center, voxel_size=voxel_size, half_width=half_width)
+
+
+def level_set_octahedron(radius, center=(0.0, 0.0, 0.0), voxel_size=0.1, half_width=3.0):
+    """Narrow-band SDF of a regular octahedron (8 faces). See :func:`level_set_platonic`."""
+    return level_set_platonic(8, radius, center=center, voxel_size=voxel_size, half_width=half_width)
+
+
+def level_set_dodecahedron(radius, center=(0.0, 0.0, 0.0), voxel_size=0.1, half_width=3.0):
+    """Narrow-band SDF of a regular dodecahedron (12 faces). See :func:`level_set_platonic`."""
+    return level_set_platonic(12, radius, center=center, voxel_size=voxel_size, half_width=half_width)
+
+
+def level_set_icosahedron(radius, center=(0.0, 0.0, 0.0), voxel_size=0.1, half_width=3.0):
+    """Narrow-band SDF of a regular icosahedron (20 faces). See :func:`level_set_platonic`."""
+    return level_set_platonic(20, radius, center=center, voxel_size=voxel_size, half_width=half_width)
+
+
 __version__ = "0.9.0"
 
 __all__ = [
@@ -477,6 +506,12 @@ __all__ = [
     "level_set_box",
     "level_set_torus",
     "level_set_capsule",
+    "level_set_platonic",
+    "level_set_tetrahedron",
+    "level_set_cube",
+    "level_set_octahedron",
+    "level_set_dodecahedron",
+    "level_set_icosahedron",
     "sdf_to_fog_volume",
     "sdf_interior_mask",
     "dilate",

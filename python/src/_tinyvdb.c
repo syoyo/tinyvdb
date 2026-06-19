@@ -107,6 +107,11 @@ extern int tvdb_py_level_set_capsule(float p0x, float p0y, float p0z,
                                      float voxel_size, float half_width,
                                      float **out_data, int *nx, int *ny, int *nz,
                                      float *ovs, float *ox, float *oy, float *oz);
+extern int tvdb_py_level_set_platonic(int face_count, float radius,
+                                      float cx, float cy, float cz,
+                                      float voxel_size, float half_width,
+                                      float **out_data, int *nx, int *ny, int *nz,
+                                      float *ovs, float *ox, float *oy, float *oz);
 extern int tvdb_py_sdf_to_fog_volume(const float *data, int nx, int ny, int nz,
                                      float vs, float ox, float oy, float oz,
                                      float half_width, float **out_data);
@@ -1936,6 +1941,27 @@ static PyObject *mod_level_set_capsule(PyObject *module, PyObject *args, PyObjec
     return DenseGrid_from_c(get_state(module)->DenseGridType, out, nx, ny, nz, ovs, ox, oy, oz);
 }
 
+static PyObject *mod_level_set_platonic(PyObject *module, PyObject *args, PyObject *kw) {
+    int face_count;
+    double radius;
+    double cx = 0.0, cy = 0.0, cz = 0.0, voxel_size = 0.1, half_width = 3.0;
+    static char *kwlist[] = {"face_count", "radius", "center", "voxel_size", "half_width", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "id|(ddd)dd", kwlist,
+                                     &face_count, &radius, &cx, &cy, &cz,
+                                     &voxel_size, &half_width))
+        return NULL;
+    float *out = NULL; int nx, ny, nz; float ovs, ox, oy, oz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_level_set_platonic(face_count, (float)radius,
+                                    (float)cx, (float)cy, (float)cz,
+                                    (float)voxel_size, (float)half_width,
+                                    &out, &nx, &ny, &nz, &ovs, &ox, &oy, &oz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(get_state(module)->DenseGridType, out, nx, ny, nz, ovs, ox, oy, oz);
+}
+
 /* ---- SDF utilities (DenseGrid -> DenseGrid) ---- */
 
 static PyObject *mod_sdf_to_fog_volume(PyObject *module, PyObject *args, PyObject *kw) {
@@ -3119,6 +3145,11 @@ static PyMethodDef module_methods[] = {
     {"level_set_capsule", (PyCFunction)mod_level_set_capsule, METH_VARARGS | METH_KEYWORDS,
      "level_set_capsule(p0, p1, radius, voxel_size=0.1, half_width=3.0) -> DenseGrid; "
      "SDF of a capsule (segment p0->p1 swept by radius)."},
+    {"level_set_platonic", (PyCFunction)mod_level_set_platonic, METH_VARARGS | METH_KEYWORDS,
+     "level_set_platonic(face_count, radius, center=(0,0,0), voxel_size=0.1, half_width=3.0) "
+     "-> DenseGrid; convex half-space SDF of a platonic solid. face_count is one of "
+     "4 (tetrahedron), 6 (cube), 8 (octahedron), 12 (dodecahedron), 20 (icosahedron); "
+     "radius is the circumradius (center-to-vertex)."},
     {"sdf_to_fog_volume", (PyCFunction)mod_sdf_to_fog_volume, METH_VARARGS | METH_KEYWORDS,
      "sdf_to_fog_volume(grid, half_width=3.0) -> DenseGrid; density = clamp(-sdf/(half_width*voxel), 0, 1)."},
     {"sdf_interior_mask", (PyCFunction)mod_sdf_interior_mask, METH_VARARGS | METH_KEYWORDS,

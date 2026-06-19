@@ -189,6 +189,111 @@ bool tvdb_level_set_capsule(const float p0[3], const float p1[3], float radius,
   return true;
 }
 
+// ---- Platonic solids (convex half-space SDF) -------------------------------
+
+// Fill `out` with `count` unit outward face normals for the given face_count and
+// report the inradius/circumradius ratio. Returns the face count, or 0 if
+// face_count is not one of {4,6,8,12,20}. `out` must hold up to 20*3 floats.
+static int lvl_platonic_normals(int face_count, float* out, float* in_over_circ) {
+  // Raw (un-normalized) normals; normalized below. PHI = golden ratio.
+  const float PHI = 1.6180339887498949f;
+  const float IPHI = 0.6180339887498949f;  // 1/PHI
+  float raw[60];
+  int n = 0;
+  switch (face_count) {
+    case 4: {  // tetrahedron: normals opposite the (1,1,1)-type vertices
+      const float t[4][3] = { {-1,-1,-1}, {-1,1,1}, {1,-1,1}, {1,1,-1} };
+      for (int i = 0; i < 4; ++i) for (int a = 0; a < 3; ++a) raw[3*i+a] = t[i][a];
+      n = 4; *in_over_circ = 1.0f / 3.0f;
+      break;
+    }
+    case 6: {  // cube: +/- axis normals
+      const float c[6][3] = { {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1} };
+      for (int i = 0; i < 6; ++i) for (int a = 0; a < 3; ++a) raw[3*i+a] = c[i][a];
+      n = 6; *in_over_circ = 0.57735026918962573f;  // 1/sqrt(3)
+      break;
+    }
+    case 8: {  // octahedron: (+/-1,+/-1,+/-1)
+      for (int sx = 0; sx < 2; ++sx) for (int sy = 0; sy < 2; ++sy)
+        for (int sz = 0; sz < 2; ++sz) {
+          raw[3*n+0] = sx ? -1.0f : 1.0f;
+          raw[3*n+1] = sy ? -1.0f : 1.0f;
+          raw[3*n+2] = sz ? -1.0f : 1.0f;
+          ++n;
+        }
+      *in_over_circ = 0.57735026918962573f;  // 1/sqrt(3)
+      break;
+    }
+    case 12: {  // dodecahedron faces = icosahedron vertex directions
+      const float v[12][3] = {
+        {0,1,PHI},{0,1,-PHI},{0,-1,PHI},{0,-1,-PHI},
+        {1,PHI,0},{1,-PHI,0},{-1,PHI,0},{-1,-PHI,0},
+        {PHI,0,1},{PHI,0,-1},{-PHI,0,1},{-PHI,0,-1} };
+      for (int i = 0; i < 12; ++i) for (int a = 0; a < 3; ++a) raw[3*i+a] = v[i][a];
+      n = 12; *in_over_circ = 0.79465447229176612f;
+      break;
+    }
+    case 20: {  // icosahedron faces = dodecahedron vertex directions
+      for (int sx = 0; sx < 2; ++sx) for (int sy = 0; sy < 2; ++sy)
+        for (int sz = 0; sz < 2; ++sz) {  // 8 cube-corner directions
+          raw[3*n+0] = sx ? -1.0f : 1.0f;
+          raw[3*n+1] = sy ? -1.0f : 1.0f;
+          raw[3*n+2] = sz ? -1.0f : 1.0f;
+          ++n;
+        }
+      const float v[12][3] = {
+        {0,IPHI,PHI},{0,IPHI,-PHI},{0,-IPHI,PHI},{0,-IPHI,-PHI},
+        {IPHI,PHI,0},{IPHI,-PHI,0},{-IPHI,PHI,0},{-IPHI,-PHI,0},
+        {PHI,0,IPHI},{PHI,0,-IPHI},{-PHI,0,IPHI},{-PHI,0,-IPHI} };
+      for (int i = 0; i < 12; ++i, ++n)
+        for (int a = 0; a < 3; ++a) raw[3*n+a] = v[i][a];
+      *in_over_circ = 0.79465447229176612f;
+      break;
+    }
+    default:
+      return 0;
+  }
+  for (int i = 0; i < n; ++i) {
+    float x = raw[3*i+0], y = raw[3*i+1], z = raw[3*i+2];
+    float len = sqrtf(x*x + y*y + z*z);
+    out[3*i+0] = x/len; out[3*i+1] = y/len; out[3*i+2] = z/len;
+  }
+  return n;
+}
+
+typedef struct { float c[3]; const float* n; int count; float offset; } lvl_platonic_t;
+
+static float lvl_platonic_sdf(float wx, float wy, float wz, const void* p) {
+  const lvl_platonic_t* s = (const lvl_platonic_t*)p;
+  float px = wx - s->c[0], py = wy - s->c[1], pz = wz - s->c[2];
+  float m = -3.4e38f;
+  for (int i = 0; i < s->count; ++i) {
+    float d = s->n[3*i+0]*px + s->n[3*i+1]*py + s->n[3*i+2]*pz;
+    if (d > m) m = d;
+  }
+  return m - s->offset;
+}
+
+bool tvdb_level_set_platonic(int face_count, float radius, const float center[3],
+                             float voxel_size, float half_width,
+                             tvdb_dense_grid* out) {
+  if (!center || radius <= 0.0f || voxel_size <= 0.0f) return false;
+  float normals[60];
+  float ratio = 0.0f;
+  int count = lvl_platonic_normals(face_count, normals, &ratio);
+  if (count == 0) return false;
+  float bg = lvl_background(half_width, voxel_size, NULL);
+  // The +bg band reaches farthest along vertex directions: |p| = (r_in+bg)/ratio.
+  float ext = radius + bg / ratio;
+  float lo[3], hi[3];
+  for (int a = 0; a < 3; ++a) { lo[a] = center[a] - ext; hi[a] = center[a] + ext; }
+  if (!lvl_make_grid(lo, hi, voxel_size, out)) return false;
+  lvl_platonic_t s = { { center[0], center[1], center[2] }, normals, count,
+                       radius * ratio };
+  lvl_fill(out, bg, lvl_platonic_sdf, &s);
+  return true;
+}
+
 // ---- SDF utilities ---------------------------------------------------------
 
 static bool lvl_clone_shape(const tvdb_dense_grid* in, tvdb_dense_grid* out) {

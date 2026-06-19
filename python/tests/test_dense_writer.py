@@ -232,6 +232,21 @@ def test_dense_grid_int_multi_leaf(tmp_path):
     assert np.array_equal(arr, field)
 
 
+def test_dense_grid_large_roundtrip(tmp_path):
+    """Regression: a wide grid (an internal node with >64 leaf children) must not
+    drop voxels. The tree-bridge DFS work-stack used to be fixed-size."""
+    np = pytest.importorskip("numpy")
+    field = np.arange(48 * 48 * 48, dtype=np.float32).reshape(48, 48, 48)
+    path = str(tmp_path / "big.vdb")
+    tinyvdb.write_dense_grid(path, field, voxel_size=0.05)
+    with tinyvdb.open(path) as f:
+        f.read_grids()
+        assert f.grid(0).active_voxel_count() == field.size
+    arr, _, _ = tinyvdb.read_dense_grid(path)
+    assert arr.shape == field.shape
+    assert np.array_equal(arr, field)
+
+
 def test_dense_grid_vec3f_roundtrip(tmp_path):
     """A (nx, ny, nz, 3) float32 field writes a Tree_vec3s grid and round-trips bit-exactly."""
     np = pytest.importorskip("numpy")

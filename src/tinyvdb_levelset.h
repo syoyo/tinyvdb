@@ -48,6 +48,17 @@ bool tvdb_level_set_capsule(const float p0[3], const float p1[3], float radius,
                             float voxel_size, float half_width,
                             tvdb_dense_grid* out);
 
+// Platonic solid, selected by `face_count`: 4 = tetrahedron, 6 = cube,
+// 8 = octahedron, 12 = dodecahedron, 20 = icosahedron. `radius` is the
+// circumradius (center-to-vertex distance). The field is the convex
+// half-space SDF (max over the face planes): its zero isosurface is exact;
+// off-surface values within the narrow band near edges/vertices are a
+// conservative underestimate of the true distance (the standard convex-polytope
+// SDF). Returns false for an unsupported face_count or bad args.
+bool tvdb_level_set_platonic(int face_count, float radius, const float center[3],
+                             float voxel_size, float half_width,
+                             tvdb_dense_grid* out);
+
 // --- SDF utilities (operate on an existing dense SDF grid) ------------------
 
 // Convert an SDF to a fog volume: per voxel density =

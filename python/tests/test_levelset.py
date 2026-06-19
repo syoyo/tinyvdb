@@ -104,8 +104,65 @@ def test_primitive_roundtrips_to_vdb(tmp_path):
     assert round(vs[0], 6) == round(g.voxel_size, 6)
 
 
+_PLATONIC = [
+    (4, 1.0 / 3.0, "tetrahedron", tinyvdb.level_set_tetrahedron),
+    (6, 0.57735027, "cube", tinyvdb.level_set_cube),
+    (8, 0.57735027, "octahedron", tinyvdb.level_set_octahedron),
+    (12, 0.79465447, "dodecahedron", tinyvdb.level_set_dodecahedron),
+    (20, 0.79465447, "icosahedron", tinyvdb.level_set_icosahedron),
+]
+
+
+@pytest.mark.parametrize("face_count, ratio, name, wrapper", _PLATONIC)
+def test_platonic_geometry(face_count, ratio, name, wrapper):
+    """Each platonic sits between its inscribed (R*ratio) and circumscribed (R) sphere."""
+    np = pytest.importorskip("numpy")
+    R, vs, hw = 1.0, 0.05, 3.0
+    bg = hw * vs
+    center = (0.2, -0.1, 0.3)
+    g = tinyvdb.level_set_platonic(face_count, R, center=center, voxel_size=vs, half_width=hw)
+    a = np.array(g, copy=False)
+    assert a.dtype == np.float32
+    assert (a < 0).any() and (a > 0).any()
+    assert a.min() >= -bg - 1e-6 and a.max() <= bg + 1e-6
+
+    X, Y, Z = _voxel_centers(g)
+    dist = np.sqrt((X - center[0]) ** 2 + (Y - center[1]) ** 2 + (Z - center[2]) ** 2)
+    near = np.abs(a) <= vs
+    assert near.any()
+    nd = dist[near]
+    inrad = R * ratio
+    assert nd.min() >= inrad - 2 * vs and nd.min() <= inrad + 2 * vs   # touches inradius
+    assert nd.max() >= R - 2 * vs                                       # reaches vertices
+    assert nd.max() <= R + 3 * vs                                       # no further out
+
+    # Named wrapper matches the face_count form bit-for-bit.
+    gw = wrapper(R, center=center, voxel_size=vs, half_width=hw)
+    assert np.array_equal(np.array(gw, copy=False), a)
+
+
+def test_platonic_composes_and_roundtrips(tmp_path):
+    np = pytest.importorskip("numpy")
+    ico = tinyvdb.level_set_icosahedron(1.0, voxel_size=0.06)
+    # Meshes via marching cubes (integration with the dense ops).
+    mesh = tinyvdb.sdf_to_mesh(ico, isovalue=0.0)
+    assert mesh.num_vertices > 0 and mesh.num_faces > 0
+    # Transform-aware SDF union with an offset sphere (differing bboxes).
+    sph = tinyvdb.level_set_sphere(0.9, center=(0.5, 0, 0), voxel_size=0.06)
+    union = tinyvdb.merge_grids(ico, sph, background=ico.voxel_size * 3.0)
+    assert min(union.shape) > 0
+    # Round-trip the raw SDF.
+    a = np.array(ico, copy=True)
+    path = str(tmp_path / "ico.vdb")
+    tinyvdb.write_dense_grid(path, a, voxel_size=ico.voxel_size, origin=ico.origin)
+    b, _, _ = tinyvdb.read_dense_grid(path)
+    assert np.array_equal(a, b)
+
+
 def test_error_paths():
     with pytest.raises((ValueError, tinyvdb.VDBError)):
         tinyvdb.level_set_sphere(-1.0)              # negative radius
     with pytest.raises((ValueError, tinyvdb.VDBError)):
         tinyvdb.level_set_sphere(1.0, voxel_size=0.0)
+    with pytest.raises((ValueError, tinyvdb.VDBError)):
+        tinyvdb.level_set_platonic(5, 1.0)         # not a platonic face count
