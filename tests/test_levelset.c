@@ -6,6 +6,7 @@
 
 #include "tinyvdb_levelset.h"
 #include "tinyvdb_mesh.h"
+#include "tinyvdb_sample.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -373,6 +374,49 @@ int main(void) {
       EXPECT(tvdb_level_set_genus(&g, 0.0f) == 2, "two tori genus=2");
       tvdb_dense_grid_free(&g);
     }
+  }
+
+  // ---- Level-set rebuild from isosurface ----
+  {
+    // Coarse resolution: mesh_to_sdf is brute-force O(voxels * triangles).
+    float c0[3] = { 0.3f, -0.2f, 0.4f };
+    tvdb_dense_grid s;
+    tvdb_level_set_sphere(1.0f, c0, 0.15f, 2.0f, &s);
+    // Damage the field: scale by 3 (breaks |grad|=1 but keeps the zero crossing).
+    size_t ns = (size_t)s.nx * s.ny * s.nz;
+    for (size_t i = 0; i < ns; ++i) s.data[i] *= 3.0f;
+
+    tvdb_dense_grid out;
+    EXPECT(tvdb_level_set_rebuild(&s, 0.0f, 0.15f, 2.0f, 0, &out), "rebuild ok");
+    EXPECT(fabsf(out.voxel_size - 0.15f) < 1e-6f, "rebuild keeps voxel size");
+    EXPECT(fabs(tvdb_level_set_euler_characteristic(&out, 0.0f) - 2.0) < 1e-9,
+           "rebuilt sphere euler=2");
+    // Interior negative; zero crossing along +x recovers radius ~1.
+    float pv = tvdb_sample_trilinear_dense(&out, c0[0], c0[1], c0[2]);
+    EXPECT(pv < 0.0f, "rebuild center interior");
+    float dcross = -1.0f;
+    for (int t = 1; t <= 30 && dcross < 0.0f; ++t) {
+      float d = (float)t * 0.05f;
+      float v = tvdb_sample_trilinear_dense(&out, c0[0] + d, c0[1], c0[2]);
+      if (pv < 0.0f && v >= 0.0f)
+        dcross = (float)(t - 1) * 0.05f + 0.05f * (-pv) / (v - pv);
+      pv = v;
+    }
+    EXPECT(dcross > 0.0f && fabsf(dcross - 1.0f) < 0.13f, "rebuild zero crossing ~R");
+    EXPECT(tvdb_sample_trilinear_dense(&out, c0[0] + 1.3f, c0[1], c0[2]) > 0.1f,
+           "rebuild exterior positive");
+    tvdb_dense_grid_free(&s);
+    tvdb_dense_grid_free(&out);
+
+    // Resample a torus to a different voxel size; genus is preserved.
+    tvdb_dense_grid t;
+    tvdb_level_set_torus(1.0f, 0.35f, c0, 0.12f, 2.0f, &t);
+    tvdb_dense_grid out2;
+    EXPECT(tvdb_level_set_rebuild(&t, 0.0f, 0.2f, 2.0f, 0, &out2), "rebuild resample ok");
+    EXPECT(fabsf(out2.voxel_size - 0.2f) < 1e-6f, "rebuild resampled voxel size");
+    EXPECT(tvdb_level_set_genus(&out2, 0.0f) == 1, "rebuilt torus keeps genus=1");
+    tvdb_dense_grid_free(&t);
+    tvdb_dense_grid_free(&out2);
   }
 
   // ---- Error paths ----

@@ -35,9 +35,12 @@ each theme. Notes point at the nearest existing primitive to reuse.
       components − χ(solid). Python `level_set_euler_characteristic` /
       `level_set_genus`. Covered by `test_levelset` (C + py).
       `tvdb_surface_area` / `tvdb_volume` already existed.
-- [ ] **Level-set rebuild from isosurface.** `level_set_rebuild` with
-      custom bandwidth (parallels OpenVDB `LevelSetRebuild`); build on
-      the `tvdb_fast_sweeping` redistance primitive.
+- [x] **Level-set rebuild from isosurface.** `tvdb_level_set_rebuild`
+      (parallels OpenVDB `LevelSetRebuild`): marching-cubes the isovalue
+      surface then mesh-to-SDF into a clean narrow band, with optional
+      resampling and re-signing from the input. Python `level_set_rebuild`.
+      Covered by `test_levelset` (C + py). NOTE: inherits `mesh_to_sdf`'s
+      brute-force O(voxels·triangles) cost — keep voxel sizes coarse.
 
 **B. Statistics, diagnostics & operators**
 
@@ -120,7 +123,7 @@ public API" design — listed for visibility, not on the near-term roadmap.
 | target | what |
 | --- | --- |
 | `test_ops` | Phase 1-6 dense ops smoke (volume, surface_area, dilate, csg, gradient, Poisson recovery, advection, sampling, TSDF, topology, ray, sparse) |
-| `test_levelset` | Level-set primitive generators (sphere/box/torus/capsule): analytic SDF recomputed and matched at every voxel; platonic solids (tetra/cube/octa/dodeca/icosa) bracketed between inscribed/circumscribed spheres; `sdf_to_fog_volume` range/empty-exterior, `sdf_interior_mask` sign-consistency, `sdf_segmentation` (two spheres → exact 2-way interior partition), `sdf_extract_enclosed_regions` (spherical-shell cavity mask) and `level_set_euler_characteristic`/`level_set_genus` (sphere 2/0, torus 0/1, two spheres 4/0, two tori 0/2) |
+| `test_levelset` | Level-set primitive generators (sphere/box/torus/capsule): analytic SDF recomputed and matched at every voxel; platonic solids (tetra/cube/octa/dodeca/icosa) bracketed between inscribed/circumscribed spheres; `sdf_to_fog_volume` range/empty-exterior, `sdf_interior_mask` sign-consistency, `sdf_segmentation` (two spheres → exact 2-way interior partition), `sdf_extract_enclosed_regions` (spherical-shell cavity mask) and `level_set_euler_characteristic`/`level_set_genus` (sphere 2/0, torus 0/1, two spheres 4/0, two tori 0/2) and `level_set_rebuild` (damaged sphere renormalized: euler 2, zero crossing ~R; torus resampled keeps genus 1) |
 | `test_sparse_tree` | OpenVDB-tree bridge on `sphere.vdb`: counts, bbox, sparse extraction, dense materialization, leaf-stamp dilate/erode |
 | `test_grid_from_sparse` | Sphere round-trip + synthetic 27-leaf cross-parent test for `tvdb_grid_from_sparse_using_template` |
 | `test_simd` | SIMD vs scalar parity for dot, AXPY, fp16 round-trip, fp16 encoder ≤1 ULP |

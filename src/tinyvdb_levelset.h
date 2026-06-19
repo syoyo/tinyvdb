@@ -115,6 +115,20 @@ double tvdb_level_set_euler_characteristic(const tvdb_dense_grid* sdf,
 // adjacency to match the closed-cube complex.)
 int tvdb_level_set_genus(const tvdb_dense_grid* sdf, float isovalue);
 
+// Rebuild a clean narrow-band signed distance field from a level set's
+// isosurface (parallels OpenVDB LevelSetRebuild): extract the `isovalue`
+// isosurface as a mesh (marching cubes) and reconvert it to an SDF. This
+// renormalizes a damaged / non-Eikonal / arbitrarily-scaled level set, can
+// resample to a new `voxel_size`, and recenters a non-zero isovalue at 0.
+// `voxel_size` <= 0 reuses the input's voxel size; `half_width` <= 0 uses the
+// default band. `sign_method` is 0 (flood fill) or 1 (sweep). `out` is
+// allocated by mesh-to-SDF (sized to the surface bbox + band) — free with
+// tvdb_dense_grid_free. Returns false on a NULL/empty grid or an empty
+// isosurface.
+bool tvdb_level_set_rebuild(const tvdb_dense_grid* sdf, float isovalue,
+                            float voxel_size, float half_width,
+                            int sign_method, tvdb_dense_grid* out);
+
 #ifdef __cplusplus
 }
 #endif

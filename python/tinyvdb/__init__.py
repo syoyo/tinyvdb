@@ -33,6 +33,7 @@ from tinyvdb._tinyvdb import (
     sdf_extract_enclosed_regions,
     level_set_euler_characteristic,
     level_set_genus,
+    level_set_rebuild,
     # Morphology
     dilate,
     erode,
@@ -522,6 +523,7 @@ __all__ = [
     "sdf_extract_enclosed_regions",
     "level_set_euler_characteristic",
     "level_set_genus",
+    "level_set_rebuild",
     "dilate",
     "erode",
     "open_op",

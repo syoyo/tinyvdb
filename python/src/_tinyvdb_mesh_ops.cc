@@ -1976,4 +1976,29 @@ int tvdb_py_level_set_genus(const float *data, int nx, int ny, int nz,
     return tvdb_level_set_genus(&in, isovalue);
 }
 
+/* Rebuild a clean SDF from the isosurface. The output has its own dims and
+   transform (sized by mesh-to-SDF), so report all of them; out_data is the
+   transferred malloc'd buffer. Returns 0 on success, -1 on error. */
+int tvdb_py_level_set_rebuild(const float *data, int nx, int ny, int nz,
+                              float vs, float ox, float oy, float oz,
+                              float isovalue, float voxel_size, float half_width,
+                              int sign_method,
+                              float **out_data, int *onx, int *ony, int *onz,
+                              float *ovs, float *oox, float *ooy, float *ooz) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = vs;
+    in.ox = ox; in.oy = oy; in.oz = oz; in.data = (float *)data;
+    tvdb_dense_grid out = {};
+    if (!tvdb_level_set_rebuild(&in, isovalue, voxel_size, half_width, sign_method, &out)) {
+        if (out.data) tvdb_dense_grid_free(&out);
+        snprintf(s_error_msg, sizeof(s_error_msg),
+                 "level_set_rebuild failed (empty isosurface?)");
+        return -1;
+    }
+    *out_data = out.data;  /* transfer */
+    *onx = out.nx; *ony = out.ny; *onz = out.nz;
+    *ovs = out.voxel_size; *oox = out.ox; *ooy = out.oy; *ooz = out.oz;
+    return 0;
+}
+
 } /* extern "C" */

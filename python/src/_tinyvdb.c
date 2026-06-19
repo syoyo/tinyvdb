@@ -127,6 +127,12 @@ extern double tvdb_py_level_set_euler(const float *data, int nx, int ny, int nz,
                                       float isovalue);
 extern int tvdb_py_level_set_genus(const float *data, int nx, int ny, int nz,
                                     float isovalue);
+extern int tvdb_py_level_set_rebuild(const float *data, int nx, int ny, int nz,
+                                     float vs, float ox, float oy, float oz,
+                                     float isovalue, float voxel_size, float half_width,
+                                     int sign_method,
+                                     float **out_data, int *onx, int *ony, int *onz,
+                                     float *ovs, float *oox, float *ooy, float *ooz);
 
 extern int tvdb_py_dilate(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_erode(float *, int, int, int, float, float, float, float, int);
@@ -2113,6 +2119,32 @@ static PyObject *mod_level_set_genus(PyObject *module, PyObject *args, PyObject 
     return PyLong_FromLong(genus);
 }
 
+static PyObject *mod_level_set_rebuild(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj;
+    double isovalue = 0.0, voxel_size = 0.0, half_width = 3.0;
+    int sign_method = 0;
+    static char *kwlist[] = {"grid", "isovalue", "voxel_size", "half_width", "sign_method", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|dddi", kwlist,
+                                     &grid_obj, &isovalue, &voxel_size, &half_width, &sign_method))
+        return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseGrid has no data");
+    float *out = NULL; int onx, ony, onz; float ovs, oox, ooy, ooz;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_level_set_rebuild(g->data, g->nx, g->ny, g->nz,
+                                   g->voxel_size, g->ox, g->oy, g->oz,
+                                   (float)isovalue, (float)voxel_size, (float)half_width,
+                                   sign_method, &out, &onx, &ony, &onz, &ovs, &oox, &ooy, &ooz);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, onx, ony, onz, ovs, oox, ooy, ooz);
+}
+
 static PyObject *mod_sdf_to_mesh(PyObject *module, PyObject *args, PyObject *kw) {
     PyObject *grid_obj; float isovalue = 0.0f;
     static char *kwlist[] = {"grid", "isovalue", NULL};
@@ -3271,6 +3303,10 @@ static PyMethodDef module_methods[] = {
     {"level_set_genus", (PyCFunction)mod_level_set_genus, METH_VARARGS | METH_KEYWORDS,
      "level_set_genus(grid, isovalue=0.0) -> int; total genus of the isosurface "
      "(0 for a sphere, 1 for a torus, 2 for a double torus)."},
+    {"level_set_rebuild", (PyCFunction)mod_level_set_rebuild, METH_VARARGS | METH_KEYWORDS,
+     "level_set_rebuild(grid, isovalue=0.0, voxel_size=0.0, half_width=3.0, sign_method=0) -> "
+     "DenseGrid; rebuild a clean narrow-band SDF from the isosurface (marching cubes -> "
+     "mesh-to-SDF). voxel_size=0 reuses the input's. Renormalizes / resamples a level set."},
     {"sdf_to_mesh", (PyCFunction)mod_sdf_to_mesh, METH_VARARGS | METH_KEYWORDS, "SDF to mesh"},
     {"make_manifold", (PyCFunction)mod_make_manifold, METH_VARARGS | METH_KEYWORDS, "Make manifold"},
     {"dilate", (PyCFunction)mod_dilate, METH_VARARGS | METH_KEYWORDS, "Dilate SDF"},

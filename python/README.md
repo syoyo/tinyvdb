@@ -150,7 +150,14 @@ voids    = tinyvdb.sdf_extract_enclosed_regions(grid)  # 1.0 mask of interior ca
 # Topology measures of the isosurface
 chi   = tinyvdb.level_set_euler_characteristic(torus)   # 0.0  (2 for a sphere)
 genus = tinyvdb.level_set_genus(torus)                  # 1    (0 for a sphere)
+
+# Rebuild a clean SDF from the isosurface (renormalize and/or resample)
+clean = tinyvdb.level_set_rebuild(damaged, isovalue=0.0, voxel_size=0.05)
 ```
+
+> **Note:** `level_set_rebuild` (and `mesh_to_sdf`) use a brute-force
+> mesh-to-SDF (O(voxels × triangles)); keep the voxel size coarse for large
+> surfaces.
 
 All generators take `voxel_size=` and `half_width=` (band width in voxels,
 default 3, matching OpenVDB's `LEVEL_SET_HALF_WIDTH`).

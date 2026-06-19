@@ -3,6 +3,7 @@
 // x-fastest: idx(i,j,k) = (k*ny + j)*nx + i, matching the rest of tinyvdb.
 
 #include "tinyvdb_levelset.h"
+#include "tinyvdb_sample.h"  // tvdb_sample_trilinear_dense (rebuild re-signing)
 
 #include <math.h>
 #include <stdlib.h>
@@ -577,4 +578,46 @@ int tvdb_level_set_genus(const tvdb_dense_grid* sdf, float isovalue) {
   int comps = lvl_count_components(sdf, isovalue, 26);
   if (comps < 0) return 0;
   return comps - (int)chi;  // total genus = components - chi(solid)
+}
+
+// ---- Rebuild from isosurface (mesh round-trip) -----------------------------
+
+bool tvdb_level_set_rebuild(const tvdb_dense_grid* sdf, float isovalue,
+                            float voxel_size, float half_width,
+                            int sign_method, tvdb_dense_grid* out) {
+  if (!sdf || !sdf->data || !out) return false;
+  float vs = (voxel_size > 0.0f) ? voxel_size : sdf->voxel_size;
+  float hw = (half_width > 0.0f) ? half_width : TVDB_LEVEL_SET_HALF_WIDTH;
+  if (vs <= 0.0f) return false;
+
+  // 1) Extract the isosurface as a world-space triangle mesh.
+  tvdb_triangle_mesh mesh;
+  tvdb_triangle_mesh_init(&mesh);
+  if (!tvdb_sdf_to_mesh(sdf, isovalue, &mesh, NULL) || mesh.face_count == 0) {
+    tvdb_triangle_mesh_free(&mesh);
+    return false;
+  }
+  // 2) Reconvert the mesh to a clean narrow-band SDF (optionally resampled).
+  //    mesh_to_sdf's band_width is in WORLD units, so convert from voxels.
+  bool ok = tvdb_mesh_to_sdf_vdb(&mesh, vs, hw * vs, out,
+                                 (tvdb_sign_method)sign_method, NULL);
+  tvdb_triangle_mesh_free(&mesh);
+  if (!ok) return false;
+
+  // 3) Re-sign from the input. The mesh-to-SDF sign is normal-based and depends
+  //    on the marching-cubes winding (which can disagree); the inside/outside
+  //    sign is invariant under the input's (possibly damaged/scaled) values, so
+  //    take it directly: out = sign(input(p) - isovalue) * |out|.
+  for (int k = 0; k < out->nz; ++k)
+    for (int j = 0; j < out->ny; ++j)
+      for (int i = 0; i < out->nx; ++i) {
+        float px = out->ox + ((float)i + 0.5f) * out->voxel_size;
+        float py = out->oy + ((float)j + 0.5f) * out->voxel_size;
+        float pz = out->oz + ((float)k + 0.5f) * out->voxel_size;
+        float in_val = tvdb_sample_trilinear_dense(sdf, px, py, pz) - isovalue;
+        size_t idx = ((size_t)k * out->ny + j) * out->nx + i;
+        float mag = fabsf(out->data[idx]);
+        out->data[idx] = (in_val < 0.0f) ? -mag : mag;
+      }
+  return true;
 }

@@ -263,6 +263,28 @@ def test_level_set_genus_multi_component():
     assert tinyvdb.level_set_genus(g) == 2
 
 
+def test_level_set_rebuild_renormalizes():
+    """Rebuilding a damaged (scaled) SDF recovers a clean sphere level set."""
+    np = pytest.importorskip("numpy")
+    # Coarse: mesh_to_sdf is brute-force O(voxels * triangles).
+    s = tinyvdb.level_set_sphere(1.0, center=(0, 0, 0), voxel_size=0.15, half_width=2.0)
+    np.asarray(s)[:] *= 3.0                         # break |grad|=1; zero crossing unchanged
+    out = tinyvdb.level_set_rebuild(s, isovalue=0.0, voxel_size=0.15, half_width=2.0)
+    assert abs(out.voxel_size - 0.15) < 1e-6
+    # Topology preserved; a proper interior (negative band) exists again.
+    assert tinyvdb.level_set_euler_characteristic(out) == 2.0
+    assert tinyvdb.level_set_genus(out) == 0
+    arr = np.asarray(out, copy=False)
+    assert arr.min() < 0.0 and arr.max() > 0.0
+
+
+def test_level_set_rebuild_resample_preserves_genus():
+    out = tinyvdb.level_set_torus(1.0, 0.35, voxel_size=0.12, half_width=2.0)
+    rebuilt = tinyvdb.level_set_rebuild(out, voxel_size=0.2, half_width=2.0)  # coarser
+    assert abs(rebuilt.voxel_size - 0.2) < 1e-6
+    assert tinyvdb.level_set_genus(rebuilt) == 1
+
+
 def test_error_paths():
     with pytest.raises((ValueError, tinyvdb.VDBError)):
         tinyvdb.level_set_sphere(-1.0)              # negative radius
