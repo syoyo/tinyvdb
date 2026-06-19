@@ -15,6 +15,7 @@ from tinyvdb._tinyvdb import (
     open,
     from_bytes,
     write_float_grid,
+    write_grid,
     # Mesh
     mesh_to_sdf,
     sdf_to_mesh,
@@ -220,48 +221,103 @@ def laplacian_filter_sparse(sparse_or_grid, voxel_size=1.0,
                          pad_value=0.0)
 
 
+# numpy dtype <-> the writer's dtype string. ``vec3f`` is handled specially
+# (a trailing length-3 axis), so it is not in this scalar table.
+_DTYPE_TO_NAME = {
+    "float32": "float32",
+    "float64": "float64",
+    "int32": "int32",
+    "int64": "int64",
+    "bool": "bool",
+}
+# Writer dtype string -> numpy dtype for reading back.
+_NAME_TO_NPDTYPE = {
+    "float32": "float32",
+    "float64": "float64",
+    "int32": "int32",
+    "int64": "int64",
+    "bool": "bool",
+    "vec3f": "float32",
+}
+
+
 def write_dense_grid(path, array, voxel_size=1.0, origin=(0.0, 0.0, 0.0),
                      name="sdf", background=0.0, compression=COMPRESS_ZIP, level=5):
-    """Write a dense 3D numpy float array (e.g. an SDF / level set) to a ``.vdb`` file.
+    """Write a dense numpy array to a ``.vdb`` file.
+
+    The grid value type is selected from the array:
+
+    * scalar grids — a 3D array ``(nx, ny, nz)`` of ``float32`` (SDF / level set),
+      ``float64``, ``int32``, ``int64`` or ``bool``;
+    * vector grids — a 4D ``float32`` array ``(nx, ny, nz, 3)`` writes a
+      ``Tree_vec3s_5_4_3`` (vec3f) grid.
 
     Parameters
     ----------
     path : str
         Output ``.vdb`` path.
     array : numpy.ndarray
-        A 3D array of shape ``(nx, ny, nz)``; cast to float32.
+        Dense grid as described above. Cast to a contiguous buffer as-is (no
+        dtype conversion beyond making it contiguous), so the dtype you pass is
+        the dtype written.
     voxel_size : float or (3,) sequence
         World size of one voxel (scalar = isotropic, or per-axis).
     origin : (3,) sequence
         World position of voxel index ``(0, 0, 0)``. ``world = voxel_size * index + origin``.
     name : str
         Grid name stored in the file.
-    background : float
-        Background value for inactive voxels (all voxels are active here).
+    background : scalar
+        Background value for inactive voxels (all voxels written here are active).
+        For vec3f a scalar fills all three components.
     compression, level :
         Passed through to the writer (``COMPRESS_NONE``/``COMPRESS_ZIP``/``COMPRESS_BLOSC``).
+
+    Notes
+    -----
+    ``bool`` grids are stored 1 byte/voxel (tinyvdb's internal layout), which is
+    self-consistent with :func:`read_dense_grid` but **not** byte-compatible with
+    OpenVDB's bit-packed BOOL leaves — such files will not load in DCCs.
     """
     try:
         import numpy as _np
     except ImportError:
         raise RuntimeError("write_dense_grid requires numpy")
-    a = _np.ascontiguousarray(array, dtype=_np.float32)
-    if a.ndim != 3:
-        raise ValueError(f"array must be 3D (nx, ny, nz), got shape {a.shape}")
-    nx, ny, nz = (int(d) for d in a.shape)
+    a = _np.ascontiguousarray(array)
+
+    # vec3f: (nx, ny, nz, 3) float32.
+    if a.ndim == 4 and a.shape[3] == 3:
+        a = _np.ascontiguousarray(a, dtype=_np.float32)
+        nx, ny, nz = (int(d) for d in a.shape[:3])
+        dtype_name = "vec3f"
+        bg = _np.asarray(background, dtype=_np.float32)
+        bg = _np.broadcast_to(bg, (3,)).astype(_np.float32, copy=True)
+    elif a.ndim == 3:
+        dtype_name = _DTYPE_TO_NAME.get(a.dtype.name)
+        if dtype_name is None:
+            raise ValueError(
+                f"unsupported array dtype {a.dtype}; expected one of "
+                f"{sorted(_DTYPE_TO_NAME)} (or a (nx,ny,nz,3) float32 array for vec3f)")
+        nx, ny, nz = (int(d) for d in a.shape)
+        bg = _np.asarray(background, dtype=a.dtype)
+    else:
+        raise ValueError(
+            f"array must be 3D (nx, ny, nz) or 4D (nx, ny, nz, 3) for vec3f, got shape {a.shape}")
+
     vs = (float(voxel_size),) * 3 if _np.isscalar(voxel_size) else tuple(float(v) for v in voxel_size)
     org = tuple(float(v) for v in origin)
-    write_float_grid(path, a.reshape(-1), nx, ny, nz, voxel_size=vs, origin=org,
-                     name=name, background=float(background),
-                     compression=int(compression), level=int(level))
+    write_grid(path, a.reshape(-1).tobytes(), nx, ny, nz, dtype_name,
+               voxel_size=vs, origin=org, name=name, background=bg.tobytes(),
+               compression=int(compression), level=int(level))
 
 
 def read_dense_grid(path, index=0):
-    """Read a float grid from a ``.vdb`` file back into a dense 3D numpy array.
+    """Read a grid from a ``.vdb`` file back into a dense numpy array.
 
-    Inverse of :func:`write_dense_grid`. Returns ``(array, voxel_size, origin)`` where ``array`` has
-    shape ``(nx, ny, nz)`` spanning the grid's active voxels, ``voxel_size`` is a 3-tuple and
-    ``origin`` is the world position of the array's first voxel. ``world = voxel_size*index + origin``.
+    Inverse of :func:`write_dense_grid`. Returns ``(array, voxel_size, origin)``
+    where ``array`` spans the grid's active voxels with shape ``(nx, ny, nz)``
+    (scalar grids) or ``(nx, ny, nz, 3)`` (vec3f), and dtype matching the grid's
+    value type. ``voxel_size`` is a 3-tuple and ``origin`` is the world position
+    of the array's first voxel. ``world = voxel_size*index + origin``.
     """
     try:
         import numpy as _np
@@ -270,16 +326,26 @@ def read_dense_grid(path, index=0):
     with open(path) as f:
         f.read_grids()
         g = f.grid(index)
-        sparse = g.to_sparse()
+        sparse = g.to_sparse_typed()
+        name = sparse["dtype"]
+        np_dtype = _NAME_TO_NPDTYPE.get(name)
+        if np_dtype is None:
+            raise ValueError(f"read_dense_grid: unsupported grid dtype '{name}'")
+        ncomp = 3 if name == "vec3f" else 1
+        empty_shape = (0, 0, 0, 3) if ncomp == 3 else (0, 0, 0)
         coords = _np.frombuffer(sparse["coords"], dtype=_np.int32).reshape(-1, 3)
         if coords.size == 0:
-            return _np.empty((0, 0, 0), dtype=_np.float32), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
+            return _np.empty(empty_shape, dtype=np_dtype), (1.0, 1.0, 1.0), (0.0, 0.0, 0.0)
+        values = _np.frombuffer(sparse["values"], dtype=np_dtype)
+        if ncomp == 3:
+            values = values.reshape(-1, 3)
         cmin = coords.min(axis=0)
         cmax = coords.max(axis=0)
         shape = tuple(int(v) for v in (cmax - cmin + 1))
-        dense = g.materialize_dense(tuple(int(v) for v in cmin), tuple(int(v) for v in (cmax + 1)))
-        # DenseGrid.to_bytes is x-fastest (Fortran order).
-        arr = _np.frombuffer(dense.to_bytes(), dtype=_np.float32).reshape(shape, order="F").copy()
+        out_shape = shape + (3,) if ncomp == 3 else shape
+        arr = _np.zeros(out_shape, dtype=np_dtype)
+        idx = tuple((coords[:, d] - cmin[d]) for d in range(3))
+        arr[idx] = values
         tr = g.transform
         voxel_size = tuple(float(v) for v in tr.get("voxel_size", (1.0, 1.0, 1.0)))
         translation = tuple(float(v) for v in tr.get("translation", (0.0, 0.0, 0.0)))
@@ -302,6 +368,7 @@ __all__ = [
     "open",
     "from_bytes",
     "write_float_grid",
+    "write_grid",
     "write_dense_grid",
     "read_dense_grid",
     "mesh_to_sdf",

@@ -110,10 +110,21 @@ mesh = tinyvdb.sdf_to_mesh(sdf, isovalue=0.0)
 print(mesh.num_vertices, mesh.num_faces)
 ```
 
-### Write a dense grid / SDF to `.vdb`
+### Write a dense grid to `.vdb`
 
-Write an existing dense scalar field (e.g. an SDF you already computed) to a fresh `.vdb`
+Write an existing dense field (e.g. an SDF you already computed) to a fresh `.vdb`
 file. `world = voxel_size * index + origin` (per-axis `ScaleTranslateMap`).
+
+The grid value type is selected from the numpy array's dtype:
+
+| array | grid type written |
+| --- | --- |
+| `(nx, ny, nz)` `float32` | `Tree_float_5_4_3` |
+| `(nx, ny, nz)` `float64` | `Tree_double_5_4_3` |
+| `(nx, ny, nz)` `int32` | `Tree_int32_5_4_3` |
+| `(nx, ny, nz)` `int64` | `Tree_int64_5_4_3` |
+| `(nx, ny, nz)` `bool` | `Tree_bool_5_4_3` (see note) |
+| `(nx, ny, nz, 3)` `float32` | `Tree_vec3s_5_4_3` (vec3f) |
 
 ```python
 import numpy as np
@@ -121,18 +132,29 @@ import tinyvdb
 
 sdf = np.random.randn(32, 32, 24).astype(np.float32)   # your dense (nx, ny, nz) field
 
-# numpy convenience (round-trips bit-exactly):
+# numpy convenience (round-trips bit-exactly, dtype preserved):
 tinyvdb.write_dense_grid("sdf.vdb", sdf, voxel_size=(0.05, 0.06, 0.07),
                          origin=(1.0, 2.0, 3.0), name="sdf")
 arr, voxel_size, origin = tinyvdb.read_dense_grid("sdf.vdb")
 assert np.array_equal(arr, sdf)
 
-# numpy-free raw API (values is an nx*ny*nz float32 buffer in C order):
+# other scalar types and vec3f, same call:
+labels = np.random.randint(0, 10, (16, 16, 16)).astype(np.int32)
+tinyvdb.write_dense_grid("labels.vdb", labels)              # Tree_int32_5_4_3
+velocity = np.random.randn(16, 16, 16, 3).astype(np.float32)
+tinyvdb.write_dense_grid("vel.vdb", velocity)              # Tree_vec3s_5_4_3
+
+# numpy-free raw API for float (values is an nx*ny*nz float32 buffer in C order):
 import struct
 buf = struct.pack("24f", *range(24))
 tinyvdb.write_float_grid("grid.vdb", buf, 2, 3, 4,
                          voxel_size=(0.1, 0.1, 0.1), origin=(0.0, 0.0, 0.0))
 ```
+
+> **Note on `bool`:** tinyvdb stores BOOL grids as 1 byte/voxel rather than
+> OpenVDB's bit-packed 1-bit format. Such files round-trip self-consistently
+> through `read_dense_grid` but are **not** byte-compatible with OpenVDB and will
+> not load in DCCs (Houdini/Blender/etc).
 
 ### CSG operations
 

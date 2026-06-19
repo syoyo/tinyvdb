@@ -144,6 +144,16 @@ size_t tvdb_grid_visit_leaves_float(const tvdb_grid_t *grid,
     return count;
 }
 
+size_t tvdb_grid_visit_leaves(const tvdb_grid_t *grid,
+                              tvdb_leaf_visit_fn cb, void *user) {
+    if (!grid || !cb) return 0;
+    if (grid->tree.num_nodes == 0) return 0;
+    size_t count = 0;
+    int stop = 0;
+    visit_subtree(&grid->tree, /*root_idx=*/0, cb, user, &count, &stop);
+    return count;
+}
+
 // ----- count -----
 
 static int count_visit(const tvdb_leaf_view_t *leaf, void *user) {

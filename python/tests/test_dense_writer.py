@@ -1,9 +1,10 @@
-"""Unit tests for the dense float-grid / SDF writer.
+"""Unit tests for the dense-grid writer / reader.
 
 Covers the raw C-backed API (``write_float_grid``, numpy-free via ``struct``) and the numpy
 conveniences (``write_dense_grid`` / ``read_dense_grid``): geometry/value round-trips, the
 ``world = voxel_size*index + origin`` transform, compression modes, multi-leaf grids, an analytic
-sphere SDF, and error handling.
+sphere SDF, error handling, and the typed paths (``float64`` / ``int32`` / ``int64`` / ``vec3f`` /
+``bool``) where the grid value type is chosen from the array dtype.
 """
 
 import math
@@ -156,14 +157,18 @@ def test_dense_grid_requires_3d(tmp_path):
         tinyvdb.write_dense_grid(str(tmp_path / "2d.vdb"), np.zeros((4, 4), dtype=np.float32))
 
 
-def test_dense_grid_casts_to_float32(tmp_path):
+def test_dense_grid_float64_roundtrip(tmp_path):
+    """A float64 array writes a Tree_double grid and reads back bit-exact float64."""
     np = pytest.importorskip("numpy")
-    field = (np.arange(4 * 4 * 4).reshape(4, 4, 4)).astype(np.float64)
-    path = str(tmp_path / "cast.vdb")
+    field = (np.arange(4 * 4 * 4).reshape(4, 4, 4)).astype(np.float64) * 0.0001234567890123
+    path = str(tmp_path / "double.vdb")
     tinyvdb.write_dense_grid(path, field, voxel_size=0.1)
     arr, _, _ = tinyvdb.read_dense_grid(path)
-    assert arr.dtype == np.float32
-    assert np.array_equal(arr, field.astype(np.float32))
+    assert arr.dtype == np.float64
+    assert np.array_equal(arr, field)
+    with tinyvdb.open(path) as f:
+        f.read_grids()
+        assert f.grid(0).type_name == "Tree_double_5_4_3"
 
 
 def test_sphere_sdf_roundtrip(tmp_path):
@@ -187,3 +192,82 @@ def test_sphere_sdf_roundtrip(tmp_path):
     # interior negative, exterior positive
     assert arr[n // 2, n // 2, n // 2] < 0.0
     assert arr[0, 0, 0] > 0.0
+
+
+# ------------------------------------------------------------------- typed dense grids
+#
+# write_dense_grid selects the .vdb value type from the array dtype. These mirror
+# the float cases for double / int32 / int64 / vec3f / bool. The underlying C
+# builder is separately validated in tests/test_scalar_writer_audit.c.
+
+
+@pytest.mark.parametrize("dtype, type_name", [
+    ("int32", "Tree_int32_5_4_3"),
+    ("int64", "Tree_int64_5_4_3"),
+])
+def test_dense_grid_int_roundtrip(tmp_path, dtype, type_name):
+    np = pytest.importorskip("numpy")
+    field = (np.arange(6 * 5 * 4).reshape(6, 5, 4) * 17 - 100).astype(dtype)
+    path = str(tmp_path / f"{dtype}.vdb")
+    tinyvdb.write_dense_grid(path, field, voxel_size=(0.1, 0.2, 0.3), origin=(1.0, -2.0, 3.0))
+    arr, voxel_size, origin = tinyvdb.read_dense_grid(path)
+    assert arr.dtype == np.dtype(dtype)
+    assert np.array_equal(arr, field)
+    assert tuple(round(v, 6) for v in voxel_size) == (0.1, 0.2, 0.3)
+    assert tuple(round(v, 6) for v in origin) == (1.0, -2.0, 3.0)
+    with tinyvdb.open(path) as f:
+        f.read_grids()
+        assert f.grid(0).type_name == type_name
+
+
+def test_dense_grid_int_multi_leaf(tmp_path):
+    """Int grid spanning several 8^3 leaves round-trips exactly."""
+    np = pytest.importorskip("numpy")
+    field = (np.arange(20 * 17 * 9).reshape(20, 17, 9)).astype(np.int32)
+    path = str(tmp_path / "int_multi.vdb")
+    tinyvdb.write_dense_grid(path, field, voxel_size=0.5)
+    arr, _, _ = tinyvdb.read_dense_grid(path)
+    assert arr.dtype == np.int32
+    assert np.array_equal(arr, field)
+
+
+def test_dense_grid_vec3f_roundtrip(tmp_path):
+    """A (nx, ny, nz, 3) float32 field writes a Tree_vec3s grid and round-trips bit-exactly."""
+    np = pytest.importorskip("numpy")
+    rng = np.random.default_rng(7)
+    field = rng.standard_normal((8, 6, 5, 3)).astype(np.float32)
+    path = str(tmp_path / "vec3f.vdb")
+    tinyvdb.write_dense_grid(path, field, voxel_size=0.25, origin=(0.5, 0.5, 0.5), name="vel")
+    arr, voxel_size, origin = tinyvdb.read_dense_grid(path)
+    assert arr.shape == field.shape
+    assert arr.dtype == np.float32
+    assert np.array_equal(arr, field)
+    assert tuple(round(v, 6) for v in voxel_size) == (0.25, 0.25, 0.25)
+    with tinyvdb.open(path) as f:
+        f.read_grids()
+        assert f.grid(0).type_name == "Tree_vec3s_5_4_3"
+        assert f.grid(0).name == "vel"
+
+
+def test_dense_grid_bool_roundtrip(tmp_path):
+    """BOOL grids round-trip self-consistently. NOTE: tinyvdb stores BOOL as
+    1 byte/voxel, not OpenVDB's bit-packed format, so these files are NOT
+    expected to load in DCCs (Houdini/Blender/etc)."""
+    np = pytest.importorskip("numpy")
+    field = (np.indices((5, 4, 3)).sum(axis=0) % 2 == 0)
+    assert field.dtype == np.bool_
+    path = str(tmp_path / "bool.vdb")
+    tinyvdb.write_dense_grid(path, field, voxel_size=0.1)
+    arr, _, _ = tinyvdb.read_dense_grid(path)
+    assert arr.dtype == np.bool_
+    assert np.array_equal(arr, field)
+    with tinyvdb.open(path) as f:
+        f.read_grids()
+        assert f.grid(0).type_name == "Tree_bool_5_4_3"
+
+
+def test_dense_grid_unsupported_dtype(tmp_path):
+    np = pytest.importorskip("numpy")
+    with pytest.raises(ValueError):
+        tinyvdb.write_dense_grid(str(tmp_path / "u.vdb"),
+                                 np.zeros((3, 3, 3), dtype=np.uint16))

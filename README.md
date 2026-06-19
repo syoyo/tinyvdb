@@ -422,6 +422,22 @@ f.save("output.nvdb", codec=tinyvdb.CODEC_BLOSC)
 data = f.to_bytes(codec=tinyvdb.CODEC_ZIP)
 ```
 
+Writing a dense grid to `.vdb` (value type chosen from the numpy dtype —
+`float32`/`float64`/`int32`/`int64`/`bool` scalar grids, or a `(nx, ny, nz, 3)`
+`float32` array for a `vec3f` grid):
+
+```python
+import numpy as np, tinyvdb
+
+sdf = np.random.randn(32, 32, 24).astype(np.float32)
+tinyvdb.write_dense_grid("sdf.vdb", sdf, voxel_size=0.05)     # Tree_float_5_4_3
+arr, voxel_size, origin = tinyvdb.read_dense_grid("sdf.vdb")  # dtype preserved
+```
+
+See `python/README.md` for the full dtype table and the `bool` caveat (tinyvdb's
+1-byte-per-voxel BOOL layout is not byte-compatible with OpenVDB's bit-packed
+format).
+
 Utility functions:
 
 ```python

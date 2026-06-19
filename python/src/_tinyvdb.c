@@ -71,6 +71,15 @@ extern int tvdb_py_write_float_grid_dense(const char *path,
                                           const char *grid_name, float background,
                                           unsigned int compression, int level);
 
+extern int tvdb_py_write_grid_dense_typed(const char *path,
+                                          const void *values, size_t count,
+                                          int value_type,
+                                          int nx, int ny, int nz,
+                                          double vsx, double vsy, double vsz,
+                                          double ox, double oy, double oz,
+                                          const char *grid_name, const void *bg_bytes,
+                                          unsigned int compression, int level);
+
 extern int tvdb_py_dilate(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_erode(float *, int, int, int, float, float, float, float, int);
 extern int tvdb_py_open(float *, int, int, int, float, float, float, float, int);
@@ -963,6 +972,8 @@ extern int    tvdb_py_grid_erode_active(const tvdb_grid_t *, int,
                                         int32_t **, float **, size_t *);
 extern int    tvdb_py_grid_to_sparse(const tvdb_grid_t *,
                                      int32_t **, float **, size_t *);
+extern int    tvdb_py_grid_to_sparse_typed(const tvdb_grid_t *,
+                                           int32_t **, void **, size_t *, int *);
 extern int    tvdb_py_grid_dilate_topology(const tvdb_grid_t *, int,
                                            int32_t **, float **, size_t *);
 extern int    tvdb_py_grid_erode_topology(const tvdb_grid_t *, int,
@@ -1107,6 +1118,57 @@ static PyObject *VDBGrid_to_sparse(PyObject *self, PyObject *Py_UNUSED(args)) {
     return Py_BuildValue("{s:N,s:N,s:n}", "coords", cb, "values", vb, "count", (Py_ssize_t)cnt);
 }
 
+/* dtype string <-> tvdb_value_type mapping for the typed dense writer/reader. */
+static int tvdb_py__dtype_to_vt(const char *s, int *out_vt) {
+    if (!strcmp(s, "float32"))      *out_vt = TVDB_VALUE_FLOAT;
+    else if (!strcmp(s, "float64")) *out_vt = TVDB_VALUE_DOUBLE;
+    else if (!strcmp(s, "int32"))   *out_vt = TVDB_VALUE_INT32;
+    else if (!strcmp(s, "int64"))   *out_vt = TVDB_VALUE_INT64;
+    else if (!strcmp(s, "bool"))    *out_vt = TVDB_VALUE_BOOL;
+    else if (!strcmp(s, "vec3f"))   *out_vt = TVDB_VALUE_VEC3F;
+    else return -1;
+    return 0;
+}
+static const char *tvdb_py__vt_to_dtype(int vt) {
+    switch (vt) {
+        case TVDB_VALUE_FLOAT:  return "float32";
+        case TVDB_VALUE_DOUBLE: return "float64";
+        case TVDB_VALUE_INT32:  return "int32";
+        case TVDB_VALUE_INT64:  return "int64";
+        case TVDB_VALUE_BOOL:   return "bool";
+        case TVDB_VALUE_VEC3F:  return "vec3f";
+        case TVDB_VALUE_VEC3D:  return "vec3d";
+        case TVDB_VALUE_VEC3I:  return "vec3i";
+        default:                return "float32";
+    }
+}
+static size_t tvdb_py__vt_size(int vt) {
+    switch (vt) {
+        case TVDB_VALUE_FLOAT:  case TVDB_VALUE_INT32: return 4;
+        case TVDB_VALUE_DOUBLE: case TVDB_VALUE_INT64: return 8;
+        case TVDB_VALUE_BOOL:   return 1;
+        case TVDB_VALUE_VEC3F:  case TVDB_VALUE_VEC3I: return 12;
+        case TVDB_VALUE_VEC3D:  return 24;
+        default:               return 4;
+    }
+}
+
+static PyObject *VDBGrid_to_sparse_typed(PyObject *self, PyObject *Py_UNUSED(args)) {
+    tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
+    int32_t *coords = NULL; void *values = NULL; size_t cnt = 0; int vt = 0;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_grid_to_sparse_typed(g, &coords, &values, &cnt, &vt);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    size_t vsize = tvdb_py__vt_size(vt);
+    PyObject *cb = PyBytes_FromStringAndSize((const char *)coords, (Py_ssize_t)(cnt * 3 * sizeof(int32_t)));
+    PyObject *vb = PyBytes_FromStringAndSize((const char *)values, (Py_ssize_t)(cnt * vsize));
+    free(coords); free(values);
+    return Py_BuildValue("{s:N,s:N,s:n,s:s}", "coords", cb, "values", vb,
+                         "count", (Py_ssize_t)cnt, "dtype", tvdb_py__vt_to_dtype(vt));
+}
+
 static PyGetSetDef VDBGrid_getset[] = {
     {"name", VDBGrid_get_name, NULL, "Grid name", NULL},
     {"type_name", VDBGrid_get_type_name, NULL, "Grid type name", NULL},
@@ -1128,6 +1190,7 @@ static PyMethodDef VDBGrid_methods[] = {
     {"dilate_active", (PyCFunction)VDBGrid_dilate_active, METH_VARARGS | METH_KEYWORDS, "Leaf-stamp 6-neighbor min over active voxels; returns {coords, values, count}"},
     {"erode_active", (PyCFunction)VDBGrid_erode_active, METH_VARARGS | METH_KEYWORDS, "Leaf-stamp 6-neighbor max over active voxels; returns {coords, values, count}"},
     {"to_sparse", VDBGrid_to_sparse, METH_NOARGS, "Extract active voxels as {coords (int32 xyz triples bytes), values (float bytes), count}"},
+    {"to_sparse_typed", VDBGrid_to_sparse_typed, METH_NOARGS, "Extract active voxels in the grid's native value type as {coords (int32 xyz triples bytes), values (raw element bytes), count, dtype}"},
     {"dilate_topology", (PyCFunction)VDBGrid_dilate_topology, METH_VARARGS | METH_KEYWORDS,
      "Topology-growing dilate: extracts active voxels, expands by `iterations` rings (6-connected); returns {coords, values, count}"},
     {"erode_topology", (PyCFunction)VDBGrid_erode_topology, METH_VARARGS | METH_KEYWORDS,
@@ -1639,6 +1702,64 @@ static PyObject *mod_write_float_grid(PyObject *module, PyObject *args, PyObject
                                         name, background, compression, level);
     Py_END_ALLOW_THREADS
     free(vals);
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    Py_RETURN_NONE;
+}
+
+/* Typed dense writer: values/background are raw element-byte buffers and dtype
+   selects the grid value type (float32/float64/int32/int64/bool/vec3f). */
+static PyObject *mod_write_grid(PyObject *module, PyObject *args, PyObject *kw) {
+    (void)module;
+    const char *path;
+    Py_buffer values_buf;
+    int nx, ny, nz;
+    const char *dtype;
+    double vsx = 1.0, vsy = 1.0, vsz = 1.0;
+    double ox = 0.0, oy = 0.0, oz = 0.0;
+    const char *name = "grid";
+    Py_buffer bg_buf;
+    unsigned int compression = 0;
+    int level = 0;
+    static char *kwlist[] = {"path", "values", "nx", "ny", "nz", "dtype",
+                             "voxel_size", "origin", "name", "background",
+                             "compression", "level", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "sy*iiis(ddd)(ddd)sy*Ii", kwlist,
+                                     &path, &values_buf, &nx, &ny, &nz, &dtype,
+                                     &vsx, &vsy, &vsz, &ox, &oy, &oz,
+                                     &name, &bg_buf, &compression, &level))
+        return NULL;
+
+    int vt;
+    if (tvdb_py__dtype_to_vt(dtype, &vt) != 0) {
+        PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+        PyErr_Format(PyExc_ValueError, "unsupported dtype '%s'", dtype);
+        return NULL;
+    }
+    size_t vsize = tvdb_py__vt_size(vt);
+    if (nx <= 0 || ny <= 0 || nz <= 0) {
+        PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+        PyErr_SetString(PyExc_ValueError, "nx, ny, nz must be positive");
+        return NULL;
+    }
+    size_t count = (size_t)nx * ny * nz;
+    if ((size_t)values_buf.len != count * vsize) {
+        PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+        PyErr_SetString(PyExc_ValueError, "values buffer size must equal nx*ny*nz*element_size");
+        return NULL;
+    }
+    if ((size_t)bg_buf.len != vsize) {
+        PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
+        PyErr_SetString(PyExc_ValueError, "background buffer size must equal element_size");
+        return NULL;
+    }
+
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_write_grid_dense_typed(path, values_buf.buf, count, vt, nx, ny, nz,
+                                        vsx, vsy, vsz, ox, oy, oz,
+                                        name, bg_buf.buf, compression, level);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
     Py_RETURN_NONE;
 }
@@ -2754,6 +2875,13 @@ static PyMethodDef module_methods[] = {
      "write_float_grid(path, values, nx, ny, nz, voxel_size=(sx,sy,sz), origin=(ox,oy,oz), "
      "name='sdf', background=0.0, compression=0, level=0); values is an nx*ny*nz float32 buffer "
      "in C order, world = voxel_size*index + origin."},
+    {"write_grid", (PyCFunction)mod_write_grid, METH_VARARGS | METH_KEYWORDS,
+     "Write a dense typed grid to a .vdb file. "
+     "write_grid(path, values, nx, ny, nz, dtype, voxel_size=(sx,sy,sz), origin=(ox,oy,oz), "
+     "name='grid', background=<element bytes>, compression=0, level=0); dtype is one of "
+     "'float32','float64','int32','int64','bool','vec3f'. values is a raw byte buffer of "
+     "nx*ny*nz elements in C order; background is one element's worth of bytes; "
+     "world = voxel_size*index + origin."},
     {"sdf_to_mesh", (PyCFunction)mod_sdf_to_mesh, METH_VARARGS | METH_KEYWORDS, "SDF to mesh"},
     {"make_manifold", (PyCFunction)mod_make_manifold, METH_VARARGS | METH_KEYWORDS, "Make manifold"},
     {"dilate", (PyCFunction)mod_dilate, METH_VARARGS | METH_KEYWORDS, "Dilate SDF"},
