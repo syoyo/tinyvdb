@@ -83,6 +83,25 @@ void tvdb_advect_semi_lagrangian(const tvdb_dense_grid* field,
                                  float dt,
                                  tvdb_dense_grid* result);
 
+// Higher-order advection (parallels OpenVDB VolumeAdvect). Advect `field`
+// through a steady `velocity` field by `dt` using `scheme`:
+//   0 RK1, 1 RK2, 2 RK3, 3 RK4  — semi-Lagrangian backtrace of that order;
+//   4 MacCormack, 5 BFECC       — second-order error-compensated schemes.
+// `clamp` (0/1) limits the MacCormack/BFECC correction to the trilinear-stencil
+// value range at the backtrace point, suppressing overshoot (recommended; the
+// RK schemes ignore it). `result` is pre-allocated, same shape as `field`.
+typedef enum {
+  TVDB_ADVECT_RK1 = 0,
+  TVDB_ADVECT_RK2 = 1,
+  TVDB_ADVECT_RK3 = 2,
+  TVDB_ADVECT_RK4 = 3,
+  TVDB_ADVECT_MACCORMACK = 4,
+  TVDB_ADVECT_BFECC = 5
+} tvdb_advect_scheme_t;
+
+void tvdb_advect(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* velocity,
+                 float dt, int scheme, int clamp, tvdb_dense_grid* result);
+
 // Phase 2: Poisson solver
 int tvdb_solve_poisson(const tvdb_dense_grid* rhs,
                        tvdb_dense_grid* x,

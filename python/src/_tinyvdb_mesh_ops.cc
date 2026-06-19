@@ -368,6 +368,23 @@ int tvdb_py_advect(const float *field_data, const float *vel_data,
     return *out_data ? 0 : -1;
 }
 
+int tvdb_py_advect_scheme(const float *field_data, const float *vel_data,
+                          int nx, int ny, int nz, float voxel_size,
+                          float ox, float oy, float oz, float dt, int scheme, int clamp,
+                          float **out_data) {
+    tvdb_dense_grid f = make_grid(field_data, nx, ny, nz, voxel_size, ox, oy, oz);
+    tvdb_dense_vec_grid v = make_vec_grid(vel_data, nx, ny, nz, voxel_size, ox, oy, oz);
+    tvdb_dense_grid out;
+    tvdb_dense_grid_init(&out, nx, ny, nz);
+    out.voxel_size = voxel_size; out.ox = ox; out.oy = oy; out.oz = oz;
+    tvdb_advect(&f, &v, dt, scheme, clamp, &out);
+    size_t n = (size_t)nx * ny * nz;
+    *out_data = (float *)malloc(n * sizeof(float));
+    if (*out_data) memcpy(*out_data, out.data, n * sizeof(float));
+    tvdb_dense_grid_free(&f); tvdb_dense_vec_grid_free(&v); tvdb_dense_grid_free(&out);
+    return *out_data ? 0 : -1;
+}
+
 int tvdb_py_solve_poisson(const float *rhs_data, int nx, int ny, int nz,
                           float voxel_size, float ox, float oy, float oz,
                           int max_iters, float tolerance,

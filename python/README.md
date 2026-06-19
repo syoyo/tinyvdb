@@ -174,6 +174,20 @@ chk = tinyvdb.check_level_set(grid, band_width=0.1, tol=0.1)   # {mean_grad_mag,
 ok = tinyvdb.check_fog_volume(grid)["valid"]
 ```
 
+### Resampling & advection
+
+```python
+# Resample to any voxel size over the same world AABB (order 0/1/2).
+coarse = tinyvdb.resample_grid(grid, 0.1, order=1)
+
+# Restore interior signs of a level set after an unsigned operation.
+clean = tinyvdb.signed_flood_fill(grid, band_width=0.15)
+
+# Higher-order advection through a steady velocity field (DenseVecGrid):
+out = tinyvdb.advect(field, velocity, dt, scheme=tinyvdb.ADVECT_MACCORMACK, clamp=1)
+#   scheme: ADVECT_RK1..ADVECT_RK4, ADVECT_MACCORMACK, ADVECT_BFECC
+```
+
 ### Operators & filters
 
 ```python

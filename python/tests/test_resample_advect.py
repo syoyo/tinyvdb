@@ -71,3 +71,50 @@ def test_signed_flood_fill_restores_interior():
     assert o.min() >= -band - 1e-5 and o.max() <= band + 1e-5
     # The deep interior is restored to exactly -band.
     assert o.min() == pytest.approx(-band, abs=1e-5)
+
+
+# ------------------------------------------------------------------ advection
+
+def _uniform_velocity(nx, ny, nz, vec, voxel_size=0.1, origin=(0.0, 0.0, 0.0)):
+    np = pytest.importorskip("numpy")
+    g = tinyvdb.DenseVecGrid(nx=nx, ny=ny, nz=nz, voxel_size=float(voxel_size),
+                             ox=float(origin[0]), oy=float(origin[1]), oz=float(origin[2]))
+    a = np.asarray(g)
+    a[..., 0], a[..., 1], a[..., 2] = vec
+    return g
+
+
+@pytest.mark.parametrize("scheme", [
+    tinyvdb.ADVECT_RK1, tinyvdb.ADVECT_RK2, tinyvdb.ADVECT_RK3,
+    tinyvdb.ADVECT_RK4, tinyvdb.ADVECT_MACCORMACK, tinyvdb.ADVECT_BFECC,
+])
+def test_advect_shifts_linear_field(scheme):
+    np = pytest.importorskip("numpy")
+    nx, ny, nz, vs = 24, 8, 8, 0.1
+    f = _dense(np.broadcast_to((-1.0 + (np.arange(nx) + 0.5) * vs)[None, None, :],
+                               (nz, ny, nx)), voxel_size=vs, origin=(-1.0, 0.0, 0.0))
+    vel = _uniform_velocity(nx, ny, nz, (1.0, 0.0, 0.0), voxel_size=vs, origin=(-1.0, 0, 0))
+    r = np.asarray(tinyvdb.advect(f, vel, 0.1, scheme=scheme, clamp=1), copy=False)
+    wx = -1.0 + (np.arange(nx) + 0.5) * vs
+    ref = np.broadcast_to((wx - 0.1)[None, None, 2:nx-2], r[:, :, 2:nx-2].shape)
+    assert np.max(np.abs(r[:, :, 2:nx-2] - ref)) < 1e-3
+
+
+def test_advect_maccormack_less_diffusive_than_rk1():
+    np = pytest.importorskip("numpy")
+    n, vs = 24, 0.1
+    c = (n - 1) / 2.0
+    g1 = np.exp(-((np.arange(n) - c) ** 2) / (2 * 4.0 ** 2)).astype(np.float32)
+    bump = (g1[:, None, None] * g1[None, :, None] * g1[None, None, :]).astype(np.float32)
+    f = _dense(bump, voxel_size=vs)
+    vel = _uniform_velocity(n, n, n, (1.0, 0.0, 0.0), voxel_size=vs)
+    f0 = np.asarray(f, copy=True)
+
+    def roundtrip_err(scheme):
+        fwd = tinyvdb.advect(f, vel, 0.05, scheme=scheme, clamp=1)   # 0.5-voxel shift
+        back = tinyvdb.advect(fwd, vel, -0.05, scheme=scheme, clamp=1)
+        return float(np.max(np.abs(np.asarray(back, copy=False) - f0)))
+
+    err_rk1 = roundtrip_err(tinyvdb.ADVECT_RK1)
+    err_mac = roundtrip_err(tinyvdb.ADVECT_MACCORMACK)
+    assert err_mac < err_rk1                                          # less numerical diffusion

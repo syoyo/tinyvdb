@@ -110,6 +110,43 @@ int main(void) {
     tvdb_dense_grid_free(&s);
   }
 
+  // ---- Higher-order advection of a linear field by a constant velocity ----
+  // Advecting f(x)=world-x by uniform v=+1 for dt shifts it: result(x)=x - v*dt.
+  // Linear field + constant velocity + trilinear backtrace is exact for every
+  // scheme (the MacCormack/BFECC round-trip error vanishes).
+  {
+    int nx = 24, ny = 8, nz = 8; float vs = 0.1f, dt = 0.1f;
+    tvdb_dense_grid f; tvdb_dense_grid_init(&f, nx, ny, nz);
+    f.voxel_size = vs; f.ox = -1.0f; f.oy = f.oz = 0.0f;
+    for (int k = 0; k < nz; ++k)
+      for (int j = 0; j < ny; ++j)
+        for (int i = 0; i < nx; ++i)
+          f.data[(size_t)(k*ny+j)*nx+i] = f.ox + ((float)i + 0.5f) * vs;
+    tvdb_dense_vec_grid vel; tvdb_dense_vec_grid_init(&vel, nx, ny, nz);
+    vel.voxel_size = vs;
+    for (size_t i = 0; i < (size_t)nx*ny*nz; ++i) {
+      vel.data[i*3+0] = 1.0f; vel.data[i*3+1] = 0.0f; vel.data[i*3+2] = 0.0f;
+    }
+    int schemes[] = { 0, 1, 2, 3, 4, 5 };
+    for (int s = 0; s < 6; ++s) {
+      tvdb_dense_grid r; tvdb_dense_grid_init(&r, nx, ny, nz);
+      r.voxel_size = vs; r.ox = f.ox; r.oy = r.oz = 0.0f;
+      tvdb_advect(&f, &vel, dt, schemes[s], 1, &r);
+      float maxerr = 0.0f; int checked = 0;
+      for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+          for (int i = 2; i < nx - 2; ++i) {
+            float wx = f.ox + ((float)i + 0.5f) * vs;
+            float e = fabsf(at3(&r, i, j, k) - (wx - dt * 1.0f));
+            if (e > maxerr) maxerr = e;
+            ++checked;
+          }
+      EXPECT(checked > 0 && maxerr < 1e-3f, "advect shifts a linear field");
+      tvdb_dense_grid_free(&r);
+    }
+    tvdb_dense_grid_free(&f); tvdb_dense_vec_grid_free(&vel);
+  }
+
   if (fails) { fprintf(stderr, "%d FAILURES\n", fails); return 1; }
   printf("All resample/advect tests passed.\n");
   return 0;

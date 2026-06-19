@@ -665,6 +665,150 @@ void tvdb_advect_semi_lagrangian(const tvdb_dense_grid* field,
 }
 
 // -------------------------------------------------------------------------
+// Higher-order advection (RK1-4, MacCormack, BFECC)
+// -------------------------------------------------------------------------
+
+// Trilinear sample of a vector grid at voxel coordinates (clamped at borders).
+static void tvdb_sample_vec_voxel(const tvdb_dense_vec_grid* g, float vx, float vy, float vz,
+                                  float out[3]) {
+  int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);
+  float fx = vx - ix, fy = vy - iy, fz = vz - iz;
+  for (int c = 0; c < 3; ++c) {
+    float c00 = tvdb_vec_at(g, ix, iy, iz, c) * (1-fx) + tvdb_vec_at(g, ix+1, iy, iz, c) * fx;
+    float c10 = tvdb_vec_at(g, ix, iy+1, iz, c) * (1-fx) + tvdb_vec_at(g, ix+1, iy+1, iz, c) * fx;
+    float c01 = tvdb_vec_at(g, ix, iy, iz+1, c) * (1-fx) + tvdb_vec_at(g, ix+1, iy, iz+1, c) * fx;
+    float c11 = tvdb_vec_at(g, ix, iy+1, iz+1, c) * (1-fx) + tvdb_vec_at(g, ix+1, iy+1, iz+1, c) * fx;
+    float c0 = c00 * (1-fy) + c10 * fy, c1 = c01 * (1-fy) + c11 * fy;
+    out[c] = c0 * (1-fz) + c1 * fz;
+  }
+}
+
+// Backtrace a voxel position by `dt` (negative dt = forward trace) under the
+// steady velocity field, integrating dx/ds = -v(x)/h with an RK scheme of the
+// given order (1..4).
+static void tvdb_rk_backtrace(const tvdb_dense_vec_grid* vel, float inv_h, float dt, int order,
+                              float x, float y, float z, float* bx, float* by, float* bz) {
+  float v[3];
+  tvdb_sample_vec_voxel(vel, x, y, z, v);
+  float g1x = -v[0]*inv_h, g1y = -v[1]*inv_h, g1z = -v[2]*inv_h;
+  if (order <= 1) { *bx = x + dt*g1x; *by = y + dt*g1y; *bz = z + dt*g1z; return; }
+  if (order == 2) {  // midpoint
+    tvdb_sample_vec_voxel(vel, x + 0.5f*dt*g1x, y + 0.5f*dt*g1y, z + 0.5f*dt*g1z, v);
+    *bx = x - dt*v[0]*inv_h; *by = y - dt*v[1]*inv_h; *bz = z - dt*v[2]*inv_h; return;
+  }
+  if (order == 3) {  // Kutta's third order
+    tvdb_sample_vec_voxel(vel, x + 0.5f*dt*g1x, y + 0.5f*dt*g1y, z + 0.5f*dt*g1z, v);
+    float g2x = -v[0]*inv_h, g2y = -v[1]*inv_h, g2z = -v[2]*inv_h;
+    tvdb_sample_vec_voxel(vel, x - dt*g1x + 2*dt*g2x, y - dt*g1y + 2*dt*g2y, z - dt*g1z + 2*dt*g2z, v);
+    float g3x = -v[0]*inv_h, g3y = -v[1]*inv_h, g3z = -v[2]*inv_h;
+    *bx = x + dt*(g1x + 4*g2x + g3x)/6.0f;
+    *by = y + dt*(g1y + 4*g2y + g3y)/6.0f;
+    *bz = z + dt*(g1z + 4*g2z + g3z)/6.0f;
+    return;
+  }
+  // RK4
+  tvdb_sample_vec_voxel(vel, x + 0.5f*dt*g1x, y + 0.5f*dt*g1y, z + 0.5f*dt*g1z, v);
+  float g2x = -v[0]*inv_h, g2y = -v[1]*inv_h, g2z = -v[2]*inv_h;
+  tvdb_sample_vec_voxel(vel, x + 0.5f*dt*g2x, y + 0.5f*dt*g2y, z + 0.5f*dt*g2z, v);
+  float g3x = -v[0]*inv_h, g3y = -v[1]*inv_h, g3z = -v[2]*inv_h;
+  tvdb_sample_vec_voxel(vel, x + dt*g3x, y + dt*g3y, z + dt*g3z, v);
+  float g4x = -v[0]*inv_h, g4y = -v[1]*inv_h, g4z = -v[2]*inv_h;
+  *bx = x + dt*(g1x + 2*g2x + 2*g3x + g4x)/6.0f;
+  *by = y + dt*(g1y + 2*g2y + 2*g3y + g4y)/6.0f;
+  *bz = z + dt*(g1z + 2*g2z + 2*g3z + g4z)/6.0f;
+}
+
+// Single semi-Lagrangian pass: result[x] = field(backtrace(x)).
+static void tvdb_advect_sl(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* vel,
+                           float dt, int order, tvdb_dense_grid* result) {
+  const int nx = field->nx, ny = field->ny, nz = field->nz;
+  const float inv_h = 1.0f / field->voxel_size;
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix) {
+        float bx, by, bz;
+        tvdb_rk_backtrace(vel, inv_h, dt, order, (float)ix, (float)iy, (float)iz, &bx, &by, &bz);
+        result->data[tvdb_idx(result, ix, iy, iz)] = tvdb_sample_dense_voxel(field, bx, by, bz);
+      }
+}
+
+// Min/max of the trilinear stencil of `field` at voxel coords (for clamping).
+static void tvdb_stencil_minmax(const tvdb_dense_grid* g, float vx, float vy, float vz,
+                                float* mn, float* mx) {
+  int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);
+  *mn = 3.4e38f; *mx = -3.4e38f;
+  for (int dz = 0; dz < 2; ++dz)
+    for (int dy = 0; dy < 2; ++dy)
+      for (int dx = 0; dx < 2; ++dx) {
+        float s = tvdb_at(g, ix+dx, iy+dy, iz+dz);
+        if (s < *mn) *mn = s;
+        if (s > *mx) *mx = s;
+      }
+}
+
+void tvdb_advect(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* velocity,
+                 float dt, int scheme, int clamp, tvdb_dense_grid* result) {
+  if (!field->data || !velocity->data || !result->data) return;
+  if (field->nx != velocity->nx || field->ny != velocity->ny || field->nz != velocity->nz) return;
+  if (!tvdb_grid_same_shape(field, result)) return;
+
+  if (scheme <= TVDB_ADVECT_RK4) {           // pure semi-Lagrangian, RK order = scheme+1
+    tvdb_advect_sl(field, velocity, dt, scheme + 1, result);
+    return;
+  }
+
+  const int nx = field->nx, ny = field->ny, nz = field->nz;
+  const size_t n = (size_t)nx * ny * nz;
+  const float inv_h = 1.0f / field->voxel_size;
+  tvdb_dense_grid phat, pstar;
+  tvdb_dense_grid_init(&phat, nx, ny, nz); phat.voxel_size = field->voxel_size;
+  tvdb_dense_grid_init(&pstar, nx, ny, nz); pstar.voxel_size = field->voxel_size;
+  if (!phat.data || !pstar.data) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return; }
+
+  // Forward then backward advect (RK2 internally), giving a 2nd-order estimate
+  // of the round-trip error (field - pstar).
+  tvdb_advect_sl(field, velocity, dt, 2, &phat);    // phat = A(field)
+  tvdb_advect_sl(&phat, velocity, -dt, 2, &pstar);  // pstar = A^-1(phat)
+
+  if (scheme == TVDB_ADVECT_MACCORMACK) {
+    for (int iz = 0; iz < nz; ++iz)
+      for (int iy = 0; iy < ny; ++iy)
+        for (int ix = 0; ix < nx; ++ix) {
+          size_t i = tvdb_idx(field, ix, iy, iz);
+          float val = phat.data[i] + 0.5f * (field->data[i] - pstar.data[i]);
+          if (clamp) {
+            float bx, by, bz, mn, mx;
+            tvdb_rk_backtrace(velocity, inv_h, dt, 2, (float)ix, (float)iy, (float)iz, &bx, &by, &bz);
+            tvdb_stencil_minmax(field, bx, by, bz, &mn, &mx);
+            if (val < mn) val = mn; else if (val > mx) val = mx;
+          }
+          result->data[i] = val;
+        }
+  } else {  // BFECC: advect the error-corrected field forward.
+    tvdb_dense_grid corr;
+    tvdb_dense_grid_init(&corr, nx, ny, nz); corr.voxel_size = field->voxel_size;
+    if (!corr.data) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return; }
+    for (size_t i = 0; i < n; ++i)
+      corr.data[i] = field->data[i] + 0.5f * (field->data[i] - pstar.data[i]);
+    tvdb_advect_sl(&corr, velocity, dt, 2, result);
+    if (clamp) {
+      for (int iz = 0; iz < nz; ++iz)
+        for (int iy = 0; iy < ny; ++iy)
+          for (int ix = 0; ix < nx; ++ix) {
+            size_t i = tvdb_idx(field, ix, iy, iz);
+            float bx, by, bz, mn, mx;
+            tvdb_rk_backtrace(velocity, inv_h, dt, 2, (float)ix, (float)iy, (float)iz, &bx, &by, &bz);
+            tvdb_stencil_minmax(field, bx, by, bz, &mn, &mx);
+            if (result->data[i] < mn) result->data[i] = mn;
+            else if (result->data[i] > mx) result->data[i] = mx;
+          }
+    }
+    tvdb_dense_grid_free(&corr);
+  }
+  tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar);
+}
+
+// -------------------------------------------------------------------------
 // Phase 2: Poisson solver via Jacobi-preconditioned Conjugate Gradient
 // -------------------------------------------------------------------------
 

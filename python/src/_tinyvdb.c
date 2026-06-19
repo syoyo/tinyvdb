@@ -173,6 +173,7 @@ extern int tvdb_py_laplacian(const float *, int, int, int, float, float, float, 
 extern int tvdb_py_curl(const float *, int, int, int, float, float, float, float, float **);
 
 extern int tvdb_py_advect(const float *, const float *, int, int, int, float, float, float, float, float, float **);
+extern int tvdb_py_advect_scheme(const float *, const float *, int, int, int, float, float, float, float, float, int, int, float **);
 extern int tvdb_py_solve_poisson(const float *, int, int, int, float, float, float, float, int, float, float **, int *);
 extern int tvdb_py_solve_poisson_d(const float *, int, int, int, float, float, float, float, int, double, float **, int *);
 extern int tvdb_py_fast_sweeping(const float *, int, int, int, float, float, float, float, float, int, float, float **, int *);
@@ -2671,9 +2672,10 @@ static PyObject *mod_signed_flood_fill(PyObject *module, PyObject *args, PyObjec
 /* ======================================================================== */
 
 static PyObject *mod_advect(PyObject *module, PyObject *args, PyObject *kw) {
-    PyObject *field_obj, *vel_obj; float dt;
-    static char *kwlist[] = {"field", "velocity", "dt", NULL};
-    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOf", kwlist, &field_obj, &vel_obj, &dt))
+    PyObject *field_obj, *vel_obj; float dt; int scheme = 0, clamp = 1;
+    static char *kwlist[] = {"field", "velocity", "dt", "scheme", "clamp", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "OOf|ii", kwlist,
+                                     &field_obj, &vel_obj, &dt, &scheme, &clamp))
         return NULL;
     module_state *st = get_state(module);
     if (!PyObject_IsInstance(field_obj, st->DenseGridType)) {
@@ -2685,11 +2687,15 @@ static PyObject *mod_advect(PyObject *module, PyObject *args, PyObject *kw) {
     PyDenseGrid *f = (PyDenseGrid *)field_obj;
     PyDenseVecGrid *v = (PyDenseVecGrid *)vel_obj;
     if (!f->data || !v->data) return raise_vdb_error("Grid has no data");
+    if (f->nx != v->nx || f->ny != v->ny || f->nz != v->nz)
+        return raise_vdb_error("field and velocity must have the same dimensions");
     float *out = NULL;
+    int rc;
     Py_BEGIN_ALLOW_THREADS
-    tvdb_py_advect(f->data, v->data, f->nx, f->ny, f->nz,
-                   f->voxel_size, f->ox, f->oy, f->oz, dt, &out);
+    rc = tvdb_py_advect_scheme(f->data, v->data, f->nx, f->ny, f->nz,
+                               f->voxel_size, f->ox, f->oy, f->oz, dt, scheme, clamp, &out);
     Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
     return DenseGrid_from_c(st->DenseGridType, out, f->nx, f->ny, f->nz,
                             f->voxel_size, f->ox, f->oy, f->oz);
 }
@@ -3720,6 +3726,12 @@ PyMODINIT_FUNC PyInit__tinyvdb(void) {
     PyModule_AddIntConstant(mod, "COMPRESS_BLOSC", TVDB_COMPRESS_BLOSC);
     PyModule_AddIntConstant(mod, "SIGN_FLOOD_FILL", 0);
     PyModule_AddIntConstant(mod, "SIGN_SWEEP", 1);
+    PyModule_AddIntConstant(mod, "ADVECT_RK1", 0);
+    PyModule_AddIntConstant(mod, "ADVECT_RK2", 1);
+    PyModule_AddIntConstant(mod, "ADVECT_RK3", 2);
+    PyModule_AddIntConstant(mod, "ADVECT_RK4", 3);
+    PyModule_AddIntConstant(mod, "ADVECT_MACCORMACK", 4);
+    PyModule_AddIntConstant(mod, "ADVECT_BFECC", 5);
 
     if (PyState_AddModule(mod, &tinyvdb_module) < 0) goto fail;
     return mod;

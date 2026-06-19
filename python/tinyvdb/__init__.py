@@ -109,6 +109,12 @@ from tinyvdb._tinyvdb import (
     COMPRESS_BLOSC,
     SIGN_FLOOD_FILL,
     SIGN_SWEEP,
+    ADVECT_RK1,
+    ADVECT_RK2,
+    ADVECT_RK3,
+    ADVECT_RK4,
+    ADVECT_MACCORMACK,
+    ADVECT_BFECC,
 )
 
 def write_obj(mesh, path):
@@ -607,4 +613,10 @@ __all__ = [
     "COMPRESS_BLOSC",
     "SIGN_FLOOD_FILL",
     "SIGN_SWEEP",
+    "ADVECT_RK1",
+    "ADVECT_RK2",
+    "ADVECT_RK3",
+    "ADVECT_RK4",
+    "ADVECT_MACCORMACK",
+    "ADVECT_BFECC",
 ]
