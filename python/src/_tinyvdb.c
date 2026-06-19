@@ -159,6 +159,13 @@ extern int tvdb_py_check_level_set(const float *, int, int, int, float,
 extern int tvdb_py_check_fog_volume(const float *, int, int, int,
                                     double, int *, double *, double *);
 
+extern int tvdb_py_magnitude(const float *, int, int, int, float **);
+extern int tvdb_py_normalize_vec(const float *, int, int, int, float **);
+extern int tvdb_py_cpt(const float *, int, int, int, float, float, float, float, float **);
+extern int tvdb_py_composite(const float *, const float *, int, int, int, int, float **);
+extern int tvdb_py_median_filter(const float *, int, int, int, int, int, float **);
+extern int tvdb_py_mean_curvature_flow(const float *, int, int, int, float, float, int, float **);
+
 extern int tvdb_py_gradient(const float *, int, int, int, float, float, float, float, float **);
 extern int tvdb_py_divergence(const float *, int, int, int, float, float, float, float, float **);
 extern int tvdb_py_laplacian(const float *, int, int, int, float, float, float, float, float **);
@@ -2519,6 +2526,125 @@ static PyObject *mod_curl(PyObject *module, PyObject *args) {
 }
 
 /* ======================================================================== */
+/*  Vector operators / composite / filters                                  */
+/* ======================================================================== */
+
+static PyObject *mod_magnitude(PyObject *module, PyObject *args) {
+    PyObject *grid_obj;
+    if (!PyArg_ParseTuple(args, "O", &grid_obj)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseVecGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseVecGrid"); return NULL;
+    }
+    PyDenseVecGrid *g = (PyDenseVecGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseVecGrid has no data");
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_magnitude(g->data, g->nx, g->ny, g->nz, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, g->nx, g->ny, g->nz,
+                            g->voxel_size, g->ox, g->oy, g->oz);
+}
+
+static PyObject *mod_normalize(PyObject *module, PyObject *args) {
+    PyObject *grid_obj;
+    if (!PyArg_ParseTuple(args, "O", &grid_obj)) return NULL;
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(grid_obj, st->DenseVecGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseVecGrid"); return NULL;
+    }
+    PyDenseVecGrid *g = (PyDenseVecGrid *)grid_obj;
+    if (!g->data) return raise_vdb_error("DenseVecGrid has no data");
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_normalize_vec(g->data, g->nx, g->ny, g->nz, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseVecGrid_from_c(st->DenseVecGridType, out, g->nx, g->ny, g->nz,
+                               g->voxel_size, g->ox, g->oy, g->oz);
+}
+
+static PyObject *mod_cpt(PyObject *module, PyObject *args) {
+    PyObject *grid_obj;
+    if (!PyArg_ParseTuple(args, "O", &grid_obj)) return NULL;
+    module_state *st = get_state(module);
+    PyDenseGrid *g = as_dense_grid(module, grid_obj);
+    if (!g) return NULL;
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_cpt(g->data, g->nx, g->ny, g->nz, g->voxel_size, g->ox, g->oy, g->oz, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseVecGrid_from_c(st->DenseVecGridType, out, g->nx, g->ny, g->nz,
+                               g->voxel_size, g->ox, g->oy, g->oz);
+}
+
+static PyObject *composite_impl(PyObject *module, PyObject *args, int op) {
+    PyObject *a_obj, *b_obj;
+    if (!PyArg_ParseTuple(args, "OO", &a_obj, &b_obj)) return NULL;
+    module_state *st = get_state(module);
+    PyDenseGrid *a = as_dense_grid(module, a_obj);
+    if (!a) return NULL;
+    PyDenseGrid *b = as_dense_grid(module, b_obj);
+    if (!b) return NULL;
+    if (a->nx != b->nx || a->ny != b->ny || a->nz != b->nz)
+        return raise_vdb_error("composite: grids must have the same dimensions");
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_composite(a->data, b->data, a->nx, a->ny, a->nz, op, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, a->nx, a->ny, a->nz,
+                            a->voxel_size, a->ox, a->oy, a->oz);
+}
+static PyObject *mod_comp_max(PyObject *m, PyObject *a)  { return composite_impl(m, a, 0); }
+static PyObject *mod_comp_min(PyObject *m, PyObject *a)  { return composite_impl(m, a, 1); }
+static PyObject *mod_comp_sum(PyObject *m, PyObject *a)  { return composite_impl(m, a, 2); }
+static PyObject *mod_comp_mult(PyObject *m, PyObject *a) { return composite_impl(m, a, 3); }
+
+static PyObject *mod_median_filter(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; int radius = 1, iterations = 1;
+    static char *kwlist[] = {"grid", "radius", "iterations", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|ii", kwlist, &grid_obj, &radius, &iterations))
+        return NULL;
+    module_state *st = get_state(module);
+    PyDenseGrid *g = as_dense_grid(module, grid_obj);
+    if (!g) return NULL;
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_median_filter(g->data, g->nx, g->ny, g->nz, radius, iterations, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, g->nx, g->ny, g->nz,
+                            g->voxel_size, g->ox, g->oy, g->oz);
+}
+
+static PyObject *mod_mean_curvature_flow(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double dt; int iterations = 1;
+    static char *kwlist[] = {"grid", "dt", "iterations", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "Od|i", kwlist, &grid_obj, &dt, &iterations))
+        return NULL;
+    module_state *st = get_state(module);
+    PyDenseGrid *g = as_dense_grid(module, grid_obj);
+    if (!g) return NULL;
+    float *out = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_mean_curvature_flow(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                                     (float)dt, iterations, &out);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return DenseGrid_from_c(st->DenseGridType, out, g->nx, g->ny, g->nz,
+                            g->voxel_size, g->ox, g->oy, g->oz);
+}
+
+/* ======================================================================== */
 /*  Advection & Poisson                                                     */
 /* ======================================================================== */
 
@@ -3431,6 +3557,18 @@ static PyMethodDef module_methods[] = {
     {"divergence", mod_divergence, METH_VARARGS, "Divergence"},
     {"laplacian", mod_laplacian_op, METH_VARARGS, "Laplacian"},
     {"curl", mod_curl, METH_VARARGS, "Curl"},
+    {"magnitude", mod_magnitude, METH_VARARGS, "magnitude(vec_grid) -> DenseGrid; per-voxel |v|."},
+    {"normalize", mod_normalize, METH_VARARGS, "normalize(vec_grid) -> DenseVecGrid; per-voxel v/|v|."},
+    {"cpt", mod_cpt, METH_VARARGS,
+     "cpt(sdf) -> DenseVecGrid; closest-point transform, p - sdf(p)*grad(sdf)(p)."},
+    {"comp_max", mod_comp_max, METH_VARARGS, "comp_max(a, b) -> DenseGrid; per-voxel max."},
+    {"comp_min", mod_comp_min, METH_VARARGS, "comp_min(a, b) -> DenseGrid; per-voxel min."},
+    {"comp_sum", mod_comp_sum, METH_VARARGS, "comp_sum(a, b) -> DenseGrid; per-voxel a+b."},
+    {"comp_mult", mod_comp_mult, METH_VARARGS, "comp_mult(a, b) -> DenseGrid; per-voxel a*b."},
+    {"median_filter", (PyCFunction)mod_median_filter, METH_VARARGS | METH_KEYWORDS,
+     "median_filter(grid, radius=1, iterations=1) -> DenseGrid; (2r+1)^3 window median."},
+    {"mean_curvature_flow", (PyCFunction)mod_mean_curvature_flow, METH_VARARGS | METH_KEYWORDS,
+     "mean_curvature_flow(grid, dt, iterations=1) -> DenseGrid; level-set curvature smoothing."},
     {"advect", (PyCFunction)mod_advect, METH_VARARGS | METH_KEYWORDS, "Advection"},
     {"solve_poisson", (PyCFunction)mod_solve_poisson, METH_VARARGS | METH_KEYWORDS, "Poisson solver (fp32 internals)"},
     {"solve_poisson_d", (PyCFunction)mod_solve_poisson_d, METH_VARARGS | METH_KEYWORDS,

@@ -51,15 +51,16 @@ each theme. Notes point at the nearest existing primitive to reuse.
 - [x] **Diagnostics / validators.** `tvdb_check_level_set` (band |grad|≈1
       health) + `tvdb_check_fog_volume` (values in [0,1]) (parallels OpenVDB
       `Diagnostics`); Python `check_level_set` / `check_fog_volume`.
-- [ ] **Vector-grid operators.** `magnitude`, `normalize`,
-      closest-point-transform `cpt` (parallels OpenVDB `GridOperators`);
-      gradient/divergence/laplacian/curl already done.
-- [ ] **Additional filters.** Median filter, mean-curvature flow
-      (parallels OpenVDB `Filter`/`LevelSetFilter`); gaussian/mean/
-      laplacian already done.
-- [ ] **General composite.** `comp_max`/`comp_min`/`comp_sum`/`comp_mult`
-      over value grids (parallels OpenVDB `Composite`); SDF CSG min/max
-      already done.
+- [x] **Vector-grid operators.** `tvdb_magnitude`, `tvdb_normalize_vec`,
+      closest-point-transform `tvdb_cpt` (parallels OpenVDB `GridOperators`)
+      in `tinyvdb_ops.{h,c}`; Python `magnitude` / `normalize` / `cpt`.
+      Covered by `test_stats_ops` (C + py).
+- [x] **Additional filters.** `tvdb_median_filter` + `tvdb_mean_curvature_flow`
+      (parallels OpenVDB `Filter`/`LevelSetFilter`); Python `median_filter` /
+      `mean_curvature_flow`. Gaussian/mean/laplacian already existed.
+- [x] **General composite.** `tvdb_comp_max`/`min`/`sum`/`mult` over value
+      grids (parallels OpenVDB `Composite`); Python `comp_max`/`comp_min`/
+      `comp_sum`/`comp_mult`. SDF CSG min/max already existed.
 
 **C. Resampling & advection**
 
@@ -125,7 +126,7 @@ public API" design — listed for visibility, not on the near-term roadmap.
 | target | what |
 | --- | --- |
 | `test_ops` | Phase 1-6 dense ops smoke (volume, surface_area, dilate, csg, gradient, Poisson recovery, advection, sampling, TSDF, topology, ray, sparse) |
-| `test_stats_ops` | Statistics (`grid_statistics`/`grid_histogram` on a known linear field) and diagnostics (`check_level_set` clean ≈1 vs damaged ≈3; `check_fog_volume` fog-valid vs raw-SDF-invalid) |
+| `test_stats_ops` | Statistics (`grid_statistics`/`grid_histogram` on a known linear field), diagnostics (`check_level_set` clean ≈1 vs damaged ≈3; `check_fog_volume` fog-valid vs raw-SDF-invalid), vector operators (`magnitude`=5 on (3,4,0); `normalize`; `cpt` maps a sphere band onto the sphere), composite (`comp_max/min/sum/mult`), and filters (`median_filter` removes an impulse; `mean_curvature_flow` shrinks a sphere) |
 | `test_levelset` | Level-set primitive generators (sphere/box/torus/capsule): analytic SDF recomputed and matched at every voxel; platonic solids (tetra/cube/octa/dodeca/icosa) bracketed between inscribed/circumscribed spheres; `sdf_to_fog_volume` range/empty-exterior, `sdf_interior_mask` sign-consistency, `sdf_segmentation` (two spheres → exact 2-way interior partition), `sdf_extract_enclosed_regions` (spherical-shell cavity mask) and `level_set_euler_characteristic`/`level_set_genus` (sphere 2/0, torus 0/1, two spheres 4/0, two tori 0/2) and `level_set_rebuild` (damaged sphere renormalized: euler 2, zero crossing ~R; torus resampled keeps genus 1) |
 | `test_sparse_tree` | OpenVDB-tree bridge on `sphere.vdb`: counts, bbox, sparse extraction, dense materialization, leaf-stamp dilate/erode |
 | `test_grid_from_sparse` | Sphere round-trip + synthetic 27-leaf cross-parent test for `tvdb_grid_from_sparse_using_template` |

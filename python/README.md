@@ -174,6 +174,22 @@ chk = tinyvdb.check_level_set(grid, band_width=0.1, tol=0.1)   # {mean_grad_mag,
 ok = tinyvdb.check_fog_volume(grid)["valid"]
 ```
 
+### Operators & filters
+
+```python
+# Vector-grid operators (GridOperators)
+mag  = tinyvdb.magnitude(vec)            # DenseVecGrid -> DenseGrid (|v|)
+unit = tinyvdb.normalize(vec)            # DenseVecGrid -> DenseVecGrid (v/|v|)
+near = tinyvdb.cpt(sdf)                  # closest-point transform of an SDF
+
+# Per-voxel composite of two same-shape grids
+u = tinyvdb.comp_max(a, b)   # also comp_min / comp_sum / comp_mult
+
+# In-place-style filters (return a new DenseGrid)
+m = tinyvdb.median_filter(grid, radius=1, iterations=1)
+s = tinyvdb.mean_curvature_flow(grid, dt=0.0003, iterations=8)   # keep dt small
+```
+
 ### Write a dense grid to `.vdb`
 
 Write an existing dense field (e.g. an SDF you already computed) to a fresh `.vdb`

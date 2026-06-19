@@ -3,6 +3,7 @@
 
 #include "tinyvdb_stats.h"
 #include "tinyvdb_levelset.h"
+#include "tinyvdb_ops.h"
 #include "tinyvdb_mesh.h"
 
 #include <math.h>
@@ -83,6 +84,80 @@ int main(void) {
     EXPECT(fv && fmn >= -1e-5 && fmx <= 1.0 + 1e-5, "fog volume is valid [0,1]");
     tvdb_dense_grid_free(&s);
     tvdb_dense_grid_free(&fog);
+  }
+
+  // ---- Vector operators: magnitude, normalize ----
+  {
+    tvdb_dense_vec_grid v; tvdb_dense_vec_grid_init(&v, 2, 2, 2);
+    size_t nv = 8;
+    for (size_t i = 0; i < nv; ++i) { v.data[i*3+0]=3.0f; v.data[i*3+1]=4.0f; v.data[i*3+2]=0.0f; }
+    tvdb_dense_grid mag; tvdb_dense_grid_init(&mag, 2, 2, 2);
+    tvdb_magnitude(&v, &mag);
+    int ok = 1; for (size_t i=0;i<nv;++i) if (fabsf(mag.data[i]-5.0f)>1e-5f) ok=0;
+    EXPECT(ok, "magnitude = 5 for (3,4,0)");
+
+    tvdb_dense_vec_grid nrm; tvdb_dense_vec_grid_init(&nrm, 2, 2, 2);
+    tvdb_normalize_vec(&v, &nrm);
+    EXPECT(fabsf(nrm.data[0]-0.6f)<1e-5f && fabsf(nrm.data[1]-0.8f)<1e-5f, "normalize (3,4,0)");
+    // Zero vector -> zero (no NaN).
+    for (int c=0;c<3;++c) v.data[c]=0.0f;
+    tvdb_normalize_vec(&v, &nrm);
+    EXPECT(nrm.data[0]==0.0f && nrm.data[1]==0.0f && nrm.data[2]==0.0f, "normalize zero -> zero");
+    tvdb_dense_vec_grid_free(&v); tvdb_dense_grid_free(&mag); tvdb_dense_vec_grid_free(&nrm);
+  }
+
+  // ---- cpt: closest point of a sphere SDF lies on the sphere ----
+  {
+    float c[3] = { 0.2f, -0.1f, 0.3f };
+    tvdb_dense_grid s; tvdb_level_set_sphere(1.0f, c, 0.05f, 3.0f, &s);
+    tvdb_dense_vec_grid cp; tvdb_dense_vec_grid_init(&cp, s.nx, s.ny, s.nz);
+    tvdb_cpt(&s, &cp);
+    // For band voxels (away from grid border), |cpt - center| ~ R = 1.
+    int checked = 0, bad = 0;
+    for (int iz=1; iz<s.nz-1; ++iz)
+      for (int iy=1; iy<s.ny-1; ++iy)
+        for (int ix=1; ix<s.nx-1; ++ix) {
+          size_t i=(size_t)(iz*s.ny+iy)*s.nx+ix;
+          if (fabsf(s.data[i]) > 0.1f) continue;        // near surface only
+          float dx=cp.data[i*3+0]-c[0], dy=cp.data[i*3+1]-c[1], dz=cp.data[i*3+2]-c[2];
+          float r=sqrtf(dx*dx+dy*dy+dz*dz);
+          ++checked; if (fabsf(r-1.0f) > 0.06f) ++bad;
+        }
+    EXPECT(checked > 0 && bad == 0, "cpt maps band voxels onto the sphere");
+    tvdb_dense_grid_free(&s); tvdb_dense_vec_grid_free(&cp);
+  }
+
+  // ---- Composite ----
+  {
+    tvdb_dense_grid a, b, r;
+    tvdb_dense_grid_init(&a, 2,2,2); tvdb_dense_grid_init(&b, 2,2,2); tvdb_dense_grid_init(&r, 2,2,2);
+    for (size_t i=0;i<8;++i) { a.data[i]=(float)i; b.data[i]=(float)(7-i); }
+    tvdb_comp_max(&a,&b,&r); EXPECT(r.data[0]==7.0f && r.data[7]==7.0f, "comp_max");
+    tvdb_comp_min(&a,&b,&r); EXPECT(r.data[0]==0.0f && r.data[7]==0.0f, "comp_min");
+    tvdb_comp_sum(&a,&b,&r); int s7=1; for(size_t i=0;i<8;++i) if(r.data[i]!=7.0f) s7=0; EXPECT(s7,"comp_sum=7");
+    tvdb_comp_mult(&a,&b,&r); EXPECT(r.data[3]==a.data[3]*b.data[3], "comp_mult");
+    tvdb_dense_grid_free(&a); tvdb_dense_grid_free(&b); tvdb_dense_grid_free(&r);
+  }
+
+  // ---- Median filter removes an impulse ----
+  {
+    tvdb_dense_grid g; tvdb_dense_grid_init(&g, 5,5,5);
+    for (size_t i=0;i<125;++i) g.data[i]=1.0f;
+    size_t mid = (size_t)(2*5+2)*5+2; g.data[mid] = 1000.0f;   // central spike
+    tvdb_median_filter(&g, 1, 1);
+    EXPECT(fabsf(g.data[mid]-1.0f) < 1e-5f, "median removes impulse");
+    tvdb_dense_grid_free(&g);
+  }
+
+  // ---- Mean-curvature flow shrinks a sphere (volume decreases) ----
+  {
+    float c[3] = { 0,0,0 };
+    tvdb_dense_grid s; tvdb_level_set_sphere(1.0f, c, 0.05f, 3.0f, &s);
+    float v0 = tvdb_volume(&s);
+    tvdb_mean_curvature_flow(&s, 0.0003f, 8);
+    float v1 = tvdb_volume(&s);
+    EXPECT(v1 < v0 && v1 > 0.0f, "mean-curvature flow shrinks the sphere");
+    tvdb_dense_grid_free(&s);
   }
 
   if (fails) { fprintf(stderr, "%d FAILURES\n", fails); return 1; }

@@ -2047,6 +2047,90 @@ int tvdb_py_check_fog_volume(const float *data, int nx, int ny, int nz,
     return 0;
 }
 
+/* ---- Vector operators / composite / filters (tinyvdb_ops.h) ---- */
+
+int tvdb_py_magnitude(const float *vdata, int nx, int ny, int nz, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "magnitude alloc"); return -1; }
+    tvdb_dense_vec_grid v; v.nx = nx; v.ny = ny; v.nz = nz; v.voxel_size = 1.0f;
+    v.ox = v.oy = v.oz = 0.0f; v.data = (float *)vdata;
+    tvdb_dense_grid o; o.nx = nx; o.ny = ny; o.nz = nz; o.voxel_size = 1.0f;
+    o.ox = o.oy = o.oz = 0.0f; o.data = *out;
+    tvdb_magnitude(&v, &o);
+    return 0;
+}
+
+int tvdb_py_normalize_vec(const float *vdata, int nx, int ny, int nz, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * 3 * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "normalize alloc"); return -1; }
+    tvdb_dense_vec_grid v; v.nx = nx; v.ny = ny; v.nz = nz; v.voxel_size = 1.0f;
+    v.ox = v.oy = v.oz = 0.0f; v.data = (float *)vdata;
+    tvdb_dense_vec_grid o; o.nx = nx; o.ny = ny; o.nz = nz; o.voxel_size = 1.0f;
+    o.ox = o.oy = o.oz = 0.0f; o.data = *out;
+    tvdb_normalize_vec(&v, &o);
+    return 0;
+}
+
+int tvdb_py_cpt(const float *data, int nx, int ny, int nz, float vs,
+                float ox, float oy, float oz, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * 3 * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "cpt alloc"); return -1; }
+    tvdb_dense_grid s; s.nx = nx; s.ny = ny; s.nz = nz; s.voxel_size = vs;
+    s.ox = ox; s.oy = oy; s.oz = oz; s.data = (float *)data;
+    tvdb_dense_vec_grid o; o.nx = nx; o.ny = ny; o.nz = nz; o.voxel_size = vs;
+    o.ox = ox; o.oy = oy; o.oz = oz; o.data = *out;
+    tvdb_cpt(&s, &o);
+    return 0;
+}
+
+/* op: 0 max, 1 min, 2 sum, 3 mult */
+int tvdb_py_composite(const float *a, const float *b, int nx, int ny, int nz,
+                      int op, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "composite alloc"); return -1; }
+    tvdb_dense_grid ga, gb, gr;
+    ga.nx = gb.nx = gr.nx = nx; ga.ny = gb.ny = gr.ny = ny; ga.nz = gb.nz = gr.nz = nz;
+    ga.voxel_size = gb.voxel_size = gr.voxel_size = 1.0f;
+    ga.ox = ga.oy = ga.oz = gb.ox = gb.oy = gb.oz = gr.ox = gr.oy = gr.oz = 0.0f;
+    ga.data = (float *)a; gb.data = (float *)b; gr.data = *out;
+    switch (op) {
+        case 0: tvdb_comp_max(&ga, &gb, &gr); break;
+        case 1: tvdb_comp_min(&ga, &gb, &gr); break;
+        case 2: tvdb_comp_sum(&ga, &gb, &gr); break;
+        case 3: tvdb_comp_mult(&ga, &gb, &gr); break;
+        default: snprintf(s_error_msg, sizeof(s_error_msg), "composite: bad op"); free(*out); *out = NULL; return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_median_filter(const float *data, int nx, int ny, int nz,
+                          int radius, int iterations, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "median alloc"); return -1; }
+    memcpy(*out, data, nvox * sizeof(float));
+    tvdb_dense_grid g; g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
+    g.ox = g.oy = g.oz = 0.0f; g.data = *out;
+    tvdb_median_filter(&g, radius, iterations);  // in place on the copy
+    return 0;
+}
+
+int tvdb_py_mean_curvature_flow(const float *data, int nx, int ny, int nz,
+                                float vs, float dt, int iterations, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "mcf alloc"); return -1; }
+    memcpy(*out, data, nvox * sizeof(float));
+    tvdb_dense_grid g; g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = vs;
+    g.ox = g.oy = g.oz = 0.0f; g.data = *out;
+    tvdb_mean_curvature_flow(&g, dt, iterations);
+    return 0;
+}
+
 /* Rebuild a clean SDF from the isosurface. The output has its own dims and
    transform (sized by mesh-to-SDF), so report all of them; out_data is the
    transferred malloc'd buffer. Returns 0 on success, -1 on error. */

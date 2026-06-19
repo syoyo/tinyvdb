@@ -45,6 +45,30 @@ float tvdb_central_diff_x(const tvdb_dense_grid* g, int ix, int iy, int iz);
 float tvdb_central_diff_y(const tvdb_dense_grid* g, int ix, int iy, int iz);
 float tvdb_central_diff_z(const tvdb_dense_grid* g, int ix, int iy, int iz);
 
+// Vector-grid operators (parallels OpenVDB GridOperators). `out` must be
+// pre-allocated with the same dims as the input.
+//   magnitude:     per-voxel |v| of a vector grid -> scalar grid.
+//   normalize_vec: per-voxel v/|v| (zero where |v| == 0) -> vector grid.
+//   cpt:           closest-point transform of an SDF -> vector grid of world
+//                  positions, cpt(p) = p - sdf(p) * grad(sdf)(p).
+void tvdb_magnitude(const tvdb_dense_vec_grid* vec, tvdb_dense_grid* out);
+void tvdb_normalize_vec(const tvdb_dense_vec_grid* vec, tvdb_dense_vec_grid* out);
+void tvdb_cpt(const tvdb_dense_grid* sdf, tvdb_dense_vec_grid* out);
+
+// Per-voxel composite of two same-shape grids (parallels OpenVDB Composite).
+// `result` is pre-allocated and may alias `a` or `b`.
+void tvdb_comp_max(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result);
+void tvdb_comp_min(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result);
+void tvdb_comp_sum(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result);
+void tvdb_comp_mult(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result);
+
+// In-place filters (parallels OpenVDB Filter / LevelSetFilter).
+//   median_filter:        (2*radius+1)^3 window median, `iterations` passes.
+//   mean_curvature_flow:  level-set smoothing phi += dt*|grad phi|*kappa via
+//                         explicit Euler (kappa = mean curvature); keep dt small.
+void tvdb_median_filter(tvdb_dense_grid* grid, int radius, int iterations);
+void tvdb_mean_curvature_flow(tvdb_dense_grid* grid, float dt, int iterations);
+
 // Phase 2: Advection
 void tvdb_advect_semi_lagrangian(const tvdb_dense_grid* field,
                                  const tvdb_dense_vec_grid* velocity,
