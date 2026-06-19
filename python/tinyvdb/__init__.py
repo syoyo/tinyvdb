@@ -50,6 +50,10 @@ from tinyvdb._tinyvdb import (
     # Measurement
     surface_area,
     volume,
+    grid_statistics,
+    grid_histogram,
+    check_level_set,
+    check_fog_volume,
     # Differential operators
     gradient,
     divergence,
@@ -536,6 +540,10 @@ __all__ = [
     "csg_difference",
     "surface_area",
     "volume",
+    "grid_statistics",
+    "grid_histogram",
+    "check_level_set",
+    "check_fog_volume",
     "gradient",
     "divergence",
     "laplacian",

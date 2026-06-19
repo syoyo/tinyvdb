@@ -14,6 +14,7 @@
 #include "tinyvdb_sparse_tree.h"
 #include "tinyvdb_autograd.h"
 #include "tinyvdb_levelset.h"
+#include "tinyvdb_stats.h"
 
 #include <cmath>
 #include <cstring>
@@ -1974,6 +1975,76 @@ int tvdb_py_level_set_genus(const float *data, int nx, int ny, int nz,
     in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = 1.0f;
     in.ox = in.oy = in.oz = 0.0f; in.data = (float *)data;
     return tvdb_level_set_genus(&in, isovalue);
+}
+
+/* ---- Statistics / diagnostics (tinyvdb_stats.h) ---- */
+
+int tvdb_py_grid_statistics(const float *data, int nx, int ny, int nz,
+                            double *mn, double *mx, double *mean,
+                            double *stddev, double *sum, size_t *count) {
+    tvdb_dense_grid g;
+    g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
+    g.ox = g.oy = g.oz = 0.0f; g.data = (float *)data;
+    tvdb_grid_stats_t s;
+    if (!tvdb_grid_statistics(&g, &s)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "grid_statistics failed");
+        return -1;
+    }
+    *mn = s.min; *mx = s.max; *mean = s.mean;
+    *stddev = s.stddev; *sum = s.sum; *count = s.count;
+    return 0;
+}
+
+/* Histogram: returns *out_counts as a malloc'd array of `nbins` int64. */
+int tvdb_py_grid_histogram(const float *data, int nx, int ny, int nz,
+                           double rmin, double rmax, int nbins,
+                           int64_t **out_counts) {
+    *out_counts = NULL;
+    tvdb_dense_grid g;
+    g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
+    g.ox = g.oy = g.oz = 0.0f; g.data = (float *)data;
+    size_t *tmp = (size_t *)malloc((size_t)nbins * sizeof(size_t));
+    if (!tmp) { snprintf(s_error_msg, sizeof(s_error_msg), "histogram alloc"); return -1; }
+    if (!tvdb_grid_histogram(&g, rmin, rmax, nbins, tmp)) {
+        free(tmp);
+        snprintf(s_error_msg, sizeof(s_error_msg), "grid_histogram failed");
+        return -1;
+    }
+    int64_t *out = (int64_t *)malloc((size_t)nbins * sizeof(int64_t));
+    if (!out) { free(tmp); snprintf(s_error_msg, sizeof(s_error_msg), "histogram alloc"); return -1; }
+    for (int b = 0; b < nbins; ++b) out[b] = (int64_t)tmp[b];
+    free(tmp);
+    *out_counts = out;
+    return 0;
+}
+
+int tvdb_py_check_level_set(const float *data, int nx, int ny, int nz, float vs,
+                            double band_world, double tol,
+                            double *mean_grad, double *max_err,
+                            double *bad_frac, int64_t *band_count) {
+    tvdb_dense_grid g;
+    g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = vs;
+    g.ox = g.oy = g.oz = 0.0f; g.data = (float *)data;
+    tvdb_level_set_check_t c;
+    if (!tvdb_check_level_set(&g, band_world, tol, &c)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "check_level_set failed");
+        return -1;
+    }
+    *mean_grad = c.mean_grad_mag; *max_err = c.max_grad_error;
+    *bad_frac = c.bad_fraction; *band_count = (int64_t)c.band_count;
+    return 0;
+}
+
+int tvdb_py_check_fog_volume(const float *data, int nx, int ny, int nz,
+                             double eps, int *valid, double *mn, double *mx) {
+    tvdb_dense_grid g;
+    g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
+    g.ox = g.oy = g.oz = 0.0f; g.data = (float *)data;
+    if (!tvdb_check_fog_volume(&g, eps, valid, mn, mx)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "check_fog_volume failed");
+        return -1;
+    }
+    return 0;
 }
 
 /* Rebuild a clean SDF from the isosurface. The output has its own dims and

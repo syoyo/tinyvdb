@@ -150,6 +150,15 @@ extern int tvdb_py_csg_difference(const float *, const float *, int, int, int, f
 extern float tvdb_py_surface_area(const float *, int, int, int, float, float, float, float);
 extern float tvdb_py_volume(const float *, int, int, int, float, float, float, float);
 
+extern int tvdb_py_grid_statistics(const float *, int, int, int,
+                                   double *, double *, double *, double *, double *, size_t *);
+extern int tvdb_py_grid_histogram(const float *, int, int, int,
+                                  double, double, int, int64_t **);
+extern int tvdb_py_check_level_set(const float *, int, int, int, float,
+                                   double, double, double *, double *, double *, int64_t *);
+extern int tvdb_py_check_fog_volume(const float *, int, int, int,
+                                    double, int *, double *, double *);
+
 extern int tvdb_py_gradient(const float *, int, int, int, float, float, float, float, float **);
 extern int tvdb_py_divergence(const float *, int, int, int, float, float, float, float, float **);
 extern int tvdb_py_laplacian(const float *, int, int, int, float, float, float, float, float **);
@@ -2350,6 +2359,94 @@ static PyObject *mod_volume(PyObject *module, PyObject *args) {
 }
 
 /* ======================================================================== */
+/*  Statistics / diagnostics                                                */
+/* ======================================================================== */
+
+static PyDenseGrid *as_dense_grid(PyObject *module, PyObject *obj) {
+    module_state *st = get_state(module);
+    if (!PyObject_IsInstance(obj, st->DenseGridType)) {
+        PyErr_SetString(PyExc_TypeError, "Expected a DenseGrid"); return NULL;
+    }
+    PyDenseGrid *g = (PyDenseGrid *)obj;
+    if (!g->data) { raise_vdb_error("DenseGrid has no data"); return NULL; }
+    return g;
+}
+
+static PyObject *mod_grid_statistics(PyObject *module, PyObject *args) {
+    PyObject *grid_obj;
+    if (!PyArg_ParseTuple(args, "O", &grid_obj)) return NULL;
+    PyDenseGrid *g = as_dense_grid(module, grid_obj);
+    if (!g) return NULL;
+    double mn, mx, mean, stddev, sum; size_t count;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_grid_statistics(g->data, g->nx, g->ny, g->nz, &mn, &mx, &mean, &stddev, &sum, &count);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return Py_BuildValue("{s:d,s:d,s:d,s:d,s:d,s:n}", "min", mn, "max", mx,
+                         "mean", mean, "stddev", stddev, "sum", sum, "count", (Py_ssize_t)count);
+}
+
+static PyObject *mod_grid_histogram(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double rmin, rmax; int nbins = 16;
+    static char *kwlist[] = {"grid", "range_min", "range_max", "nbins", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "Odd|i", kwlist,
+                                     &grid_obj, &rmin, &rmax, &nbins)) return NULL;
+    PyDenseGrid *g = as_dense_grid(module, grid_obj);
+    if (!g) return NULL;
+    int64_t *counts = NULL;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_grid_histogram(g->data, g->nx, g->ny, g->nz, rmin, rmax, nbins, &counts);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    PyObject *list = PyList_New(nbins);
+    if (!list) { free(counts); return NULL; }
+    for (int b = 0; b < nbins; ++b) {
+        PyObject *v = PyLong_FromLongLong((long long)counts[b]);
+        if (!v) { free(counts); Py_DECREF(list); return NULL; }
+        PyList_SetItem(list, b, v);
+    }
+    free(counts);
+    return list;
+}
+
+static PyObject *mod_check_level_set(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double band_world = 0.0, tol = 0.1;
+    static char *kwlist[] = {"grid", "band_width", "tol", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|dd", kwlist, &grid_obj, &band_world, &tol))
+        return NULL;
+    PyDenseGrid *g = as_dense_grid(module, grid_obj);
+    if (!g) return NULL;
+    double mean_grad, max_err, bad_frac; int64_t band_count;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_check_level_set(g->data, g->nx, g->ny, g->nz, g->voxel_size,
+                                 band_world, tol, &mean_grad, &max_err, &bad_frac, &band_count);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return Py_BuildValue("{s:d,s:d,s:d,s:n}", "mean_grad_mag", mean_grad,
+                         "max_grad_error", max_err, "bad_fraction", bad_frac,
+                         "band_count", (Py_ssize_t)band_count);
+}
+
+static PyObject *mod_check_fog_volume(PyObject *module, PyObject *args, PyObject *kw) {
+    PyObject *grid_obj; double eps = 1e-5;
+    static char *kwlist[] = {"grid", "eps", NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "O|d", kwlist, &grid_obj, &eps)) return NULL;
+    PyDenseGrid *g = as_dense_grid(module, grid_obj);
+    if (!g) return NULL;
+    int valid; double mn, mx;
+    int rc;
+    Py_BEGIN_ALLOW_THREADS
+    rc = tvdb_py_check_fog_volume(g->data, g->nx, g->ny, g->nz, eps, &valid, &mn, &mx);
+    Py_END_ALLOW_THREADS
+    if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
+    return Py_BuildValue("{s:O,s:d,s:d}", "valid", valid ? Py_True : Py_False,
+                         "min", mn, "max", mx);
+}
+
+/* ======================================================================== */
 /*  Differential operators                                                  */
 /* ======================================================================== */
 
@@ -3321,6 +3418,15 @@ static PyMethodDef module_methods[] = {
     {"csg_difference", mod_csg_difference, METH_VARARGS, "CSG difference"},
     {"surface_area", mod_surface_area, METH_VARARGS, "SDF surface area"},
     {"volume", mod_volume, METH_VARARGS, "SDF volume"},
+    {"grid_statistics", mod_grid_statistics, METH_VARARGS,
+     "grid_statistics(grid) -> {min,max,mean,stddev,sum,count} over all voxels."},
+    {"grid_histogram", (PyCFunction)mod_grid_histogram, METH_VARARGS | METH_KEYWORDS,
+     "grid_histogram(grid, range_min, range_max, nbins=16) -> list of bin counts."},
+    {"check_level_set", (PyCFunction)mod_check_level_set, METH_VARARGS | METH_KEYWORDS,
+     "check_level_set(grid, band_width=0.0, tol=0.1) -> {mean_grad_mag, max_grad_error, "
+     "bad_fraction, band_count}; a clean SDF has mean_grad_mag ~ 1."},
+    {"check_fog_volume", (PyCFunction)mod_check_fog_volume, METH_VARARGS | METH_KEYWORDS,
+     "check_fog_volume(grid, eps=1e-5) -> {valid, min, max}; valid if all values in [0,1]."},
     {"gradient", mod_gradient, METH_VARARGS, "Gradient"},
     {"divergence", mod_divergence, METH_VARARGS, "Divergence"},
     {"laplacian", mod_laplacian_op, METH_VARARGS, "Laplacian"},

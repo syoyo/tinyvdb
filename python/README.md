@@ -162,6 +162,18 @@ clean = tinyvdb.level_set_rebuild(damaged, isovalue=0.0, voxel_size=0.05)
 All generators take `voxel_size=` and `half_width=` (band width in voxels,
 default 3, matching OpenVDB's `LEVEL_SET_HALF_WIDTH`).
 
+### Statistics & diagnostics
+
+```python
+s = tinyvdb.grid_statistics(grid)        # {min, max, mean, stddev, sum, count}
+h = tinyvdb.grid_histogram(grid, -1.0, 1.0, nbins=32)   # list of bin counts
+
+# A valid narrow-band SDF has |grad| == 1 in the band:
+chk = tinyvdb.check_level_set(grid, band_width=0.1, tol=0.1)   # {mean_grad_mag, ...}
+# A valid fog volume has all values in [0, 1]:
+ok = tinyvdb.check_fog_volume(grid)["valid"]
+```
+
 ### Write a dense grid to `.vdb`
 
 Write an existing dense field (e.g. an SDF you already computed) to a fresh `.vdb`

@@ -44,11 +44,13 @@ each theme. Notes point at the nearest existing primitive to reuse.
 
 **B. Statistics, diagnostics & operators**
 
-- [ ] **Active-voxel statistics.** min/max/mean/stddev/extrema +
-      histogram over active voxels (parallels OpenVDB
-      `Statistics`/`Extrema`/`Histogram`). Walk via `tvdb_grid_visit_leaves`.
-- [ ] **Diagnostics / validators.** `check_level_set`, `check_fog_volume`
-      (parallels OpenVDB `Diagnostics`).
+- [x] **Grid statistics.** `tvdb_grid_statistics` (min/max/mean/stddev/sum)
+      + `tvdb_grid_histogram` (parallels OpenVDB `Statistics`/`Histogram`) in
+      `tinyvdb_stats.{h,c}`; Python `grid_statistics` / `grid_histogram`.
+      Covered by `test_stats_ops` (C + py).
+- [x] **Diagnostics / validators.** `tvdb_check_level_set` (band |grad|≈1
+      health) + `tvdb_check_fog_volume` (values in [0,1]) (parallels OpenVDB
+      `Diagnostics`); Python `check_level_set` / `check_fog_volume`.
 - [ ] **Vector-grid operators.** `magnitude`, `normalize`,
       closest-point-transform `cpt` (parallels OpenVDB `GridOperators`);
       gradient/divergence/laplacian/curl already done.
@@ -118,11 +120,12 @@ public API" design — listed for visibility, not on the near-term roadmap.
 
 ## Test coverage (current)
 
-16 ctests register under `build/`:
+17 ctests register under `build/`:
 
 | target | what |
 | --- | --- |
 | `test_ops` | Phase 1-6 dense ops smoke (volume, surface_area, dilate, csg, gradient, Poisson recovery, advection, sampling, TSDF, topology, ray, sparse) |
+| `test_stats_ops` | Statistics (`grid_statistics`/`grid_histogram` on a known linear field) and diagnostics (`check_level_set` clean ≈1 vs damaged ≈3; `check_fog_volume` fog-valid vs raw-SDF-invalid) |
 | `test_levelset` | Level-set primitive generators (sphere/box/torus/capsule): analytic SDF recomputed and matched at every voxel; platonic solids (tetra/cube/octa/dodeca/icosa) bracketed between inscribed/circumscribed spheres; `sdf_to_fog_volume` range/empty-exterior, `sdf_interior_mask` sign-consistency, `sdf_segmentation` (two spheres → exact 2-way interior partition), `sdf_extract_enclosed_regions` (spherical-shell cavity mask) and `level_set_euler_characteristic`/`level_set_genus` (sphere 2/0, torus 0/1, two spheres 4/0, two tori 0/2) and `level_set_rebuild` (damaged sphere renormalized: euler 2, zero crossing ~R; torus resampled keeps genus 1) |
 | `test_sparse_tree` | OpenVDB-tree bridge on `sphere.vdb`: counts, bbox, sparse extraction, dense materialization, leaf-stamp dilate/erode |
 | `test_grid_from_sparse` | Sphere round-trip + synthetic 27-leaf cross-parent test for `tvdb_grid_from_sparse_using_template` |
