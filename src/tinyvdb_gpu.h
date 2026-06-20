@@ -291,6 +291,19 @@ tvdb_status_t tvdb_gpu_integrate_tsdf(tvdb_gpu_context_t* ctx, tvdb_dense_grid* 
 tvdb_status_t tvdb_gpu_grid_statistics(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
                                        tvdb_grid_stats_t* out, tvdb_error_t* err);
 
+// Fog-volume validity check (parallels tvdb_check_fog_volume): reports the
+// value range and whether all voxels lie in [-eps, 1+eps]. Reuses the stats
+// reduction for min/max.
+tvdb_status_t tvdb_gpu_check_fog_volume(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                        double eps, int* out_valid, double* out_min,
+                                        double* out_max, tvdb_error_t* err);
+
+// Narrow-band |grad| ~ 1 level-set health check (parallels
+// tvdb_check_level_set), via a band-voxel gradient reduction.
+tvdb_status_t tvdb_gpu_check_level_set(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                       double band_world, double tol,
+                                       tvdb_level_set_check_t* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

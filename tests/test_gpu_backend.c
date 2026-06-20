@@ -925,6 +925,41 @@ static void test_stats(tvdb_gpu_context_t* ctx) {
     EXPECT_NEAR(gpu.mean, cpu.mean, 1e-4);
     EXPECT_NEAR(gpu.stddev, cpu.stddev, 1e-3);
   }
+
+  // --- check_level_set: sphere SDF should report |grad| ~ 1 -----------------
+  {
+    tvdb_level_set_check_t cc, gc;
+    EXPECT(tvdb_check_level_set(&g, 0.0, 0.5, &cc));
+    if (tvdb_gpu_check_level_set(ctx, &g, 0.0, 0.5, &gc, &err) != TVDB_OK) {
+      fprintf(stderr, "gpu check_level_set failed: %s\n", err.message);
+      EXPECT(0);
+    } else {
+      EXPECT(gc.band_count == cc.band_count);
+      EXPECT_NEAR(gc.mean_grad_mag, cc.mean_grad_mag, 1e-3);
+      EXPECT_NEAR(gc.max_grad_error, cc.max_grad_error, 1e-3);
+      EXPECT_NEAR(gc.bad_fraction, cc.bad_fraction, 0.02);
+    }
+  }
+
+  // --- check_fog_volume: raw SDF invalid, clamped [0,1] copy valid ----------
+  {
+    int cv, gv; double cmn, cmx, gmn, gmx;
+    EXPECT(tvdb_check_fog_volume(&g, 0.01, &cv, &cmn, &cmx));
+    EXPECT(tvdb_gpu_check_fog_volume(ctx, &g, 0.01, &gv, &gmn, &gmx, &err) == TVDB_OK);
+    EXPECT(gv == cv);  // both invalid (SDF has negatives)
+    EXPECT_NEAR(gmn, cmn, 1e-5);
+    EXPECT_NEAR(gmx, cmx, 1e-5);
+
+    tvdb_dense_grid fog;
+    tvdb_dense_grid_init(&fog, g.nx, g.ny, g.nz);
+    fog.voxel_size = g.voxel_size; fog.ox = g.ox; fog.oy = g.oy; fog.oz = g.oz;
+    size_t n = (size_t)g.nx * g.ny * g.nz;
+    for (size_t i = 0; i < n; ++i) { float v = g.data[i]; fog.data[i] = v < 0 ? 0.0f : (v > 1 ? 1.0f : v); }
+    EXPECT(tvdb_check_fog_volume(&fog, 0.01, &cv, &cmn, &cmx));
+    EXPECT(tvdb_gpu_check_fog_volume(ctx, &fog, 0.01, &gv, &gmn, &gmx, &err) == TVDB_OK);
+    EXPECT(gv == cv && gv == 1);  // both valid
+    tvdb_dense_grid_free(&fog);
+  }
   tvdb_dense_grid_free(&g);
 }
 

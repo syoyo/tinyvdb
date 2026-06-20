@@ -34,6 +34,7 @@
 #include "tinyvdb_gpu_segments_along_ray_spv.inc"
 #include "tinyvdb_gpu_tsdf_spv.inc"
 #include "tinyvdb_gpu_stats_spv.inc"
+#include "tinyvdb_gpu_levelset_check_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2023,6 +2024,27 @@ static const char* kTvdbCudaSource =
 "    sum += v; sumsq += v * v;\n"
 "  }\n"
 "  float4 p; p.x = mn; p.y = mx; p.z = sum; p.w = sumsq; partials[t] = p;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_levelset_check(const float* data, float4* partials,\n"
+"    int nx, int ny, int nz, float inv2vs, float band_world, float tol, unsigned int count, unsigned int nthreads) {\n"
+"  unsigned int t = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (t >= nthreads) return;\n"
+"  int inx = nx - 2, iny = ny - 2; unsigned int sl = (unsigned int)(nx * ny);\n"
+"  float sum_mag = 0.0f, max_err = 0.0f, bad = 0.0f, band = 0.0f;\n"
+"  for (unsigned int m = t; m < count; m += nthreads) {\n"
+"    int ix = (int)(m % (unsigned int)inx) + 1;\n"
+"    unsigned int tmp = m / (unsigned int)inx;\n"
+"    int iy = (int)(tmp % (unsigned int)iny) + 1;\n"
+"    int iz = (int)(tmp / (unsigned int)iny) + 1;\n"
+"    unsigned int c = (unsigned int)((iz * ny + iy) * nx + ix);\n"
+"    if (band_world > 0.0f && fabsf(data[c]) > band_world) continue;\n"
+"    float gx = (data[c + 1u] - data[c - 1u]) * inv2vs;\n"
+"    float gy = (data[c + (unsigned int)nx] - data[c - (unsigned int)nx]) * inv2vs;\n"
+"    float gz = (data[c + sl] - data[c - sl]) * inv2vs;\n"
+"    float mag = sqrtf(gx*gx + gy*gy + gz*gz); float err = fabsf(mag - 1.0f);\n"
+"    sum_mag += mag; if (err > max_err) max_err = err; if (err > tol) bad += 1.0f; band += 1.0f;\n"
+"  }\n"
+"  float4 p; p.x = sum_mag; p.y = max_err; p.z = bad; p.w = band; partials[t] = p;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -4783,6 +4805,110 @@ cu_ret:
   tvdb_vk_destroy_buffer(ctx, &bu);
 vk_p: tvdb_vk_destroy_buffer(ctx, &bp);
 vk_i: tvdb_vk_destroy_buffer(ctx, &bi);
+  free(partials);
+  return st;
+}
+
+// ---- diagnostics validators -------------------------------------------------
+
+tvdb_status_t tvdb_gpu_check_fog_volume(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                        double eps, int* out_valid, double* out_min,
+                                        double* out_max, tvdb_error_t* err) {
+  tvdb_grid_stats_t s;
+  tvdb_status_t st = tvdb_gpu_grid_statistics(ctx, grid, &s, err);
+  if (st != TVDB_OK) return st;
+  if (out_min) *out_min = s.min;
+  if (out_max) *out_max = s.max;
+  if (out_valid) *out_valid = (s.min >= -eps && s.max <= 1.0 + eps) ? 1 : 0;
+  return TVDB_OK;
+}
+
+static void tvdb_finalize_ls_check(const float* partials, uint32_t nthreads, size_t band_total,
+                                   tvdb_level_set_check_t* out) {
+  (void)band_total;
+  double sum_mag = 0.0, max_err = 0.0, bad = 0.0, band = 0.0;
+  for (uint32_t t = 0; t < nthreads; ++t) {
+    sum_mag += partials[4*t+0];
+    if (partials[4*t+1] > max_err) max_err = partials[4*t+1];
+    bad += partials[4*t+2];
+    band += partials[4*t+3];
+  }
+  out->band_count = (size_t)band;
+  if (band > 0.0) {
+    out->mean_grad_mag = sum_mag / band;
+    out->bad_fraction = bad / band;
+    out->max_grad_error = max_err;
+  }
+}
+
+tvdb_status_t tvdb_gpu_check_level_set(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                       double band_world, double tol,
+                                       tvdb_level_set_check_t* out, tvdb_error_t* err) {
+  if (!out) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "null check out"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  out->mean_grad_mag = 0.0; out->max_grad_error = 0.0; out->bad_fraction = 0.0; out->band_count = 0;
+  if (!ctx || !grid || !grid->data || grid->nx < 3 || grid->ny < 3 || grid->nz < 3) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid check_level_set arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  size_t n = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
+  size_t interior = (size_t)(grid->nx - 2) * (size_t)(grid->ny - 2) * (size_t)(grid->nz - 2);
+  uint32_t nthreads = interior < 256 ? (uint32_t)interior : 256u;
+  if (nthreads == 0) return TVDB_OK;
+  float inv2vs = (float)(1.0 / (2.0 * (double)grid->voxel_size));
+  float bw = (float)band_world, ftol = (float)tol;
+  float* partials = (float*)malloc((size_t)nthreads * 4u * sizeof(float));
+  if (!partials) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dd = 0, dp = 0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto lcu_ret;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_levelset_check"))) { st = err ? err->status : TVDB_ERROR_IO; goto lcu_ret; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, grid->data, n * sizeof(float), err)) != TVDB_OK) goto lcu_free;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, NULL, (size_t)nthreads * 4u * sizeof(float), err)) != TVDB_OK) goto lcu_free;
+    int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+    unsigned int uc = (unsigned int)interior, unt = nthreads;
+    void* args[] = {&dd, &dp, &nx, &ny, &nz, &inv2vs, &bw, &ftol, &uc, &unt};
+    unsigned int block = 256, gridb = (nthreads + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, gridb, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto lcu_free; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto lcu_free; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(partials, dp, (size_t)nthreads * 4u * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto lcu_free; }
+    st = TVDB_OK;
+lcu_free:
+    if (dp) ctx->cuda.cuMemFree(dp);
+    if (dd) ctx->cuda.cuMemFree(dd);
+lcu_ret:
+    if (st == TVDB_OK) tvdb_finalize_ls_check(partials, nthreads, interior, out);
+    free(partials);
+    return st;
+  }
+
+  tvdb_vk_buffer bi, bp, bu;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bi, err)) != TVDB_OK) { free(partials); return st; }
+  if ((st = tvdb_vk_create_buffer(ctx, (size_t)nthreads * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bp, err)) != TVDB_OK) goto lvk_i;
+  if ((st = tvdb_vk_create_buffer(ctx, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto lvk_p;
+  memcpy(bi.mapped, grid->data, n * sizeof(float));
+  struct { int32_t dim[4]; float cfg[4]; uint32_t count; uint32_t nthreads; uint32_t pad[2]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = grid->nx; par.dim[1] = grid->ny; par.dim[2] = grid->nz;
+  par.cfg[0] = inv2vs; par.cfg[1] = bw; par.cfg[2] = ftol;
+  par.count = (uint32_t)interior; par.nthreads = nthreads;
+  memcpy(bu.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuLevelsetCheckSpv; d.spv_len = kTvdbGpuLevelsetCheckSpv_len; d.descriptor_count = 3;
+  d.buffers[0] = &bi; d.buffers[1] = &bp; d.buffers[2] = &bu;
+  d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (nthreads + 255u) / 256u;
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) {
+    memcpy(partials, bp.mapped, (size_t)nthreads * 4u * sizeof(float));
+    tvdb_finalize_ls_check(partials, nthreads, interior, out);
+  }
+  tvdb_vk_destroy_buffer(ctx, &bu);
+lvk_p: tvdb_vk_destroy_buffer(ctx, &bp);
+lvk_i: tvdb_vk_destroy_buffer(ctx, &bi);
   free(partials);
   return st;
 }
