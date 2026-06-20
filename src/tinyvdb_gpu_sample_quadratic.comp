@@ -1,0 +1,45 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer GridBuffer { float grid[]; };
+layout(std430, set = 0, binding = 1) readonly buffer PointsBuffer { vec4 pts[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer { float out_values[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;
+  vec4 origin_voxel;
+  uint count;
+} u;
+
+float fetch(int x, int y, int z) {
+  x = clamp(x, 0, u.dim.x - 1);
+  y = clamp(y, 0, u.dim.y - 1);
+  z = clamp(z, 0, u.dim.z - 1);
+  return grid[x + u.dim.x * (y + u.dim.y * z)];
+}
+
+// 3-point parabola through (v0,v1,v2) at offsets (-1,0,1), evaluated at w.
+float quad1(float v0, float v1, float v2, float w) {
+  float a = 0.5 * (v0 + v2) - v1;
+  float b = 0.5 * (v2 - v0);
+  return w * (w * a + b) + v1;
+}
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x;
+  if (idx >= u.count) return;
+  vec3 p = pts[idx].xyz;
+  vec3 c = (p - u.origin_voxel.xyz) / u.origin_voxel.w - vec3(0.5);  // cell-center voxel coord
+  ivec3 i0 = ivec3(floor(c));
+  vec3 t = c - vec3(i0);
+  float vx[3];
+  for (int dx = 0; dx < 3; ++dx) {
+    float vy[3];
+    for (int dy = 0; dy < 3; ++dy) {
+      float a = fetch(i0.x - 1 + dx, i0.y - 1 + dy, i0.z - 1);
+      float b = fetch(i0.x - 1 + dx, i0.y - 1 + dy, i0.z);
+      float cc = fetch(i0.x - 1 + dx, i0.y - 1 + dy, i0.z + 1);
+      vy[dy] = quad1(a, b, cc, t.z);
+    }
+    vx[dx] = quad1(vy[0], vy[1], vy[2], t.y);
+  }
+  out_values[idx] = quad1(vx[0], vx[1], vx[2], t.x);
+}

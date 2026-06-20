@@ -104,6 +104,17 @@ tvdb_status_t tvdb_gpu_sample_trilinear_dense_batch(tvdb_gpu_context_t* ctx,
                                                     float* out_values,
                                                     tvdb_error_t* err);
 
+// Triquadratic (3x3x3 stencil, per-axis 3-point parabola) batch sampler,
+// mirroring tvdb_sample_quadratic_dense — smoother than trilinear. One thread
+// per query point; out-of-range fetches clamp to the grid edge. Vulkan and
+// CUDA/NVRTC.
+tvdb_status_t tvdb_gpu_sample_quadratic_dense_batch(tvdb_gpu_context_t* ctx,
+                                                    const tvdb_dense_grid* grid,
+                                                    const tvdb_vec3f* pts,
+                                                    size_t n,
+                                                    float* out_values,
+                                                    tvdb_error_t* err);
+
 // Vulkan-only experimental path that uploads the dense grid to a 3D sampled
 // image and uses hardware linear filtering. Returns TVDB_ERROR_UNIMPLEMENTED
 // for non-Vulkan contexts or when SPIR-V/image support is unavailable.

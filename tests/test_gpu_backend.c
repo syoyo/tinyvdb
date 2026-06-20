@@ -214,6 +214,31 @@ static void test_sample(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&g);
 }
 
+static void test_sample_quadratic(tvdb_gpu_context_t* ctx) {
+  tvdb_dense_grid g;
+  fill_grid(&g, 8, 0.0f);
+  tvdb_vec3f pts[6] = {
+      {-0.30f, -0.05f, 0.40f},
+      { 0.20f,  0.30f, 0.70f},
+      {-0.45f, -0.20f, 0.15f},
+      { 1.00f,  0.10f, 1.10f},
+      {-1.00f, -1.00f, 0.00f},   // far out-of-range -> edge clamp
+      { 0.55f,  0.45f, 0.95f},
+  };
+  float cpu[6], gpu[6];
+  tvdb_sample_quadratic_dense_batch(&g, pts, 6, cpu);
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_sample_quadratic_dense_batch(ctx, &g, pts, 6, gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "quadratic sample failed: %s\n", err.message);
+    EXPECT(0);
+    tvdb_dense_grid_free(&g);
+    return;
+  }
+  for (int i = 0; i < 6; ++i) EXPECT_NEAR(gpu[i], cpu[i], 2e-5f);
+  tvdb_dense_grid_free(&g);
+}
+
 static double now_seconds(void) {
   struct timespec ts;
   timespec_get(&ts, TIME_UTC);
@@ -1743,6 +1768,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_gpu_sdf_box(ctx, label);
   test_gpu_sdf_torus(ctx, label);
   test_sample(ctx);
+  test_sample_quadratic(ctx);
   test_vulkan_image3d_sample_and_bench(ctx, &info);
   test_vulkan_partial_sparse_image3d(ctx, &info);
   test_sparse_conv(ctx);

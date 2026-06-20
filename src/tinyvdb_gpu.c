@@ -17,6 +17,7 @@
 #include "tinyvdb_gpu_csg_spv.inc"
 #include "tinyvdb_gpu_sample_spv.inc"
 #include "tinyvdb_gpu_sample_image_spv.inc"
+#include "tinyvdb_gpu_sample_quadratic_spv.inc"
 #include "tinyvdb_gpu_sparse_conv_spv.inc"
 #include "tinyvdb_gpu_sdf_sphere_spv.inc"
 #include "tinyvdb_gpu_sdf_box_spv.inc"
@@ -1787,6 +1788,35 @@ static const char* kTvdbCudaSource =
 "  float c1 = c01 + (c11 - c01) * ty;\n"
 "  out_values[idx] = c0 + (c1 - c0) * tz;\n"
 "}\n"
+"__device__ float tvdb_quad1(float v0, float v1, float v2, float w) {\n"
+"  float a = 0.5f * (v0 + v2) - v1;\n"
+"  float b = 0.5f * (v2 - v0);\n"
+"  return w * (w * a + b) + v1;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_sample_quadratic(const float* grid, const tvdb_float4* pts, float* out_values,\n"
+"                                             int nx, int ny, int nz, float ox, float oy, float oz, float vs,\n"
+"                                             unsigned int count) {\n"
+"  unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (idx >= count) return;\n"
+"  tvdb_float4 p = pts[idx];\n"
+"  float cx = (p.x - ox) / vs - 0.5f;\n"
+"  float cy = (p.y - oy) / vs - 0.5f;\n"
+"  float cz = (p.z - oz) / vs - 0.5f;\n"
+"  int ix = (int)floorf(cx); int iy = (int)floorf(cy); int iz = (int)floorf(cz);\n"
+"  float tu = cx - (float)ix; float tv = cy - (float)iy; float tw = cz - (float)iz;\n"
+"  float vx[3];\n"
+"  for (int dx = 0; dx < 3; ++dx) {\n"
+"    float vy[3];\n"
+"    for (int dy = 0; dy < 3; ++dy) {\n"
+"      float a = tvdb_fetch(grid, nx, ny, nz, ix - 1 + dx, iy - 1 + dy, iz - 1);\n"
+"      float b = tvdb_fetch(grid, nx, ny, nz, ix - 1 + dx, iy - 1 + dy, iz);\n"
+"      float cc = tvdb_fetch(grid, nx, ny, nz, ix - 1 + dx, iy - 1 + dy, iz + 1);\n"
+"      vy[dy] = tvdb_quad1(a, b, cc, tw);\n"
+"    }\n"
+"    vx[dx] = tvdb_quad1(vy[0], vy[1], vy[2], tv);\n"
+"  }\n"
+"  out_values[idx] = tvdb_quad1(vx[0], vx[1], vx[2], tu);\n"
+"}\n"
 "__device__ float tvdb_sparse_lookup(const tvdb_int4* coords, const float* values, unsigned int count, int x, int y, int z, float pad_value) {\n"
 "  for (unsigned int i = 0; i < count; ++i) {\n"
 "    tvdb_int4 c = coords[i];\n"
@@ -3060,9 +3090,9 @@ done:
   return st;
 }
 
-static tvdb_status_t tvdb_cuda_sample_dense(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid_in,
+static tvdb_status_t tvdb_cuda_sample_dense_kernel(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid_in,
                                             const tvdb_vec3f* pts, size_t n,
-                                            float* out_values, tvdb_error_t* err) {
+                                            float* out_values, const char* kernel_name, tvdb_error_t* err) {
   size_t voxels = (size_t)grid_in->nx * (size_t)grid_in->ny * (size_t)grid_in->nz;
   CUmodule module = NULL;
   CUfunction fn = NULL;
@@ -3075,7 +3105,7 @@ static tvdb_status_t tvdb_cuda_sample_dense(tvdb_gpu_context_t* ctx, const tvdb_
   for (size_t i = 0; i < n; ++i) {
     p4[4*i+0] = pts[i].x; p4[4*i+1] = pts[i].y; p4[4*i+2] = pts[i].z; p4[4*i+3] = 0.0f;
   }
-  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_sample"))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, kernel_name))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
   if ((st = tvdb_cuda_alloc_copy_in(ctx, &dg, grid_in->data, voxels * sizeof(float), err)) != TVDB_OK) goto done;
   if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, p4, n * 4u * sizeof(float), err)) != TVDB_OK) goto done;
   if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, n * sizeof(float), err)) != TVDB_OK) goto done;
@@ -3095,6 +3125,18 @@ done:
   if (dp) ctx->cuda.cuMemFree(dp);
   if (dg) ctx->cuda.cuMemFree(dg);
   return st;
+}
+
+static tvdb_status_t tvdb_cuda_sample_dense(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid_in,
+                                            const tvdb_vec3f* pts, size_t n,
+                                            float* out_values, tvdb_error_t* err) {
+  return tvdb_cuda_sample_dense_kernel(ctx, grid_in, pts, n, out_values, "tvdb_cuda_sample", err);
+}
+
+static tvdb_status_t tvdb_cuda_sample_quadratic_dense(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid_in,
+                                            const tvdb_vec3f* pts, size_t n,
+                                            float* out_values, tvdb_error_t* err) {
+  return tvdb_cuda_sample_dense_kernel(ctx, grid_in, pts, n, out_values, "tvdb_cuda_sample_quadratic", err);
 }
 
 static tvdb_status_t tvdb_cuda_sparse_conv(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
@@ -3422,6 +3464,54 @@ tvdb_status_t tvdb_gpu_sample_trilinear_dense_batch(tvdb_gpu_context_t* ctx,
 done_o: tvdb_vk_destroy_buffer(ctx, &bo);
 done_pnts: tvdb_vk_destroy_buffer(ctx, &bpnts);
 done_g: tvdb_vk_destroy_buffer(ctx, &bg);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_sample_quadratic_dense_batch(tvdb_gpu_context_t* ctx,
+                                                    const tvdb_dense_grid* grid,
+                                                    const tvdb_vec3f* pts,
+                                                    size_t n,
+                                                    float* out_values,
+                                                    tvdb_error_t* err) {
+  if (!ctx || !grid || !grid->data || !pts || !out_values) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid quadratic sample arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (n == 0) return TVDB_OK;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    return tvdb_cuda_sample_quadratic_dense(ctx, grid, pts, n, out_values, err);
+  }
+  size_t voxels = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
+  tvdb_vk_buffer bg, bpnts, bo, bpar;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, voxels * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bg, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bpnts, err)) != TVDB_OK) goto qdone_g;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto qdone_pnts;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bpar, err)) != TVDB_OK) goto qdone_o;
+  memcpy(bg.mapped, grid->data, voxels * sizeof(float));
+  float* p4 = (float*)bpnts.mapped;
+  for (size_t i = 0; i < n; ++i) {
+    p4[4*i+0] = pts[i].x; p4[4*i+1] = pts[i].y; p4[4*i+2] = pts[i].z; p4[4*i+3] = 0.0f;
+  }
+  struct { int32_t dim[4]; float ov[4]; uint32_t count; uint32_t pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = grid->nx; par.dim[1] = grid->ny; par.dim[2] = grid->nz;
+  par.ov[0] = grid->ox; par.ov[1] = grid->oy; par.ov[2] = grid->oz; par.ov[3] = grid->voxel_size;
+  par.count = (uint32_t)n;
+  memcpy(bpar.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuSampleQuadraticSpv; d.spv_len = kTvdbGpuSampleQuadraticSpv_len; d.descriptor_count = 4;
+  d.buffers[0] = &bg; d.buffers[1] = &bpnts; d.buffers[2] = &bo; d.buffers[3] = &bpar;
+  d.descriptor_types[0] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out_values, bo.mapped, n * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bpar);
+qdone_o: tvdb_vk_destroy_buffer(ctx, &bo);
+qdone_pnts: tvdb_vk_destroy_buffer(ctx, &bpnts);
+qdone_g: tvdb_vk_destroy_buffer(ctx, &bg);
   return st;
 }
 
