@@ -450,6 +450,14 @@ tvdb_status_t tvdb_gpu_gaussian_rasterize_backward(tvdb_gpu_context_t* ctx,
     const tvdb_raster_output_t* fwd, const float* dL_dC, const float* dL_dA,
     float background[3], float alpha_threshold, tvdb_gaussian_grad_t* grad_out, tvdb_error_t* err);
 
+// GPU windowed SSIM (Gaussian-splat training-loss helper): structural
+// similarity between two HxWxC images with an 11x11 Gaussian window (sigma 1.5,
+// clamp-to-edge), averaged over channels. `*out_mean` gets the image-mean SSIM;
+// `out_map` (nullable) gets the per-pixel SSIM (width*height floats).
+tvdb_status_t tvdb_gpu_ssim(tvdb_gpu_context_t* ctx, const float* img_a, const float* img_b,
+                            uint32_t width, uint32_t height, uint32_t channels, float data_range,
+                            float* out_mean, float* out_map, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

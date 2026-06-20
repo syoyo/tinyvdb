@@ -1550,6 +1550,51 @@ static void test_gaussian_backward_gpu(tvdb_gpu_context_t* ctx) {
   free(dC); free(dA);
 }
 
+static float ref_ssim_mean(const float* a, const float* b, int W, int H, int C, float dr) {
+  const int R = 5, wn = 11; float win[121], sum = 0.0f, sigma = 1.5f;
+  for (int dy=-R; dy<=R; ++dy) for (int dx=-R; dx<=R; ++dx) { float v = expf(-(float)(dx*dx+dy*dy)/(2.0f*sigma*sigma)); win[(dy+R)*wn+(dx+R)]=v; sum+=v; }
+  for (int i=0;i<121;++i) win[i]/=sum;
+  float c1=(0.01f*dr)*(0.01f*dr), c2=(0.03f*dr)*(0.03f*dr);
+  double acc = 0.0;
+  for (int py=0; py<H; ++py) for (int px=0; px<W; ++px) {
+    float ssim_sum = 0.0f;
+    for (int c=0;c<C;++c){ float ma=0,mb=0,maa=0,mbb=0,mab=0;
+      for (int dy=-R;dy<=R;++dy) for (int dx=-R;dx<=R;++dx){
+        int qx=px+dx; if(qx<0)qx=0; if(qx>=W)qx=W-1; int qy=py+dy; if(qy<0)qy=0; if(qy>=H)qy=H-1;
+        float wgt=win[(dy+R)*wn+(dx+R)]; float va=a[(qy*W+qx)*C+c], vb=b[(qy*W+qx)*C+c];
+        ma+=wgt*va; mb+=wgt*vb; maa+=wgt*va*va; mbb+=wgt*vb*vb; mab+=wgt*va*vb;
+      }
+      float va2=maa-ma*ma, vb2=mbb-mb*mb, vab=mab-ma*mb;
+      ssim_sum += ((2.0f*ma*mb+c1)*(2.0f*vab+c2))/((ma*ma+mb*mb+c1)*(va2+vb2+c2));
+    }
+    acc += ssim_sum/(float)C;
+  }
+  return (float)(acc/((double)W*H));
+}
+
+static void test_ssim(tvdb_gpu_context_t* ctx) {
+  const int W = 16, H = 16, C = 3;
+  float* a = (float*)malloc((size_t)W*H*C*sizeof(float));
+  float* b = (float*)malloc((size_t)W*H*C*sizeof(float));
+  unsigned int s = 4242u;
+  for (int i = 0; i < W*H*C; ++i) {
+    s = s*1664525u + 1013904223u; float r = (float)(s>>8)/16777216.0f;
+    a[i] = r; b[i] = r*0.8f + 0.1f;  // a degraded copy
+  }
+  tvdb_error_t err; memset(&err, 0, sizeof(err));
+  float gpu_mean = 0.0f, self = 0.0f;
+  if (tvdb_gpu_ssim(ctx, a, b, W, H, C, 1.0f, &gpu_mean, NULL, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu ssim failed: %s\n", err.message); EXPECT(0);
+  } else {
+    float cpu_mean = ref_ssim_mean(a, b, W, H, C, 1.0f);
+    EXPECT_NEAR(gpu_mean, cpu_mean, 2e-5f);
+    EXPECT(gpu_mean > 0.0f && gpu_mean < 1.0f);  // degraded -> SSIM in (0,1)
+    EXPECT(tvdb_gpu_ssim(ctx, a, a, W, H, C, 1.0f, &self, NULL, &err) == TVDB_OK);
+    EXPECT_NEAR(self, 1.0f, 1e-4f);  // identical images -> SSIM 1
+  }
+  free(a); free(b);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1596,6 +1641,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_buffer_interop(ctx);
   test_gaussian_forward(ctx);
   test_gaussian_backward_gpu(ctx);
+  test_ssim(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

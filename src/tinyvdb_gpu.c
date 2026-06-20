@@ -53,6 +53,7 @@
 #include "tinyvdb_gpu_conv_transpose_scatter_spv.inc"
 #include "tinyvdb_gpu_gaussian_forward_spv.inc"
 #include "tinyvdb_gpu_gaussian_backward_spv.inc"
+#include "tinyvdb_gpu_ssim_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2382,6 +2383,23 @@ static const char* kTvdbCudaSource =
 "    tvdb_atomic_add_f(&grad[gb+4u], dL_dsigma*0.5f*dy*dy);\n"
 "    for (unsigned int f=0;f<F;++f) Sc[f]+=w*gauss[g+8u+f]; Tc=T_pre;\n"
 "  }\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_ssim(const float* a, const float* b, const float* win, float* ssim,\n"
+"    int W, int H, int C, int R, float c1, float c2) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (gid >= (unsigned int)(W*H)) return;\n"
+"  int px=(int)gid%W, py=(int)gid/W; int win_n=2*R+1; float ssim_sum=0.0f;\n"
+"  for (int c=0;c<C;++c){ float ma=0,mb=0,maa=0,mbb=0,mab=0;\n"
+"    for (int dy=-R;dy<=R;++dy) for (int dx=-R;dx<=R;++dx){\n"
+"      int qx=px+dx; if(qx<0)qx=0; if(qx>=W)qx=W-1; int qy=py+dy; if(qy<0)qy=0; if(qy>=H)qy=H-1;\n"
+"      float wgt=win[(dy+R)*win_n+(dx+R)]; float va=a[(qy*W+qx)*C+c], vb=b[(qy*W+qx)*C+c];\n"
+"      ma+=wgt*va; mb+=wgt*vb; maa+=wgt*va*va; mbb+=wgt*vb*vb; mab+=wgt*va*vb;\n"
+"    }\n"
+"    float va2=maa-ma*ma, vb2=mbb-mb*mb, vab=mab-ma*mb;\n"
+"    float num=(2.0f*ma*mb+c1)*(2.0f*vab+c2); float den=(ma*ma+mb*mb+c1)*(va2+vb2+c2);\n"
+"    ssim_sum += num/den;\n"
+"  }\n"
+"  ssim[gid] = ssim_sum/(float)C;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -6952,5 +6970,92 @@ gb_accum:
   }
 gb_done:
   free(e4); free(gpack); free(pix); free(gradf);
+  return st;
+}
+
+// ---- SSIM (Gaussian-splat training helper) ----------------------------------
+
+tvdb_status_t tvdb_gpu_ssim(tvdb_gpu_context_t* ctx, const float* img_a, const float* img_b,
+                            uint32_t width, uint32_t height, uint32_t channels, float data_range,
+                            float* out_mean, float* out_map, tvdb_error_t* err) {
+  if (!ctx || !img_a || !img_b || !out_mean || width == 0 || height == 0 || channels == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid ssim arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (data_range <= 0.0f) data_range = 1.0f;
+  const int R = 5;            // 11x11 window
+  const int win_n = 2*R + 1;
+  size_t nwin = (size_t)win_n * win_n;
+  size_t npix = (size_t)width * height, nimg = npix * channels;
+  float c1 = (0.01f*data_range)*(0.01f*data_range), c2 = (0.03f*data_range)*(0.03f*data_range);
+
+  // Normalized Gaussian window (sigma 1.5), matching the standard SSIM kernel.
+  float* win = (float*)malloc(nwin * sizeof(float));
+  float* map = (float*)malloc(npix * sizeof(float));
+  if (!win || !map) { free(win); free(map); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  {
+    float sigma = 1.5f, sum = 0.0f;
+    for (int dy = -R; dy <= R; ++dy) for (int dx = -R; dx <= R; ++dx) {
+      float v = expf(-(float)(dx*dx + dy*dy) / (2.0f*sigma*sigma));
+      win[(dy+R)*win_n + (dx+R)] = v; sum += v;
+    }
+    for (size_t i = 0; i < nwin; ++i) win[i] /= sum;
+  }
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr da=0, db=0, dw=0, dm=0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto ss_host;
+    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_ssim"))) { st=err?err->status:TVDB_ERROR_IO; goto ss_host; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &da, img_a, nimg*sizeof(float), err)) != TVDB_OK) goto ss_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &db, img_b, nimg*sizeof(float), err)) != TVDB_OK) goto ss_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dw, win, nwin*sizeof(float), err)) != TVDB_OK) goto ss_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dm, NULL, npix*sizeof(float), err)) != TVDB_OK) goto ss_dev;
+    int W=(int)width, H=(int)height, C=(int)channels;
+    void* args[] = {&da,&db,&dw,&dm,&W,&H,&C,(void*)&R,&c1,&c2};
+    unsigned int block=64;
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,((unsigned int)npix+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto ss_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto ss_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(map, dm, npix*sizeof(float)))) { st=err?err->status:TVDB_ERROR_IO; goto ss_dev; }
+    st = TVDB_OK;
+ss_dev:
+    if (dm) ctx->cuda.cuMemFree(dm); if (dw) ctx->cuda.cuMemFree(dw); if (db) ctx->cuda.cuMemFree(db); if (da) ctx->cuda.cuMemFree(da);
+    goto ss_finish;
+  }
+  {
+    tvdb_vk_buffer ba, bb, bw, bm, bu;
+    if ((st = tvdb_vk_create_buffer(ctx, nimg*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &ba, err)) != TVDB_OK) goto ss_host;
+    if ((st = tvdb_vk_create_buffer(ctx, nimg*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bb, err)) != TVDB_OK) goto sd_a;
+    if ((st = tvdb_vk_create_buffer(ctx, nwin*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bw, err)) != TVDB_OK) goto sd_b;
+    if ((st = tvdb_vk_create_buffer(ctx, npix*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bm, err)) != TVDB_OK) goto sd_w;
+    if ((st = tvdb_vk_create_buffer(ctx, 32, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto sd_m;
+    memcpy(ba.mapped, img_a, nimg*sizeof(float)); memcpy(bb.mapped, img_b, nimg*sizeof(float)); memcpy(bw.mapped, win, nwin*sizeof(float));
+    struct { uint32_t dim[4]; float c1; float c2; uint32_t pad[2]; } par;
+    memset(&par, 0, sizeof(par));
+    par.dim[0]=width; par.dim[1]=height; par.dim[2]=channels; par.dim[3]=(uint32_t)R; par.c1=c1; par.c2=c2;
+    memcpy(bu.mapped, &par, sizeof(par));
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = kTvdbGpuSsimSpv; d.spv_len = kTvdbGpuSsimSpv_len; d.descriptor_count = 5;
+    d.buffers[0]=&ba; d.buffers[1]=&bb; d.buffers[2]=&bw; d.buffers[3]=&bm; d.buffers[4]=&bu;
+    for (int i = 0; i < 4; ++i) d.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    d.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    d.group_x = (uint32_t)((npix + 63u) / 64u);
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st == TVDB_OK) memcpy(map, bm.mapped, npix*sizeof(float));
+    tvdb_vk_destroy_buffer(ctx, &bu);
+sd_m: tvdb_vk_destroy_buffer(ctx, &bm);
+sd_w: tvdb_vk_destroy_buffer(ctx, &bw);
+sd_b: tvdb_vk_destroy_buffer(ctx, &bb);
+sd_a: tvdb_vk_destroy_buffer(ctx, &ba);
+  }
+ss_finish:
+  if (st == TVDB_OK) {
+    double sum = 0.0; for (size_t p = 0; p < npix; ++p) sum += map[p];
+    *out_mean = (float)(sum / (double)npix);
+    if (out_map) memcpy(out_map, map, npix*sizeof(float));
+  }
+ss_host:
+  free(win); free(map);
   return st;
 }

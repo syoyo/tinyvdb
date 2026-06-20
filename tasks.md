@@ -301,8 +301,13 @@ each theme. Notes point at the nearest existing primitive to reuse.
       preserving the dependency-free C API.
 - [ ] **P2: PyTorch integration.** Expose selected GPU ops through PyTorch
       tensors/autograd only as an optional layer outside the core C API.
-- [ ] **P2: Gaussian training helpers.** Consider fused SSIM, Gaussian
-      projection/SH/MCMC helpers after the rasterizer and batching layers exist.
+- [~] **P2: Gaussian training helpers.** `tvdb_gpu_ssim` — windowed SSIM
+      (11x11 Gaussian window, sigma 1.5, clamp-to-edge, per-channel, image-mean +
+      optional per-pixel map) on Vulkan and CUDA/NVRTC, the core Gaussian-splat
+      training-loss helper. Covered by `test_gpu_backend` (`test_ssim`:
+      GPU-vs-CPU-reference parity + SSIM(x,x)=1). *Still open:* Gaussian
+      projection / SH evaluation / MCMC densification helpers (each a larger,
+      separate subsystem).
 - [ ] **P2: multi-GPU construction/scheduling.** Defer NanoVDB/fvdb-style
       multi-GPU grid construction until single-GPU construction and device
       interop are stable.
