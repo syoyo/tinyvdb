@@ -189,7 +189,10 @@ each theme. Notes point at the nearest existing primitive to reuse.
 - [ ] **P0: device-to-device buffer interop.** Sample batches are currently
       host-visible Vulkan buffers owned by tinyvdb. Add import/export or
       caller-provided buffer hooks for Vulkan and CUDA so sample/query results
-      can stay on device.
+      can stay on device. *Deferred:* true cross-API interop needs
+      `VK_KHR_external_memory_fd`/Win32 + CUDA external-memory import, whose ABI
+      structs are outside the minimal local Vulkan ABI the backend currently
+      defines; this is an architectural extension rather than a compute kernel.
 - [~] **P0: GPU sparse topology ops.** Dense `tvdb_gpu_dilate`/`tvdb_gpu_erode`
       (6-neighbor min/max morphology), `tvdb_gpu_prune`, `tvdb_gpu_coarsen`
       (block average), and `tvdb_gpu_refine` (trilinear upsample), plus sparse
@@ -235,7 +238,11 @@ each theme. Notes point at the nearest existing primitive to reuse.
       for point clouds whose ijk bbox volume exceeds VRAM.
 - [ ] **P1: sparse convolution upgrades.** Add transposed convolution,
       arbitrary stride, output-grid builders, and a faster near-dense backend
-      beyond the current same-topology sparse conv3d.
+      beyond the current same-topology sparse conv3d. *Note:* the
+      atomic-counter compaction primitive (used by voxelize/dilate/erode) is the
+      building block for the output-grid builders; the remaining work is the
+      strided/transposed conv math plus a CPU reference to test against (the CPU
+      `tvdb_sparse_conv3d` is same-topology only).
 - [~] **P1: GPU sampling/splatting gradients.** `tvdb_gpu_splat_trilinear_dense`
       (scatter-add with portable CAS atomic-float on Vulkan, native atomicAdd on
       CUDA) mirrors `tvdb_splat_trilinear_dense`; covered by `test_gpu_backend`
@@ -316,7 +323,7 @@ core — listed for visibility, not on the near-term roadmap.
 | `test_reference_roundtrip` | libopenvdb-generated reference grids (bool/float/double/int32/int64/vec3s) round-trip through tinyvdb. Cross-tool byte-format guard |
 | `test_gaussian_backward` | Gaussian-splat rasterizer backward pass: 16×16 image from 4 random gaussians, all 36 analytic gradients checked against central FD |
 | `test_nanovdb_reference` | nanovdb_convert-produced `.nvdb` corpus: hierarchical accessor + trilinear sampler + CRC32 checksum validation + VDB→NanoVDB conversion exactness |
-| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling, same-topology sparse conv3d against CPU, and spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 parity vs CPU on a 4³ active block + outside coords); skips with code 77 if no runtime backend/device is available |
+| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling, same-topology sparse conv3d against CPU, spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear splat, points→mask, sparse `voxelize_points`, sparse dilate/erode, dense `merge_grids`, and dense→sparse active-coord extraction — all parity-checked vs CPU; skips with code 77 if no runtime backend/device is available |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate/erode/CSG/update_from_sparse → save → reload |
 | `test_dense_writer` (py) | Dense + sparse `.vdb` writer/reader: float SDF (raw + numpy), all compression modes, multi-leaf, analytic sphere, plus typed `write_dense_grid`/`read_dense_grid` and `write_sparse_grid`/`read_sparse_grid` round-trips for `float64`/`int32`/`int64`/`vec3f`/`bool` with grid-type-string checks |
 
