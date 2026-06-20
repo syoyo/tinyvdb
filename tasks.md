@@ -199,15 +199,24 @@ each theme. Notes point at the nearest existing primitive to reuse.
 > Gaussian projection/SH/MCMC, a general JaggedTensor container) — none are
 > unimplemented compute kernels.
 
-- [~] **P0: device-to-device buffer interop.** Public caller-owned device buffer
+- [x] **P0: device-to-device buffer interop.** Public caller-owned device buffer
       `tvdb_gpu_buffer_t` with `tvdb_gpu_buffer_create`/`destroy`/`upload`/
       `download`/`size` and `tvdb_gpu_buffer_native_handle` (exports the VkBuffer
       / CUdeviceptr as a uint64) on Vulkan and CUDA — the foundation for keeping
       results device-resident and consuming them from caller-side GPU code.
-      Covered by `test_gpu_backend` (`test_buffer_interop`, device round-trip +
-      handle). *Still open:* true cross-API import/export needs
-      `VK_KHR_external_memory_fd`/Win32 + CUDA external-memory ABI structs
-      outside the minimal local Vulkan ABI — an architectural extension.
+      *Cross-API import/export now implemented* (Linux opaque-fd): the local
+      Vulkan ABI was extended with `VK_KHR_external_memory{,_fd}` (1.1 instance,
+      `vkGetMemoryFdKHR`) and the CUDA external-memory driver entry points
+      (`cuImportExternalMemory`/`cuExternalMemoryGetMappedBuffer`/`cuDestroyExternalMemory`),
+      surfaced as `tvdb_gpu_context_supports_external_memory`,
+      `tvdb_gpu_buffer_create_exportable`, `tvdb_gpu_buffer_export`, and
+      `tvdb_gpu_buffer_import`. A device-local exportable Vulkan buffer is shared
+      with CUDA on the same GPU with no host round-trip. Covered by
+      `test_gpu_backend` (`test_buffer_interop` device round-trip + handle, and
+      `test_external_memory_interop` Vulkan→CUDA bit-exact share, skipping
+      gracefully when either backend/extension is absent). *Still open (optional):*
+      Win32 (`VK_KHR_external_memory_win32`/`CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32`)
+      handles for non-Linux hosts.
 - [x] **P0: GPU sparse topology ops.** Dense `tvdb_gpu_dilate`/`tvdb_gpu_erode`
       (6-neighbor min/max morphology), `tvdb_gpu_prune`, `tvdb_gpu_coarsen`
       (block average), and `tvdb_gpu_refine` (trilinear upsample), plus sparse
@@ -374,7 +383,7 @@ core — listed for visibility, not on the near-term roadmap.
 | `test_reference_roundtrip` | libopenvdb-generated reference grids (bool/float/double/int32/int64/vec3s) round-trip through tinyvdb. Cross-tool byte-format guard |
 | `test_gaussian_backward` | Gaussian-splat rasterizer backward pass: 16×16 image from 4 random gaussians, all 36 analytic gradients checked against central FD |
 | `test_nanovdb_reference` | nanovdb_convert-produced `.nvdb` corpus: hierarchical accessor + trilinear sampler + CRC32 checksum validation + VDB→NanoVDB conversion exactness |
-| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling, same-topology sparse conv3d against CPU, spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear splat, points→mask, sparse `voxelize_points`, sparse dilate/erode, dense `merge_grids`, dense→sparse active-coord extraction, triangle-mesh→SDF, marching cubes, strided + transposed sparse conv, a device-resident buffer round-trip, the Gaussian-splat rasterizer (forward + backward), SSIM, batched sparse conv, and multi-context scheduling — all parity-checked vs CPU (33 test cases); skips with code 77 if no runtime backend/device is available |
+| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling, same-topology sparse conv3d against CPU, spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear splat, points→mask, sparse `voxelize_points`, sparse dilate/erode, dense `merge_grids`, dense→sparse active-coord extraction, triangle-mesh→SDF, marching cubes, strided + transposed sparse conv, a device-resident buffer round-trip, cross-API external-memory interop (Vulkan→CUDA opaque-fd share, bit-exact, skips if unsupported), the Gaussian-splat rasterizer (forward + backward), SSIM, batched sparse conv, and multi-context scheduling — all parity-checked vs CPU (34 test cases); skips with code 77 if no runtime backend/device is available |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate/erode/CSG/update_from_sparse → save → reload |
 | `test_dense_writer` (py) | Dense + sparse `.vdb` writer/reader: float SDF (raw + numpy), all compression modes, multi-leaf, analytic sphere, plus typed `write_dense_grid`/`read_dense_grid` and `write_sparse_grid`/`read_sparse_grid` round-trips for `float64`/`int32`/`int64`/`vec3f`/`bool` with grid-type-string checks |
 

@@ -1671,6 +1671,57 @@ static void test_multi_gpu(tvdb_gpu_context_t* ctx) {
   for (int g = 0; g < 4; ++g) { tvdb_sparse_grid_free(&in[g]); tvdb_sparse_grid_free(&single[g]); tvdb_sparse_grid_free(&multi[g]); }
 }
 
+// Cross-API external-memory interop: fill a Vulkan exportable buffer, export its
+// memory as an opaque fd, import into CUDA, and read it back. Needs a Vulkan
+// exporter and a CUDA importer on the same GPU; skips gracefully otherwise.
+static void test_external_memory_interop(void) {
+  tvdb_error_t verr, cerr, err;
+  memset(&verr, 0, sizeof(verr)); memset(&cerr, 0, sizeof(cerr)); memset(&err, 0, sizeof(err));
+  tvdb_gpu_context_t* vk = NULL;
+  tvdb_gpu_context_t* cu = NULL;
+  if (tvdb_gpu_context_create(TVDB_GPU_BACKEND_VULKAN, 0, &vk, &verr) != TVDB_OK) {
+    printf("external-memory: SKIP (no Vulkan exporter)\n"); return;
+  }
+  if (tvdb_gpu_context_create(TVDB_GPU_BACKEND_CUDA, 0, &cu, &cerr) != TVDB_OK) {
+    printf("external-memory: SKIP (no CUDA importer)\n"); tvdb_gpu_context_destroy(vk); return;
+  }
+  if (!tvdb_gpu_context_supports_external_memory(vk) || !tvdb_gpu_context_supports_external_memory(cu)) {
+    printf("external-memory: SKIP (unsupported: vk=%d cu=%d)\n",
+           tvdb_gpu_context_supports_external_memory(vk), tvdb_gpu_context_supports_external_memory(cu));
+    tvdb_gpu_context_destroy(cu); tvdb_gpu_context_destroy(vk); return;
+  }
+
+  const size_t N = 1024;  // 4 KiB, far under the VRAM budget
+  float src[1024], dst[1024];
+  for (size_t i = 0; i < N; ++i) { src[i] = 0.091f * (float)i - 7.5f; dst[i] = 0.0f; }
+
+  tvdb_gpu_buffer_t* xbuf = NULL;
+  if (tvdb_gpu_buffer_create_exportable(vk, N * sizeof(float), &xbuf, &err) != TVDB_OK) {
+    fprintf(stderr, "buffer_create_exportable failed: %s\n", err.message); EXPECT(0);
+    tvdb_gpu_context_destroy(cu); tvdb_gpu_context_destroy(vk); return;
+  }
+  EXPECT(tvdb_gpu_buffer_upload(xbuf, src, N * sizeof(float), &err) == TVDB_OK);
+
+  uint64_t handle = 0;
+  if (tvdb_gpu_buffer_export(xbuf, &handle, &err) != TVDB_OK) {
+    fprintf(stderr, "buffer_export failed: %s\n", err.message); EXPECT(0);
+  }
+
+  tvdb_gpu_buffer_t* ibuf = NULL;
+  if (tvdb_gpu_buffer_import(cu, handle, N * sizeof(float), &ibuf, &err) != TVDB_OK) {
+    fprintf(stderr, "buffer_import failed: %s\n", err.message); EXPECT(0);
+  } else {
+    // The CUDA buffer aliases the Vulkan memory; read it back through CUDA.
+    EXPECT(tvdb_gpu_buffer_download(ibuf, dst, N * sizeof(float), &err) == TVDB_OK);
+    for (size_t i = 0; i < N; ++i) EXPECT(dst[i] == src[i]);  // bit-exact cross-API share
+    printf("external-memory: OK (Vulkan->CUDA shared %zu bytes)\n", N * sizeof(float));
+    tvdb_gpu_buffer_destroy(ibuf);
+  }
+  tvdb_gpu_buffer_destroy(xbuf);
+  tvdb_gpu_context_destroy(cu);
+  tvdb_gpu_context_destroy(vk);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1734,6 +1785,7 @@ int main(void) {
   int ran = 0;
   ran += run_backend(TVDB_GPU_BACKEND_VULKAN, "vulkan", 0);
   ran += run_backend(TVDB_GPU_BACKEND_CUDA, "cuda", 0);
+  test_external_memory_interop();
   if (ran == 0) {
     printf("SKIP: no GPU context could be created\n");
     return 77;

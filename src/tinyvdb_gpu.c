@@ -91,6 +91,22 @@ typedef struct CUctx_st* CUcontext;
 typedef struct CUmod_st* CUmodule;
 typedef struct CUfunc_st* CUfunction;
 typedef uint64_t CUdeviceptr;
+typedef struct CUextMemory_st* CUexternalMemory;
+typedef struct {
+  unsigned int type;
+  union { int fd; struct { void* handle; const void* name; } win32; const void* nvSciBufObject; } handle;
+  unsigned long long size;
+  unsigned int flags;
+  unsigned int reserved[16];
+} CUDA_EXTERNAL_MEMORY_HANDLE_DESC;
+typedef struct {
+  unsigned long long offset;
+  unsigned long long size;
+  unsigned int flags;
+  unsigned int reserved[16];
+} CUDA_EXTERNAL_MEMORY_BUFFER_DESC;
+#define CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD 1
+#define CUDA_EXTERNAL_MEMORY_DEDICATED 0x1u
 typedef int nvrtcResult;
 typedef struct _nvrtcProgram* nvrtcProgram;
 
@@ -127,6 +143,7 @@ typedef struct _nvrtcProgram* nvrtcProgram;
 #define VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER 44
 #define VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO 100
 #define VK_API_VERSION_1_0 ((uint32_t)(1u << 22))
+#define VK_API_VERSION_1_1 ((uint32_t)((1u << 22) | (1u << 12)))
 #define VK_QUEUE_COMPUTE_BIT 0x00000002u
 #define VK_QUEUE_SPARSE_BINDING_BIT 0x00000008u
 #define VK_QUEUE_FAMILY_IGNORED UINT32_MAX
@@ -140,6 +157,13 @@ typedef struct _nvrtcProgram* nvrtcProgram;
 #define VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT 0x00000001u
 #define VK_MEMORY_PROPERTY_HOST_COHERENT_BIT 0x00000002u
 #define VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT 0x00000004u
+#define VK_BUFFER_USAGE_TRANSFER_DST_BIT 0x00000002u
+// External memory (VK_KHR_external_memory + VK_KHR_external_memory_fd).
+#define VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO 1000072000
+#define VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO 1000072002
+#define VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO 1000127001
+#define VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR 1000074002
+#define VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT 0x00000001u
 #define VK_SHARING_MODE_EXCLUSIVE 0
 #define VK_IMAGE_TYPE_3D 2
 #define VK_IMAGE_VIEW_TYPE_3D 2
@@ -275,6 +299,12 @@ typedef struct { uint32_t sType; const void* pNext; uint32_t waitSemaphoreCount;
 typedef struct { uint32_t aspectMask; VkExtent3D imageGranularity; VkFlags flags; } VkSparseImageFormatProperties;
 typedef struct { VkSparseImageFormatProperties formatProperties; uint32_t imageMipTailFirstLod; VkDeviceSize imageMipTailSize; VkDeviceSize imageMipTailOffset; VkDeviceSize imageMipTailStride; } VkSparseImageMemoryRequirements;
 typedef struct { uint32_t sType; const void* pNext; VkDeviceSize allocationSize; uint32_t memoryTypeIndex; } VkMemoryAllocateInfo;
+typedef struct { uint32_t sType; const void* pNext; uint32_t handleTypes; } VkExternalMemoryBufferCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; uint32_t handleTypes; } VkExportMemoryAllocateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkImage image; VkBuffer buffer; } VkMemoryDedicatedAllocateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkDeviceMemory memory; uint32_t handleType; } VkMemoryGetFdInfoKHR;
+typedef struct { VkDeviceSize srcOffset; VkDeviceSize dstOffset; VkDeviceSize size; } VkBufferCopy;
+typedef struct { char extensionName[256]; uint32_t specVersion; } VkExtensionProperties;
 typedef struct { uint32_t binding; uint32_t descriptorType; uint32_t descriptorCount; uint32_t stageFlags; const void* pImmutableSamplers; } VkDescriptorSetLayoutBinding;
 typedef struct { uint32_t sType; const void* pNext; VkFlags flags; uint32_t bindingCount; const VkDescriptorSetLayoutBinding* pBindings; } VkDescriptorSetLayoutCreateInfo;
 typedef struct { uint32_t type; uint32_t descriptorCount; } VkDescriptorPoolSize;
@@ -344,6 +374,9 @@ typedef void (*PFN_vkCmdBindDescriptorSets)(VkCommandBuffer, uint32_t, VkPipelin
 typedef void (*PFN_vkCmdDispatch)(VkCommandBuffer, uint32_t, uint32_t, uint32_t);
 typedef void (*PFN_vkCmdPipelineBarrier)(VkCommandBuffer, VkFlags, VkFlags, VkFlags, uint32_t, const void*, uint32_t, const void*, uint32_t, const VkImageMemoryBarrier*);
 typedef void (*PFN_vkCmdCopyBufferToImage)(VkCommandBuffer, VkBuffer, VkImage, uint32_t, uint32_t, const VkBufferImageCopy*);
+typedef void (*PFN_vkCmdCopyBuffer)(VkCommandBuffer, VkBuffer, VkBuffer, uint32_t, const VkBufferCopy*);
+typedef VkResult (*PFN_vkEnumerateDeviceExtensionProperties)(VkPhysicalDevice, const char*, uint32_t*, VkExtensionProperties*);
+typedef VkResult (*PFN_vkGetMemoryFdKHR)(VkDevice, const VkMemoryGetFdInfoKHR*, int*);
 typedef VkResult (*PFN_vkCreateFence)(VkDevice, const VkFenceCreateInfo*, const void*, VkFence*);
 typedef void (*PFN_vkDestroyFence)(VkDevice, VkFence, const void*);
 typedef VkResult (*PFN_vkResetFences)(VkDevice, uint32_t, const VkFence*);
@@ -406,6 +439,9 @@ typedef struct {
   PFN_vkCmdDispatch CmdDispatch;
   PFN_vkCmdPipelineBarrier CmdPipelineBarrier;
   PFN_vkCmdCopyBufferToImage CmdCopyBufferToImage;
+  PFN_vkCmdCopyBuffer CmdCopyBuffer;
+  PFN_vkEnumerateDeviceExtensionProperties EnumerateDeviceExtensionProperties;
+  PFN_vkGetMemoryFdKHR GetMemoryFdKHR;
   PFN_vkCreateFence CreateFence;
   PFN_vkDestroyFence DestroyFence;
   PFN_vkResetFences ResetFences;
@@ -458,6 +494,9 @@ typedef struct {
                              unsigned int, unsigned int, unsigned int,
                              unsigned int, void*, void**, void**);
   CUresult (*cuGetErrorString)(CUresult, const char**);
+  CUresult (*cuImportExternalMemory)(CUexternalMemory*, const CUDA_EXTERNAL_MEMORY_HANDLE_DESC*);
+  CUresult (*cuExternalMemoryGetMappedBuffer)(CUdeviceptr*, CUexternalMemory, const CUDA_EXTERNAL_MEMORY_BUFFER_DESC*);
+  CUresult (*cuDestroyExternalMemory)(CUexternalMemory);
   nvrtcResult (*nvrtcCreateProgram)(nvrtcProgram*, const char*, const char*, int,
                                     const char* const*, const char* const*);
   nvrtcResult (*nvrtcCompileProgram)(nvrtcProgram, int, const char* const*);
@@ -479,13 +518,15 @@ struct tvdb_gpu_context {
   uint32_t queue_family;
   VkPhysicalDeviceMemoryProperties memory_props;
   int supports_sparse_3d_images;
+  int supports_external_memory;
   char device_name[128];
   tvdb_cuda_table cuda;
   CUcontext cu_ctx;
   CUdevice cu_device;
   CUmodule cu_module;
 };
-struct tvdb_gpu_buffer { tvdb_vk_buffer vk; tvdb_gpu_context_t* ctx; tvdb_gpu_backend_t backend; CUdeviceptr cu; size_t size; };
+struct tvdb_gpu_buffer { tvdb_vk_buffer vk; tvdb_gpu_context_t* ctx; tvdb_gpu_backend_t backend; CUdeviceptr cu; size_t size;
+                         CUexternalMemory ext_mem; int imported; };
 struct tvdb_gpu_dense_grid { tvdb_gpu_buffer_t values; int nx, ny, nz; };
 struct tvdb_gpu_sparse_grid { tvdb_gpu_buffer_t coords; tvdb_gpu_buffer_t values; size_t count; };
 struct tvdb_gpu_vulkan_sparse_image3d {
@@ -641,6 +682,10 @@ static int tvdb_load_cuda_library(tvdb_cuda_table* cu) {
   TVDB_CUDA_SYM(cuModuleGetFunction, "cuModuleGetFunction");
   TVDB_CUDA_SYM(cuLaunchKernel, "cuLaunchKernel");
   cu->cuGetErrorString = (void*)tvdb_dyn_sym(cu->libcuda, "cuGetErrorString");
+  // External-memory interop (optional; absent on very old drivers).
+  cu->cuImportExternalMemory = (void*)tvdb_dyn_sym(cu->libcuda, "cuImportExternalMemory");
+  cu->cuExternalMemoryGetMappedBuffer = (void*)tvdb_dyn_sym(cu->libcuda, "cuExternalMemoryGetMappedBuffer");
+  cu->cuDestroyExternalMemory = (void*)tvdb_dyn_sym(cu->libcuda, "cuDestroyExternalMemory");
   TVDB_NVRTC_SYM(nvrtcCreateProgram, "nvrtcCreateProgram");
   TVDB_NVRTC_SYM(nvrtcCompileProgram, "nvrtcCompileProgram");
   TVDB_NVRTC_SYM(nvrtcGetPTXSize, "nvrtcGetPTXSize");
@@ -683,6 +728,7 @@ static tvdb_status_t tvdb_vk_load_instance_functions(tvdb_gpu_context_t* ctx, tv
   TVDB_LOAD_INST(ctx, GetPhysicalDeviceQueueFamilyProperties);
   TVDB_LOAD_INST(ctx, GetPhysicalDeviceMemoryProperties);
   TVDB_LOAD_INST(ctx, GetPhysicalDeviceFeatures);
+  TVDB_LOAD_INST(ctx, EnumerateDeviceExtensionProperties);
   TVDB_LOAD_INST(ctx, CreateDevice);
   ctx->vk.GetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)ctx->vk.GetInstanceProcAddr(ctx->instance, "vkGetDeviceProcAddr");
   if (!ctx->vk.GetDeviceProcAddr) {
@@ -715,12 +761,15 @@ static tvdb_status_t tvdb_vk_load_device_functions(tvdb_gpu_context_t* ctx, tvdb
   TVDB_LOAD_DEV(ctx, EndCommandBuffer); TVDB_LOAD_DEV(ctx, ResetCommandBuffer);
   TVDB_LOAD_DEV(ctx, CmdBindPipeline); TVDB_LOAD_DEV(ctx, CmdBindDescriptorSets);
   TVDB_LOAD_DEV(ctx, CmdDispatch); TVDB_LOAD_DEV(ctx, CmdPipelineBarrier);
-  TVDB_LOAD_DEV(ctx, CmdCopyBufferToImage); TVDB_LOAD_DEV(ctx, CreateFence);
+  TVDB_LOAD_DEV(ctx, CmdCopyBufferToImage); TVDB_LOAD_DEV(ctx, CmdCopyBuffer); TVDB_LOAD_DEV(ctx, CreateFence);
   TVDB_LOAD_DEV(ctx, DestroyFence); TVDB_LOAD_DEV(ctx, ResetFences);
   TVDB_LOAD_DEV(ctx, GetFenceStatus);
   TVDB_LOAD_DEV(ctx, WaitForFences); TVDB_LOAD_DEV(ctx, QueueSubmit);
   TVDB_LOAD_DEV(ctx, QueueBindSparse);
   TVDB_LOAD_DEV(ctx, DeviceWaitIdle);
+  // Optional external-memory export function (only present when the extension
+  // is enabled); non-fatal if absent.
+  ctx->vk.GetMemoryFdKHR = (PFN_vkGetMemoryFdKHR)ctx->vk.GetDeviceProcAddr(ctx->device, "vkGetMemoryFdKHR");
   return TVDB_OK;
 }
 
@@ -2585,7 +2634,17 @@ static tvdb_status_t tvdb_vulkan_context_create(uint32_t device_index,
   memset(&ai, 0, sizeof(ai));
   ai.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
   ai.pApplicationName = "tinyvdb_gpu";
+  // Request Vulkan 1.1 when the loader supports it: external-memory interop
+  // (VK_KHR_external_memory and its capabilities instance extension) is core in
+  // 1.1, which the opaque-fd export path below relies on. Fall back to 1.0 on
+  // older loaders so context creation still succeeds.
   ai.apiVersion = VK_API_VERSION_1_0;
+  {
+    VkResult (*enum_ver)(uint32_t*) = (VkResult(*)(uint32_t*))ctx->vk.GetInstanceProcAddr(NULL, "vkEnumerateInstanceVersion");
+    uint32_t loader_ver = 0;
+    if (enum_ver && enum_ver(&loader_ver) == VK_SUCCESS && loader_ver >= VK_API_VERSION_1_1)
+      ai.apiVersion = VK_API_VERSION_1_1;
+  }
   VkInstanceCreateInfo ici;
   memset(&ici, 0, sizeof(ici));
   ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -2656,6 +2715,40 @@ static tvdb_status_t tvdb_vulkan_context_create(uint32_t device_index,
   dci.queueCreateInfoCount = 1;
   dci.pQueueCreateInfos = &qci;
   dci.pEnabledFeatures = &enabled_features;
+  // Enable external-memory extensions for cross-API (Vulkan<->CUDA) interop when
+  // the device advertises them; harmless to skip if unsupported.
+  const char* all_ext[2] = { "VK_KHR_external_memory", "VK_KHR_external_memory_fd" };
+  const char* enabled_ext[2];
+  uint32_t enabled_ext_count = 0;
+  int have_ext_fd = 0;
+  {
+    uint32_t ext_count = 0;
+    ctx->vk.EnumerateDeviceExtensionProperties(ctx->physical_device, NULL, &ext_count, NULL);
+    if (ext_count > 0 && ext_count < 4096) {
+      VkExtensionProperties* props = (VkExtensionProperties*)calloc(ext_count, sizeof(VkExtensionProperties));
+      if (props) {
+        ctx->vk.EnumerateDeviceExtensionProperties(ctx->physical_device, NULL, &ext_count, props);
+        for (uint32_t e = 0; e < 2; ++e) {
+          for (uint32_t i = 0; i < ext_count; ++i) {
+            if (strcmp(props[i].extensionName, all_ext[e]) == 0) {
+              enabled_ext[enabled_ext_count++] = all_ext[e];
+              if (e == 1) have_ext_fd = 1;
+              break;
+            }
+          }
+        }
+        free(props);
+      }
+    }
+  }
+  // VK_KHR_external_memory_fd (which provides vkGetMemoryFdKHR) is the essential
+  // one; its base VK_KHR_external_memory is core under Vulkan 1.1 and may not be
+  // separately advertised, so enable whichever are present.
+  if (have_ext_fd) {
+    dci.enabledExtensionCount = enabled_ext_count;
+    dci.ppEnabledExtensionNames = enabled_ext;
+    ctx->supports_external_memory = 1;
+  }
   if (!tvdb_vk_ok(ctx->vk.CreateDevice(ctx->physical_device, &dci, NULL, &ctx->device), err, "vkCreateDevice")) goto fail;
   if (tvdb_vk_load_device_functions(ctx, err) != TVDB_OK) goto fail;
   ctx->vk.GetDeviceQueue(ctx->device, ctx->queue_family, 0, &ctx->queue);
@@ -6708,8 +6801,17 @@ tvdb_status_t tvdb_gpu_buffer_create(tvdb_gpu_context_t* ctx, size_t size_bytes,
 
 void tvdb_gpu_buffer_destroy(tvdb_gpu_buffer_t* buf) {
   if (!buf) return;
-  if (buf->backend == TVDB_GPU_BACKEND_CUDA) { if (buf->cu) buf->ctx->cuda.cuMemFree(buf->cu); }
-  else tvdb_vk_destroy_buffer(buf->ctx, &buf->vk);
+  if (buf->backend == TVDB_GPU_BACKEND_CUDA) {
+    if (buf->imported) {
+      // The mapped device pointer is owned by the external-memory object; do not
+      // cuMemFree it. Releasing the external memory frees the mapping.
+      if (buf->ext_mem && buf->ctx->cuda.cuDestroyExternalMemory) buf->ctx->cuda.cuDestroyExternalMemory(buf->ext_mem);
+    } else if (buf->cu) {
+      buf->ctx->cuda.cuMemFree(buf->cu);
+    }
+  } else {
+    tvdb_vk_destroy_buffer(buf->ctx, &buf->vk);
+  }
   free(buf);
 }
 
@@ -6717,7 +6819,24 @@ tvdb_status_t tvdb_gpu_buffer_upload(tvdb_gpu_buffer_t* buf, const void* src, si
   if (!buf || !src || size > buf->size) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_upload arguments"); return TVDB_ERROR_INVALID_ARGUMENT; }
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) {
     if (!tvdb_cuda_ok(buf->ctx, err, "cuMemcpyHtoD", buf->ctx->cuda.cuMemcpyHtoD(buf->cu, src, size))) return err ? err->status : TVDB_ERROR_IO;
-  } else memcpy(buf->vk.mapped, src, size);
+  } else if (buf->vk.mapped) {
+    memcpy(buf->vk.mapped, src, size);
+  } else {
+    // Device-local (e.g. exportable) buffer: stage through a host-visible buffer.
+    tvdb_vk_buffer staging;
+    tvdb_status_t st = tvdb_vk_create_buffer(buf->ctx, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, err);
+    if (st != TVDB_OK) return st;
+    memcpy(staging.mapped, src, size);
+    VkCommandBuffer cmd; VkCommandPool pool; VkFence fence;
+    st = tvdb_vk_submit_one_time(buf->ctx, &cmd, &pool, &fence, err);
+    if (st == TVDB_OK) {
+      VkBufferCopy region; region.srcOffset = 0; region.dstOffset = 0; region.size = size;
+      buf->ctx->vk.CmdCopyBuffer(cmd, staging.buffer, buf->vk.buffer, 1, &region);
+      st = tvdb_vk_end_submit_wait(buf->ctx, cmd, pool, fence, err);
+    }
+    tvdb_vk_destroy_buffer(buf->ctx, &staging);
+    if (st != TVDB_OK) return st;
+  }
   return TVDB_OK;
 }
 
@@ -6725,7 +6844,24 @@ tvdb_status_t tvdb_gpu_buffer_download(tvdb_gpu_buffer_t* buf, void* dst, size_t
   if (!buf || !dst || size > buf->size) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_download arguments"); return TVDB_ERROR_INVALID_ARGUMENT; }
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) {
     if (!tvdb_cuda_ok(buf->ctx, err, "cuMemcpyDtoH", buf->ctx->cuda.cuMemcpyDtoH(dst, buf->cu, size))) return err ? err->status : TVDB_ERROR_IO;
-  } else memcpy(dst, buf->vk.mapped, size);
+  } else if (buf->vk.mapped) {
+    memcpy(dst, buf->vk.mapped, size);
+  } else {
+    // Device-local (e.g. exportable) buffer: stage through a host-visible buffer.
+    tvdb_vk_buffer staging;
+    tvdb_status_t st = tvdb_vk_create_buffer(buf->ctx, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &staging, err);
+    if (st != TVDB_OK) return st;
+    VkCommandBuffer cmd; VkCommandPool pool; VkFence fence;
+    st = tvdb_vk_submit_one_time(buf->ctx, &cmd, &pool, &fence, err);
+    if (st == TVDB_OK) {
+      VkBufferCopy region; region.srcOffset = 0; region.dstOffset = 0; region.size = size;
+      buf->ctx->vk.CmdCopyBuffer(cmd, buf->vk.buffer, staging.buffer, 1, &region);
+      st = tvdb_vk_end_submit_wait(buf->ctx, cmd, pool, fence, err);
+    }
+    if (st == TVDB_OK) memcpy(dst, staging.mapped, size);
+    tvdb_vk_destroy_buffer(buf->ctx, &staging);
+    if (st != TVDB_OK) return st;
+  }
   return TVDB_OK;
 }
 
@@ -6735,6 +6871,148 @@ uint64_t tvdb_gpu_buffer_native_handle(const tvdb_gpu_buffer_t* buf) {
   if (!buf) return 0;
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) return (uint64_t)buf->cu;
   return (uint64_t)(uintptr_t)buf->vk.buffer;
+}
+
+// ---- cross-API external-memory interop (Vulkan export -> CUDA import) --------
+//
+// On Linux with VK_KHR_external_memory{,_fd} and the CUDA driver's external-memory
+// entry points present, a device-local Vulkan buffer can be shared with CUDA
+// without a host round-trip: export the backing memory as an opaque POSIX fd, then
+// import it into CUDA. Both contexts must reference the same physical GPU.
+
+int tvdb_gpu_context_supports_external_memory(const tvdb_gpu_context_t* ctx) {
+  if (!ctx) return 0;
+  if (ctx->backend == TVDB_GPU_BACKEND_VULKAN)
+    return ctx->supports_external_memory && ctx->vk.GetMemoryFdKHR ? 1 : 0;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA)
+    return (ctx->cuda.cuImportExternalMemory && ctx->cuda.cuExternalMemoryGetMappedBuffer) ? 1 : 0;
+  return 0;
+}
+
+tvdb_status_t tvdb_gpu_buffer_create_exportable(tvdb_gpu_context_t* ctx, size_t size_bytes,
+                                                tvdb_gpu_buffer_t** out, tvdb_error_t* err) {
+  if (!ctx || !out || size_bytes == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_create_exportable arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  *out = NULL;
+  if (ctx->backend != TVDB_GPU_BACKEND_VULKAN || !ctx->supports_external_memory || !ctx->vk.GetMemoryFdKHR) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "external-memory export requires a Vulkan context with VK_KHR_external_memory_fd");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  tvdb_gpu_buffer_t* b = (tvdb_gpu_buffer_t*)calloc(1, sizeof(*b));
+  if (!b) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  b->ctx = ctx; b->backend = TVDB_GPU_BACKEND_VULKAN; b->size = size_bytes;
+
+  VkExternalMemoryBufferCreateInfo emb;
+  memset(&emb, 0, sizeof(emb));
+  emb.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+  emb.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+  VkBufferCreateInfo bci;
+  memset(&bci, 0, sizeof(bci));
+  bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  bci.pNext = &emb;
+  bci.size = size_bytes;
+  bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (!tvdb_vk_ok(ctx->vk.CreateBuffer(ctx->device, &bci, NULL, &b->vk.buffer), err, "vkCreateBuffer")) { free(b); return err ? err->status : TVDB_ERROR_IO; }
+
+  VkMemoryRequirements req;
+  ctx->vk.GetBufferMemoryRequirements(ctx->device, b->vk.buffer, &req);
+  uint32_t mt = tvdb_vk_find_memory_type(ctx, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (mt == UINT32_MAX) mt = tvdb_vk_find_memory_type(ctx, req.memoryTypeBits, 0);
+  if (mt == UINT32_MAX) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "no suitable Vulkan memory type for exportable buffer");
+    ctx->vk.DestroyBuffer(ctx->device, b->vk.buffer, NULL); free(b);
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  // Dedicated allocation keeps the export's offset at 0, which the CUDA import expects.
+  VkMemoryDedicatedAllocateInfo ded;
+  memset(&ded, 0, sizeof(ded));
+  ded.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+  ded.buffer = b->vk.buffer;
+  VkExportMemoryAllocateInfo exp;
+  memset(&exp, 0, sizeof(exp));
+  exp.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+  exp.pNext = &ded;
+  exp.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+  VkMemoryAllocateInfo mai;
+  memset(&mai, 0, sizeof(mai));
+  mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  mai.pNext = &exp;
+  mai.allocationSize = req.size;
+  mai.memoryTypeIndex = mt;
+  if (!tvdb_vk_ok(ctx->vk.AllocateMemory(ctx->device, &mai, NULL, &b->vk.memory), err, "vkAllocateMemory")) {
+    ctx->vk.DestroyBuffer(ctx->device, b->vk.buffer, NULL); free(b);
+    return err ? err->status : TVDB_ERROR_IO;
+  }
+  if (!tvdb_vk_ok(ctx->vk.BindBufferMemory(ctx->device, b->vk.buffer, b->vk.memory, 0), err, "vkBindBufferMemory")) {
+    tvdb_vk_destroy_buffer(ctx, &b->vk); free(b);
+    return err ? err->status : TVDB_ERROR_IO;
+  }
+  b->vk.size = req.size;
+  b->vk.mapped = NULL;  // device-local: not host-mapped (upload/download stage through a temp buffer)
+  *out = b;
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gpu_buffer_export(tvdb_gpu_buffer_t* buf, uint64_t* out_handle, tvdb_error_t* err) {
+  if (!buf || !out_handle) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_export arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  *out_handle = 0;
+  if (buf->backend != TVDB_GPU_BACKEND_VULKAN || !buf->ctx->vk.GetMemoryFdKHR || !buf->vk.memory) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "buffer is not exportable on this context");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  VkMemoryGetFdInfoKHR gfi;
+  memset(&gfi, 0, sizeof(gfi));
+  gfi.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
+  gfi.memory = buf->vk.memory;
+  gfi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+  int fd = -1;
+  if (!tvdb_vk_ok(buf->ctx->vk.GetMemoryFdKHR(buf->ctx->device, &gfi, &fd), err, "vkGetMemoryFdKHR")) return err ? err->status : TVDB_ERROR_IO;
+  if (fd < 0) { tvdb_gpu_set_error(err, TVDB_ERROR_IO, "vkGetMemoryFdKHR returned an invalid fd"); return TVDB_ERROR_IO; }
+  // The fd is a freshly dup'd handle owned by the caller; CUDA import consumes it.
+  *out_handle = (uint64_t)(unsigned int)fd;
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gpu_buffer_import(tvdb_gpu_context_t* ctx, uint64_t handle, size_t size_bytes,
+                                     tvdb_gpu_buffer_t** out, tvdb_error_t* err) {
+  if (!ctx || !out || size_bytes == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_import arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  *out = NULL;
+  if (ctx->backend != TVDB_GPU_BACKEND_CUDA || !ctx->cuda.cuImportExternalMemory || !ctx->cuda.cuExternalMemoryGetMappedBuffer) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "external-memory import requires a CUDA context with external-memory support");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  tvdb_gpu_buffer_t* b = (tvdb_gpu_buffer_t*)calloc(1, sizeof(*b));
+  if (!b) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  b->ctx = ctx; b->backend = TVDB_GPU_BACKEND_CUDA; b->size = size_bytes; b->imported = 1;
+
+  CUDA_EXTERNAL_MEMORY_HANDLE_DESC hd;
+  memset(&hd, 0, sizeof(hd));
+  hd.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
+  hd.handle.fd = (int)(unsigned int)handle;
+  hd.size = (unsigned long long)size_bytes;
+  hd.flags = CUDA_EXTERNAL_MEMORY_DEDICATED;
+  if (!tvdb_cuda_ok(ctx, err, "cuImportExternalMemory", ctx->cuda.cuImportExternalMemory(&b->ext_mem, &hd))) { free(b); return err ? err->status : TVDB_ERROR_IO; }
+
+  CUDA_EXTERNAL_MEMORY_BUFFER_DESC bd;
+  memset(&bd, 0, sizeof(bd));
+  bd.offset = 0;
+  bd.size = (unsigned long long)size_bytes;
+  if (!tvdb_cuda_ok(ctx, err, "cuExternalMemoryGetMappedBuffer", ctx->cuda.cuExternalMemoryGetMappedBuffer(&b->cu, b->ext_mem, &bd))) {
+    if (ctx->cuda.cuDestroyExternalMemory) ctx->cuda.cuDestroyExternalMemory(b->ext_mem);
+    free(b);
+    return err ? err->status : TVDB_ERROR_IO;
+  }
+  *out = b;
+  return TVDB_OK;
 }
 
 // ---- Gaussian-splat rasterizer (forward) ------------------------------------

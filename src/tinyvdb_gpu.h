@@ -430,6 +430,30 @@ size_t tvdb_gpu_buffer_size(const tvdb_gpu_buffer_t* buf);
 // caller-side interop; 0 if unavailable.
 uint64_t tvdb_gpu_buffer_native_handle(const tvdb_gpu_buffer_t* buf);
 
+// Cross-API external-memory interop (Linux opaque-fd). Lets a device buffer be
+// shared between a Vulkan context (exporter) and a CUDA context (importer)
+// referencing the same physical GPU, with no host round-trip. Requires
+// VK_KHR_external_memory{,_fd} on the Vulkan side and the CUDA driver's
+// external-memory entry points; the calls return TVDB_ERROR_UNIMPLEMENTED when
+// unsupported, so callers can degrade gracefully.
+//
+// Returns nonzero if `ctx` can participate in external-memory interop: a Vulkan
+// context that can export, or a CUDA context that can import.
+int tvdb_gpu_context_supports_external_memory(const tvdb_gpu_context_t* ctx);
+// Create a device-local Vulkan buffer whose backing memory can be exported.
+// Upload/download stage through a temporary host-visible buffer (it is not
+// host-mapped). Vulkan context only.
+tvdb_status_t tvdb_gpu_buffer_create_exportable(tvdb_gpu_context_t* ctx, size_t size_bytes,
+                                                tvdb_gpu_buffer_t** out, tvdb_error_t* err);
+// Export an exportable buffer's memory as an opaque POSIX fd packed into a
+// uint64 handle. The handle is owned by the caller; a successful
+// tvdb_gpu_buffer_import consumes it (do not close it afterwards).
+tvdb_status_t tvdb_gpu_buffer_export(tvdb_gpu_buffer_t* buf, uint64_t* out_handle, tvdb_error_t* err);
+// Import a handle from tvdb_gpu_buffer_export into a CUDA context, yielding a
+// device buffer that aliases the same memory. CUDA context only.
+tvdb_status_t tvdb_gpu_buffer_import(tvdb_gpu_context_t* ctx, uint64_t handle, size_t size_bytes,
+                                     tvdb_gpu_buffer_t** out, tvdb_error_t* err);
+
 // GPU Gaussian-splat rasterizer forward (parallels
 // tvdb_gaussian_rasterize_forward): tile-based depth-sorted front-to-back alpha
 // blend. The per-tile entry list is built and depth-sorted host-side (same as
