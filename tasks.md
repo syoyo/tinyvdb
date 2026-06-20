@@ -274,7 +274,7 @@ each theme. Notes point at the nearest existing primitive to reuse.
       it when the dense bbox is too large. Covered by `test_gpu_backend`
       (`test_voxelize_unbounded`: a ~10^18-voxel bbox with duplicate cells,
       set-compared vs CPU for both the explicit and auto-fallback entry points).
-- [~] **P1: sparse convolution upgrades.** `tvdb_gpu_sparse_conv3d_strided`
+- [x] **P1: sparse convolution upgrades.** `tvdb_gpu_sparse_conv3d_strided`
       adds arbitrary integer stride with output-grid building: output active
       coords are the unique floor(coord/stride) of the input set (host dedup),
       and `out[oc] = sum_k kernel[k] * input(oc*stride + tap)` is computed on
@@ -284,8 +284,18 @@ each theme. Notes point at the nearest existing primitive to reuse.
       reference). `tvdb_gpu_sparse_conv3d_transpose` adds the transposed/adjoint
       convolution (each input scatters kernel[k]*value to coord*stride+tap via
       CAS atomic-add into a dense bbox buffer, then atomic-counter compaction),
-      covered by `test_conv_transpose` vs a CPU reference. *Still open:* a faster
-      near-dense (hashed/blocked) backend — an optimization, not a new op.
+      covered by `test_conv_transpose` vs a CPU reference. The same-topology
+      `tvdb_gpu_sparse_conv3d` now has a **near-dense fast path**: when the active
+      set's ijk bbox fits a dense index grid (≤ ~400M voxels), a scatter kernel
+      builds a bbox-local ijk→value-index grid so each kernel tap is an O(1)
+      lookup instead of the brute-force O(active) scan — O(active·k³) instead of
+      O(active²·k³). It auto-selects per call and falls back to the scan path for
+      bboxes too large to fit; both produce identical results (neighbors outside
+      the bbox can't be active, so they take the pad value). The Vulkan dispatch
+      binding cap was raised 5→6 for the 5-SSBO dense kernel. Covered by
+      `test_gpu_backend` (`test_sparse_conv` exercises the dense path,
+      `test_sparse_conv_brute` a >400M-volume spread that forces the fallback —
+      both parity-checked vs CPU).
 - [x] **P1: GPU sampling/splatting gradients.** `tvdb_gpu_splat_trilinear_dense`
       (scatter-add with portable CAS atomic-float on Vulkan, native atomicAdd on
       CUDA) mirrors `tvdb_splat_trilinear_dense`; covered by `test_gpu_backend`
@@ -409,7 +419,7 @@ core — listed for visibility, not on the near-term roadmap.
 | `test_reference_roundtrip` | libopenvdb-generated reference grids (bool/float/double/int32/int64/vec3s) round-trip through tinyvdb. Cross-tool byte-format guard |
 | `test_gaussian_backward` | Gaussian-splat rasterizer backward pass: 16×16 image from 4 random gaussians, all 36 analytic gradients checked against central FD |
 | `test_nanovdb_reference` | nanovdb_convert-produced `.nvdb` corpus: hierarchical accessor + trilinear sampler + CRC32 checksum validation + VDB→NanoVDB conversion exactness |
-| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear + triquadratic batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling, same-topology sparse conv3d against CPU, spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear + triquadratic splat, points→mask, sparse `voxelize_points` (dense + unbounded hash-set paths), sparse dilate/erode, dense `merge_grids`, dense→sparse active-coord extraction, triangle-mesh→SDF, marching cubes, strided + transposed sparse conv, a device-resident buffer round-trip, cross-API external-memory interop (Vulkan→CUDA opaque-fd share, bit-exact, skips if unsupported), the Gaussian-splat rasterizer (forward + backward), 3D→2D projection, spherical-harmonics color eval, SSIM, batched sparse conv, and multi-context scheduling — all parity-checked vs CPU (39 test cases); skips with code 77 if no runtime backend/device is available |
+| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear + triquadratic batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling, same-topology sparse conv3d against CPU (near-dense index-grid fast path + brute-force fallback), spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear + triquadratic splat, points→mask, sparse `voxelize_points` (dense + unbounded hash-set paths), sparse dilate/erode, dense `merge_grids`, dense→sparse active-coord extraction, triangle-mesh→SDF, marching cubes, strided + transposed sparse conv, a device-resident buffer round-trip, cross-API external-memory interop (Vulkan→CUDA opaque-fd share, bit-exact, skips if unsupported), the Gaussian-splat rasterizer (forward + backward), 3D→2D projection, spherical-harmonics color eval, SSIM, batched sparse conv, and multi-context scheduling — all parity-checked vs CPU (40 test cases); skips with code 77 if no runtime backend/device is available |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate/erode/CSG/update_from_sparse → save → reload |
 | `test_dense_writer` (py) | Dense + sparse `.vdb` writer/reader: float SDF (raw + numpy), all compression modes, multi-leaf, analytic sphere, plus typed `write_dense_grid`/`read_dense_grid` and `write_sparse_grid`/`read_sparse_grid` round-trips for `float64`/`int32`/`int64`/`vec3f`/`bool` with grid-type-string checks |
 

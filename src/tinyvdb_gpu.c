@@ -19,6 +19,8 @@
 #include "tinyvdb_gpu_sample_image_spv.inc"
 #include "tinyvdb_gpu_sample_quadratic_spv.inc"
 #include "tinyvdb_gpu_sparse_conv_spv.inc"
+#include "tinyvdb_gpu_sparse_index_scatter_spv.inc"
+#include "tinyvdb_gpu_sparse_conv_dense_spv.inc"
 #include "tinyvdb_gpu_sdf_sphere_spv.inc"
 #include "tinyvdb_gpu_sdf_box_spv.inc"
 #include "tinyvdb_gpu_sdf_torus_spv.inc"
@@ -493,6 +495,7 @@ typedef struct {
   CUresult (*cuMemFree)(CUdeviceptr);
   CUresult (*cuMemcpyHtoD)(CUdeviceptr, const void*, size_t);
   CUresult (*cuMemcpyDtoH)(void*, CUdeviceptr, size_t);
+  CUresult (*cuMemsetD32)(CUdeviceptr, unsigned int, size_t);
   CUresult (*cuModuleLoadData)(CUmodule*, const void*);
   CUresult (*cuModuleUnload)(CUmodule);
   CUresult (*cuModuleGetFunction)(CUfunction*, CUmodule, const char*);
@@ -683,6 +686,7 @@ static int tvdb_load_cuda_library(tvdb_cuda_table* cu) {
   TVDB_CUDA_SYM(cuMemFree, "cuMemFree_v2");
   TVDB_CUDA_SYM(cuMemcpyHtoD, "cuMemcpyHtoD_v2");
   TVDB_CUDA_SYM(cuMemcpyDtoH, "cuMemcpyDtoH_v2");
+  TVDB_CUDA_SYM(cuMemsetD32, "cuMemsetD32_v2");
   TVDB_CUDA_SYM(cuModuleLoadData, "cuModuleLoadData");
   TVDB_CUDA_SYM(cuModuleUnload, "cuModuleUnload");
   TVDB_CUDA_SYM(cuModuleGetFunction, "cuModuleGetFunction");
@@ -1519,9 +1523,9 @@ typedef struct {
   const uint8_t* spv;
   uint32_t spv_len;
   uint32_t descriptor_count;
-  const tvdb_vk_buffer* buffers[5];
-  const tvdb_vk_image3d* images[5];
-  uint32_t descriptor_types[5];
+  const tvdb_vk_buffer* buffers[6];
+  const tvdb_vk_image3d* images[6];
+  uint32_t descriptor_types[6];
   uint32_t group_x;
 } tvdb_vk_dispatch_desc;
 
@@ -1530,7 +1534,7 @@ static tvdb_status_t tvdb_vk_dispatch(tvdb_gpu_context_t* ctx, const tvdb_vk_dis
     tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan SPIR-V blobs are unavailable; rebuild with glslangValidator or use generated include");
     return TVDB_ERROR_UNIMPLEMENTED;
   }
-  VkDescriptorSetLayoutBinding bindings[5];
+  VkDescriptorSetLayoutBinding bindings[6];
   memset(bindings, 0, sizeof(bindings));
   for (uint32_t i = 0; i < d->descriptor_count; ++i) {
     bindings[i].binding = i;
@@ -1574,9 +1578,9 @@ static tvdb_status_t tvdb_vk_dispatch(tvdb_gpu_context_t* ctx, const tvdb_vk_dis
   VkDescriptorSet set = VK_NULL_HANDLE;
   if (!tvdb_vk_ok(ctx->vk.AllocateDescriptorSets(ctx->device, &dsai, &set), err, "vkAllocateDescriptorSets")) goto fail_pool;
 
-  VkDescriptorBufferInfo infos[5];
-  VkDescriptorImageInfo image_infos[5];
-  VkWriteDescriptorSet writes[5];
+  VkDescriptorBufferInfo infos[6];
+  VkDescriptorImageInfo image_infos[6];
+  VkWriteDescriptorSet writes[6];
   memset(infos, 0, sizeof(infos));
   memset(image_infos, 0, sizeof(image_infos));
   memset(writes, 0, sizeof(writes));
@@ -1842,6 +1846,36 @@ static const char* kTvdbCudaSource =
 "      for (int di = 0; di < kx; ++di) {\n"
 "        int ki = (dk * ky + dj) * kx + di;\n"
 "        acc += kernel[ki] * tvdb_sparse_lookup(coords, values, count, c.x + di - ax, c.y + dj - ay, c.z + dk - az, pad_value);\n"
+"      }\n"
+"    }\n"
+"  }\n"
+"  out_values[i] = acc;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_sparse_index_scatter(const tvdb_int4* coords, int* idx_grid,\n"
+"    int bx, int by, int bz, int dx, int dy, int dz, unsigned int count) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= count) return;\n"
+"  tvdb_int4 c = coords[i];\n"
+"  int lx = c.x - bx, ly = c.y - by, lz = c.z - bz;\n"
+"  idx_grid[(lz * dy + ly) * dx + lx] = (int)i;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_sparse_conv_dense(const tvdb_int4* coords, const float* values,\n"
+"    const float* kernel, float* out_values, const int* idx_grid, unsigned int count, int kx, int ky, int kz,\n"
+"    float pad_value, int bx, int by, int bz, int dx, int dy, int dz) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= count) return;\n"
+"  tvdb_int4 c = coords[i];\n"
+"  int ax = kx / 2, ay = ky / 2, az = kz / 2;\n"
+"  float acc = 0.0f;\n"
+"  for (int dk = 0; dk < kz; ++dk) {\n"
+"    for (int dj = 0; dj < ky; ++dj) {\n"
+"      for (int di = 0; di < kx; ++di) {\n"
+"        int lx = c.x + di - ax - bx, ly = c.y + dj - ay - by, lz = c.z + dk - az - bz;\n"
+"        float val;\n"
+"        if (lx < 0 || lx >= dx || ly < 0 || ly >= dy || lz < 0 || lz >= dz) val = pad_value;\n"
+"        else { int idx = idx_grid[(lz * dy + ly) * dx + lx]; val = idx >= 0 ? values[idx] : pad_value; }\n"
+"        int ki = (dk * ky + dj) * kx + di;\n"
+"        acc += kernel[ki] * val;\n"
 "      }\n"
 "    }\n"
 "  }\n"
@@ -3300,6 +3334,57 @@ done:
   return st;
 }
 
+// Near-dense CUDA conv: build a dense bbox-local index grid (O(1) tap lookups)
+// instead of the brute-force per-tap scan. Same result, much faster when the
+// active set nearly fills its bounding box.
+static tvdb_status_t tvdb_cuda_sparse_conv_dense(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
+                                                 const float* kernel, int kx, int ky, int kz,
+                                                 float pad_value, const int32_t bbmin[3], const int32_t dims[3],
+                                                 size_t volume, tvdb_sparse_grid* out, tvdb_error_t* err) {
+  CUmodule module = NULL;
+  CUfunction fscatter = NULL, fconv = NULL;
+  CUdeviceptr dc = 0, dv = 0, dk = 0, dout = 0, didx = 0;
+  int32_t* c4 = NULL;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  if (!ctx->cuda.cuMemsetD32) { tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "cuMemsetD32 unavailable"); return TVDB_ERROR_UNIMPLEMENTED; }
+  c4 = (int32_t*)calloc(in->count ? in->count : 1, 4u * sizeof(int32_t));
+  if (!c4) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); st = TVDB_ERROR_OUT_OF_MEMORY; goto done; }
+  for (size_t i = 0; i < in->count; ++i) {
+    c4[4*i+0] = in->coords[i].x; c4[4*i+1] = in->coords[i].y; c4[4*i+2] = in->coords[i].z; c4[4*i+3] = 0;
+    out->coords[i] = in->coords[i];
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fscatter, module, "tvdb_cuda_sparse_index_scatter"))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fconv, module, "tvdb_cuda_sparse_conv_dense"))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dc, c4, in->count * 4u * sizeof(int32_t), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dv, in->values, in->count * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dk, kernel, (size_t)kx * (size_t)ky * (size_t)kz * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, in->count * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &didx, NULL, volume * sizeof(int32_t), err)) != TVDB_OK) goto done;
+  if (!tvdb_cuda_ok(ctx, err, "cuMemsetD32", ctx->cuda.cuMemsetD32(didx, 0xFFFFFFFFu, volume))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  {
+    unsigned int count = (unsigned int)in->count, block = 128;
+    int bx = bbmin[0], by = bbmin[1], bz = bbmin[2], dx = dims[0], dy = dims[1], dz = dims[2];
+    void* sargs[] = {&dc, &didx, &bx, &by, &bz, &dx, &dy, &dz, &count};
+    unsigned int gs = (count + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fscatter, gs, 1, 1, block, 1, 1, 0, NULL, sargs, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+    void* cargs[] = {&dc, &dv, &dk, &dout, &didx, &count, &kx, &ky, &kz, &pad_value, &bx, &by, &bz, &dx, &dy, &dz};
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fconv, gs, 1, 1, block, 1, 1, 0, NULL, cargs, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out->values, dout, in->count * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  out->count = in->count;
+  st = TVDB_OK;
+done:
+  free(c4);
+  if (didx) ctx->cuda.cuMemFree(didx);
+  if (dout) ctx->cuda.cuMemFree(dout);
+  if (dk) ctx->cuda.cuMemFree(dk);
+  if (dv) ctx->cuda.cuMemFree(dv);
+  if (dc) ctx->cuda.cuMemFree(dc);
+  return st;
+}
+
 tvdb_status_t tvdb_gpu_csg_dense(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* a,
                                  const tvdb_dense_grid* b, int op,
                                  tvdb_dense_grid* out, tvdb_error_t* err) {
@@ -4402,6 +4487,95 @@ tvdb_status_t tvdb_gpu_vulkan_sample_batch_readback(tvdb_gpu_vulkan_sample_batch
   return TVDB_OK;
 }
 
+// Near-dense Vulkan conv: dense bbox-local index grid for O(1) tap lookups.
+static tvdb_status_t tvdb_vk_sparse_conv_dense(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
+                                               const float* kernel, int kx, int ky, int kz,
+                                               float pad_value, const int32_t bbmin[3], const int32_t dims[3],
+                                               size_t volume, tvdb_sparse_grid* out, tvdb_error_t* err) {
+  tvdb_vk_buffer bc, bv, bk, bo, bidx, bus, buc;
+  tvdb_status_t st;
+  size_t kvol = (size_t)kx * (size_t)ky * (size_t)kz;
+  if ((st = tvdb_vk_create_buffer(ctx, in->count * 4u * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bc, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, in->count * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bv, err)) != TVDB_OK) goto dd_c;
+  if ((st = tvdb_vk_create_buffer(ctx, kvol * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bk, err)) != TVDB_OK) goto dd_v;
+  if ((st = tvdb_vk_create_buffer(ctx, in->count * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto dd_k;
+  if ((st = tvdb_vk_create_buffer(ctx, volume * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bidx, err)) != TVDB_OK) goto dd_o;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bus, err)) != TVDB_OK) goto dd_idx;
+  if ((st = tvdb_vk_create_buffer(ctx, 80, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &buc, err)) != TVDB_OK) goto dd_us;
+  {
+    int32_t* c4 = (int32_t*)bc.mapped;
+    for (size_t i = 0; i < in->count; ++i) {
+      c4[4*i+0] = in->coords[i].x; c4[4*i+1] = in->coords[i].y; c4[4*i+2] = in->coords[i].z; c4[4*i+3] = 0;
+      out->coords[i] = in->coords[i];
+    }
+  }
+  memcpy(bv.mapped, in->values, in->count * sizeof(float));
+  memcpy(bk.mapped, kernel, kvol * sizeof(float));
+  memset(bidx.mapped, 0xFF, volume * sizeof(int32_t));  // all -1
+  struct { int32_t bbmin[4]; int32_t dims[4]; uint32_t count; uint32_t pad[3]; } spar;
+  memset(&spar, 0, sizeof(spar));
+  spar.bbmin[0]=bbmin[0]; spar.bbmin[1]=bbmin[1]; spar.bbmin[2]=bbmin[2];
+  spar.dims[0]=dims[0]; spar.dims[1]=dims[1]; spar.dims[2]=dims[2];
+  spar.count=(uint32_t)in->count;
+  memcpy(bus.mapped, &spar, sizeof(spar));
+  struct { int32_t bbmin[4]; int32_t dims[4]; int32_t kdim[4]; float misc[4]; uint32_t count; uint32_t pad[3]; } cpar;
+  memset(&cpar, 0, sizeof(cpar));
+  cpar.bbmin[0]=bbmin[0]; cpar.bbmin[1]=bbmin[1]; cpar.bbmin[2]=bbmin[2];
+  cpar.dims[0]=dims[0]; cpar.dims[1]=dims[1]; cpar.dims[2]=dims[2];
+  cpar.kdim[0]=kx; cpar.kdim[1]=ky; cpar.kdim[2]=kz; cpar.misc[0]=pad_value; cpar.count=(uint32_t)in->count;
+  memcpy(buc.mapped, &cpar, sizeof(cpar));
+  {
+    tvdb_vk_dispatch_desc ds;
+    memset(&ds, 0, sizeof(ds));
+    ds.spv = kTvdbGpuSparseIndexScatterSpv; ds.spv_len = kTvdbGpuSparseIndexScatterSpv_len; ds.descriptor_count = 3;
+    ds.buffers[0]=&bc; ds.buffers[1]=&bidx; ds.buffers[2]=&bus;
+    ds.descriptor_types[0]=ds.descriptor_types[1]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ds.descriptor_types[2]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    ds.group_x = (uint32_t)((in->count + 127u) / 128u);
+    st = tvdb_vk_dispatch(ctx, &ds, err);
+  }
+  if (st == TVDB_OK) {
+    tvdb_vk_dispatch_desc dc;
+    memset(&dc, 0, sizeof(dc));
+    dc.spv = kTvdbGpuSparseConvDenseSpv; dc.spv_len = kTvdbGpuSparseConvDenseSpv_len; dc.descriptor_count = 6;
+    dc.buffers[0]=&bc; dc.buffers[1]=&bv; dc.buffers[2]=&bk; dc.buffers[3]=&bo; dc.buffers[4]=&bidx; dc.buffers[5]=&buc;
+    for (int i = 0; i < 5; ++i) dc.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    dc.descriptor_types[5] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    dc.group_x = (uint32_t)((in->count + 127u) / 128u);
+    st = tvdb_vk_dispatch(ctx, &dc, err);
+  }
+  if (st == TVDB_OK) { memcpy(out->values, bo.mapped, in->count * sizeof(float)); out->count = in->count; }
+  tvdb_vk_destroy_buffer(ctx, &buc);
+dd_us: tvdb_vk_destroy_buffer(ctx, &bus);
+dd_idx: tvdb_vk_destroy_buffer(ctx, &bidx);
+dd_o: tvdb_vk_destroy_buffer(ctx, &bo);
+dd_k: tvdb_vk_destroy_buffer(ctx, &bk);
+dd_v: tvdb_vk_destroy_buffer(ctx, &bv);
+dd_c: tvdb_vk_destroy_buffer(ctx, &bc);
+  return st;
+}
+
+// Active-set ijk bbox; returns the volume (or 0 on overflow/degenerate).
+static size_t tvdb_sparse_bbox(const tvdb_sparse_grid* in, int32_t bbmin[3], int32_t dims[3]) {
+  bbmin[0]=bbmin[1]=bbmin[2]=0; dims[0]=dims[1]=dims[2]=1;
+  if (in->count == 0) return 0;
+  int32_t mn[3], mx[3];
+  mn[0]=mx[0]=in->coords[0].x; mn[1]=mx[1]=in->coords[0].y; mn[2]=mx[2]=in->coords[0].z;
+  for (size_t i = 1; i < in->count; ++i) {
+    int32_t v[3] = { in->coords[i].x, in->coords[i].y, in->coords[i].z };
+    for (int a = 0; a < 3; ++a) { if (v[a] < mn[a]) mn[a] = v[a]; if (v[a] > mx[a]) mx[a] = v[a]; }
+  }
+  long long vol = 1;
+  for (int a = 0; a < 3; ++a) {
+    bbmin[a] = mn[a];
+    long long d = (long long)mx[a] - mn[a] + 1;
+    dims[a] = (int32_t)d;
+    vol *= d;
+    if (vol <= 0 || vol > (long long)400000000) return 0;  // too large for dense index grid
+  }
+  return (size_t)vol;
+}
+
 tvdb_status_t tvdb_gpu_sparse_conv3d(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
                                      const float* kernel, int kx, int ky, int kz,
                                      float pad_value, tvdb_sparse_grid* out,
@@ -4416,8 +4590,17 @@ tvdb_status_t tvdb_gpu_sparse_conv3d(tvdb_gpu_context_t* ctx, const tvdb_sparse_
     return TVDB_ERROR_OUT_OF_MEMORY;
   }
   if (in->count == 0) return TVDB_OK;
+  // Near-dense fast path: when the active set's bbox fits a dense index grid,
+  // O(1) tap lookups beat the brute-force O(active) scan. Falls back otherwise.
+  int32_t bbmin[3], dims[3];
+  size_t volume = tvdb_sparse_bbox(in, bbmin, dims);
   if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    if (volume && ctx->cuda.cuMemsetD32)
+      return tvdb_cuda_sparse_conv_dense(ctx, in, kernel, kx, ky, kz, pad_value, bbmin, dims, volume, out, err);
     return tvdb_cuda_sparse_conv(ctx, in, kernel, kx, ky, kz, pad_value, out, err);
+  }
+  if (volume) {
+    return tvdb_vk_sparse_conv_dense(ctx, in, kernel, kx, ky, kz, pad_value, bbmin, dims, volume, out, err);
   }
   tvdb_vk_buffer bc, bv, bk, bo, bp;
   tvdb_status_t st;

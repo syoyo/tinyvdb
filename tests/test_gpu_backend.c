@@ -567,6 +567,34 @@ done:
   tvdb_sparse_grid_free(&gpu);
 }
 
+// Force the brute-force fallback: voxels spread over a >400M-voxel bbox so the
+// dense index grid would not fit, exercising the scan path (must match CPU).
+static void test_sparse_conv_brute(tvdb_gpu_context_t* ctx) {
+  tvdb_sparse_grid sg, cpu, gpu;
+  tvdb_sparse_grid_init(&sg); tvdb_sparse_grid_init(&cpu); tvdb_sparse_grid_init(&gpu);
+  const int32_t pts[6][3] = {{0,0,0},{800,1,2},{1,800,3},{2,3,800},{800,800,800},{400,400,400}};
+  EXPECT(tvdb_sparse_grid_reserve(&sg, 6));
+  for (int i = 0; i < 6; ++i) {
+    sg.coords[i].x = pts[i][0]; sg.coords[i].y = pts[i][1]; sg.coords[i].z = pts[i][2];
+    sg.values[i] = (float)(i + 1) * 0.3f - 0.5f;
+  }
+  sg.count = 6;
+  float kernel[27];
+  for (int i = 0; i < 27; ++i) kernel[i] = (float)(i % 4) * 0.07f - 0.1f;
+  EXPECT(tvdb_sparse_conv3d(&sg, kernel, 3, 3, 3, 0.2f, &cpu));
+  tvdb_error_t err; memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_sparse_conv3d(ctx, &sg, kernel, 3, 3, 3, 0.2f, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "sparse conv (brute) failed: %s\n", err.message); EXPECT(0);
+  } else {
+    EXPECT(gpu.count == cpu.count);
+    for (size_t i = 0; i < cpu.count && gpu.count == cpu.count; ++i) {
+      EXPECT(gpu.coords[i].x == cpu.coords[i].x && gpu.coords[i].y == cpu.coords[i].y && gpu.coords[i].z == cpu.coords[i].z);
+      EXPECT_NEAR(gpu.values[i], cpu.values[i], 2e-5f);
+    }
+  }
+  tvdb_sparse_grid_free(&sg); tvdb_sparse_grid_free(&cpu); tvdb_sparse_grid_free(&gpu);
+}
+
 static void test_spatial_queries(tvdb_gpu_context_t* ctx) {
   // Active set: a 4x4x4 block based at a negative-inclusive origin to exercise
   // the signed-coordinate path.
@@ -1959,6 +1987,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_vulkan_image3d_sample_and_bench(ctx, &info);
   test_vulkan_partial_sparse_image3d(ctx, &info);
   test_sparse_conv(ctx);
+  test_sparse_conv_brute(ctx);
   test_spatial_queries(ctx);
   test_topology(ctx);
   test_volume_render(ctx);
