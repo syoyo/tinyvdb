@@ -387,6 +387,15 @@ tvdb_status_t tvdb_gpu_mesh_to_sdf(tvdb_gpu_context_t* ctx, const tvdb_triangle_
                                    float voxel_size, float band_width,
                                    tvdb_dense_grid* out, tvdb_error_t* err);
 
+// Marching cubes on the GPU (parallels tvdb_sdf_to_mesh) producing a triangle
+// soup. One thread per cell; emits each cell's triangles in scan/table order so
+// the result matches the CPU mesh triangle-for-triangle (positions). `*out_verts`
+// is malloc'd (caller frees): `*out_tri_count` triangles * 9 floats (3 xyz
+// vertices each), non-indexed.
+tvdb_status_t tvdb_gpu_marching_cubes(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                      float isovalue, float** out_verts, size_t* out_tri_count,
+                                      tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

@@ -48,6 +48,7 @@
 #include "tinyvdb_gpu_active_coords_spv.inc"
 #include "tinyvdb_gpu_checksum_spv.inc"
 #include "tinyvdb_gpu_mesh_to_sdf_spv.inc"
+#include "tinyvdb_gpu_marching_cubes_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2259,6 +2260,37 @@ static const char* kTvdbCudaSource =
 "  float dist=sqrtf(best);\n"
 "  float s=((p[0]-bcp[0])*bn[0]+(p[1]-bcp[1])*bn[1]+(p[2]-bcp[2])*bn[2])>=0.0f?1.0f:-1.0f;\n"
 "  float v=s*dist; if (v>band) v=band; if (v<-band) v=-band; out_sdf[gid]=v;\n"
+"}\n"
+"__device__ void tvdb_mc_interp(float iso, const float* p1, const float* p2, float v1, float v2, float* o) {\n"
+"  if (fabsf(v1 - v2) < 1e-10f) { o[0]=p1[0]; o[1]=p1[1]; o[2]=p1[2]; return; }\n"
+"  float mu=(iso-v1)/(v2-v1); o[0]=p1[0]+mu*(p2[0]-p1[0]); o[1]=p1[1]+mu*(p2[1]-p1[1]); o[2]=p1[2]+mu*(p2[2]-p1[2]);\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_marching_cubes(const float* grid, const int* tables,\n"
+"    float* out_verts, int* tri_counts, int nx, int ny, int nz, float ox, float oy, float oz, float vs,\n"
+"    float isovalue, unsigned int cell_count) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (gid >= cell_count) return;\n"
+"  const int CN[8][3]={{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};\n"
+"  const int EA[12]={0,1,2,3,4,5,6,7,0,1,2,3}; const int EB[12]={1,2,3,0,5,6,7,4,4,5,6,7};\n"
+"  int cnx=nx-1, cny=ny-1;\n"
+"  int cz=(int)(gid/(unsigned int)(cnx*cny)); int rem=(int)(gid-(unsigned int)(cz*cnx*cny)); int cy=rem/cnx; int cx=rem-cy*cnx;\n"
+"  float val[8]; int gc[8][3]; int cube=0;\n"
+"  for (int i=0;i<8;++i){ gc[i][0]=cx+CN[i][0]; gc[i][1]=cy+CN[i][1]; gc[i][2]=cz+CN[i][2];\n"
+"    val[i]=grid[(gc[i][2]*ny+gc[i][1])*nx+gc[i][0]]; if (val[i]<isovalue) cube|=(1<<i); }\n"
+"  int edges=tables[cube]; if (edges==0){ tri_counts[gid]=0; return; }\n"
+"  float ev[12][3];\n"
+"  for (int e=0;e<12;++e){ if((edges&(1<<e))==0) continue; int a=EA[e],b=EB[e];\n"
+"    float pa[3]={ox+((float)gc[a][0]+0.5f)*vs, oy+((float)gc[a][1]+0.5f)*vs, oz+((float)gc[a][2]+0.5f)*vs};\n"
+"    float pb[3]={ox+((float)gc[b][0]+0.5f)*vs, oy+((float)gc[b][1]+0.5f)*vs, oz+((float)gc[b][2]+0.5f)*vs};\n"
+"    tvdb_mc_interp(isovalue,pa,pb,val[a],val[b],ev[e]); }\n"
+"  int tc=0;\n"
+"  for (int i=0;i<16 && tables[256+cube*16+i]!=-1; i+=3){\n"
+"    int e0=tables[256+cube*16+i],e1=tables[256+cube*16+i+1],e2=tables[256+cube*16+i+2];\n"
+"    unsigned int base=(gid*5u+(unsigned int)tc)*9u;\n"
+"    out_verts[base+0]=ev[e0][0];out_verts[base+1]=ev[e0][1];out_verts[base+2]=ev[e0][2];\n"
+"    out_verts[base+3]=ev[e1][0];out_verts[base+4]=ev[e1][1];out_verts[base+5]=ev[e1][2];\n"
+"    out_verts[base+6]=ev[e2][0];out_verts[base+7]=ev[e2][1];out_verts[base+8]=ev[e2][2]; ++tc; }\n"
+"  tri_counts[gid]=tc;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -6189,5 +6221,105 @@ mvd_o: tvdb_vk_destroy_buffer(ctx, &bo);
 mvd_n: tvdb_vk_destroy_buffer(ctx, &bn);
 mvd_v: tvdb_vk_destroy_buffer(ctx, &bv);
   free(verts); free(normals);
+  return st;
+}
+
+// ---- marching cubes (GPU) ---------------------------------------------------
+
+static void tvdb_mc_gather(const int32_t* tri_counts, const float* cell_verts, size_t cells,
+                           float* out, size_t* total) {
+  size_t w = 0;
+  for (size_t c = 0; c < cells; ++c) {
+    int tc = tri_counts[c];
+    for (int t = 0; t < tc && t < 5; ++t) {
+      const float* src = &cell_verts[(c * 5 + (size_t)t) * 9];
+      for (int k = 0; k < 9; ++k) out[w++] = src[k];
+    }
+  }
+  *total = w / 9;
+}
+
+tvdb_status_t tvdb_gpu_marching_cubes(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                      float isovalue, float** out_verts, size_t* out_tri_count,
+                                      tvdb_error_t* err) {
+  if (out_verts) *out_verts = NULL;
+  if (out_tri_count) *out_tri_count = 0;
+  if (!ctx || !grid || !grid->data || !out_verts || !out_tri_count || grid->nx < 2 || grid->ny < 2 || grid->nz < 2) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid marching_cubes arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  size_t nvox = (size_t)nx*(size_t)ny*(size_t)nz;
+  size_t cells = (size_t)(nx-1)*(size_t)(ny-1)*(size_t)(nz-1);
+  int* tab = (int*)malloc((256 + 256*16) * sizeof(int));
+  float* cellv = (float*)malloc(cells * 5u * 9u * sizeof(float));
+  int32_t* tcounts = (int32_t*)malloc(cells * sizeof(int32_t));
+  if (!tab || !cellv || !tcounts) { free(tab); free(cellv); free(tcounts); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  memcpy(tab, tvdb_mc_edge_table(), 256 * sizeof(int));
+  memcpy(tab + 256, tvdb_mc_tri_table_flat(), 256*16 * sizeof(int));
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dg=0, dt=0, dv=0, dc=0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto mc_dev;
+    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_marching_cubes"))) { st=err?err->status:TVDB_ERROR_IO; goto mc_dev; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dg, grid->data, nvox*sizeof(float), err)) != TVDB_OK) goto mc_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dt, tab, (256+256*16)*sizeof(int), err)) != TVDB_OK) goto mc_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dv, NULL, cells*5u*9u*sizeof(float), err)) != TVDB_OK) goto mc_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dc, NULL, cells*sizeof(int32_t), err)) != TVDB_OK) goto mc_dev;
+    float ox=grid->ox, oy=grid->oy, oz=grid->oz, vs=grid->voxel_size;
+    unsigned int ucells=(unsigned int)cells, block=64;
+    void* args[] = {&dg,&dt,&dv,&dc,&nx,&ny,&nz,&ox,&oy,&oz,&vs,&isovalue,&ucells};
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,(ucells+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto mc_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto mc_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(tcounts, dc, cells*sizeof(int32_t)))) { st=err?err->status:TVDB_ERROR_IO; goto mc_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(cellv, dv, cells*5u*9u*sizeof(float)))) { st=err?err->status:TVDB_ERROR_IO; goto mc_dev; }
+    st = TVDB_OK;
+mc_dev:
+    if (dc) ctx->cuda.cuMemFree(dc);
+    if (dv) ctx->cuda.cuMemFree(dv);
+    if (dt) ctx->cuda.cuMemFree(dt);
+    if (dg) ctx->cuda.cuMemFree(dg);
+    goto mc_finish;
+  }
+  {
+    tvdb_vk_buffer bg, bt, bv, bc, bu;
+    if ((st = tvdb_vk_create_buffer(ctx, nvox*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bg, err)) != TVDB_OK) { free(tab); free(cellv); free(tcounts); return st; }
+    if ((st = tvdb_vk_create_buffer(ctx, (256+256*16)*sizeof(int), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bt, err)) != TVDB_OK) goto mvk_g;
+    if ((st = tvdb_vk_create_buffer(ctx, cells*5u*9u*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bv, err)) != TVDB_OK) goto mvk_t;
+    if ((st = tvdb_vk_create_buffer(ctx, cells*sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bc, err)) != TVDB_OK) goto mvk_v;
+    if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto mvk_c;
+    memcpy(bg.mapped, grid->data, nvox*sizeof(float));
+    memcpy(bt.mapped, tab, (256+256*16)*sizeof(int));
+    struct { int32_t dim[4]; float grid_o[4]; float isovalue; uint32_t cell_count; uint32_t pad[2]; } par;
+    memset(&par, 0, sizeof(par));
+    par.dim[0]=nx; par.dim[1]=ny; par.dim[2]=nz;
+    par.grid_o[0]=grid->ox; par.grid_o[1]=grid->oy; par.grid_o[2]=grid->oz; par.grid_o[3]=grid->voxel_size;
+    par.isovalue=isovalue; par.cell_count=(uint32_t)cells;
+    memcpy(bu.mapped, &par, sizeof(par));
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = kTvdbGpuMarchingCubesSpv; d.spv_len = kTvdbGpuMarchingCubesSpv_len; d.descriptor_count = 5;
+    d.buffers[0]=&bg; d.buffers[1]=&bt; d.buffers[2]=&bv; d.buffers[3]=&bc; d.buffers[4]=&bu;
+    for (int i = 0; i < 4; ++i) d.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    d.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    d.group_x = (uint32_t)((cells + 63u) / 64u);
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st == TVDB_OK) { memcpy(tcounts, bc.mapped, cells*sizeof(int32_t)); memcpy(cellv, bv.mapped, cells*5u*9u*sizeof(float)); }
+    tvdb_vk_destroy_buffer(ctx, &bu);
+mvk_c: tvdb_vk_destroy_buffer(ctx, &bc);
+mvk_v: tvdb_vk_destroy_buffer(ctx, &bv);
+mvk_t: tvdb_vk_destroy_buffer(ctx, &bt);
+mvk_g: tvdb_vk_destroy_buffer(ctx, &bg);
+  }
+mc_finish:
+  if (st == TVDB_OK) {
+    size_t total_tris = 0;
+    for (size_t c = 0; c < cells; ++c) { int tc = tcounts[c]; total_tris += (tc < 0 ? 0 : (tc > 5 ? 5 : tc)); }
+    float* out = (float*)malloc((total_tris ? total_tris : 1) * 9u * sizeof(float));
+    if (!out) { st = TVDB_ERROR_OUT_OF_MEMORY; tvdb_gpu_set_error(err, st, "OOM"); }
+    else { size_t total = 0; tvdb_mc_gather(tcounts, cellv, cells, out, &total); *out_verts = out; *out_tri_count = total; }
+  }
+  free(tab); free(cellv); free(tcounts);
   return st;
 }

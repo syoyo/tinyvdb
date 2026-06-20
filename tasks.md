@@ -223,19 +223,15 @@ each theme. Notes point at the nearest existing primitive to reuse.
 - [~] **P0: GPU TSDF integration and marching cubes.** `tvdb_gpu_integrate_tsdf`
       (per-voxel depth-frame fusion + weighted average) done on Vulkan and
       CUDA/NVRTC, mirroring `tvdb_integrate_tsdf`; covered by `test_gpu_backend`
-      (`test_tsdf`). *Blocked:* GPU marching cubes. Investigated in depth: the
-      CPU MC lookup tables in `tinyvdb_mesh.c` are mutually inconsistent — the
-      triangle table references edge indices that are not set in the edge table
-      for the same cube config (279 violations even in the populated rows
-      0-159, and configs 160-255 are entirely zero-filled, which a sphere SDF
-      hits in thousands of cells). The CPU mesher "works" only because it reads
-      uninitialized per-cube edge vertices (index 0) for those refs, so a
-      faithful GPU port reads garbage and a *correct* port would need a
-      canonical, self-consistent MC table set replacing the CPU's — a CPU-side
-      data-correctness fix with `test_levelset` regression risk, beyond a GPU
-      kernel port. Prerequisite: replace the CPU MC tables with a verified
-      consistent set (edge table ✓ complement-symmetric; triangle table needs
-      sourcing/regeneration).
+      (`test_tsdf`). `tvdb_gpu_marching_cubes` (one thread/cell, emits a triangle
+      soup in scan/table order matching the CPU) on Vulkan and CUDA/NVRTC,
+      mirroring `tvdb_sdf_to_mesh`; covered by `test_marching_cubes` (exact
+      triangle-for-triangle parity vs CPU). This first required fixing the CPU
+      MC triangle table, which was corrupted (88 of rows 0-159 referenced wrong
+      edges, configs 160-255 missing): replaced with the canonical 256-row
+      table (`tinyvdb_mc_tri_table.h`), verified edge-consistent for all 256
+      configs and end-to-end (sphere meshes to a watertight manifold, V-E+F=2).
+      COMPLETE.
 - [~] **P1: GPU grid construction.** `tvdb_gpu_points_to_mask` rasterizes a
       point cloud into a dense occupancy grid, and `tvdb_gpu_voxelize_points`
       builds the unique occupied-voxel coord set (sparse) via a dense bbox-local

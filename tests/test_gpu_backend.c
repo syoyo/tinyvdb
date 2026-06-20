@@ -1320,6 +1320,39 @@ static void test_mesh_to_sdf(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&cpu); tvdb_dense_grid_free(&gpu);
 }
 
+static void test_marching_cubes(tvdb_gpu_context_t* ctx) {
+  tvdb_dense_grid g;
+  make_sphere(&g);
+  tvdb_triangle_mesh mesh;
+  memset(&mesh, 0, sizeof(mesh));
+  EXPECT(tvdb_sdf_to_mesh(&g, 0.0f, &mesh, NULL));
+  float* verts = NULL; size_t tcount = 0;
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_marching_cubes(ctx, &g, 0.0f, &verts, &tcount, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu marching_cubes failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(tcount == mesh.face_count);
+    EXPECT(tcount > 0);
+    if (tcount == mesh.face_count) {
+      // Same cell/table order -> triangle T's vertex positions must match.
+      for (size_t t = 0; t < tcount; ++t) {
+        tvdb_triangle f = mesh.faces[t];
+        tvdb_vec3f cv[3] = { mesh.vertices[f.v0], mesh.vertices[f.v1], mesh.vertices[f.v2] };
+        for (int k = 0; k < 3; ++k) {
+          EXPECT_NEAR(verts[t*9 + k*3 + 0], cv[k].x, 1e-5f);
+          EXPECT_NEAR(verts[t*9 + k*3 + 1], cv[k].y, 1e-5f);
+          EXPECT_NEAR(verts[t*9 + k*3 + 2], cv[k].z, 1e-5f);
+        }
+      }
+    }
+  }
+  free(verts);
+  free(mesh.vertices); free(mesh.faces);
+  tvdb_dense_grid_free(&g);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1360,6 +1393,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_active_coords(ctx);
   test_checksum(ctx);
   test_mesh_to_sdf(ctx);
+  test_marching_cubes(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }
