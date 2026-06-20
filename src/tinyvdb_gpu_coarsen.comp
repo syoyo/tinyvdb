@@ -1,0 +1,34 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer  { float in_data[]; };
+layout(std430, set = 0, binding = 1) buffer OutBuffer { float out_data[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 in_dim;   // nx, ny, nz
+  ivec4 out_dim;
+  int factor;
+} u;
+
+// Downsample by integer factor via block averaging (matches tvdb_coarsen_grid).
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint total = uint(u.out_dim.x * u.out_dim.y * u.out_dim.z);
+  if (gid >= total) return;
+  int oz = int(gid) / (u.out_dim.x * u.out_dim.y);
+  int rem = int(gid) - oz * u.out_dim.x * u.out_dim.y;
+  int oy = rem / u.out_dim.x;
+  int ox = rem - oy * u.out_dim.x;
+  float sum = 0.0;
+  int count = 0;
+  for (int dz = 0; dz < u.factor; ++dz) {
+    int sz = oz * u.factor + dz; if (sz >= u.in_dim.z) break;
+    for (int dy = 0; dy < u.factor; ++dy) {
+      int sy = oy * u.factor + dy; if (sy >= u.in_dim.y) break;
+      for (int dx = 0; dx < u.factor; ++dx) {
+        int sx = ox * u.factor + dx; if (sx >= u.in_dim.x) break;
+        sum += in_data[(sz * u.in_dim.y + sy) * u.in_dim.x + sx];
+        ++count;
+      }
+    }
+  }
+  out_data[gid] = count > 0 ? sum / float(count) : 0.0;
+}

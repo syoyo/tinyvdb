@@ -26,6 +26,8 @@
 #include "tinyvdb_gpu_neighbor_counts_spv.inc"
 #include "tinyvdb_gpu_morph_spv.inc"
 #include "tinyvdb_gpu_prune_spv.inc"
+#include "tinyvdb_gpu_coarsen_spv.inc"
+#include "tinyvdb_gpu_refine_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -1806,6 +1808,52 @@ static const char* kTvdbCudaSource =
 "  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
 "  if (i >= count) return;\n"
 "  if (fabsf(data[i] - background) <= tolerance) data[i] = background;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_coarsen(const float* in_data, float* out_data,\n"
+"                                              int inx, int iny, int inz, int onx, int ony, int onz, int factor) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = (unsigned int)(onx * ony * onz);\n"
+"  if (gid >= total) return;\n"
+"  int oz = (int)(gid / (unsigned int)(onx * ony));\n"
+"  int rem = (int)(gid - (unsigned int)(oz * onx * ony));\n"
+"  int oy = rem / onx; int ox = rem - oy * onx;\n"
+"  float sum = 0.0f; int count = 0;\n"
+"  for (int dz = 0; dz < factor; ++dz) { int sz = oz * factor + dz; if (sz >= inz) break;\n"
+"    for (int dy = 0; dy < factor; ++dy) { int sy = oy * factor + dy; if (sy >= iny) break;\n"
+"      for (int dx = 0; dx < factor; ++dx) { int sx = ox * factor + dx; if (sx >= inx) break;\n"
+"        sum += in_data[(sz * iny + sy) * inx + sx]; ++count; } } }\n"
+"  out_data[gid] = count > 0 ? sum / (float)count : 0.0f;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_refine(const float* in_data, float* out_data,\n"
+"                                             int inx, int iny, int inz, int onx, int ony, int onz,\n"
+"                                             float iox, float ioy, float ioz, float ivs,\n"
+"                                             float oox, float ooy, float ooz, float ovs) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = (unsigned int)(onx * ony * onz);\n"
+"  if (gid >= total) return;\n"
+"  int oz = (int)(gid / (unsigned int)(onx * ony));\n"
+"  int rem = (int)(gid - (unsigned int)(oz * onx * ony));\n"
+"  int oy = rem / onx; int ox = rem - oy * onx;\n"
+"  float wx = oox + ((float)ox + 0.5f) * ovs;\n"
+"  float wy = ooy + ((float)oy + 0.5f) * ovs;\n"
+"  float wz = ooz + ((float)oz + 0.5f) * ovs;\n"
+"  float fx = (wx - iox) / ivs - 0.5f;\n"
+"  float fy = (wy - ioy) / ivs - 0.5f;\n"
+"  float fz = (wz - ioz) / ivs - 0.5f;\n"
+"  int ix = (int)floorf(fx), iy = (int)floorf(fy), iz = (int)floorf(fz);\n"
+"  float tx = fx - (float)ix, ty = fy - (float)iy, tz = fz - (float)iz;\n"
+"  float c000 = tvdb_fetch(in_data, inx, iny, inz, ix, iy, iz);\n"
+"  float c100 = tvdb_fetch(in_data, inx, iny, inz, ix+1, iy, iz);\n"
+"  float c010 = tvdb_fetch(in_data, inx, iny, inz, ix, iy+1, iz);\n"
+"  float c110 = tvdb_fetch(in_data, inx, iny, inz, ix+1, iy+1, iz);\n"
+"  float c001 = tvdb_fetch(in_data, inx, iny, inz, ix, iy, iz+1);\n"
+"  float c101 = tvdb_fetch(in_data, inx, iny, inz, ix+1, iy, iz+1);\n"
+"  float c011 = tvdb_fetch(in_data, inx, iny, inz, ix, iy+1, iz+1);\n"
+"  float c111 = tvdb_fetch(in_data, inx, iny, inz, ix+1, iy+1, iz+1);\n"
+"  float c00 = c000 + (c100 - c000) * tx; float c10 = c010 + (c110 - c010) * tx;\n"
+"  float c01 = c001 + (c101 - c001) * tx; float c11 = c011 + (c111 - c011) * tx;\n"
+"  float c0 = c00 + (c10 - c00) * ty; float c1 = c01 + (c11 - c01) * ty;\n"
+"  out_data[gid] = c0 + (c1 - c0) * tz;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -3952,4 +4000,138 @@ tvdb_status_t tvdb_gpu_prune(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
   if (ctx->backend == TVDB_GPU_BACKEND_CUDA)
     return tvdb_cuda_prune_impl(ctx, grid, background, tolerance, err);
   return tvdb_vk_prune(ctx, grid, background, tolerance, err);
+}
+
+// ---- coarsen / refine (dimension-changing resamples) -----------------------
+
+static tvdb_status_t tvdb_gpu_init_out_grid(tvdb_dense_grid* out, int nx, int ny, int nz,
+                                            float vs, float ox, float oy, float oz, tvdb_error_t* err) {
+  size_t bytes = (size_t)nx * (size_t)ny * (size_t)nz * sizeof(float);
+  out->nx = nx; out->ny = ny; out->nz = nz;
+  out->voxel_size = vs; out->ox = ox; out->oy = oy; out->oz = oz;
+  out->data = (float*)malloc(bytes);
+  if (!out->data) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  memset(out->data, 0, bytes);
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gpu_coarsen(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* in,
+                               int factor, tvdb_dense_grid* out, tvdb_error_t* err) {
+  if (!ctx || !in || !in->data || !out || factor <= 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid coarsen arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  int onx = (in->nx + factor - 1) / factor;
+  int ony = (in->ny + factor - 1) / factor;
+  int onz = (in->nz + factor - 1) / factor;
+  tvdb_status_t st = tvdb_gpu_init_out_grid(out, onx, ony, onz, in->voxel_size * (float)factor,
+                                            in->ox, in->oy, in->oz, err);
+  if (st != TVDB_OK) return st;
+  size_t nin = (size_t)in->nx * (size_t)in->ny * (size_t)in->nz;
+  size_t nout = (size_t)onx * (size_t)ony * (size_t)onz;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr di = 0, dou = 0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) return st;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_coarsen"))) return err ? err->status : TVDB_ERROR_IO;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &di, in->data, nin * sizeof(float), err)) != TVDB_OK) goto cdone;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dou, NULL, nout * sizeof(float), err)) != TVDB_OK) goto cdone;
+    int inx = in->nx, iny = in->ny, inz = in->nz;
+    void* args[] = {&di, &dou, &inx, &iny, &inz, &onx, &ony, &onz, &factor};
+    unsigned int block = 128, grid = ((unsigned int)nout + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto cdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto cdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out->data, dou, nout * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto cdone; }
+    st = TVDB_OK;
+cdone:
+    if (dou) ctx->cuda.cuMemFree(dou);
+    if (di) ctx->cuda.cuMemFree(di);
+    return st;
+  }
+
+  tvdb_vk_buffer bi, bo, bp;
+  if ((st = tvdb_vk_create_buffer(ctx, nin * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bi, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, nout * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto done_i;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_o;
+  memcpy(bi.mapped, in->data, nin * sizeof(float));
+  struct { int32_t in_dim[4]; int32_t out_dim[4]; int32_t factor; int32_t pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.in_dim[0] = in->nx; par.in_dim[1] = in->ny; par.in_dim[2] = in->nz;
+  par.out_dim[0] = onx; par.out_dim[1] = ony; par.out_dim[2] = onz; par.factor = factor;
+  memcpy(bp.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuCoarsenSpv; d.spv_len = kTvdbGpuCoarsenSpv_len; d.descriptor_count = 3;
+  d.buffers[0] = &bi; d.buffers[1] = &bo; d.buffers[2] = &bp;
+  d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((nout + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out->data, bo.mapped, nout * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+done_o: tvdb_vk_destroy_buffer(ctx, &bo);
+done_i: tvdb_vk_destroy_buffer(ctx, &bi);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_refine(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* in,
+                              int factor, tvdb_dense_grid* out, tvdb_error_t* err) {
+  if (!ctx || !in || !in->data || !out || factor <= 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid refine arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  int onx = in->nx * factor, ony = in->ny * factor, onz = in->nz * factor;
+  float ovs = in->voxel_size / (float)factor;
+  tvdb_status_t st = tvdb_gpu_init_out_grid(out, onx, ony, onz, ovs, in->ox, in->oy, in->oz, err);
+  if (st != TVDB_OK) return st;
+  size_t nin = (size_t)in->nx * (size_t)in->ny * (size_t)in->nz;
+  size_t nout = (size_t)onx * (size_t)ony * (size_t)onz;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr di = 0, dou = 0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) return st;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_refine"))) return err ? err->status : TVDB_ERROR_IO;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &di, in->data, nin * sizeof(float), err)) != TVDB_OK) goto rdone;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dou, NULL, nout * sizeof(float), err)) != TVDB_OK) goto rdone;
+    int inx = in->nx, iny = in->ny, inz = in->nz;
+    float iox = in->ox, ioy = in->oy, ioz = in->oz, ivs = in->voxel_size;
+    float oox = out->ox, ooy = out->oy, ooz = out->oz;
+    void* args[] = {&di, &dou, &inx, &iny, &inz, &onx, &ony, &onz, &iox, &ioy, &ioz, &ivs, &oox, &ooy, &ooz, &ovs};
+    unsigned int block = 128, grid = ((unsigned int)nout + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto rdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto rdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out->data, dou, nout * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto rdone; }
+    st = TVDB_OK;
+rdone:
+    if (dou) ctx->cuda.cuMemFree(dou);
+    if (di) ctx->cuda.cuMemFree(di);
+    return st;
+  }
+
+  tvdb_vk_buffer bi, bo, bp;
+  if ((st = tvdb_vk_create_buffer(ctx, nin * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bi, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, nout * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto rdone_i;
+  if ((st = tvdb_vk_create_buffer(ctx, 80, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto rdone_o;
+  memcpy(bi.mapped, in->data, nin * sizeof(float));
+  struct { int32_t in_dim[4]; int32_t out_dim[4]; float in_origin[4]; float out_origin[4]; float in_vs; float out_vs; float pad[2]; } par;
+  memset(&par, 0, sizeof(par));
+  par.in_dim[0] = in->nx; par.in_dim[1] = in->ny; par.in_dim[2] = in->nz;
+  par.out_dim[0] = onx; par.out_dim[1] = ony; par.out_dim[2] = onz;
+  par.in_origin[0] = in->ox; par.in_origin[1] = in->oy; par.in_origin[2] = in->oz;
+  par.out_origin[0] = out->ox; par.out_origin[1] = out->oy; par.out_origin[2] = out->oz;
+  par.in_vs = in->voxel_size; par.out_vs = ovs;
+  memcpy(bp.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuRefineSpv; d.spv_len = kTvdbGpuRefineSpv_len; d.descriptor_count = 3;
+  d.buffers[0] = &bi; d.buffers[1] = &bo; d.buffers[2] = &bp;
+  d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((nout + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out->data, bo.mapped, nout * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+rdone_o: tvdb_vk_destroy_buffer(ctx, &bo);
+rdone_i: tvdb_vk_destroy_buffer(ctx, &bi);
+  return st;
 }

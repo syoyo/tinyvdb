@@ -227,6 +227,16 @@ tvdb_status_t tvdb_gpu_erode(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
 tvdb_status_t tvdb_gpu_prune(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
                              float background, float tolerance, tvdb_error_t* err);
 
+// Downsample by integer `factor` via block averaging (parallels
+// tvdb_coarsen_grid). `out` is filled (dims = ceil(in/factor), vs*factor).
+tvdb_status_t tvdb_gpu_coarsen(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* in,
+                               int factor, tvdb_dense_grid* out, tvdb_error_t* err);
+
+// Upsample by integer `factor` via trilinear resampling (parallels
+// tvdb_refine_grid). `out` is filled (dims = in*factor, vs/factor).
+tvdb_status_t tvdb_gpu_refine(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* in,
+                              int factor, tvdb_dense_grid* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

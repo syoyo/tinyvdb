@@ -22,3 +22,7 @@ static const uint8_t kTvdbGpuMorphSpv[] = {0};
 static const uint32_t kTvdbGpuMorphSpv_len = 0;
 static const uint8_t kTvdbGpuPruneSpv[] = {0};
 static const uint32_t kTvdbGpuPruneSpv_len = 0;
+static const uint8_t kTvdbGpuCoarsenSpv[] = {0};
+static const uint32_t kTvdbGpuCoarsenSpv_len = 0;
+static const uint8_t kTvdbGpuRefineSpv[] = {0};
+static const uint32_t kTvdbGpuRefineSpv_len = 0;

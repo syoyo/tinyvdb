@@ -678,6 +678,29 @@ static void test_topology(tvdb_gpu_context_t* ctx) {
     tvdb_dense_grid_free(&cpu);
     tvdb_dense_grid_free(&gpu);
   }
+
+  // coarsen / refine parity vs CPU (integer factor 2).
+  for (int mode = 0; mode < 2; ++mode) {
+    tvdb_dense_grid src, cpu, gpu;
+    make_sphere(&src);
+    memset(&cpu, 0, sizeof(cpu));
+    memset(&gpu, 0, sizeof(gpu));
+    tvdb_status_t st;
+    if (mode == 0) { EXPECT(tvdb_coarsen_grid(&src, 2, &cpu, NULL)); st = tvdb_gpu_coarsen(ctx, &src, 2, &gpu, &err); }
+    else           { EXPECT(tvdb_refine_grid(&src, 2, &cpu, NULL));  st = tvdb_gpu_refine(ctx, &src, 2, &gpu, &err); }
+    if (st != TVDB_OK) {
+      fprintf(stderr, "gpu %s failed: %s\n", mode == 0 ? "coarsen" : "refine", err.message);
+      EXPECT(0);
+    } else {
+      EXPECT(gpu.nx == cpu.nx && gpu.ny == cpu.ny && gpu.nz == cpu.nz);
+      EXPECT_NEAR(gpu.voxel_size, cpu.voxel_size, 1e-7f);
+      size_t n = (size_t)cpu.nx * (size_t)cpu.ny * (size_t)cpu.nz;
+      for (size_t i = 0; i < n; ++i) EXPECT_NEAR(gpu.data[i], cpu.data[i], 1e-4f);
+    }
+    tvdb_dense_grid_free(&src);
+    tvdb_dense_grid_free(&cpu);
+    tvdb_dense_grid_free(&gpu);
+  }
 }
 
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
