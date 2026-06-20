@@ -102,7 +102,13 @@ static uint64_t edge_key_c(uint64_t v0, uint64_t v1) {
     return (v0 << 32) | v1;
 }
 
-// Edge Cache
+// Edge Cache — open-addressing hash map keyed on the 64-bit edge key, mapping
+// each shared cube edge to its (deduplicated) output-vertex index. Replaces a
+// former linear scan that made meshing O(n^2); lookups are now O(1) amortized.
+//
+// edge_key_c packs two *distinct* voxel indices as (min << 32) | max with the
+// larger in the low word, so a valid edge key is always >= 1 — we can use
+// key == 0 as the empty-slot sentinel.
 typedef struct {
     uint64_t key;
     uint32_t value;
@@ -111,32 +117,44 @@ typedef struct {
 typedef struct {
     edge_cache_entry_t* entries;
     size_t count;
-    size_t capacity;
+    size_t capacity;   // power of two
+    size_t mask;       // capacity - 1
 } edge_cache_t;
+
+static inline uint64_t edge_hash_u64(uint64_t x) {
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
 
 static void edge_cache_init(edge_cache_t* cache, tvdb_arena_allocator_t* arena) {
     cache->count = 0;
-    cache->capacity = 16;
+    cache->capacity = 1024;
+    cache->mask = cache->capacity - 1;
     cache->entries = (edge_cache_entry_t*)arena_alloc_wrapper(arena, cache->capacity * sizeof(edge_cache_entry_t));
+    if (cache->entries) memset(cache->entries, 0, cache->capacity * sizeof(edge_cache_entry_t));
 }
 
-static uint32_t edge_cache_get_or_insert(edge_cache_t* cache, tvdb_arena_allocator_t* arena, uint64_t key, uint32_t new_value) {
-    for (size_t i = 0; i < cache->count; ++i) {
-        if (cache->entries[i].key == key) {
-            return cache->entries[i].value;
-        }
+// Double the table and rehash all live entries. Returns 0 on alloc failure.
+static int edge_cache_grow(edge_cache_t* cache, tvdb_arena_allocator_t* arena) {
+    size_t new_cap = cache->capacity ? cache->capacity * 2 : 1024;
+    size_t new_mask = new_cap - 1;
+    edge_cache_entry_t* ne = (edge_cache_entry_t*)arena_alloc_wrapper(arena, new_cap * sizeof(edge_cache_entry_t));
+    if (!ne) return 0;
+    memset(ne, 0, new_cap * sizeof(edge_cache_entry_t));
+    for (size_t k = 0; k < cache->capacity; ++k) {
+        uint64_t key = cache->entries[k].key;
+        if (key == 0) continue;
+        size_t i = edge_hash_u64(key) & new_mask;
+        while (ne[i].key != 0) i = (i + 1) & new_mask;
+        ne[i] = cache->entries[k];
     }
-    if (cache->count == cache->capacity) {
-        size_t new_capacity = cache->capacity * 2;
-        edge_cache_entry_t* new_entries = (edge_cache_entry_t*)arena_alloc_wrapper(arena, new_capacity * sizeof(edge_cache_entry_t));
-        if (!new_entries) return 0;
-        memcpy(new_entries, cache->entries, cache->count * sizeof(edge_cache_entry_t));
-        cache->entries = new_entries;
-        cache->capacity = new_capacity;
-    }
-    cache->entries[cache->count].key = key;
-    cache->entries[cache->count].value = new_value;
-    return cache->entries[cache->count++].value;
+    if (!arena && cache->entries) free(cache->entries);
+    cache->entries = ne;
+    cache->capacity = new_cap;
+    cache->mask = new_mask;
+    return 1;
 }
 
 // Vertex Interpolation
@@ -155,28 +173,37 @@ static uint32_t get_or_create_edge_vertex_c(edge_cache_t* cache, tvdb_arena_allo
     uint64_t v1_flat = voxel_idx_c(grid->nx, grid->ny, x1, y1, z1);
     uint64_t edge_key = edge_key_c(v0_flat, v1_flat);
 
-    for (size_t i = 0; i < cache->count; ++i) {
+    // Keep the load factor under ~0.7. Grow before probing so the slot we
+    // settle on below stays valid.
+    if ((cache->count + 1) * 10 >= cache->capacity * 7)
+        if (!edge_cache_grow(cache, arena)) return 0;
+
+    size_t i = edge_hash_u64(edge_key) & cache->mask;
+    while (cache->entries[i].key != 0) {
         if (cache->entries[i].key == edge_key) return cache->entries[i].value;
+        i = (i + 1) & cache->mask;
     }
 
+    // Not cached: interpolate the new vertex, append it, and record the slot.
     tvdb_vec3f p0 = voxel_pos_c(grid, x0, y0, z0);
     tvdb_vec3f p1 = voxel_pos_c(grid, x1, y1, z1);
-    float v0 = grid->data[voxel_idx_c(grid->nx, grid->ny, x0, y0, z0)];
-    float v1 = grid->data[voxel_idx_c(grid->nx, grid->ny, x1, y1, z1)];
-    tvdb_vec3f p = vertex_interp_c(isovalue, p0, p1, v0, v1);
+    tvdb_vec3f p = vertex_interp_c(isovalue, p0, p1, grid->data[v0_flat], grid->data[v1_flat]);
 
     uint32_t idx = (uint32_t)mesh->vertex_count;
     if (mesh->vertex_count == mesh->vertex_capacity) {
-        size_t new_cap = mesh->vertex_capacity * 2;
+        size_t new_cap = mesh->vertex_capacity ? mesh->vertex_capacity * 2 : 64;
         tvdb_vec3f* new_verts = (tvdb_vec3f*)arena_alloc_wrapper(arena, new_cap * sizeof(tvdb_vec3f));
         if (!new_verts) return 0;
-        memcpy(new_verts, mesh->vertices, mesh->vertex_count * sizeof(tvdb_vec3f));
+        if (mesh->vertices) memcpy(new_verts, mesh->vertices, mesh->vertex_count * sizeof(tvdb_vec3f));
+        if (!arena && mesh->vertices) free(mesh->vertices);
         mesh->vertices = new_verts;
         mesh->vertex_capacity = new_cap;
     }
     mesh->vertices[mesh->vertex_count++] = p;
-    
-    if (edge_cache_get_or_insert(cache, arena, edge_key, idx) == 0 && cache->count == 0) return 0;
+
+    cache->entries[i].key = edge_key;
+    cache->entries[i].value = idx;
+    cache->count++;
     return idx;
 }
 
