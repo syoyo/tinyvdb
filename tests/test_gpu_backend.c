@@ -1118,6 +1118,54 @@ static void test_voxelize(tvdb_gpu_context_t* ctx) {
   free(cpu_coords); free(gpu_coords); free(flat);
 }
 
+typedef struct { long long key; float val; } kv_t;
+static int cmp_kv(const void* a, const void* b) {
+  long long x = ((const kv_t*)a)->key, y = ((const kv_t*)b)->key;
+  return (x > y) - (x < y);
+}
+static void build_kv(const tvdb_sparse_grid* g, kv_t* kv) {
+  for (size_t i = 0; i < g->count; ++i) {
+    kv[i].key = (((long long)g->coords[i].x + (1<<20)) << 42) |
+                (((long long)g->coords[i].y + (1<<20)) << 21) |
+                ((long long)g->coords[i].z + (1<<20));
+    kv[i].val = g->values[i];
+  }
+  qsort(kv, g->count, sizeof(kv_t), cmp_kv);
+}
+
+static void test_sparse_erode(tvdb_gpu_context_t* ctx) {
+  // Solid 5x5x5 block; erode (1 iter) keeps the interior 3x3x3 with max-pooled
+  // values. Compare GPU vs CPU as sets.
+  tvdb_sparse_grid in, cpu, gpu;
+  tvdb_sparse_grid_init(&in); tvdb_sparse_grid_init(&cpu); tvdb_sparse_grid_init(&gpu);
+  EXPECT(tvdb_sparse_grid_reserve(&in, 125));
+  size_t k = 0;
+  for (int z = 0; z < 5; ++z) for (int y = 0; y < 5; ++y) for (int x = 0; x < 5; ++x) {
+    in.coords[k].x = x; in.coords[k].y = y; in.coords[k].z = z;
+    in.values[k] = 0.1f * (float)(x + y + z) - 0.5f; ++k;
+  }
+  in.count = 125;
+
+  EXPECT(tvdb_erode_sparse(&in, 1, &cpu));
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_erode_sparse(ctx, &in, 1, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu erode_sparse failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu.count == cpu.count);
+    EXPECT(cpu.count == 27);  // 3x3x3 interior
+    if (gpu.count == cpu.count && cpu.count > 0) {
+      kv_t* kc = (kv_t*)malloc(cpu.count * sizeof(kv_t));
+      kv_t* kg = (kv_t*)malloc(gpu.count * sizeof(kv_t));
+      build_kv(&cpu, kc); build_kv(&gpu, kg);
+      for (size_t i = 0; i < cpu.count; ++i) { EXPECT(kc[i].key == kg[i].key); EXPECT_NEAR(kc[i].val, kg[i].val, 1e-6f); }
+      free(kc); free(kg);
+    }
+  }
+  tvdb_sparse_grid_free(&in); tvdb_sparse_grid_free(&cpu); tvdb_sparse_grid_free(&gpu);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1152,6 +1200,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_splat(ctx);
   test_points_to_mask(ctx);
   test_voxelize(ctx);
+  test_sparse_erode(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

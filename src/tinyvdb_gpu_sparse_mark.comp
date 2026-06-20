@@ -1,0 +1,24 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) buffer OccBuffer { uint occ[]; };
+layout(std430, set = 0, binding = 1) buffer ValBuffer { float val[]; };
+layout(std430, set = 0, binding = 2) readonly buffer CoordBuffer { ivec4 coords[]; };
+layout(std430, set = 0, binding = 3) readonly buffer InValBuffer { float invals[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  ivec4 dims;    // bbox-local occupancy dims
+  ivec4 bbmin;   // ijk bbox minimum
+  uint count;
+} u;
+
+// Mark a sparse grid into a dense (bbox-local) occupancy + value grid. One
+// thread per active voxel; coords are guaranteed in-bbox by construction.
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.count) return;
+  int lx = coords[i].x - u.bbmin.x;
+  int ly = coords[i].y - u.bbmin.y;
+  int lz = coords[i].z - u.bbmin.z;
+  uint lin = uint((lz * u.dims.y + ly) * u.dims.x + lx);
+  occ[lin] = 1u;
+  val[lin] = invals[i];
+}

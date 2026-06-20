@@ -339,6 +339,14 @@ tvdb_status_t tvdb_gpu_voxelize_points(tvdb_gpu_context_t* ctx, const float* poi
                                        const float voxel_size[3], const float origin[3],
                                        int32_t** out_coords, size_t* out_count, tvdb_error_t* err);
 
+// Sparse erode (parallels tvdb_erode_sparse): keep an active voxel only if all
+// 6 face neighbors are active, with max-pooled value; `iterations` steps. `out`
+// is filled (set semantics: output coord order is arbitrary). Uses a dense
+// bbox-local occupancy + atomic-counter compaction, so the active set's ijk
+// bbox volume must fit in VRAM.
+tvdb_status_t tvdb_gpu_erode_sparse(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
+                                    int iterations, tvdb_sparse_grid* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

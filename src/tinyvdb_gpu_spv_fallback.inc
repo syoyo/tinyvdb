@@ -50,3 +50,7 @@ static const uint8_t kTvdbGpuVoxelizeMarkSpv[] = {0};
 static const uint32_t kTvdbGpuVoxelizeMarkSpv_len = 0;
 static const uint8_t kTvdbGpuVoxelizeCompactSpv[] = {0};
 static const uint32_t kTvdbGpuVoxelizeCompactSpv_len = 0;
+static const uint8_t kTvdbGpuSparseMarkSpv[] = {0};
+static const uint32_t kTvdbGpuSparseMarkSpv_len = 0;
+static const uint8_t kTvdbGpuSparseErodeSpv[] = {0};
+static const uint32_t kTvdbGpuSparseErodeSpv_len = 0;
