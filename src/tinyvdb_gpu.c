@@ -36,6 +36,7 @@
 #include "tinyvdb_gpu_stats_spv.inc"
 #include "tinyvdb_gpu_levelset_check_spv.inc"
 #include "tinyvdb_gpu_flood_spv.inc"
+#include "tinyvdb_gpu_splat_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2066,6 +2067,22 @@ static const char* kTvdbCudaSource =
 "  if (iz > 0      && vis[gid - sl] != 0u) reached = true;\n"
 "  if (iz < nz - 1 && vis[gid + sl] != 0u) reached = true;\n"
 "  if (reached) { vis[gid] = 1u; changed[0] = 1u; }\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_splat(float* data, const tvdb_float4* pts, const float* vals,\n"
+"    float* wdata, int nx, int ny, int nz, float ox, float oy, float oz, float vs,\n"
+"    unsigned int count, int has_weights) {\n"
+"  unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (p >= count) return;\n"
+"  tvdb_float4 q = pts[p];\n"
+"  float vx = (q.x - ox) / vs - 0.5f, vy = (q.y - oy) / vs - 0.5f, vz = (q.z - oz) / vs - 0.5f;\n"
+"  int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);\n"
+"  float fx = vx - ix, fy = vy - iy, fz = vz - iz; float v = vals[p];\n"
+"  for (int dz = 0; dz < 2; ++dz) { int z = iz + dz; if (z < 0 || z >= nz) continue; float wz = (dz==0)?(1.0f-fz):fz;\n"
+"    for (int dy = 0; dy < 2; ++dy) { int y = iy + dy; if (y < 0 || y >= ny) continue; float wy = (dy==0)?(1.0f-fy):fy;\n"
+"      for (int dx = 0; dx < 2; ++dx) { int x = ix + dx; if (x < 0 || x >= nx) continue; float wx = (dx==0)?(1.0f-fx):fx;\n"
+"        float w = wx * wy * wz; unsigned int idx = (unsigned int)((z * ny + y) * nx + x);\n"
+"        atomicAdd(&data[idx], w * v); if (has_weights) atomicAdd(&wdata[idx], w);\n"
+"      } } }\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -5030,5 +5047,87 @@ fvk_c: tvdb_vk_destroy_buffer(ctx, &bc);
 fvk_v: tvdb_vk_destroy_buffer(ctx, &bv);
 fvk_g: tvdb_vk_destroy_buffer(ctx, &bg);
   free(vis);
+  return st;
+}
+
+// ---- trilinear splat --------------------------------------------------------
+
+tvdb_status_t tvdb_gpu_splat_trilinear_dense(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                             const float* points, const float* vals, size_t n,
+                                             float* weights, tvdb_error_t* err) {
+  if (!ctx || !grid || !grid->data || (!points && n) || (!vals && n)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid splat arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (n == 0) return TVDB_OK;
+  size_t nvox = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
+  int has_weights = weights ? 1 : 0;
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dd = 0, dp = 0, dv = 0, dw = 0;
+    float* p4 = (float*)malloc(n * 4u * sizeof(float));
+    if (!p4) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+    for (size_t i = 0; i < n; ++i) { p4[4*i+0]=points[3*i+0]; p4[4*i+1]=points[3*i+1]; p4[4*i+2]=points[3*i+2]; p4[4*i+3]=0.0f; }
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) { free(p4); return st; }
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_splat"))) { free(p4); return err ? err->status : TVDB_ERROR_IO; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, grid->data, nvox * sizeof(float), err)) != TVDB_OK) goto scu_free;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, p4, n * 4u * sizeof(float), err)) != TVDB_OK) goto scu_free;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dv, vals, n * sizeof(float), err)) != TVDB_OK) goto scu_free;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dw, has_weights ? weights : NULL, has_weights ? nvox * sizeof(float) : sizeof(float), err)) != TVDB_OK) goto scu_free;
+    int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+    float ox = grid->ox, oy = grid->oy, oz = grid->oz, vs = grid->voxel_size;
+    unsigned int uc = (unsigned int)n;
+    void* args[] = {&dd, &dp, &dv, &dw, &nx, &ny, &nz, &ox, &oy, &oz, &vs, &uc, &has_weights};
+    unsigned int block = 128, gridb = ((unsigned int)n + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, gridb, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto scu_free; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto scu_free; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(grid->data, dd, nvox * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto scu_free; }
+    if (has_weights && !tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(weights, dw, nvox * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto scu_free; }
+    st = TVDB_OK;
+scu_free:
+    if (dw) ctx->cuda.cuMemFree(dw);
+    if (dv) ctx->cuda.cuMemFree(dv);
+    if (dp) ctx->cuda.cuMemFree(dp);
+    if (dd) ctx->cuda.cuMemFree(dd);
+    free(p4);
+    return st;
+  }
+
+  tvdb_vk_buffer bd, bp, bv, bw, bu;
+  size_t wbytes = has_weights ? nvox * sizeof(float) : sizeof(float);
+  if ((st = tvdb_vk_create_buffer(ctx, nvox * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bd, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bp, err)) != TVDB_OK) goto sd_d;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bv, err)) != TVDB_OK) goto sd_p;
+  if ((st = tvdb_vk_create_buffer(ctx, wbytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bw, err)) != TVDB_OK) goto sd_v;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto sd_w;
+  memcpy(bd.mapped, grid->data, nvox * sizeof(float));
+  { float* pm = (float*)bp.mapped;
+    for (size_t i = 0; i < n; ++i) { pm[4*i+0]=points[3*i+0]; pm[4*i+1]=points[3*i+1]; pm[4*i+2]=points[3*i+2]; pm[4*i+3]=0.0f; } }
+  memcpy(bv.mapped, vals, n * sizeof(float));
+  if (has_weights) memcpy(bw.mapped, weights, nvox * sizeof(float));
+  struct { int32_t dim[4]; float grid[4]; uint32_t count; uint32_t has_weights; uint32_t pad[2]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = grid->nx; par.dim[1] = grid->ny; par.dim[2] = grid->nz;
+  par.grid[0] = grid->ox; par.grid[1] = grid->oy; par.grid[2] = grid->oz; par.grid[3] = grid->voxel_size;
+  par.count = (uint32_t)n; par.has_weights = (uint32_t)has_weights;
+  memcpy(bu.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuSplatSpv; d.spv_len = kTvdbGpuSplatSpv_len; d.descriptor_count = 5;
+  d.buffers[0] = &bd; d.buffers[1] = &bp; d.buffers[2] = &bv; d.buffers[3] = &bw; d.buffers[4] = &bu;
+  for (int i = 0; i < 4; ++i) d.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) {
+    memcpy(grid->data, bd.mapped, nvox * sizeof(float));
+    if (has_weights) memcpy(weights, bw.mapped, nvox * sizeof(float));
+  }
+  tvdb_vk_destroy_buffer(ctx, &bu);
+sd_w: tvdb_vk_destroy_buffer(ctx, &bw);
+sd_v: tvdb_vk_destroy_buffer(ctx, &bv);
+sd_p: tvdb_vk_destroy_buffer(ctx, &bp);
+sd_d: tvdb_vk_destroy_buffer(ctx, &bd);
   return st;
 }

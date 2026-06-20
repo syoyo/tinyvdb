@@ -312,6 +312,17 @@ tvdb_status_t tvdb_gpu_check_level_set(tvdb_gpu_context_t* ctx, const tvdb_dense
 tvdb_status_t tvdb_gpu_signed_flood_fill(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
                                          float band_world, tvdb_error_t* err);
 
+// Trilinear splat: scatter `n` point values onto `grid` (accumulated in place,
+// so callers zero it first), mirroring tvdb_splat_trilinear_dense. `points` is
+// `n` xyz triples; `weights` (nullable, same shape as grid) receives the splat
+// weight sum for normalization. Corner accumulation uses a portable CAS
+// atomic-add. This also realizes the trilinear-sample VJP w.r.t. the grid
+// (sample.vjp(grid) == splat(grad_out, points)); the splat VJP w.r.t. values is
+// tvdb_gpu_sample_trilinear_dense_batch.
+tvdb_status_t tvdb_gpu_splat_trilinear_dense(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                             const float* points, const float* vals, size_t n,
+                                             float* weights, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

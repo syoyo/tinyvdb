@@ -226,8 +226,13 @@ each theme. Notes point at the nearest existing primitive to reuse.
 - [ ] **P1: sparse convolution upgrades.** Add transposed convolution,
       arbitrary stride, output-grid builders, and a faster near-dense backend
       beyond the current same-topology sparse conv3d.
-- [ ] **P1: GPU sampling/splatting gradients.** Add trilinear/Bezier-style
-      sample and splat gradient kernels without requiring PyTorch autograd.
+- [~] **P1: GPU sampling/splatting gradients.** `tvdb_gpu_splat_trilinear_dense`
+      (scatter-add with portable CAS atomic-float on Vulkan, native atomicAdd on
+      CUDA) mirrors `tvdb_splat_trilinear_dense`; covered by `test_gpu_backend`
+      (`test_splat`). This also realizes the trilinear-sample VJP w.r.t. the grid
+      (`sample.vjp(grid) == splat`), while the existing GPU trilinear sample is
+      the splat VJP w.r.t. values. *Still open:* quadratic/Bezier sample+splat
+      gradient kernels.
 - [~] **P1: GPU diagnostics.** `tvdb_gpu_grid_statistics`
       (min/max/mean/stddev/sum via grid-stride partial reduction),
       `tvdb_gpu_check_fog_volume`, and `tvdb_gpu_check_level_set` (band |grad|

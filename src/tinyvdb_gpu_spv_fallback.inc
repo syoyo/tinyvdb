@@ -42,3 +42,5 @@ static const uint8_t kTvdbGpuLevelsetCheckSpv[] = {0};
 static const uint32_t kTvdbGpuLevelsetCheckSpv_len = 0;
 static const uint8_t kTvdbGpuFloodSpv[] = {0};
 static const uint32_t kTvdbGpuFloodSpv_len = 0;
+static const uint8_t kTvdbGpuSplatSpv[] = {0};
+static const uint32_t kTvdbGpuSplatSpv_len = 0;
