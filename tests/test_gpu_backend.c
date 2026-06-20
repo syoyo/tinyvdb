@@ -963,6 +963,32 @@ static void test_stats(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&g);
 }
 
+static void test_flood(tvdb_gpu_context_t* ctx) {
+  // Sphere SDF: the narrow band clamps values to +/-0.3. Flood with band=0.2:
+  // deep-interior far voxels (v <= -0.2) are enclosed -> set to -band; exterior
+  // far voxels (v >= 0.2) -> +band. The reachability flood is deterministic, so
+  // GPU and CPU agree exactly.
+  const float band = 0.2f;
+  tvdb_dense_grid cpu, gpu;
+  make_sphere(&cpu); make_sphere(&gpu);
+  tvdb_signed_flood_fill(&cpu, band);
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_signed_flood_fill(ctx, &gpu, band, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu signed_flood_fill failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    size_t n = (size_t)cpu.nx * cpu.ny * cpu.nz, interior = 0;
+    for (size_t i = 0; i < n; ++i) {
+      EXPECT_NEAR(gpu.data[i], cpu.data[i], 1e-6f);
+      if (cpu.data[i] < -(band - 0.01f)) ++interior;
+    }
+    EXPECT(interior > 0);  // the enclosed interior was filled to -band
+  }
+  tvdb_dense_grid_free(&cpu);
+  tvdb_dense_grid_free(&gpu);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -993,6 +1019,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_ray_queries(ctx);
   test_tsdf(ctx);
   test_stats(ctx);
+  test_flood(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

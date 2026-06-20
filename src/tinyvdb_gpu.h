@@ -304,6 +304,14 @@ tvdb_status_t tvdb_gpu_check_level_set(tvdb_gpu_context_t* ctx, const tvdb_dense
                                        double band_world, double tol,
                                        tvdb_level_set_check_t* out, tvdb_error_t* err);
 
+// Signed flood fill (parallels tvdb_signed_flood_fill): flood the exterior
+// through far voxels (|value| >= band) from the grid boundary, then set
+// reached far voxels to +band (exterior) and unreached to -band (interior).
+// In place. The GPU runs the reachability flood as iterative label
+// propagation; the host seeds the boundary and assigns final signs.
+tvdb_status_t tvdb_gpu_signed_flood_fill(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                         float band_world, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

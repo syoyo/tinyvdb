@@ -35,6 +35,7 @@
 #include "tinyvdb_gpu_tsdf_spv.inc"
 #include "tinyvdb_gpu_stats_spv.inc"
 #include "tinyvdb_gpu_levelset_check_spv.inc"
+#include "tinyvdb_gpu_flood_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2045,6 +2046,26 @@ static const char* kTvdbCudaSource =
 "    sum_mag += mag; if (err > max_err) max_err = err; if (err > tol) bad += 1.0f; band += 1.0f;\n"
 "  }\n"
 "  float4 p; p.x = sum_mag; p.y = max_err; p.z = bad; p.w = band; partials[t] = p;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_flood(const float* data, unsigned int* vis, unsigned int* changed,\n"
+"                                            int nx, int ny, int nz, float thresh) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = (unsigned int)(nx * ny * nz);\n"
+"  if (gid >= total) return;\n"
+"  if (vis[gid] != 0u) return;\n"
+"  if (fabsf(data[gid]) < thresh) return;\n"
+"  int iz = (int)(gid / (unsigned int)(nx * ny));\n"
+"  int rem = (int)(gid - (unsigned int)(iz * nx * ny));\n"
+"  int iy = rem / nx; int ix = rem - iy * nx;\n"
+"  unsigned int sl = (unsigned int)(nx * ny);\n"
+"  bool reached = false;\n"
+"  if (ix > 0      && vis[gid - 1u] != 0u) reached = true;\n"
+"  if (ix < nx - 1 && vis[gid + 1u] != 0u) reached = true;\n"
+"  if (iy > 0      && vis[gid - (unsigned int)nx] != 0u) reached = true;\n"
+"  if (iy < ny - 1 && vis[gid + (unsigned int)nx] != 0u) reached = true;\n"
+"  if (iz > 0      && vis[gid - sl] != 0u) reached = true;\n"
+"  if (iz < nz - 1 && vis[gid + sl] != 0u) reached = true;\n"
+"  if (reached) { vis[gid] = 1u; changed[0] = 1u; }\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -4910,5 +4931,104 @@ lcu_ret:
 lvk_p: tvdb_vk_destroy_buffer(ctx, &bp);
 lvk_i: tvdb_vk_destroy_buffer(ctx, &bi);
   free(partials);
+  return st;
+}
+
+// ---- signed flood fill ------------------------------------------------------
+
+// Seed boundary far voxels and assign final signs (shared host helpers).
+static void tvdb_flood_seed(const float* data, uint32_t* vis, int nx, int ny, int nz, float thresh) {
+  for (int k = 0; k < nz; ++k)
+    for (int j = 0; j < ny; ++j)
+      for (int i = 0; i < nx; ++i) {
+        if (i != 0 && i != nx-1 && j != 0 && j != ny-1 && k != 0 && k != nz-1) continue;
+        size_t idx = ((size_t)k * ny + j) * nx + i;
+        vis[idx] = (fabsf(data[idx]) >= thresh) ? 1u : 0u;
+      }
+}
+static void tvdb_flood_assign(float* data, const uint32_t* vis, size_t n, float thresh, float band) {
+  for (size_t i = 0; i < n; ++i)
+    if (fabsf(data[i]) >= thresh) data[i] = vis[i] ? band : -band;
+}
+
+tvdb_status_t tvdb_gpu_signed_flood_fill(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                         float band_world, tvdb_error_t* err) {
+  if (!ctx || !grid || !grid->data || band_world <= 0.0f) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid signed_flood_fill arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  size_t n = (size_t)nx * (size_t)ny * (size_t)nz;
+  if (n == 0) return TVDB_OK;
+  float thresh = band_world - 1e-5f;
+  uint32_t* vis = (uint32_t*)calloc(n, sizeof(uint32_t));
+  if (!vis) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  tvdb_flood_seed(grid->data, vis, nx, ny, nz, thresh);
+  size_t max_iter = n + 1;  // worst-case label-propagation depth
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dg = 0, dv = 0, dc = 0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto fcu_ret;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_flood"))) { st = err ? err->status : TVDB_ERROR_IO; goto fcu_ret; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dg, grid->data, n * sizeof(float), err)) != TVDB_OK) goto fcu_free;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dv, vis, n * sizeof(uint32_t), err)) != TVDB_OK) goto fcu_free;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dc, NULL, sizeof(uint32_t), err)) != TVDB_OK) goto fcu_free;
+    unsigned int block = 128, gridb = ((unsigned int)n + block - 1u) / block;
+    for (size_t it = 0; it < max_iter; ++it) {
+      uint32_t zero = 0;
+      if (!tvdb_cuda_ok(ctx, err, "cuMemcpyHtoD", ctx->cuda.cuMemcpyHtoD(dc, &zero, sizeof(uint32_t)))) { st = err ? err->status : TVDB_ERROR_IO; goto fcu_free; }
+      void* args[] = {&dg, &dv, &dc, &nx, &ny, &nz, &thresh};
+      if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, gridb, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto fcu_free; }
+      if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto fcu_free; }
+      uint32_t changed = 0;
+      if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(&changed, dc, sizeof(uint32_t)))) { st = err ? err->status : TVDB_ERROR_IO; goto fcu_free; }
+      if (!changed) break;
+    }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(vis, dv, n * sizeof(uint32_t)))) { st = err ? err->status : TVDB_ERROR_IO; goto fcu_free; }
+    st = TVDB_OK;
+fcu_free:
+    if (dc) ctx->cuda.cuMemFree(dc);
+    if (dv) ctx->cuda.cuMemFree(dv);
+    if (dg) ctx->cuda.cuMemFree(dg);
+fcu_ret:
+    if (st == TVDB_OK) tvdb_flood_assign(grid->data, vis, n, thresh, band_world);
+    free(vis);
+    return st;
+  }
+
+  tvdb_vk_buffer bg, bv, bc, bu;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bg, err)) != TVDB_OK) { free(vis); return st; }
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bv, err)) != TVDB_OK) goto fvk_g;
+  if ((st = tvdb_vk_create_buffer(ctx, sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bc, err)) != TVDB_OK) goto fvk_v;
+  if ((st = tvdb_vk_create_buffer(ctx, 32, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto fvk_c;
+  memcpy(bg.mapped, grid->data, n * sizeof(float));
+  memcpy(bv.mapped, vis, n * sizeof(uint32_t));
+  struct { int32_t dim[4]; float thresh; float pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = nx; par.dim[1] = ny; par.dim[2] = nz; par.thresh = thresh;
+  memcpy(bu.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuFloodSpv; d.spv_len = kTvdbGpuFloodSpv_len; d.descriptor_count = 4;
+  d.buffers[0] = &bg; d.buffers[1] = &bv; d.buffers[2] = &bc; d.buffers[3] = &bu;
+  d.descriptor_types[0] = d.descriptor_types[1] = d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 127u) / 128u);
+  for (size_t it = 0; it < max_iter; ++it) {
+    *(uint32_t*)bc.mapped = 0u;
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st != TVDB_OK) goto fvk_done;
+    if (*(uint32_t*)bc.mapped == 0u) break;
+  }
+  memcpy(vis, bv.mapped, n * sizeof(uint32_t));
+  tvdb_flood_assign(grid->data, vis, n, thresh, band_world);
+  st = TVDB_OK;
+fvk_done:
+  tvdb_vk_destroy_buffer(ctx, &bu);
+fvk_c: tvdb_vk_destroy_buffer(ctx, &bc);
+fvk_v: tvdb_vk_destroy_buffer(ctx, &bv);
+fvk_g: tvdb_vk_destroy_buffer(ctx, &bg);
+  free(vis);
   return st;
 }

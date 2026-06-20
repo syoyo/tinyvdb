@@ -228,11 +228,18 @@ each theme. Notes point at the nearest existing primitive to reuse.
       beyond the current same-topology sparse conv3d.
 - [ ] **P1: GPU sampling/splatting gradients.** Add trilinear/Bezier-style
       sample and splat gradient kernels without requiring PyTorch autograd.
-- [ ] **P1: GPU diagnostics.** Add NanoVDB-style stats, checksum, and validator
-      kernels for device-resident dense/sparse data.
-- [ ] **P1: signed flood fill and sparse background robustness.** Add GPU
-      signed flood fill plus portable inactive-page/background fallback for
-      sparse-image sampling near unbound regions.
+- [~] **P1: GPU diagnostics.** `tvdb_gpu_grid_statistics`
+      (min/max/mean/stddev/sum via grid-stride partial reduction),
+      `tvdb_gpu_check_fog_volume`, and `tvdb_gpu_check_level_set` (band |grad|
+      reduction) on Vulkan and CUDA/NVRTC, mirroring `tinyvdb_stats.c`. Covered
+      by `test_gpu_backend` (`test_stats`). *Still open:* NanoVDB-style checksum
+      and sparse-data validators.
+- [~] **P1: signed flood fill and sparse background robustness.**
+      `tvdb_gpu_signed_flood_fill` done — exterior reachability flood through
+      far voxels as iterative GPU label propagation (host seeds the boundary and
+      assigns final signs), mirroring `tvdb_signed_flood_fill`; covered by
+      `test_gpu_backend` (`test_flood`). *Still open:* portable inactive-page /
+      background fallback for sparse-image sampling near unbound regions.
 - [ ] **P2: GPU Gaussian-splat rasterizer.** Add CUDA/Vulkan forward and
       backward rasterization to complement the existing CPU Gaussian splat
       implementation.

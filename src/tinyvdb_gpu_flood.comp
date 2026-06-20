@@ -1,0 +1,35 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer GridBuffer { float data[]; };
+layout(std430, set = 0, binding = 1) buffer VisBuffer { uint vis[]; };
+layout(std430, set = 0, binding = 2) buffer ChangedBuffer { uint changed[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;   // nx, ny, nz, unused
+  float thresh;
+} u;
+
+// One label-propagation step of the exterior flood through "far" voxels
+// (|value| >= thresh), matching the reachability flood in
+// tvdb_signed_flood_fill. Monotonic (0->1 only); the host iterates to a
+// fixpoint. Intra-step read/write races only accelerate convergence.
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  uint total = uint(nx * ny * nz);
+  if (gid >= total) return;
+  if (vis[gid] != 0u) return;
+  if (abs(data[gid]) < u.thresh) return;  // not a far voxel
+  int iz = int(gid) / (nx * ny);
+  int rem = int(gid) - iz * nx * ny;
+  int iy = rem / nx;
+  int ix = rem - iy * nx;
+  uint sl = uint(nx * ny);
+  bool reached = false;
+  if (ix > 0      && vis[gid - 1u] != 0u) reached = true;
+  if (ix < nx - 1 && vis[gid + 1u] != 0u) reached = true;
+  if (iy > 0      && vis[gid - uint(nx)] != 0u) reached = true;
+  if (iy < ny - 1 && vis[gid + uint(nx)] != 0u) reached = true;
+  if (iz > 0      && vis[gid - sl] != 0u) reached = true;
+  if (iz < nz - 1 && vis[gid + sl] != 0u) reached = true;
+  if (reached) { vis[gid] = 1u; changed[0] = 1u; }
+}
