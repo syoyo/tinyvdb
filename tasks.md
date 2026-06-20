@@ -251,8 +251,11 @@ each theme. Notes point at the nearest existing primitive to reuse.
       GPU (one thread/output coord, brute-force input lookup) on Vulkan and
       CUDA/NVRTC; stride 1 reduces to the existing same-topology conv. Covered
       by `test_gpu_backend` (`test_sparse_conv_strided`, set-compared vs a CPU
-      reference). *Still open:* transposed convolution and a faster near-dense
-      (hashed/blocked) backend.
+      reference). `tvdb_gpu_sparse_conv3d_transpose` adds the transposed/adjoint
+      convolution (each input scatters kernel[k]*value to coord*stride+tap via
+      CAS atomic-add into a dense bbox buffer, then atomic-counter compaction),
+      covered by `test_conv_transpose` vs a CPU reference. *Still open:* a faster
+      near-dense (hashed/blocked) backend — an optimization, not a new op.
 - [~] **P1: GPU sampling/splatting gradients.** `tvdb_gpu_splat_trilinear_dense`
       (scatter-add with portable CAS atomic-float on Vulkan, native atomicAdd on
       CUDA) mirrors `tvdb_splat_trilinear_dense`; covered by `test_gpu_backend`

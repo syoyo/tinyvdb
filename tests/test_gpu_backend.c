@@ -1404,6 +1404,61 @@ static void test_sparse_conv_strided(tvdb_gpu_context_t* ctx) {
   tvdb_sparse_grid_free(&in); tvdb_sparse_grid_free(&gpu);
 }
 
+static void test_conv_transpose(tvdb_gpu_context_t* ctx) {
+  // 2x2x2 input; 3x3x3 kernel; stride 2 (upsampling adjoint).
+  tvdb_sparse_grid in, gpu;
+  tvdb_sparse_grid_init(&in); tvdb_sparse_grid_init(&gpu);
+  EXPECT(tvdb_sparse_grid_reserve(&in, 8));
+  size_t k = 0;
+  for (int z = 0; z < 2; ++z) for (int y = 0; y < 2; ++y) for (int x = 0; x < 2; ++x) {
+    in.coords[k].x = x; in.coords[k].y = y; in.coords[k].z = z;
+    in.values[k] = 0.2f * (float)(x*4 + y*2 + z) + 0.1f; ++k;
+  }
+  in.count = 8;
+  float kernel[27];
+  for (int i = 0; i < 27; ++i) kernel[i] = (float)(i % 4) * 0.1f - 0.1f;
+  const int stride = 2;
+
+  // CPU reference: scatter-accumulate into a dense bbox accumulator.
+  const int BM = -1, D = 5;  // bbmin=-1, dims=5 per axis
+  float acc[125]; char occ[125];
+  memset(acc, 0, sizeof(acc)); memset(occ, 0, sizeof(occ));
+  for (size_t i = 0; i < 8; ++i) {
+    int cx = in.coords[i].x*stride, cy = in.coords[i].y*stride, cz = in.coords[i].z*stride;
+    float v = in.values[i];
+    for (int dk = 0; dk < 3; ++dk) for (int dj = 0; dj < 3; ++dj) for (int di = 0; di < 3; ++di) {
+      int ox = cx+di-1-BM, oy = cy+dj-1-BM, oz = cz+dk-1-BM;
+      int lin = (oz*D+oy)*D+ox; acc[lin] += kernel[(dk*3+dj)*3+di]*v; occ[lin] = 1;
+    }
+  }
+  size_t no = 0; for (int i = 0; i < 125; ++i) if (occ[i]) ++no;
+
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_sparse_conv3d_transpose(ctx, &in, kernel, 3, 3, 3, stride, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu conv_transpose failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu.count == no);
+    if (gpu.count == no) {
+      kv_t* kc = (kv_t*)malloc(no * sizeof(kv_t));
+      kv_t* kg = (kv_t*)malloc(no * sizeof(kv_t));
+      size_t w = 0;
+      for (int lin = 0; lin < 125; ++lin) if (occ[lin]) {
+        int oz = lin/(D*D), rem = lin-oz*D*D, oy = rem/D, ox = rem-oy*D;
+        int cx = ox+BM, cy = oy+BM, cz = oz+BM;
+        kc[w].key = (((long long)cx+(1<<20))<<42)|(((long long)cy+(1<<20))<<21)|((long long)cz+(1<<20));
+        kc[w].val = acc[lin]; ++w;
+      }
+      qsort(kc, no, sizeof(kv_t), cmp_kv);
+      build_kv(&gpu, kg);
+      for (size_t i = 0; i < no; ++i) { EXPECT(kc[i].key == kg[i].key); EXPECT_NEAR(kc[i].val, kg[i].val, 2e-5f); }
+      free(kc); free(kg);
+    }
+  }
+  tvdb_sparse_grid_free(&in); tvdb_sparse_grid_free(&gpu);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1446,6 +1501,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_mesh_to_sdf(ctx);
   test_marching_cubes(ctx);
   test_sparse_conv_strided(ctx);
+  test_conv_transpose(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

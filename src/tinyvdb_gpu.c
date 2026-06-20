@@ -50,6 +50,7 @@
 #include "tinyvdb_gpu_mesh_to_sdf_spv.inc"
 #include "tinyvdb_gpu_marching_cubes_spv.inc"
 #include "tinyvdb_gpu_sparse_conv_strided_spv.inc"
+#include "tinyvdb_gpu_conv_transpose_scatter_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2309,6 +2310,24 @@ static const char* kTvdbCudaSource =
 "    acc += kernel[ki]*tvdb_strided_lookup(in_data, n_in, oc.x*stride+di-ax, oc.y*stride+dj-ay, oc.z*stride+dk-az, pad_value);\n"
 "  }\n"
 "  out_values[i]=acc;\n"
+"}\n"
+"__device__ void tvdb_atomic_add_f(float* addr, float val) {\n"
+"  int* a=(int*)addr; int old=*a, assumed;\n"
+"  do { assumed=old; old=atomicCAS(a, assumed, __float_as_int(__int_as_float(assumed)+val)); } while (assumed!=old);\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_conv_transpose_scatter(float* v2, unsigned int* occ,\n"
+"    const tvdb_int4* in_data, const float* kernel, int dx, int dy, int dz, int bx, int by, int bz,\n"
+"    int kx, int ky, int kz, int stride, unsigned int n_in) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= n_in) return;\n"
+"  tvdb_int4 c = in_data[i]; float v = __int_as_float(c.w);\n"
+"  int ax=kx/2, ay=ky/2, az=kz/2;\n"
+"  for (int dk=0;dk<kz;++dk) for (int dj=0;dj<ky;++dj) for (int di=0;di<kx;++di){\n"
+"    int ki=(dk*ky+dj)*kx+di;\n"
+"    int ox=c.x*stride+di-ax-bx, oy=c.y*stride+dj-ay-by, oz=c.z*stride+dk-az-bz;\n"
+"    unsigned int lin=(unsigned int)((oz*dy+oy)*dx+ox);\n"
+"    tvdb_atomic_add_f(&v2[lin], kernel[ki]*v); occ[lin]=1u;\n"
+"  }\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -6449,5 +6468,129 @@ cs_build:
   }
 cs_host:
   free(ent); free(in4); free(outc4); free(outval);
+  return st;
+}
+
+// ---- transposed sparse convolution ------------------------------------------
+
+tvdb_status_t tvdb_gpu_sparse_conv3d_transpose(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
+                                               const float* kernel, int kx, int ky, int kz,
+                                               int stride, tvdb_sparse_grid* out, tvdb_error_t* err) {
+  if (!ctx || !in || !kernel || !out || kx <= 0 || ky <= 0 || kz <= 0 || stride <= 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid transpose conv arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  out->count = 0; out->voxel_size = in->voxel_size / (float)stride; out->ox = in->ox; out->oy = in->oy; out->oz = in->oz;
+  size_t n_in = in->count;
+  if (n_in == 0) return TVDB_OK;
+  int ax = kx/2, ay = ky/2, az = kz/2;
+  // Output bbox over ic*stride + tap, tap in [-a, k-1-a].
+  int32_t bbmin[3], bbmax[3];
+  for (int a = 0; a < 3; ++a) { bbmin[a] = 0x7fffffff; bbmax[a] = -0x7fffffff; }
+  for (size_t i = 0; i < n_in; ++i) {
+    int b[3] = {in->coords[i].x*stride, in->coords[i].y*stride, in->coords[i].z*stride};
+    int lo[3] = {b[0]-ax, b[1]-ay, b[2]-az}, hi[3] = {b[0]+(kx-1-ax), b[1]+(ky-1-ay), b[2]+(kz-1-az)};
+    for (int a = 0; a < 3; ++a) { if (lo[a]<bbmin[a]) bbmin[a]=lo[a]; if (hi[a]>bbmax[a]) bbmax[a]=hi[a]; }
+  }
+  long long dx=(long long)bbmax[0]-bbmin[0]+1, dy=(long long)bbmax[1]-bbmin[1]+1, dz=(long long)bbmax[2]-bbmin[2]+1;
+  long long vol = dx*dy*dz;
+  if (vol <= 0 || vol > (long long)400000000) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "transpose conv bbox too large"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  size_t volume = (size_t)vol, kn = (size_t)kx*ky*kz;
+  size_t capll = n_in * kn; if (capll > volume) capll = volume; size_t cap = capll;
+  int idx[3] = {(int)dx,(int)dy,(int)dz}, bb[3] = {bbmin[0],bbmin[1],bbmin[2]};
+
+  int32_t* in4 = (int32_t*)malloc(n_in*4u*sizeof(int32_t));
+  int32_t* outd = (int32_t*)malloc(cap*4u*sizeof(int32_t));
+  if (!in4 || !outd) { free(in4); free(outd); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  for (size_t i = 0; i < n_in; ++i) { in4[4*i+0]=in->coords[i].x; in4[4*i+1]=in->coords[i].y; in4[4*i+2]=in->coords[i].z; memcpy(&in4[4*i+3], &in->values[i], sizeof(float)); }
+  uint32_t m = 0; tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fs=NULL, ff=NULL; CUdeviceptr dv=0, doc=0, di=0, dk=0, dcnt=0, dout=0;
+    float* zf = (float*)calloc(volume, sizeof(float)); uint32_t* zu = (uint32_t*)calloc(volume, sizeof(uint32_t));
+    if (!zf || !zu) { free(zf); free(zu); free(in4); free(outd); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto tc_host;
+    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fs, module, "tvdb_cuda_conv_transpose_scatter")) ||
+        !tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&ff, module, "tvdb_cuda_sparse_finalize"))) { st=err?err->status:TVDB_ERROR_IO; goto tc_host; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dv, zf, volume*sizeof(float), err)) != TVDB_OK) goto tc_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &doc, zu, volume*sizeof(uint32_t), err)) != TVDB_OK) goto tc_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &di, in4, n_in*4u*sizeof(int32_t), err)) != TVDB_OK) goto tc_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dk, kernel, kn*sizeof(float), err)) != TVDB_OK) goto tc_dev;
+    { uint32_t z=0; if ((st = tvdb_cuda_alloc_copy_in(ctx, &dcnt, &z, sizeof(uint32_t), err)) != TVDB_OK) goto tc_dev; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, cap*4u*sizeof(int32_t), err)) != TVDB_OK) goto tc_dev;
+    unsigned int uni=(unsigned int)n_in, uvol=(unsigned int)volume, ucap=(unsigned int)cap, block=128;
+    void* sargs[] = {&dv,&doc,&di,&dk,&idx[0],&idx[1],&idx[2],&bb[0],&bb[1],&bb[2],&kx,&ky,&kz,&stride,&uni};
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fs,(uni+block-1u)/block,1,1,block,1,1,0,NULL,sargs,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto tc_dev; }
+    void* fargs[] = {&dv,&doc,&dcnt,&dout,&idx[0],&idx[1],&idx[2],&bb[0],&bb[1],&bb[2],&ucap};
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(ff,(uvol+block-1u)/block,1,1,block,1,1,0,NULL,fargs,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto tc_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto tc_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(&m, dcnt, sizeof(uint32_t)))) { st=err?err->status:TVDB_ERROR_IO; goto tc_dev; }
+    if (m > cap) m = (uint32_t)cap;
+    if (m && !tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(outd, dout, (size_t)m*4u*sizeof(int32_t)))) { st=err?err->status:TVDB_ERROR_IO; goto tc_dev; }
+    st = TVDB_OK;
+tc_dev:
+    if (dout) ctx->cuda.cuMemFree(dout); if (dcnt) ctx->cuda.cuMemFree(dcnt); if (dk) ctx->cuda.cuMemFree(dk);
+    if (di) ctx->cuda.cuMemFree(di); if (doc) ctx->cuda.cuMemFree(doc); if (dv) ctx->cuda.cuMemFree(dv);
+    free(zf); free(zu);
+    goto tc_build;
+tc_host:
+    free(zf); free(zu); free(in4); free(outd); return st;
+  }
+  {
+    tvdb_vk_buffer bv, boc, bi, bk, bcnt, bout, bus, buf;
+    if ((st = tvdb_vk_create_buffer(ctx, volume*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bv, err)) != TVDB_OK) { free(in4); free(outd); return st; }
+    if ((st = tvdb_vk_create_buffer(ctx, volume*sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &boc, err)) != TVDB_OK) goto td_v;
+    if ((st = tvdb_vk_create_buffer(ctx, n_in*4u*sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bi, err)) != TVDB_OK) goto td_oc;
+    if ((st = tvdb_vk_create_buffer(ctx, kn*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bk, err)) != TVDB_OK) goto td_i;
+    if ((st = tvdb_vk_create_buffer(ctx, sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bcnt, err)) != TVDB_OK) goto td_k;
+    if ((st = tvdb_vk_create_buffer(ctx, cap*4u*sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bout, err)) != TVDB_OK) goto td_cnt;
+    if ((st = tvdb_vk_create_buffer(ctx, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bus, err)) != TVDB_OK) goto td_out;
+    if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &buf, err)) != TVDB_OK) goto td_us;
+    memset(bv.mapped, 0, volume*sizeof(float)); memset(boc.mapped, 0, volume*sizeof(uint32_t)); *(uint32_t*)bcnt.mapped = 0u;
+    memcpy(bi.mapped, in4, n_in*4u*sizeof(int32_t)); memcpy(bk.mapped, kernel, kn*sizeof(float));
+    struct { int32_t dims[4]; int32_t bbmin[4]; int32_t kdim[4]; int32_t stride; uint32_t n_in; uint32_t pad[2]; } sp;
+    memset(&sp, 0, sizeof(sp)); sp.dims[0]=(int)dx; sp.dims[1]=(int)dy; sp.dims[2]=(int)dz; sp.bbmin[0]=bbmin[0]; sp.bbmin[1]=bbmin[1]; sp.bbmin[2]=bbmin[2];
+    sp.kdim[0]=kx; sp.kdim[1]=ky; sp.kdim[2]=kz; sp.stride=stride; sp.n_in=(uint32_t)n_in;
+    memcpy(bus.mapped, &sp, sizeof(sp));
+    struct { int32_t dims[4]; int32_t bbmin[4]; uint32_t cap; uint32_t pad[3]; } fp;
+    memset(&fp, 0, sizeof(fp)); fp.dims[0]=(int)dx; fp.dims[1]=(int)dy; fp.dims[2]=(int)dz; fp.bbmin[0]=bbmin[0]; fp.bbmin[1]=bbmin[1]; fp.bbmin[2]=bbmin[2]; fp.cap=(uint32_t)cap;
+    memcpy(buf.mapped, &fp, sizeof(fp));
+    tvdb_vk_dispatch_desc ds;
+    memset(&ds, 0, sizeof(ds));
+    ds.spv = kTvdbGpuConvTransposeScatterSpv; ds.spv_len = kTvdbGpuConvTransposeScatterSpv_len; ds.descriptor_count = 5;
+    ds.buffers[0]=&bv; ds.buffers[1]=&boc; ds.buffers[2]=&bi; ds.buffers[3]=&bk; ds.buffers[4]=&bus;
+    for (int i = 0; i < 4; ++i) ds.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ds.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    ds.group_x = (uint32_t)((n_in + 127u) / 128u);
+    st = tvdb_vk_dispatch(ctx, &ds, err);
+    if (st == TVDB_OK) {
+      tvdb_vk_dispatch_desc df;
+      memset(&df, 0, sizeof(df));
+      df.spv = kTvdbGpuSparseFinalizeSpv; df.spv_len = kTvdbGpuSparseFinalizeSpv_len; df.descriptor_count = 5;
+      df.buffers[0]=&bv; df.buffers[1]=&boc; df.buffers[2]=&bcnt; df.buffers[3]=&bout; df.buffers[4]=&buf;
+      for (int i = 0; i < 4; ++i) df.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      df.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      df.group_x = (uint32_t)((volume + 127u) / 128u);
+      st = tvdb_vk_dispatch(ctx, &df, err);
+    }
+    if (st == TVDB_OK) { m = *(uint32_t*)bcnt.mapped; if (m > cap) m = (uint32_t)cap; memcpy(outd, bout.mapped, (size_t)m*4u*sizeof(int32_t)); }
+    tvdb_vk_destroy_buffer(ctx, &buf);
+td_us: tvdb_vk_destroy_buffer(ctx, &bus);
+td_out: tvdb_vk_destroy_buffer(ctx, &bout);
+td_cnt: tvdb_vk_destroy_buffer(ctx, &bcnt);
+td_k: tvdb_vk_destroy_buffer(ctx, &bk);
+td_i: tvdb_vk_destroy_buffer(ctx, &bi);
+td_oc: tvdb_vk_destroy_buffer(ctx, &boc);
+td_v: tvdb_vk_destroy_buffer(ctx, &bv);
+  }
+tc_build:
+  if (st == TVDB_OK) {
+    if (!tvdb_sparse_grid_reserve(out, m ? m : 1)) { st = TVDB_ERROR_OUT_OF_MEMORY; tvdb_gpu_set_error(err, st, "OOM"); }
+    else {
+      for (uint32_t i = 0; i < m; ++i) { out->coords[i].x=outd[4*i+0]; out->coords[i].y=outd[4*i+1]; out->coords[i].z=outd[4*i+2]; int32_t bits=outd[4*i+3]; memcpy(&out->values[i], &bits, sizeof(float)); }
+      out->count = m;
+    }
+  }
+  free(in4); free(outd);
   return st;
 }

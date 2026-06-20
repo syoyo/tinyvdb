@@ -406,6 +406,15 @@ tvdb_status_t tvdb_gpu_sparse_conv3d_strided(tvdb_gpu_context_t* ctx, const tvdb
                                              int stride, float pad_value,
                                              tvdb_sparse_grid* out, tvdb_error_t* err);
 
+// Transposed (adjoint) sparse 3D convolution — the upsampling adjoint of the
+// strided conv. Each input voxel scatters kernel[k]*value to output coord
+// `coord*stride + tap_k`, accumulating; the output active set is the union of
+// scattered coords. `out` is filled (set semantics). stride 1 with a centred
+// kernel mirrors a same-topology accumulation.
+tvdb_status_t tvdb_gpu_sparse_conv3d_transpose(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
+                                               const float* kernel, int kx, int ky, int kz,
+                                               int stride, tvdb_sparse_grid* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif
