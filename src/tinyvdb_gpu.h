@@ -511,6 +511,21 @@ tvdb_status_t tvdb_gpu_gaussian_sh_eval(tvdb_gpu_context_t* ctx, uint32_t num_ga
                                         uint32_t degree, const float* sh_coeffs, const float* dirs,
                                         float* out_colors, tvdb_error_t* err);
 
+// GPU Gaussian projection (3D -> 2D screen-space conic), mirroring the CPU
+// tvdb_gaussian_project: each Gaussian's mean is projected through the camera,
+// its rotated covariance is projected to a 2D conic, and a screen-space radius
+// is derived. `means` (N*3), `quats` (N*4, xyzw), `log_scales` (N*3), nullable
+// `opacities` (N logits; default 0) and `sh_dc` (N*3 DC color; default {1,0,0}).
+// `extrinsics` is a column-major 4x4; `intrinsics` is a 3x3 (fx,_,cx,_,fy,cy,...).
+// `out` receives N filled tvdb_projected_gaussian_t. Bit-exact vs the CPU path
+// (the radius reuses the same fast-sqrt bit trick). Vulkan and CUDA/NVRTC.
+tvdb_status_t tvdb_gpu_gaussian_project(tvdb_gpu_context_t* ctx, uint32_t num_gaussians,
+                                        const float* means, const float* quats, const float* log_scales,
+                                        const float* opacities, const float* sh_dc,
+                                        const float extrinsics[16], const float intrinsics[9],
+                                        float near, float far,
+                                        tvdb_projected_gaussian_t* out, tvdb_error_t* err);
+
 // Batched sparse convolution (GridBatch / JaggedTensor-style): run a
 // same-topology sparse conv3d over `n_grids` grids in a single GPU dispatch.
 // The grids are concatenated jagged on device and each voxel's lookups are

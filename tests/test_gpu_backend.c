@@ -1086,6 +1086,66 @@ static void test_gaussian_sh(tvdb_gpu_context_t* ctx) {
   free(sh); free(dirs); free(cpu); free(gpu);
 }
 
+static void test_gaussian_project(tvdb_gpu_context_t* ctx) {
+  // Project 3D Gaussians to 2D conics, parity vs CPU tvdb_gaussian_project.
+  const uint32_t N = 100;
+  float* means = (float*)malloc(N * 3 * sizeof(float));
+  float* quats = (float*)malloc(N * 4 * sizeof(float));
+  float* log_scales = (float*)malloc(N * 3 * sizeof(float));
+  float* opac = (float*)malloc(N * sizeof(float));
+  float* sh_dc = (float*)malloc(N * 3 * sizeof(float));
+  unsigned int s = 99173u;
+  #define RND01 ( (s = s*1664525u + 1013904223u), (float)(s >> 8) / 16777216.0f )
+  for (uint32_t i = 0; i < N; ++i) {
+    means[3*i+0] = RND01 * 2.0f - 1.0f;
+    means[3*i+1] = RND01 * 2.0f - 1.0f;
+    means[3*i+2] = RND01 * 2.0f - 1.0f;       // depth = z + 5 (extrinsics below) -> visible
+    float qx = RND01*2-1, qy = RND01*2-1, qz = RND01*2-1, qw = RND01*2-1;
+    float ql = sqrtf(qx*qx+qy*qy+qz*qz+qw*qw); if (ql < 1e-6f) { qw = 1; ql = 1; }
+    quats[4*i+0]=qx/ql; quats[4*i+1]=qy/ql; quats[4*i+2]=qz/ql; quats[4*i+3]=qw/ql;
+    log_scales[3*i+0] = RND01 - 2.0f; log_scales[3*i+1] = RND01 - 2.0f; log_scales[3*i+2] = RND01 - 2.0f;
+    opac[i] = RND01 * 4.0f - 2.0f;
+    sh_dc[3*i+0] = RND01; sh_dc[3*i+1] = RND01; sh_dc[3*i+2] = RND01;
+  }
+  #undef RND01
+  // Column-major extrinsics: identity rotation + translation (0,0,5).
+  float extr[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,5,1};
+  tvdb_camera_t* cam = tvdb_camera_create_perspective(500.0f, 500.0f, 256.0f, 256.0f,
+                                                      512.0f, 512.0f, 0.1f, 100.0f, extr);
+  if (!cam) { EXPECT(0); free(means); free(quats); free(log_scales); free(opac); free(sh_dc); return; }
+
+  tvdb_gaussian_splat_t splat;
+  memset(&splat, 0, sizeof(splat));
+  splat.num_gaussians = N;
+  splat.means = means; splat.quats = quats; splat.log_scales = log_scales;
+  splat.logit_opacities = opac; splat.sh_coeffs = sh_dc; splat.owns_data = 0;
+
+  tvdb_error_t cerr, err;
+  memset(&cerr, 0, sizeof(cerr)); memset(&err, 0, sizeof(err));
+  uint32_t cpu_count = 0;
+  tvdb_projected_gaussian_t* cpu = tvdb_gaussian_project(&splat, cam, &cpu_count, &cerr);
+  tvdb_projected_gaussian_t* gpu = (tvdb_projected_gaussian_t*)malloc(N * sizeof(tvdb_projected_gaussian_t));
+  EXPECT(cpu != NULL && cpu_count == N);
+  if (cpu && tvdb_gpu_gaussian_project(ctx, N, means, quats, log_scales, opac, sh_dc,
+                                       cam->extrinsics, cam->intrinsics, cam->near, cam->far, gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu gaussian project failed: %s\n", err.message);
+    EXPECT(0);
+  } else if (cpu) {
+    for (uint32_t i = 0; i < N; ++i) {
+      const float* c = (const float*)&cpu[i];
+      const float* g = (const float*)&gpu[i];
+      for (int k = 0; k < 11; ++k) {
+        float tol = 1e-3f * (1.0f + fabsf(c[k]));  // GPU reorders FP; fast-sqrt bit trick matches
+        EXPECT(fabsf(g[k] - c[k]) <= tol);
+      }
+    }
+  }
+  tvdb_projected_gaussian_destroy(cpu);
+  free(gpu);
+  tvdb_camera_destroy(cam);
+  free(means); free(quats); free(log_scales); free(opac); free(sh_dc);
+}
+
 static void test_splat_quadratic(tvdb_gpu_context_t* ctx) {
   const int N = 16;
   tvdb_dense_grid cpu, gpu;
@@ -1854,6 +1914,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_splat(ctx);
   test_splat_quadratic(ctx);
   test_gaussian_sh(ctx);
+  test_gaussian_project(ctx);
   test_points_to_mask(ctx);
   test_voxelize(ctx);
   test_sparse_erode(ctx);
