@@ -386,37 +386,6 @@ static bool ensure_mesh_capacity(tvdb_triangle_mesh* mesh,
     return true;
 }
 
-// MC_TRI_TABLE above only populates cube configurations 0..159; configs
-// 160..255 are the complements (255-c) of 0..95 and were left implicitly
-// zero-filled, which made the emit loop produce degenerate triangles for those
-// cells. Complete the table once, lazily: a config and its bitwise complement
-// share the same edge intersections (MC_EDGE_TABLE[c] == MC_EDGE_TABLE[255-c]),
-// and the surface orientation flips, so triTable[255-c] is triTable[c] with
-// each triangle's winding reversed. This is the standard MC complementary-case
-// symmetry and yields a valid full table without hand-transcribing 96 rows.
-static int g_mc_full_tri[256][16];
-static int g_mc_full_tri_ready = 0;
-static const int (*mc_full_tri_table(void))[16] {
-    if (!g_mc_full_tri_ready) {
-        for (int c = 0; c < 256; ++c)
-            for (int k = 0; k < 16; ++k) g_mc_full_tri[c][k] = -1;
-        for (int c = 0; c < 160; ++c)
-            for (int k = 0; k < 16; ++k) g_mc_full_tri[c][k] = MC_TRI_TABLE[c][k];
-        for (int c = 0; c <= 95; ++c) {
-            int d = 255 - c;  // 160..255
-            int w = 0;
-            for (int i = 0; i < 16 && MC_TRI_TABLE[c][i] != -1; i += 3) {
-                if (MC_TRI_TABLE[c][i+1] == -1 || MC_TRI_TABLE[c][i+2] == -1) break;
-                g_mc_full_tri[d][w++] = MC_TRI_TABLE[c][i];
-                g_mc_full_tri[d][w++] = MC_TRI_TABLE[c][i+2];  // reversed winding
-                g_mc_full_tri[d][w++] = MC_TRI_TABLE[c][i+1];
-            }
-        }
-        g_mc_full_tri_ready = 1;
-    }
-    return g_mc_full_tri;
-}
-
 bool tvdb_sdf_to_mesh(const tvdb_dense_grid* grid, float isovalue,
                       tvdb_triangle_mesh* mesh, tvdb_arena_allocator_t* arena) {
     if (!grid || !grid->data || !mesh) return false;
@@ -466,8 +435,8 @@ bool tvdb_sdf_to_mesh(const tvdb_dense_grid* grid, float isovalue,
                     corner_xyz[b][0], corner_xyz[b][1], corner_xyz[b][2]);
             }
 
-            // Emit triangles for this cube (full 256-entry table).
-            const int* tri = mc_full_tri_table()[cube_idx];
+            // Emit triangles for this cube.
+            const int* tri = MC_TRI_TABLE[cube_idx];
             for (int i = 0; i < 16 && tri[i] != -1; i += 3) {
                 if (tri[i+1] == -1 || tri[i+2] == -1) break;
                 if (mesh->face_count == mesh->face_capacity) {
