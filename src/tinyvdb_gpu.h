@@ -581,7 +581,7 @@ tvdb_status_t tvdb_gpu_gaussian_project(tvdb_gpu_context_t* ctx, uint32_t num_ga
                                         const float* means, const float* quats, const float* log_scales,
                                         const float* opacities, const float* sh_dc,
                                         const float extrinsics[16], const float intrinsics[9],
-                                        float near, float far,
+                                        float z_near, float z_far,
                                         tvdb_projected_gaussian_t* out, tvdb_error_t* err);
 
 // GPU MCMC densification helpers (parallel tvdb_gaussian_mcmc_relocation /

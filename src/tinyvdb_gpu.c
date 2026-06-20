@@ -8,6 +8,11 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+// <windows.h> defines legacy 16-bit `near`/`far` macros (expand to nothing),
+// which collide with parameter/identifier names like tvdb_gpu_gaussian_project's
+// near/far plane. Undefine them; nothing here relies on the macros.
+#undef near
+#undef far
 #else
 #include <dlfcn.h>
 #include <unistd.h>   // close() for external-memory opaque fds
@@ -6173,7 +6178,7 @@ tvdb_status_t tvdb_gpu_gaussian_project(tvdb_gpu_context_t* ctx, uint32_t num_ga
                                         const float* means, const float* quats, const float* log_scales,
                                         const float* opacities, const float* sh_dc,
                                         const float extrinsics[16], const float intrinsics[9],
-                                        float near, float far,
+                                        float z_near, float z_far,
                                         tvdb_projected_gaussian_t* out, tvdb_error_t* err) {
   if (!ctx || !extrinsics || !intrinsics || (num_gaussians && (!means || !quats || !log_scales || !out))) {
     tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid gaussian_project arguments");
@@ -6195,7 +6200,7 @@ tvdb_status_t tvdb_gpu_gaussian_project(tvdb_gpu_context_t* ctx, uint32_t num_ga
     if ((st = tvdb_cuda_alloc_copy_in(ctx, &dextr, extrinsics, 16u * sizeof(float), err)) != TVDB_OK) goto pcu_free;
     if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, n * 11u * sizeof(float), err)) != TVDB_OK) goto pcu_free;
     unsigned int uc = (unsigned int)n;
-    void* args[] = {&din, &dout, &dextr, &fx, &fy, &cx, &cy, &near, &far, (void*)&eps2d, &uc};
+    void* args[] = {&din, &dout, &dextr, &fx, &fy, &cx, &cy, &z_near, &z_far, (void*)&eps2d, &uc};
     unsigned int block = 128, gridb = (uc + block - 1u) / block;
     if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, gridb, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto pcu_free; }
     if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto pcu_free; }
@@ -6218,7 +6223,7 @@ pcu_free:
   memset(&par, 0, sizeof(par));
   memcpy(par.extr, extrinsics, 16u * sizeof(float));
   par.fxfycxcy[0]=fx; par.fxfycxcy[1]=fy; par.fxfycxcy[2]=cx; par.fxfycxcy[3]=cy;
-  par.nfe[0]=near; par.nfe[1]=far; par.nfe[2]=eps2d;
+  par.nfe[0]=z_near; par.nfe[1]=z_far; par.nfe[2]=eps2d;
   par.count = (uint32_t)n;
   memcpy(bu.mapped, &par, sizeof(par));
   tvdb_vk_dispatch_desc d;
