@@ -372,6 +372,12 @@ tvdb_status_t tvdb_gpu_active_grid_coords(tvdb_gpu_context_t* ctx, const tvdb_de
                                           float background, float tolerance,
                                           tvdb_sparse_grid* out, tvdb_error_t* err);
 
+// Order-independent additive checksum over a dense grid's values (NanoVDB-style
+// validation hash). Parallel grid-stride partial sums folded on the host;
+// `*out_checksum` is a 32-bit wrapping sum of a per-element (value,index) mix.
+tvdb_status_t tvdb_gpu_grid_checksum(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                     uint32_t* out_checksum, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

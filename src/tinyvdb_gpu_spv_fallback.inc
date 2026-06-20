@@ -62,3 +62,5 @@ static const uint8_t kTvdbGpuMergeScatterSpv[] = {0};
 static const uint32_t kTvdbGpuMergeScatterSpv_len = 0;
 static const uint8_t kTvdbGpuActiveCoordsSpv[] = {0};
 static const uint32_t kTvdbGpuActiveCoordsSpv_len = 0;
+static const uint8_t kTvdbGpuChecksumSpv[] = {0};
+static const uint32_t kTvdbGpuChecksumSpv_len = 0;

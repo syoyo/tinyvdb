@@ -46,6 +46,7 @@
 #include "tinyvdb_gpu_sparse_finalize_spv.inc"
 #include "tinyvdb_gpu_merge_scatter_spv.inc"
 #include "tinyvdb_gpu_active_coords_spv.inc"
+#include "tinyvdb_gpu_checksum_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2210,6 +2211,16 @@ static const char* kTvdbCudaSource =
 "  int iy = rem / nx; int ix = rem - iy * nx;\n"
 "  unsigned int slot = atomicAdd(counter, 1u);\n"
 "  if (slot < cap) { outd[4u*slot+0u]=ix; outd[4u*slot+1u]=iy; outd[4u*slot+2u]=iz; outd[4u*slot+3u]=__float_as_int(val); }\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_checksum(const unsigned int* data, unsigned int* partials,\n"
+"                                               unsigned int count, unsigned int nthreads) {\n"
+"  unsigned int t = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (t >= nthreads) return;\n"
+"  unsigned int s = 0u;\n"
+"  for (unsigned int i = t; i < count; i += nthreads) {\n"
+"    unsigned int h = data[i] ^ (i * 2654435761u); h *= 2654435761u; h ^= h >> 15; s += h;\n"
+"  }\n"
+"  partials[t] = s;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -5860,6 +5871,66 @@ afinish:
     }
   }
   free(outd);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_grid_checksum(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                     uint32_t* out_checksum, tvdb_error_t* err) {
+  if (!out_checksum) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "null checksum out"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  *out_checksum = 0;
+  if (!ctx || !grid || !grid->data) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid grid_checksum arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  size_t n = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
+  if (n == 0) return TVDB_OK;
+  uint32_t nthreads = n < 256 ? (uint32_t)n : 256u;
+  uint32_t* partials = (uint32_t*)malloc((size_t)nthreads * sizeof(uint32_t));
+  if (!partials) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dd = 0, dp = 0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) { free(partials); return st; }
+    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_checksum"))) { free(partials); return err?err->status:TVDB_ERROR_IO; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, grid->data, n*sizeof(float), err)) != TVDB_OK) goto kcu;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, NULL, (size_t)nthreads*sizeof(uint32_t), err)) != TVDB_OK) goto kcu;
+    unsigned int uc=(unsigned int)n, unt=nthreads, block=256;
+    void* args[] = {&dd,&dp,&uc,&unt};
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,(nthreads+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto kcu; }
+    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto kcu; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(partials, dp, (size_t)nthreads*sizeof(uint32_t)))) { st=err?err->status:TVDB_ERROR_IO; goto kcu; }
+    st = TVDB_OK;
+kcu:
+    if (dp) ctx->cuda.cuMemFree(dp);
+    if (dd) ctx->cuda.cuMemFree(dd);
+    if (st == TVDB_OK) { uint32_t s = 0; for (uint32_t i = 0; i < nthreads; ++i) s += partials[i]; *out_checksum = s; }
+    free(partials);
+    return st;
+  }
+
+  tvdb_vk_buffer bd, bp, bu;
+  if ((st = tvdb_vk_create_buffer(ctx, n*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bd, err)) != TVDB_OK) { free(partials); return st; }
+  if ((st = tvdb_vk_create_buffer(ctx, (size_t)nthreads*sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bp, err)) != TVDB_OK) goto kvk_d;
+  if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto kvk_p;
+  memcpy(bd.mapped, grid->data, n*sizeof(float));
+  { struct { uint32_t count, nthreads, pad[2]; } par = {(uint32_t)n, nthreads, {0,0}}; memcpy(bu.mapped, &par, sizeof(par)); }
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuChecksumSpv; d.spv_len = kTvdbGpuChecksumSpv_len; d.descriptor_count = 3;
+  d.buffers[0]=&bd; d.buffers[1]=&bp; d.buffers[2]=&bu;
+  d.descriptor_types[0]=d.descriptor_types[1]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (nthreads + 255u) / 256u;
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) {
+    memcpy(partials, bp.mapped, (size_t)nthreads*sizeof(uint32_t));
+    uint32_t s = 0; for (uint32_t i = 0; i < nthreads; ++i) s += partials[i]; *out_checksum = s;
+  }
+  tvdb_vk_destroy_buffer(ctx, &bu);
+kvk_p: tvdb_vk_destroy_buffer(ctx, &bp);
+kvk_d: tvdb_vk_destroy_buffer(ctx, &bd);
+  free(partials);
   return st;
 }
 

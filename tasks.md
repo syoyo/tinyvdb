@@ -247,8 +247,9 @@ each theme. Notes point at the nearest existing primitive to reuse.
       (min/max/mean/stddev/sum via grid-stride partial reduction),
       `tvdb_gpu_check_fog_volume`, and `tvdb_gpu_check_level_set` (band |grad|
       reduction) on Vulkan and CUDA/NVRTC, mirroring `tinyvdb_stats.c`. Covered
-      by `test_gpu_backend` (`test_stats`). *Still open:* NanoVDB-style checksum
-      and sparse-data validators.
+      by `test_gpu_backend` (`test_stats`), plus `tvdb_gpu_grid_checksum` (an
+      order-independent additive validation hash via reduction, `test_checksum`).
+      COMPLETE for dense grids.
 - [~] **P1: signed flood fill and sparse background robustness.**
       `tvdb_gpu_signed_flood_fill` done — exterior reachability flood through
       far voxels as iterative GPU label propagation (host seeds the boundary and

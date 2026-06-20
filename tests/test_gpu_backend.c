@@ -1254,6 +1254,31 @@ static void test_active_coords(tvdb_gpu_context_t* ctx) {
   tvdb_sparse_grid_free(&cpu); tvdb_sparse_grid_free(&gpu);
 }
 
+static void test_checksum(tvdb_gpu_context_t* ctx) {
+  tvdb_dense_grid g;
+  make_sphere(&g);
+  size_t n = (size_t)g.nx * g.ny * g.nz;
+  // CPU reference: the same order-independent additive mix (commutative, so the
+  // total is partition-independent).
+  uint32_t cpu = 0;
+  for (size_t i = 0; i < n; ++i) {
+    uint32_t bits; memcpy(&bits, &g.data[i], sizeof(uint32_t));
+    uint32_t h = bits ^ ((uint32_t)i * 2654435761u);
+    h *= 2654435761u; h ^= h >> 15; cpu += h;
+  }
+  uint32_t gpu = 0;
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_grid_checksum(ctx, &g, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu grid_checksum failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu == cpu);
+    EXPECT(gpu != 0u);
+  }
+  tvdb_dense_grid_free(&g);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1292,6 +1317,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_sparse_dilate(ctx);
   test_merge(ctx);
   test_active_coords(ctx);
+  test_checksum(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }
