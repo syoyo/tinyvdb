@@ -212,9 +212,14 @@ each theme. Notes point at the nearest existing primitive to reuse.
       Covered by `test_gpu_backend` (`test_volume_render`, `test_ray_queries`);
       DDA termination/entry are float-sensitive so the test allows a ±1
       boundary diff with exact-prefix agreement. VRAM-trivial test data.
-- [ ] **P0: GPU TSDF integration and marching cubes.** Port the existing CPU
-      TSDF fusion and marching-cubes surface extraction to the runtime-loaded
-      GPU backend.
+- [~] **P0: GPU TSDF integration and marching cubes.** `tvdb_gpu_integrate_tsdf`
+      (per-voxel depth-frame fusion + weighted average) done on Vulkan and
+      CUDA/NVRTC, mirroring `tvdb_integrate_tsdf`; covered by `test_gpu_backend`
+      (`test_tsdf`). *Blocked:* GPU marching cubes — the CPU reference
+      `MC_TRI_TABLE` in `tinyvdb_mesh.c` only populates 160 of 256 cube
+      configurations (indices 160-255 implicitly zero-filled), so a faithful
+      GPU port can't match the CPU for general SDFs. Completing that CPU table
+      is a prerequisite.
 - [ ] **P1: GPU grid construction.** Build sparse grids on GPU from points,
       voxel/ijk lists, dense masks, and triangle meshes, taking inspiration from
       NanoVDB `pointsToGrid`/`voxelsToGrid` and fvdb GridBatch factories.

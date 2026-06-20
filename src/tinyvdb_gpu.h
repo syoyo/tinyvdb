@@ -13,6 +13,7 @@
 #include "tinyvdb_io.h"     // tvdb_status_t, tvdb_error_t
 #include "tinyvdb_mesh.h"   // tvdb_dense_grid, tvdb_vec3f
 #include "tinyvdb_sparse.h" // tvdb_sparse_grid
+#include "tinyvdb_stats.h"  // tvdb_grid_stats_t
 #include "tinyvdb_tsdf.h"   // tvdb_depth_frame
 
 #ifdef __cplusplus
@@ -283,6 +284,12 @@ tvdb_status_t tvdb_gpu_segments_along_ray(tvdb_gpu_context_t* ctx, const tvdb_de
 tvdb_status_t tvdb_gpu_integrate_tsdf(tvdb_gpu_context_t* ctx, tvdb_dense_grid* tsdf,
                                       tvdb_dense_grid* weights, const tvdb_depth_frame* frame,
                                       tvdb_error_t* err);
+
+// Min/max/mean/stddev/sum over all voxels (parallels tvdb_grid_statistics).
+// GPU computes (min,max,sum,sumsq) partials via a grid-stride reduction; the
+// host finalizes mean/stddev in double.
+tvdb_status_t tvdb_gpu_grid_statistics(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                       tvdb_grid_stats_t* out, tvdb_error_t* err);
 
 #ifdef __cplusplus
 }

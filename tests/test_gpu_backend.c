@@ -6,6 +6,7 @@
 #include "tinyvdb_render.h"
 #include "tinyvdb_sample.h"
 #include "tinyvdb_sparse.h"
+#include "tinyvdb_stats.h"
 #include "tinyvdb_topology.h"
 #include "tinyvdb_tsdf.h"
 
@@ -905,6 +906,28 @@ static void test_tsdf(tvdb_gpu_context_t* ctx) {
   free(depth);
 }
 
+static void test_stats(tvdb_gpu_context_t* ctx) {
+  tvdb_dense_grid g;
+  make_sphere(&g);
+  tvdb_grid_stats_t cpu, gpu;
+  EXPECT(tvdb_grid_statistics(&g, &cpu));
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_grid_statistics(ctx, &g, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu grid_statistics failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu.count == cpu.count);
+    EXPECT_NEAR(gpu.min, cpu.min, 1e-5);
+    EXPECT_NEAR(gpu.max, cpu.max, 1e-5);
+    double srel = fabs(cpu.sum) * 1e-4 + 1e-2;
+    EXPECT_NEAR(gpu.sum, cpu.sum, srel);
+    EXPECT_NEAR(gpu.mean, cpu.mean, 1e-4);
+    EXPECT_NEAR(gpu.stddev, cpu.stddev, 1e-3);
+  }
+  tvdb_dense_grid_free(&g);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -934,6 +957,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_volume_render(ctx);
   test_ray_queries(ctx);
   test_tsdf(ctx);
+  test_stats(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

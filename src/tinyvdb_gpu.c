@@ -33,6 +33,7 @@
 #include "tinyvdb_gpu_voxels_along_ray_spv.inc"
 #include "tinyvdb_gpu_segments_along_ray_spv.inc"
 #include "tinyvdb_gpu_tsdf_spv.inc"
+#include "tinyvdb_gpu_stats_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2010,6 +2011,18 @@ static const char* kTvdbCudaSource =
 "  float w_old = weights[gid], t_old = tsdf[gid], w_new = w_old + 1.0f;\n"
 "  tsdf[gid] = (t_old * w_old + sdf) / w_new;\n"
 "  weights[gid] = w_new;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_stats(const float* data, float4* partials,\n"
+"                                            unsigned int count, unsigned int nthreads) {\n"
+"  unsigned int t = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (t >= nthreads) return;\n"
+"  float mn = 0.0f, mx = 0.0f, sum = 0.0f, sumsq = 0.0f; bool any = false;\n"
+"  for (unsigned int i = t; i < count; i += nthreads) {\n"
+"    float v = data[i];\n"
+"    if (!any) { mn = v; mx = v; any = true; } else { mn = fminf(mn, v); mx = fmaxf(mx, v); }\n"
+"    sum += v; sumsq += v * v;\n"
+"  }\n"
+"  float4 p; p.x = mn; p.y = mx; p.z = sum; p.w = sumsq; partials[t] = p;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -4688,5 +4701,88 @@ tdone:
 td_d: tvdb_vk_destroy_buffer(ctx, &bd);
 td_w: tvdb_vk_destroy_buffer(ctx, &bw);
 td_t: tvdb_vk_destroy_buffer(ctx, &bt);
+  return st;
+}
+
+// ---- grid statistics --------------------------------------------------------
+
+// Combine the per-thread (min,max,sum,sumsq) partials in double, matching
+// tvdb_grid_statistics' min/max/mean/stddev/sum/count semantics.
+static void tvdb_finalize_stats(const float* partials, uint32_t nthreads, size_t n,
+                                tvdb_grid_stats_t* out) {
+  double mn = partials[0], mx = partials[1], sum = 0.0, sumsq = 0.0;
+  for (uint32_t t = 0; t < nthreads; ++t) {
+    if (partials[4*t+0] < mn) mn = partials[4*t+0];
+    if (partials[4*t+1] > mx) mx = partials[4*t+1];
+    sum += partials[4*t+2];
+    sumsq += partials[4*t+3];
+  }
+  double mean = sum / (double)n;
+  double var = sumsq / (double)n - mean * mean;
+  if (var < 0.0) var = 0.0;
+  out->min = mn; out->max = mx; out->mean = mean;
+  out->stddev = sqrt(var); out->sum = sum; out->count = n;
+}
+
+tvdb_status_t tvdb_gpu_grid_statistics(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                       tvdb_grid_stats_t* out, tvdb_error_t* err) {
+  if (!out) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "null stats out"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  memset(out, 0, sizeof(*out));
+  if (!ctx || !grid || !grid->data) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid grid_statistics arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  size_t n = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
+  if (n == 0) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "empty grid"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  uint32_t nthreads = n < 256 ? (uint32_t)n : 256u;
+  float* partials = (float*)malloc((size_t)nthreads * 4u * sizeof(float));
+  if (!partials) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+
+  tvdb_status_t st;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dd = 0, dp = 0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto cu_ret;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_stats"))) { st = err ? err->status : TVDB_ERROR_IO; goto cu_ret; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, grid->data, n * sizeof(float), err)) != TVDB_OK) goto cu_free;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, NULL, (size_t)nthreads * 4u * sizeof(float), err)) != TVDB_OK) goto cu_free;
+    unsigned int uc = (unsigned int)n, unt = nthreads;
+    void* args[] = {&dd, &dp, &uc, &unt};
+    unsigned int block = 256, gridb = (nthreads + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, gridb, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto cu_free; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto cu_free; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(partials, dp, (size_t)nthreads * 4u * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto cu_free; }
+    st = TVDB_OK;
+cu_free:
+    if (dp) ctx->cuda.cuMemFree(dp);
+    if (dd) ctx->cuda.cuMemFree(dd);
+cu_ret:
+    if (st == TVDB_OK) tvdb_finalize_stats(partials, nthreads, n, out);
+    free(partials);
+    return st;
+  }
+
+  tvdb_vk_buffer bi, bp, bu;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bi, err)) != TVDB_OK) { free(partials); return st; }
+  if ((st = tvdb_vk_create_buffer(ctx, (size_t)nthreads * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bp, err)) != TVDB_OK) goto vk_i;
+  if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto vk_p;
+  memcpy(bi.mapped, grid->data, n * sizeof(float));
+  struct { uint32_t count, nthreads, pad[2]; } par = {(uint32_t)n, nthreads, {0, 0}};
+  memcpy(bu.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuStatsSpv; d.spv_len = kTvdbGpuStatsSpv_len; d.descriptor_count = 3;
+  d.buffers[0] = &bi; d.buffers[1] = &bp; d.buffers[2] = &bu;
+  d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (nthreads + 255u) / 256u;
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) {
+    memcpy(partials, bp.mapped, (size_t)nthreads * 4u * sizeof(float));
+    tvdb_finalize_stats(partials, nthreads, n, out);
+  }
+  tvdb_vk_destroy_buffer(ctx, &bu);
+vk_p: tvdb_vk_destroy_buffer(ctx, &bp);
+vk_i: tvdb_vk_destroy_buffer(ctx, &bi);
+  free(partials);
   return st;
 }
