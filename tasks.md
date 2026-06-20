@@ -223,11 +223,19 @@ each theme. Notes point at the nearest existing primitive to reuse.
 - [~] **P0: GPU TSDF integration and marching cubes.** `tvdb_gpu_integrate_tsdf`
       (per-voxel depth-frame fusion + weighted average) done on Vulkan and
       CUDA/NVRTC, mirroring `tvdb_integrate_tsdf`; covered by `test_gpu_backend`
-      (`test_tsdf`). *Blocked:* GPU marching cubes — the CPU reference
-      `MC_TRI_TABLE` in `tinyvdb_mesh.c` only populates 160 of 256 cube
-      configurations (indices 160-255 implicitly zero-filled), so a faithful
-      GPU port can't match the CPU for general SDFs. Completing that CPU table
-      is a prerequisite.
+      (`test_tsdf`). *Blocked:* GPU marching cubes. Investigated in depth: the
+      CPU MC lookup tables in `tinyvdb_mesh.c` are mutually inconsistent — the
+      triangle table references edge indices that are not set in the edge table
+      for the same cube config (279 violations even in the populated rows
+      0-159, and configs 160-255 are entirely zero-filled, which a sphere SDF
+      hits in thousands of cells). The CPU mesher "works" only because it reads
+      uninitialized per-cube edge vertices (index 0) for those refs, so a
+      faithful GPU port reads garbage and a *correct* port would need a
+      canonical, self-consistent MC table set replacing the CPU's — a CPU-side
+      data-correctness fix with `test_levelset` regression risk, beyond a GPU
+      kernel port. Prerequisite: replace the CPU MC tables with a verified
+      consistent set (edge table ✓ complement-symmetric; triangle table needs
+      sourcing/regeneration).
 - [~] **P1: GPU grid construction.** `tvdb_gpu_points_to_mask` rasterizes a
       point cloud into a dense occupancy grid, and `tvdb_gpu_voxelize_points`
       builds the unique occupied-voxel coord set (sparse) via a dense bbox-local
