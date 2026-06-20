@@ -2,6 +2,7 @@
 #include "tinyvdb_grid_index.h"
 #include "tinyvdb_levelset.h"
 #include "tinyvdb_ops.h"
+#include "tinyvdb_ray.h"
 #include "tinyvdb_render.h"
 #include "tinyvdb_sample.h"
 #include "tinyvdb_sparse.h"
@@ -743,6 +744,81 @@ static void test_volume_render(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&dens);
 }
 
+static void test_ray_queries(tvdb_gpu_context_t* ctx) {
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+
+  // A handful of rays with non-grid-aligned directions to avoid voxel-corner
+  // ties in the DDA. Grid world AABB = [0, 1.6]^3.
+  enum { NR = 4 };
+  tvdb_ray rays[NR] = {
+    {{-0.5f, 0.37f, 0.81f}, {1.0f, 0.05f, -0.03f}, 0.0f, 4.0f},
+    {{ 0.83f, -0.5f, 0.41f}, {0.02f, 1.0f, 0.04f}, 0.0f, 4.0f},
+    {{ 0.21f, 0.95f, -0.5f}, {0.07f, -0.06f, 1.0f}, 0.0f, 4.0f},
+    {{-0.4f, -0.4f, -0.4f}, {1.0f, 1.02f, 0.98f}, 0.0f, 4.0f},
+  };
+  float flat[NR * 8];
+  for (int i = 0; i < NR; ++i) {
+    flat[8*i+0] = rays[i].origin.x; flat[8*i+1] = rays[i].origin.y; flat[8*i+2] = rays[i].origin.z;
+    flat[8*i+3] = rays[i].tmin;
+    flat[8*i+4] = rays[i].dir.x; flat[8*i+5] = rays[i].dir.y; flat[8*i+6] = rays[i].dir.z;
+    flat[8*i+7] = rays[i].tmax;
+  }
+
+  // --- uniform_ray_samples --------------------------------------------------
+  const size_t M = 8;
+  float* gpu_pts = (float*)malloc(NR * M * 3 * sizeof(float));
+  float* gpu_t = (float*)malloc(NR * M * sizeof(float));
+  if (tvdb_gpu_uniform_ray_samples(ctx, flat, NR, M, gpu_pts, gpu_t, &err) != TVDB_OK) {
+    fprintf(stderr, "uniform_ray_samples failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    for (int r = 0; r < NR; ++r) {
+      tvdb_vec3f cpu_pts[8]; float cpu_t[8];
+      tvdb_uniform_ray_samples(&rays[r], M, cpu_pts, cpu_t);
+      for (size_t s = 0; s < M; ++s) {
+        size_t g = (size_t)r * M + s;
+        EXPECT_NEAR(gpu_t[g], cpu_t[s], 1e-5f);
+        EXPECT_NEAR(gpu_pts[3*g+0], cpu_pts[s].x, 1e-5f);
+        EXPECT_NEAR(gpu_pts[3*g+1], cpu_pts[s].y, 1e-5f);
+        EXPECT_NEAR(gpu_pts[3*g+2], cpu_pts[s].z, 1e-5f);
+      }
+    }
+  }
+  free(gpu_pts); free(gpu_t);
+
+  // --- voxels_along_ray (DDA) -----------------------------------------------
+  tvdb_dense_grid grid;
+  tvdb_dense_grid_init(&grid, 16, 16, 16);
+  grid.voxel_size = 0.1f; grid.ox = grid.oy = grid.oz = 0.0f;
+  const size_t cap = 64;
+  int32_t* gpu_vox = (int32_t*)malloc(NR * cap * 3 * sizeof(int32_t));
+  int32_t* gpu_cnt = (int32_t*)malloc(NR * sizeof(int32_t));
+  if (tvdb_gpu_voxels_along_ray(ctx, &grid, flat, NR, cap, gpu_vox, gpu_cnt, &err) != TVDB_OK) {
+    fprintf(stderr, "voxels_along_ray failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    for (int r = 0; r < NR; ++r) {
+      tvdb_vec3i cpu_vox[64];
+      size_t cpu_n = tvdb_voxels_along_ray_dense(&grid, &rays[r], cpu_vox, cap);
+      // Amanatides-Woo termination at the exit boundary is float-sensitive, so
+      // the CPU and GPU may differ by one trailing voxel; require the common
+      // prefix to match exactly and the counts to be within one.
+      size_t gn = (size_t)gpu_cnt[r];
+      EXPECT(gn + 1 >= cpu_n && cpu_n + 1 >= gn);
+      size_t common = gn < cpu_n ? gn : cpu_n;
+      for (size_t k = 0; k < common; ++k) {
+        size_t b = ((size_t)r * cap + k) * 3;
+        EXPECT(gpu_vox[b+0] == cpu_vox[k].x);
+        EXPECT(gpu_vox[b+1] == cpu_vox[k].y);
+        EXPECT(gpu_vox[b+2] == cpu_vox[k].z);
+      }
+    }
+  }
+  free(gpu_vox); free(gpu_cnt);
+  tvdb_dense_grid_free(&grid);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -770,6 +846,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_spatial_queries(ctx);
   test_topology(ctx);
   test_volume_render(ctx);
+  test_ray_queries(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

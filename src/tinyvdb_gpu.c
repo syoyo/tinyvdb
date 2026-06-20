@@ -29,6 +29,8 @@
 #include "tinyvdb_gpu_coarsen_spv.inc"
 #include "tinyvdb_gpu_refine_spv.inc"
 #include "tinyvdb_gpu_volume_render_spv.inc"
+#include "tinyvdb_gpu_ray_samples_spv.inc"
+#include "tinyvdb_gpu_voxels_along_ray_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -1901,6 +1903,58 @@ static const char* kTvdbCudaSource =
 "  }\n"
 "  float opacity = 1.0f - transmit;\n"
 "  out_image[py * width + px] = opacity + transmit * background;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_ray_samples(const float* rays, float* out_points, float* out_t,\n"
+"                                                  unsigned int n_rays, unsigned int n_samples) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = n_rays * n_samples;\n"
+"  if (gid >= total) return;\n"
+"  unsigned int ri = gid / n_samples, si = gid - ri * n_samples;\n"
+"  const float* r = rays + ri * 8u;\n"
+"  float a = (n_samples == 1u) ? 0.0f : (float)si / (float)(n_samples - 1u);\n"
+"  float t = r[3] + (r[7] - r[3]) * a;\n"
+"  out_t[gid] = t;\n"
+"  out_points[3*gid+0] = r[0] + t * r[4];\n"
+"  out_points[3*gid+1] = r[1] + t * r[5];\n"
+"  out_points[3*gid+2] = r[2] + t * r[6];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_voxels_along_ray(const float* rays, int* out_voxels, int* out_counts,\n"
+"    int nx, int ny, int nz, float ox, float oy, float oz, float vs, unsigned int n_rays, unsigned int cap) {\n"
+"  unsigned int ri = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (ri >= n_rays) return;\n"
+"  const float* r = rays + ri * 8u;\n"
+"  float o[3] = {(r[0]-ox)/vs, (r[1]-oy)/vs, (r[2]-oz)/vs};\n"
+"  float d[3] = {r[4]/vs, r[5]/vs, r[6]/vs};\n"
+"  int dim[3] = {nx, ny, nz};\n"
+"  float t0 = r[3], t1 = r[7]; bool hit = true;\n"
+"  for (int a = 0; a < 3; ++a) {\n"
+"    float hi = (float)dim[a];\n"
+"    if (fabsf(d[a]) < 1e-30f) { if (o[a] < 0.0f || o[a] > hi) { hit = false; break; } continue; }\n"
+"    float ta = (0.0f - o[a]) / d[a], tb = (hi - o[a]) / d[a];\n"
+"    if (ta > tb) { float t = ta; ta = tb; tb = t; } if (ta > t0) t0 = ta; if (tb < t1) t1 = tb;\n"
+"    if (t0 > t1) { hit = false; break; } }\n"
+"  out_counts[ri] = 0;\n"
+"  if (!hit) return;\n"
+"  float ex = o[0] + t0*d[0], ey = o[1] + t0*d[1], ez = o[2] + t0*d[2];\n"
+"  int ip[3] = {(int)floorf(ex), (int)floorf(ey), (int)floorf(ez)};\n"
+"  int dm[3] = {nx, ny, nz};\n"
+"  for (int a = 0; a < 3; ++a) { if (ip[a] < 0) ip[a] = 0; if (ip[a] >= dm[a]) ip[a] = dm[a]-1; }\n"
+"  int s[3] = {d[0]>0.0f?1:(d[0]<0.0f?-1:0), d[1]>0.0f?1:(d[1]<0.0f?-1:0), d[2]>0.0f?1:(d[2]<0.0f?-1:0)};\n"
+"  float tmax3[3], tdelta[3]; const float BIG = 1e30f;\n"
+"  for (int a = 0; a < 3; ++a) {\n"
+"    tmax3[a] = (s[a]!=0) ? (((float)ip[a] + (s[a]>0?1.0f:0.0f)) - o[a]) / d[a] : BIG;\n"
+"    tdelta[a] = (s[a]!=0) ? fabsf(1.0f/d[a]) : BIG; }\n"
+"  int written = 0;\n"
+"  while (ip[0]>=0 && ip[0]<nx && ip[1]>=0 && ip[1]<ny && ip[2]>=0 && ip[2]<nz) {\n"
+"    if ((unsigned int)written < cap) {\n"
+"      unsigned int base = 3u * (ri * cap + (unsigned int)written);\n"
+"      out_voxels[base+0] = ip[0]; out_voxels[base+1] = ip[1]; out_voxels[base+2] = ip[2]; ++written; }\n"
+"    if (tmax3[0] < tmax3[1] && tmax3[0] < tmax3[2]) { ip[0]+=s[0]; tmax3[0]+=tdelta[0]; }\n"
+"    else if (tmax3[1] < tmax3[2]) { ip[1]+=s[1]; tmax3[1]+=tdelta[1]; }\n"
+"    else { ip[2]+=s[2]; tmax3[2]+=tdelta[2]; }\n"
+"    if (tmax3[0] > t1 && tmax3[1] > t1 && tmax3[2] > t1) break;\n"
+"  }\n"
+"  out_counts[ri] = written;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -4289,5 +4343,135 @@ vdone:
   tvdb_vk_destroy_buffer(ctx, &bp);
 vdone_o: tvdb_vk_destroy_buffer(ctx, &bo);
 vdone_d: tvdb_vk_destroy_buffer(ctx, &bd);
+  return st;
+}
+
+// ---- batched ray queries ----------------------------------------------------
+
+tvdb_status_t tvdb_gpu_uniform_ray_samples(tvdb_gpu_context_t* ctx,
+                                           const float* rays, size_t n_rays, size_t n_samples,
+                                           float* out_points, float* out_t, tvdb_error_t* err) {
+  if (!ctx || !rays || !out_points || !out_t || n_samples == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid uniform_ray_samples arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (n_rays == 0) return TVDB_OK;
+  size_t ntot = n_rays * n_samples;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dr = 0, dp = 0, dt = 0;
+    tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+    if (st != TVDB_OK) return st;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_ray_samples"))) return err ? err->status : TVDB_ERROR_IO;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dr, rays, n_rays * 8u * sizeof(float), err)) != TVDB_OK) goto sdone;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, NULL, ntot * 3u * sizeof(float), err)) != TVDB_OK) goto sdone;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dt, NULL, ntot * sizeof(float), err)) != TVDB_OK) goto sdone;
+    unsigned int unr = (unsigned int)n_rays, uns = (unsigned int)n_samples;
+    void* args[] = {&dr, &dp, &dt, &unr, &uns};
+    unsigned int block = 128, grid = ((unsigned int)ntot + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto sdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto sdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out_points, dp, ntot * 3u * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto sdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out_t, dt, ntot * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto sdone; }
+    st = TVDB_OK;
+sdone:
+    if (dt) ctx->cuda.cuMemFree(dt);
+    if (dp) ctx->cuda.cuMemFree(dp);
+    if (dr) ctx->cuda.cuMemFree(dr);
+    return st;
+  }
+
+  tvdb_vk_buffer br, bp, bt, bu;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, n_rays * 8u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &br, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, ntot * 3u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bp, err)) != TVDB_OK) goto sd_r;
+  if ((st = tvdb_vk_create_buffer(ctx, ntot * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bt, err)) != TVDB_OK) goto sd_p;
+  if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto sd_t;
+  memcpy(br.mapped, rays, n_rays * 8u * sizeof(float));
+  struct { uint32_t n_rays, n_samples, pad[2]; } par = {(uint32_t)n_rays, (uint32_t)n_samples, {0, 0}};
+  memcpy(bu.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuRaySamplesSpv; d.spv_len = kTvdbGpuRaySamplesSpv_len; d.descriptor_count = 4;
+  d.buffers[0] = &br; d.buffers[1] = &bp; d.buffers[2] = &bt; d.buffers[3] = &bu;
+  d.descriptor_types[0] = d.descriptor_types[1] = d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((ntot + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) {
+    memcpy(out_points, bp.mapped, ntot * 3u * sizeof(float));
+    memcpy(out_t, bt.mapped, ntot * sizeof(float));
+  }
+  tvdb_vk_destroy_buffer(ctx, &bu);
+sd_t: tvdb_vk_destroy_buffer(ctx, &bt);
+sd_p: tvdb_vk_destroy_buffer(ctx, &bp);
+sd_r: tvdb_vk_destroy_buffer(ctx, &br);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_voxels_along_ray(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                        const float* rays, size_t n_rays, size_t cap,
+                                        int32_t* out_voxels, int32_t* out_counts, tvdb_error_t* err) {
+  if (!ctx || !grid || !grid->data || !rays || !out_voxels || !out_counts || cap == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid voxels_along_ray arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (n_rays == 0) return TVDB_OK;
+  size_t nvox = n_rays * cap * 3u;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dr = 0, dv = 0, dc = 0;
+    tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+    if (st != TVDB_OK) return st;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_voxels_along_ray"))) return err ? err->status : TVDB_ERROR_IO;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dr, rays, n_rays * 8u * sizeof(float), err)) != TVDB_OK) goto xdone;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dv, NULL, nvox * sizeof(int32_t), err)) != TVDB_OK) goto xdone;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dc, NULL, n_rays * sizeof(int32_t), err)) != TVDB_OK) goto xdone;
+    int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+    float ox = grid->ox, oy = grid->oy, oz = grid->oz, vs = grid->voxel_size;
+    unsigned int unr = (unsigned int)n_rays, ucap = (unsigned int)cap;
+    void* args[] = {&dr, &dv, &dc, &nx, &ny, &nz, &ox, &oy, &oz, &vs, &unr, &ucap};
+    unsigned int block = 64, grid_blocks = (unr + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid_blocks, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto xdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto xdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out_voxels, dv, nvox * sizeof(int32_t)))) { st = err ? err->status : TVDB_ERROR_IO; goto xdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out_counts, dc, n_rays * sizeof(int32_t)))) { st = err ? err->status : TVDB_ERROR_IO; goto xdone; }
+    st = TVDB_OK;
+xdone:
+    if (dc) ctx->cuda.cuMemFree(dc);
+    if (dv) ctx->cuda.cuMemFree(dv);
+    if (dr) ctx->cuda.cuMemFree(dr);
+    return st;
+  }
+
+  tvdb_vk_buffer br, bv, bc, bu;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, n_rays * 8u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &br, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, nvox * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bv, err)) != TVDB_OK) goto xd_r;
+  if ((st = tvdb_vk_create_buffer(ctx, n_rays * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bc, err)) != TVDB_OK) goto xd_v;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto xd_c;
+  memcpy(br.mapped, rays, n_rays * 8u * sizeof(float));
+  struct { int32_t dim[4]; float grid[4]; uint32_t n_rays; uint32_t cap; uint32_t pad[2]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = grid->nx; par.dim[1] = grid->ny; par.dim[2] = grid->nz;
+  par.grid[0] = grid->ox; par.grid[1] = grid->oy; par.grid[2] = grid->oz; par.grid[3] = grid->voxel_size;
+  par.n_rays = (uint32_t)n_rays; par.cap = (uint32_t)cap;
+  memcpy(bu.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuVoxelsAlongRaySpv; d.spv_len = kTvdbGpuVoxelsAlongRaySpv_len; d.descriptor_count = 4;
+  d.buffers[0] = &br; d.buffers[1] = &bv; d.buffers[2] = &bc; d.buffers[3] = &bu;
+  d.descriptor_types[0] = d.descriptor_types[1] = d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n_rays + 63u) / 64u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) {
+    memcpy(out_voxels, bv.mapped, nvox * sizeof(int32_t));
+    memcpy(out_counts, bc.mapped, n_rays * sizeof(int32_t));
+  }
+  tvdb_vk_destroy_buffer(ctx, &bu);
+xd_c: tvdb_vk_destroy_buffer(ctx, &bc);
+xd_v: tvdb_vk_destroy_buffer(ctx, &bv);
+xd_r: tvdb_vk_destroy_buffer(ctx, &br);
   return st;
 }

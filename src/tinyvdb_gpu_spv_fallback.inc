@@ -28,3 +28,7 @@ static const uint8_t kTvdbGpuRefineSpv[] = {0};
 static const uint32_t kTvdbGpuRefineSpv_len = 0;
 static const uint8_t kTvdbGpuVolumeRenderSpv[] = {0};
 static const uint32_t kTvdbGpuVolumeRenderSpv_len = 0;
+static const uint8_t kTvdbGpuRaySamplesSpv[] = {0};
+static const uint32_t kTvdbGpuRaySamplesSpv_len = 0;
+static const uint8_t kTvdbGpuVoxelsAlongRaySpv[] = {0};
+static const uint32_t kTvdbGpuVoxelsAlongRaySpv_len = 0;

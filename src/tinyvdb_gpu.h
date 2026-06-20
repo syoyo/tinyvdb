@@ -247,6 +247,25 @@ tvdb_status_t tvdb_gpu_volume_render(tvdb_gpu_context_t* ctx, const tvdb_dense_g
                                      float sigma, float step, float background,
                                      float* out_image, tvdb_error_t* err);
 
+// Batched ray queries. `rays` is `n_rays` * 8 floats: per ray
+// (ox,oy,oz,tmin, dx,dy,dz,tmax) — matching tvdb_ray laid out flat.
+
+// Uniform samples along each ray in [tmin,tmax] (parallels
+// tvdb_uniform_ray_samples). out_points = n_rays*n_samples*3 floats,
+// out_t = n_rays*n_samples floats (both caller-allocated, output index
+// ray*n_samples+sample).
+tvdb_status_t tvdb_gpu_uniform_ray_samples(tvdb_gpu_context_t* ctx,
+                                           const float* rays, size_t n_rays, size_t n_samples,
+                                           float* out_points, float* out_t, tvdb_error_t* err);
+
+// Amanatides-Woo DDA voxel traversal per ray (parallels
+// tvdb_voxels_along_ray_dense). Writes up to `cap` voxels into
+// out_voxels[ray*cap*3 ...] and the per-ray written count into
+// out_counts[ray] (<= cap).
+tvdb_status_t tvdb_gpu_voxels_along_ray(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                        const float* rays, size_t n_rays, size_t cap,
+                                        int32_t* out_voxels, int32_t* out_counts, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

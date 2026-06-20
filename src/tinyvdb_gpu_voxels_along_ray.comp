@@ -1,0 +1,77 @@
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+// Two vec4 per ray: (ox,oy,oz,tmin), (dx,dy,dz,tmax).
+layout(std430, set = 0, binding = 0) readonly buffer RayBuffer { vec4 rays[]; };
+layout(std430, set = 0, binding = 1) buffer VoxelBuffer { int out_voxels[]; };
+layout(std430, set = 0, binding = 2) buffer CountBuffer { int out_counts[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;       // nx, ny, nz, unused
+  vec4 grid;       // ox, oy, oz, voxel_size
+  uint n_rays;
+  uint cap;
+} u;
+
+const float BIG = 1e30;
+
+// Amanatides-Woo DDA in voxel-index space (matches tvdb_voxels_along_ray_dense).
+// One thread per ray; writes up to `cap` voxels into out_voxels[ray*cap + k].
+void main() {
+  uint ri = gl_GlobalInvocationID.x;
+  if (ri >= u.n_rays) return;
+  vec4 r0 = rays[2 * ri], r1 = rays[2 * ri + 1];
+  float vs = u.grid.w;
+  vec3 o = (r0.xyz - u.grid.xyz) / vs;
+  vec3 d = r1.xyz / vs;
+  float tmin = r0.w, tmax = r1.w;
+
+  // Ray-AABB slab clip to [0,nx)x[0,ny)x[0,nz).
+  float t0 = tmin, t1 = tmax;
+  ivec3 dim = u.dim.xyz;
+  bool hit = true;
+  for (int a = 0; a < 3; ++a) {
+    float oa = o[a], da = d[a], hi = float(dim[a]);
+    if (abs(da) < 1e-30) { if (oa < 0.0 || oa > hi) { hit = false; break; } continue; }
+    float ta = (0.0 - oa) / da, tb = (hi - oa) / da;
+    if (ta > tb) { float t = ta; ta = tb; tb = t; }
+    if (ta > t0) t0 = ta;
+    if (tb < t1) t1 = tb;
+    if (t0 > t1) { hit = false; break; }
+  }
+  out_counts[ri] = 0;
+  if (!hit) return;
+
+  vec3 e = o + t0 * d;
+  // Robust entry clamp: the boundary-defining axis can floor to -1 or dim from
+  // float epsilon at the slab entry; clamp into range (DDA standard practice).
+  ivec3 ip = clamp(ivec3(floor(e)), ivec3(0), dim - ivec3(1));
+  ivec3 s = ivec3(d.x > 0.0 ? 1 : (d.x < 0.0 ? -1 : 0),
+                  d.y > 0.0 ? 1 : (d.y < 0.0 ? -1 : 0),
+                  d.z > 0.0 ? 1 : (d.z < 0.0 ? -1 : 0));
+  vec3 tmax3, tdelta;
+  tmax3.x = (s.x != 0) ? ((float(ip.x) + (s.x > 0 ? 1.0 : 0.0)) - o.x) / d.x : BIG;
+  tmax3.y = (s.y != 0) ? ((float(ip.y) + (s.y > 0 ? 1.0 : 0.0)) - o.y) / d.y : BIG;
+  tmax3.z = (s.z != 0) ? ((float(ip.z) + (s.z > 0 ? 1.0 : 0.0)) - o.z) / d.z : BIG;
+  tdelta.x = (s.x != 0) ? abs(1.0 / d.x) : BIG;
+  tdelta.y = (s.y != 0) ? abs(1.0 / d.y) : BIG;
+  tdelta.z = (s.z != 0) ? abs(1.0 / d.z) : BIG;
+
+  int written = 0;
+  while (ip.x >= 0 && ip.x < dim.x && ip.y >= 0 && ip.y < dim.y && ip.z >= 0 && ip.z < dim.z) {
+    if (uint(written) < u.cap) {
+      uint base = 3u * (ri * u.cap + uint(written));
+      out_voxels[base + 0u] = ip.x;
+      out_voxels[base + 1u] = ip.y;
+      out_voxels[base + 2u] = ip.z;
+      ++written;
+    }
+    if (tmax3.x < tmax3.y && tmax3.x < tmax3.z) {
+      ip.x += s.x; tmax3.x += tdelta.x;
+    } else if (tmax3.y < tmax3.z) {
+      ip.y += s.y; tmax3.y += tdelta.y;
+    } else {
+      ip.z += s.z; tmax3.z += tdelta.z;
+    }
+    if (tmax3.x > t1 && tmax3.y > t1 && tmax3.z > t1) break;
+  }
+  out_counts[ri] = written;
+}
