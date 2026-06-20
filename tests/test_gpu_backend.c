@@ -1295,6 +1295,28 @@ static void test_gaussian_project(tvdb_gpu_context_t* ctx) {
   free(means); free(quats); free(log_scales); free(opac); free(sh_dc);
 }
 
+// Generic dispatch engine, exercised through tvdb_gpu_axpy (which builds a
+// dispatch spec with storage-in, storage-out, and uniform bindings).
+static void test_dispatch(tvdb_gpu_context_t* ctx) {
+  const size_t N = 1000;
+  float* x = (float*)malloc(N * sizeof(float));
+  float* y = (float*)malloc(N * sizeof(float));
+  float* gpu = (float*)malloc(N * sizeof(float));
+  const float alpha = 2.5f;
+  unsigned int s = 271828u;
+  for (size_t i = 0; i < N; ++i) {
+    s = s * 1664525u + 1013904223u; x[i] = (float)(s >> 8) / 16777216.0f * 4.0f - 2.0f;
+    s = s * 1664525u + 1013904223u; y[i] = (float)(s >> 8) / 16777216.0f * 4.0f - 2.0f;
+  }
+  tvdb_error_t err; memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_axpy(ctx, x, y, alpha, N, gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu axpy (dispatch) failed: %s\n", err.message); EXPECT(0);
+  } else {
+    for (size_t i = 0; i < N; ++i) EXPECT_NEAR(gpu[i], alpha * x[i] + y[i], 2e-5f);
+  }
+  free(x); free(y); free(gpu);
+}
+
 static void test_gaussian_mcmc(tvdb_gpu_context_t* ctx) {
   const uint32_t N = 150;
   float* opac = (float*)malloc(N * sizeof(float));
@@ -2181,6 +2203,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_gaussian_sh(ctx);
   test_gaussian_project(ctx);
   test_gaussian_mcmc(ctx);
+  test_dispatch(ctx);
   test_points_to_mask(ctx);
   test_voxelize(ctx);
   test_voxelize_unbounded(ctx);

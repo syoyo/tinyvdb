@@ -63,6 +63,7 @@
 #include "tinyvdb_gpu_gaussian_project_spv.inc"
 #include "tinyvdb_gpu_mcmc_relocation_spv.inc"
 #include "tinyvdb_gpu_mcmc_noise_spv.inc"
+#include "tinyvdb_gpu_axpy_spv.inc"
 #include "tinyvdb_gpu_ssim_spv.inc"
 #include "tinyvdb_gpu_sparse_conv_batched_spv.inc"
 #else
@@ -2358,6 +2359,12 @@ static const char* kTvdbCudaSource =
 "  gout[ob+0u]=x; gout[ob+1u]=y; gout[ob+2u]=conic_a; gout[ob+3u]=conic_b; gout[ob+4u]=conic_c;\n"
 "  gout[ob+5u]=opacity; gout[ob+6u]=pz; gout[ob+7u]=radius;\n"
 "  gout[ob+8u]=gin[ib+11u]; gout[ob+9u]=gin[ib+12u]; gout[ob+10u]=gin[ib+13u];\n"
+"}\n"
+"struct TvdbAxpyParams { unsigned int n; float alpha; };\n"
+"extern \"C\" __global__ void tvdb_cuda_axpy(const float* x, const float* y, float* o, const TvdbAxpyParams* u) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= u->n) return;\n"
+"  o[i] = u->alpha * x[i] + y[i];\n"
 "}\n"
 "extern \"C\" __global__ void tvdb_cuda_mcmc_relocation(const float* gin, const float* B,\n"
 "    float* new_op, float* new_scale, unsigned int count, unsigned int nmax) {\n"
@@ -7736,6 +7743,113 @@ tc_build:
   }
   free(in4); free(outd);
   return st;
+}
+
+// ---- generic compute-dispatch engine ----------------------------------------
+
+tvdb_status_t tvdb_gpu_dispatch(tvdb_gpu_context_t* ctx, const tvdb_gpu_dispatch_spec_t* spec,
+                                tvdb_error_t* err) {
+  if (!ctx || !spec || spec->num_bindings > 6 || (spec->num_bindings && !spec->bindings)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid dispatch spec");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  for (unsigned int i = 0; i < spec->num_bindings; ++i) {
+    const tvdb_gpu_binding_t* b = &spec->bindings[i];
+    if (b->size_bytes == 0 || (b->kind != TVDB_GPU_BIND_STORAGE_OUT && !b->host_data) ||
+        ((b->kind == TVDB_GPU_BIND_STORAGE_OUT || b->kind == TVDB_GPU_BIND_STORAGE_INOUT) && !b->host_data)) {
+      tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid dispatch binding");
+      return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+  }
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    if (!spec->cuda_kernel) { tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "no CUDA kernel name in dispatch spec"); return TVDB_ERROR_UNIMPLEMENTED; }
+    CUmodule module = NULL; CUfunction fn = NULL;
+    CUdeviceptr dptr[6]; for (int i = 0; i < 6; ++i) dptr[i] = 0;
+    void* args[6]; for (int i = 0; i < 6; ++i) args[i] = NULL;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) return st;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, spec->cuda_kernel))) return err ? err->status : TVDB_ERROR_IO;
+    st = TVDB_OK;
+    for (unsigned int i = 0; i < spec->num_bindings && st == TVDB_OK; ++i) {
+      const tvdb_gpu_binding_t* b = &spec->bindings[i];
+      int upload = (b->kind != TVDB_GPU_BIND_STORAGE_OUT);
+      st = tvdb_cuda_alloc_copy_in(ctx, &dptr[i], upload ? b->host_data : NULL, b->size_bytes, err);
+      args[i] = &dptr[i];
+    }
+    if (st == TVDB_OK) {
+      unsigned int block = 128;
+      if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, spec->group_count_x ? spec->group_count_x : 1u, 1, 1, block, 1, 1, 0, NULL, args, NULL))) st = err ? err->status : TVDB_ERROR_IO;
+    }
+    if (st == TVDB_OK && !tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) st = err ? err->status : TVDB_ERROR_IO;
+    for (unsigned int i = 0; i < spec->num_bindings && st == TVDB_OK; ++i) {
+      const tvdb_gpu_binding_t* b = &spec->bindings[i];
+      if (b->kind == TVDB_GPU_BIND_STORAGE_OUT || b->kind == TVDB_GPU_BIND_STORAGE_INOUT)
+        if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(b->host_data, dptr[i], b->size_bytes))) st = err ? err->status : TVDB_ERROR_IO;
+    }
+    for (unsigned int i = 0; i < spec->num_bindings; ++i) if (dptr[i]) ctx->cuda.cuMemFree(dptr[i]);
+    return st;
+  }
+
+  // Vulkan path.
+  if (!spec->spv || spec->spv_len == 0) { tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "no SPIR-V in dispatch spec"); return TVDB_ERROR_UNIMPLEMENTED; }
+  tvdb_vk_buffer bufs[6]; memset(bufs, 0, sizeof(bufs));
+  unsigned int created = 0;
+  st = TVDB_OK;
+  for (unsigned int i = 0; i < spec->num_bindings && st == TVDB_OK; ++i) {
+    const tvdb_gpu_binding_t* b = &spec->bindings[i];
+    uint32_t usage = (b->kind == TVDB_GPU_BIND_UNIFORM) ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    size_t sz = (b->kind == TVDB_GPU_BIND_UNIFORM && b->size_bytes < 16) ? 16 : b->size_bytes;
+    st = tvdb_vk_create_buffer(ctx, sz, usage, &bufs[i], err);
+    if (st != TVDB_OK) break;
+    created = i + 1;
+    if (b->kind != TVDB_GPU_BIND_STORAGE_OUT) memcpy(bufs[i].mapped, b->host_data, b->size_bytes);
+  }
+  if (st == TVDB_OK) {
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = spec->spv; d.spv_len = spec->spv_len; d.descriptor_count = spec->num_bindings;
+    for (unsigned int i = 0; i < spec->num_bindings; ++i) {
+      d.buffers[i] = &bufs[i];
+      d.descriptor_types[i] = (spec->bindings[i].kind == TVDB_GPU_BIND_UNIFORM)
+          ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    }
+    d.group_x = spec->group_count_x ? spec->group_count_x : 1u;
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st == TVDB_OK) {
+      for (unsigned int i = 0; i < spec->num_bindings; ++i) {
+        const tvdb_gpu_binding_t* b = &spec->bindings[i];
+        if (b->kind == TVDB_GPU_BIND_STORAGE_OUT || b->kind == TVDB_GPU_BIND_STORAGE_INOUT)
+          memcpy(b->host_data, bufs[i].mapped, b->size_bytes);
+      }
+    }
+  }
+  for (unsigned int i = 0; i < created; ++i) tvdb_vk_destroy_buffer(ctx, &bufs[i]);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_axpy(tvdb_gpu_context_t* ctx, const float* x, const float* y,
+                            float alpha, size_t n, float* out, tvdb_error_t* err) {
+  if (!ctx || (n && (!x || !y || !out))) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid axpy arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (n == 0) return TVDB_OK;
+  struct { uint32_t n; float alpha; uint32_t pad[2]; } params;
+  memset(&params, 0, sizeof(params));
+  params.n = (uint32_t)n; params.alpha = alpha;
+  tvdb_gpu_binding_t bindings[4];
+  bindings[0].kind = TVDB_GPU_BIND_STORAGE_IN;  bindings[0].host_data = (void*)x;   bindings[0].size_bytes = n * sizeof(float);
+  bindings[1].kind = TVDB_GPU_BIND_STORAGE_IN;  bindings[1].host_data = (void*)y;   bindings[1].size_bytes = n * sizeof(float);
+  bindings[2].kind = TVDB_GPU_BIND_STORAGE_OUT; bindings[2].host_data = out;         bindings[2].size_bytes = n * sizeof(float);
+  bindings[3].kind = TVDB_GPU_BIND_UNIFORM;     bindings[3].host_data = &params;     bindings[3].size_bytes = sizeof(params);
+  tvdb_gpu_dispatch_spec_t spec;
+  memset(&spec, 0, sizeof(spec));
+  spec.spv = kTvdbGpuAxpySpv; spec.spv_len = kTvdbGpuAxpySpv_len;
+  spec.cuda_kernel = "tvdb_cuda_axpy";
+  spec.bindings = bindings; spec.num_bindings = 4;
+  spec.group_count_x = (uint32_t)((n + 127u) / 128u);
+  return tvdb_gpu_dispatch(ctx, &spec, err);
 }
 
 // ---- device-resident buffer interop -----------------------------------------

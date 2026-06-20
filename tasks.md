@@ -418,9 +418,20 @@ core — listed for visibility, not on the near-term roadmap.
       (CPU per-op VJPs are already in `tinyvdb_autograd.{h,c}`; this
       task is specifically about wiring them into PyTorch's autograd
       graph as `torch.autograd.Function` subclasses.)
-- [ ] **High-performance GPU dispatch system.** Generic kernel dispatch
-      mechanism for sparse grid topology/types (parallels
-      `fvdb::dispatch`) beyond the small v1 runtime-loaded backend.
+- [x] **High-performance GPU dispatch system.** Generic kernel dispatch
+      mechanism (parallels `fvdb::dispatch`) beyond the per-op boilerplate.
+      `tvdb_gpu_dispatch` is a backend-uniform engine: describe a kernel
+      (SPIR-V blob for Vulkan / kernel name for CUDA) and its host-side buffer
+      bindings (`tvdb_gpu_binding_t`: STORAGE_IN / STORAGE_OUT / STORAGE_INOUT /
+      UNIFORM, up to 6), and it allocates device buffers, uploads inputs,
+      dispatches, downloads outputs, and frees — on whichever backend the
+      context uses (CUDA kernels receive the binding device pointers as args in
+      order, the uniform as a `const T*`; Vulkan binds them at set 0). This
+      factors out the buffer-lifecycle + dispatch boilerplate repeated across
+      the ~45 hand-written ops, and existing ops can migrate onto it
+      incrementally. Demonstrated by `tvdb_gpu_axpy` (out = alpha*x + y, built
+      entirely on the engine) on Vulkan + CUDA/NVRTC; covered by
+      `test_gpu_backend` (`test_dispatch`, parity vs CPU).
 - [ ] **GPU Gaussian-splat rasterizer.** A CUDA forward+backward to
       complement the CPU forward (`tvdb_gaussian_rasterize_forward`)
       and the CPU backward (`tvdb_gaussian_rasterize_backward`,
@@ -451,7 +462,7 @@ core — listed for visibility, not on the near-term roadmap.
 | `test_reference_roundtrip` | libopenvdb-generated reference grids (bool/float/double/int32/int64/vec3s) round-trip through tinyvdb. Cross-tool byte-format guard |
 | `test_gaussian_backward` | Gaussian-splat rasterizer backward pass: 16×16 image from 4 random gaussians, all 36 analytic gradients checked against central FD |
 | `test_nanovdb_reference` | nanovdb_convert-produced `.nvdb` corpus: hierarchical accessor + trilinear sampler + CRC32 checksum validation + VDB→NanoVDB conversion exactness |
-| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear + triquadratic batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling (incl. unbound-region background fallback), same-topology sparse conv3d against CPU (near-dense index-grid fast path + brute-force fallback), spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear + triquadratic splat, points→mask, sparse `voxelize_points` (dense + unbounded hash-set paths), sparse dilate/erode, dense `merge_grids`, dense→sparse active-coord extraction, triangle-mesh→SDF, marching cubes, strided + transposed sparse conv, a device-resident buffer round-trip, cross-API external-memory interop (Vulkan→CUDA opaque-fd share, bit-exact, skips if unsupported), the Gaussian-splat rasterizer (forward + backward), 3D→2D projection, spherical-harmonics color eval, MCMC relocation + exploration-noise densification, SSIM, batched sparse conv (incl. driving it through the GridBatch container's views), and multi-context scheduling — all parity-checked vs CPU (43 test cases); skips with code 77 if no runtime backend/device is available |
+| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear + triquadratic batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling (incl. unbound-region background fallback), same-topology sparse conv3d against CPU (near-dense index-grid fast path + brute-force fallback), spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear + triquadratic splat, points→mask, sparse `voxelize_points` (dense + unbounded hash-set paths), sparse dilate/erode, dense `merge_grids`, dense→sparse active-coord extraction, triangle-mesh→SDF, marching cubes, strided + transposed sparse conv, a device-resident buffer round-trip, cross-API external-memory interop (Vulkan→CUDA opaque-fd share, bit-exact, skips if unsupported), the Gaussian-splat rasterizer (forward + backward), 3D→2D projection, spherical-harmonics color eval, MCMC relocation + exploration-noise densification, SSIM, batched sparse conv (incl. driving it through the GridBatch container's views), the generic dispatch engine (axpy), and multi-context scheduling — all parity-checked vs CPU (44 test cases); skips with code 77 if no runtime backend/device is available |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate/erode/CSG/update_from_sparse → save → reload |
 | `test_dense_writer` (py) | Dense + sparse `.vdb` writer/reader: float SDF (raw + numpy), all compression modes, multi-leaf, analytic sphere, plus typed `write_dense_grid`/`read_dense_grid` and `write_sparse_grid`/`read_sparse_grid` round-trips for `float64`/`int32`/`int64`/`vec3f`/`bool` with grid-type-string checks |
 

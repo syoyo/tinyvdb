@@ -446,6 +446,49 @@ tvdb_status_t tvdb_gpu_sparse_conv3d_transpose(tvdb_gpu_context_t* ctx, const tv
                                                const float* kernel, int kx, int ky, int kz,
                                                int stride, tvdb_sparse_grid* out, tvdb_error_t* err);
 
+// ---- Generic compute-dispatch engine ----------------------------------------
+// A backend-uniform way to run a single compute kernel, factoring out the
+// per-op buffer-lifecycle + dispatch boilerplate (the tinyvdb analogue of
+// fvdb::dispatch). Describe the kernel and its host-side buffer bindings; the
+// engine allocates device buffers, uploads inputs, dispatches, downloads
+// outputs, and frees — on whichever backend the context uses. CUDA kernels
+// receive the binding device pointers as arguments in binding order (the
+// uniform binding arrives as a `const T*`); Vulkan binds them at set 0,
+// binding i (the uniform as a uniform block). Max 6 bindings.
+
+typedef enum {
+  TVDB_GPU_BIND_STORAGE_IN = 0,    // host -> device storage buffer (read in kernel)
+  TVDB_GPU_BIND_STORAGE_OUT,       // device storage buffer -> host (written by kernel)
+  TVDB_GPU_BIND_STORAGE_INOUT,     // host -> device -> host
+  TVDB_GPU_BIND_UNIFORM            // host -> device uniform/const buffer (read in kernel)
+} tvdb_gpu_binding_kind_t;
+
+typedef struct {
+  tvdb_gpu_binding_kind_t kind;
+  void*  host_data;    // IN/INOUT/UNIFORM: upload source; OUT/INOUT: download dest
+  size_t size_bytes;   // buffer size (>= 1)
+} tvdb_gpu_binding_t;
+
+typedef struct {
+  const unsigned char* spv;   // Vulkan SPIR-V blob
+  unsigned int spv_len;       // SPIR-V length in bytes (0 => Vulkan unavailable)
+  const char* cuda_kernel;    // CUDA kernel name (resolved in the bundled module)
+  const tvdb_gpu_binding_t* bindings;
+  unsigned int num_bindings;  // <= 6
+  unsigned int group_count_x; // workgroup count (kernel uses local_size_x = 128)
+} tvdb_gpu_dispatch_spec_t;
+
+// Run one compute dispatch described by `spec`. Returns TVDB_ERROR_UNIMPLEMENTED
+// when the backend can't run it (e.g. no SPIR-V on Vulkan).
+tvdb_status_t tvdb_gpu_dispatch(tvdb_gpu_context_t* ctx, const tvdb_gpu_dispatch_spec_t* spec,
+                                tvdb_error_t* err);
+
+// Demonstration op built on the dispatch engine: out = alpha*x + y over `n`
+// floats, on Vulkan and CUDA. Useful as a BLAS-like primitive and as the worked
+// example of authoring a kernel against tvdb_gpu_dispatch.
+tvdb_status_t tvdb_gpu_axpy(tvdb_gpu_context_t* ctx, const float* x, const float* y,
+                            float alpha, size_t n, float* out, tvdb_error_t* err);
+
 // Device-resident buffer interop. A caller-owned GPU buffer that stays on
 // device across uploads/downloads, with its native handle exported so the
 // caller's own Vulkan/CUDA code can consume the data without a host round-trip
