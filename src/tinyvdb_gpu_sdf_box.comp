@@ -1,0 +1,38 @@
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(std430, set = 0, binding = 0) buffer OutBuffer {
+  float values[];
+} out_buf;
+
+layout(std140, set = 0, binding = 1) uniform Params {
+  ivec4 dim;
+  vec4 origin_voxel;
+  vec4 center_pad;
+  vec4 half_extents_background;
+} u;
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x;
+  uint count = uint(u.dim.w);
+  if (idx >= count) return;
+
+  int nx = u.dim.x;
+  int ny = u.dim.y;
+  int iz = int(idx / uint(nx * ny));
+  int rem = int(idx - uint(iz * nx * ny));
+  int iy = rem / nx;
+  int ix = rem - iy * nx;
+
+  float vs = u.origin_voxel.w;
+  vec3 p = vec3(u.origin_voxel.x + (float(ix) + 0.5) * vs,
+                u.origin_voxel.y + (float(iy) + 0.5) * vs,
+                u.origin_voxel.z + (float(iz) + 0.5) * vs);
+  vec3 q = abs(p - u.center_pad.xyz) - u.half_extents_background.xyz;
+  vec3 outside_v = max(q, vec3(0.0));
+  float outside_d = length(outside_v);
+  float inside_d = min(max(q.x, max(q.y, q.z)), 0.0);
+  float bg = u.half_extents_background.w;
+  out_buf.values[idx] = clamp(outside_d + inside_d, -bg, bg);
+}

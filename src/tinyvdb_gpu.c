@@ -1,0 +1,3786 @@
+#include "tinyvdb_gpu.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
+#if defined(__has_include)
+#if __has_include("tinyvdb_gpu_csg_spv.inc")
+#include "tinyvdb_gpu_csg_spv.inc"
+#include "tinyvdb_gpu_sample_spv.inc"
+#include "tinyvdb_gpu_sample_image_spv.inc"
+#include "tinyvdb_gpu_sparse_conv_spv.inc"
+#include "tinyvdb_gpu_sdf_sphere_spv.inc"
+#include "tinyvdb_gpu_sdf_box_spv.inc"
+#include "tinyvdb_gpu_sdf_torus_spv.inc"
+#include "tinyvdb_gpu_ijk_to_index_spv.inc"
+#include "tinyvdb_gpu_points_in_grid_spv.inc"
+#include "tinyvdb_gpu_neighbor_counts_spv.inc"
+#else
+#include "tinyvdb_gpu_spv_fallback.inc"
+#endif
+#else
+#include "tinyvdb_gpu_spv_fallback.inc"
+#endif
+
+typedef uint32_t VkBool32;
+typedef uint32_t VkFlags;
+typedef uint64_t VkDeviceSize;
+typedef int32_t VkResult;
+typedef struct VkInstance_T* VkInstance;
+typedef struct VkPhysicalDevice_T* VkPhysicalDevice;
+typedef struct VkDevice_T* VkDevice;
+typedef struct VkQueue_T* VkQueue;
+typedef struct VkCommandBuffer_T* VkCommandBuffer;
+typedef uint64_t VkBuffer;
+typedef uint64_t VkDeviceMemory;
+typedef uint64_t VkShaderModule;
+typedef uint64_t VkPipelineLayout;
+typedef uint64_t VkPipeline;
+typedef uint64_t VkDescriptorSetLayout;
+typedef uint64_t VkDescriptorPool;
+typedef uint64_t VkDescriptorSet;
+typedef uint64_t VkCommandPool;
+typedef uint64_t VkFence;
+typedef uint64_t VkImage;
+typedef uint64_t VkImageView;
+typedef uint64_t VkSampler;
+
+typedef int CUresult;
+typedef int CUdevice;
+typedef struct CUctx_st* CUcontext;
+typedef struct CUmod_st* CUmodule;
+typedef struct CUfunc_st* CUfunction;
+typedef uint64_t CUdeviceptr;
+typedef int nvrtcResult;
+typedef struct _nvrtcProgram* nvrtcProgram;
+
+#define CUDA_SUCCESS 0
+#define NVRTC_SUCCESS 0
+
+#define VK_NULL_HANDLE 0
+#define VK_SUCCESS 0
+#define VK_NOT_READY 1
+#define VK_TRUE 1
+#define VK_FALSE 0
+#define VK_STRUCTURE_TYPE_APPLICATION_INFO 0
+#define VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO 1
+#define VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO 2
+#define VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO 3
+#define VK_STRUCTURE_TYPE_SUBMIT_INFO 4
+#define VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO 5
+#define VK_STRUCTURE_TYPE_BIND_SPARSE_INFO 7
+#define VK_STRUCTURE_TYPE_FENCE_CREATE_INFO 8
+#define VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO 12
+#define VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO 14
+#define VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO 15
+#define VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO 16
+#define VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO 31
+#define VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO 18
+#define VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO 30
+#define VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO 32
+#define VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO 33
+#define VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO 34
+#define VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET 35
+#define VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO 39
+#define VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO 40
+#define VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO 42
+#define VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER 44
+#define VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO 100
+#define VK_API_VERSION_1_0 ((uint32_t)(1u << 22))
+#define VK_QUEUE_COMPUTE_BIT 0x00000002u
+#define VK_QUEUE_SPARSE_BINDING_BIT 0x00000008u
+#define VK_QUEUE_FAMILY_IGNORED UINT32_MAX
+#define VK_IMAGE_CREATE_SPARSE_BINDING_BIT 0x00000001u
+#define VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT 0x00000002u
+#define VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT 0x00000010u
+#define VK_BUFFER_USAGE_STORAGE_BUFFER_BIT 0x00000020u
+#define VK_BUFFER_USAGE_TRANSFER_SRC_BIT 0x00000001u
+#define VK_IMAGE_USAGE_TRANSFER_DST_BIT 0x00000002u
+#define VK_IMAGE_USAGE_SAMPLED_BIT 0x00000004u
+#define VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT 0x00000001u
+#define VK_MEMORY_PROPERTY_HOST_COHERENT_BIT 0x00000002u
+#define VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT 0x00000004u
+#define VK_SHARING_MODE_EXCLUSIVE 0
+#define VK_IMAGE_TYPE_3D 2
+#define VK_IMAGE_VIEW_TYPE_3D 2
+#define VK_FORMAT_R32_SFLOAT 100
+#define VK_SAMPLE_COUNT_1_BIT 0x00000001u
+#define VK_IMAGE_TILING_OPTIMAL 0
+#define VK_IMAGE_LAYOUT_UNDEFINED 0
+#define VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL 7
+#define VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL 5
+#define VK_IMAGE_ASPECT_COLOR_BIT 0x00000001u
+#define VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER 1
+#define VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER 6
+#define VK_DESCRIPTOR_TYPE_STORAGE_BUFFER 7
+#define VK_FILTER_LINEAR 1
+#define VK_SAMPLER_MIPMAP_MODE_NEAREST 0
+#define VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE 2
+#define VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK 0
+#define VK_ACCESS_TRANSFER_WRITE_BIT 0x00001000u
+#define VK_ACCESS_SHADER_READ_BIT 0x00000020u
+#define VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT 0x00000001u
+#define VK_PIPELINE_STAGE_TRANSFER_BIT 0x00001000u
+#define VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT 0x00000800u
+#define VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT 0x00000001u
+#define VK_SPARSE_MEMORY_BIND_METADATA_BIT 0x00000001u
+#define VK_SHADER_STAGE_COMPUTE_BIT 0x00000020u
+#define VK_PIPELINE_BIND_POINT_COMPUTE 1
+#define VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT 0x00000002u
+#define VK_COMMAND_BUFFER_LEVEL_PRIMARY 0
+
+typedef struct {
+  uint32_t sType;
+  const void* pNext;
+  const char* pApplicationName;
+  uint32_t applicationVersion;
+  const char* pEngineName;
+  uint32_t engineVersion;
+  uint32_t apiVersion;
+} VkApplicationInfo;
+typedef struct {
+  uint32_t sType; const void* pNext; VkFlags flags;
+  const VkApplicationInfo* pApplicationInfo;
+  uint32_t enabledLayerCount; const char* const* ppEnabledLayerNames;
+  uint32_t enabledExtensionCount; const char* const* ppEnabledExtensionNames;
+} VkInstanceCreateInfo;
+typedef struct {
+  uint32_t sType; const void* pNext; VkFlags flags; uint32_t queueFamilyIndex;
+  uint32_t queueCount; const float* pQueuePriorities;
+} VkDeviceQueueCreateInfo;
+typedef struct {
+  uint32_t sType; const void* pNext; VkFlags flags; uint32_t queueCreateInfoCount;
+  const VkDeviceQueueCreateInfo* pQueueCreateInfos; uint32_t enabledLayerCount;
+  const char* const* ppEnabledLayerNames; uint32_t enabledExtensionCount;
+  const char* const* ppEnabledExtensionNames; const void* pEnabledFeatures;
+} VkDeviceCreateInfo;
+typedef struct { VkFlags queueFlags; uint32_t queueCount; uint32_t timestampValidBits; uint64_t minImageTransferGranularity[3]; } VkQueueFamilyProperties;
+typedef struct { uint32_t propertyFlags; uint32_t heapIndex; } VkMemoryType;
+typedef struct { VkDeviceSize size; uint32_t flags; } VkMemoryHeap;
+typedef struct { uint32_t memoryTypeCount; VkMemoryType memoryTypes[32]; uint32_t memoryHeapCount; VkMemoryHeap memoryHeaps[16]; } VkPhysicalDeviceMemoryProperties;
+typedef struct {
+  VkBool32 robustBufferAccess;
+  VkBool32 fullDrawIndexUint32;
+  VkBool32 imageCubeArray;
+  VkBool32 independentBlend;
+  VkBool32 geometryShader;
+  VkBool32 tessellationShader;
+  VkBool32 sampleRateShading;
+  VkBool32 dualSrcBlend;
+  VkBool32 logicOp;
+  VkBool32 multiDrawIndirect;
+  VkBool32 drawIndirectFirstInstance;
+  VkBool32 depthClamp;
+  VkBool32 depthBiasClamp;
+  VkBool32 fillModeNonSolid;
+  VkBool32 depthBounds;
+  VkBool32 wideLines;
+  VkBool32 largePoints;
+  VkBool32 alphaToOne;
+  VkBool32 multiViewport;
+  VkBool32 samplerAnisotropy;
+  VkBool32 textureCompressionETC2;
+  VkBool32 textureCompressionASTC_LDR;
+  VkBool32 textureCompressionBC;
+  VkBool32 occlusionQueryPrecise;
+  VkBool32 pipelineStatisticsQuery;
+  VkBool32 vertexPipelineStoresAndAtomics;
+  VkBool32 fragmentStoresAndAtomics;
+  VkBool32 shaderTessellationAndGeometryPointSize;
+  VkBool32 shaderImageGatherExtended;
+  VkBool32 shaderStorageImageExtendedFormats;
+  VkBool32 shaderStorageImageMultisample;
+  VkBool32 shaderStorageImageReadWithoutFormat;
+  VkBool32 shaderStorageImageWriteWithoutFormat;
+  VkBool32 shaderUniformBufferArrayDynamicIndexing;
+  VkBool32 shaderSampledImageArrayDynamicIndexing;
+  VkBool32 shaderStorageBufferArrayDynamicIndexing;
+  VkBool32 shaderStorageImageArrayDynamicIndexing;
+  VkBool32 shaderClipDistance;
+  VkBool32 shaderCullDistance;
+  VkBool32 shaderFloat64;
+  VkBool32 shaderInt64;
+  VkBool32 shaderInt16;
+  VkBool32 shaderResourceResidency;
+  VkBool32 shaderResourceMinLod;
+  VkBool32 sparseBinding;
+  VkBool32 sparseResidencyBuffer;
+  VkBool32 sparseResidencyImage2D;
+  VkBool32 sparseResidencyImage3D;
+  VkBool32 sparseResidency2Samples;
+  VkBool32 sparseResidency4Samples;
+  VkBool32 sparseResidency8Samples;
+  VkBool32 sparseResidency16Samples;
+  VkBool32 sparseResidencyAliased;
+  VkBool32 variableMultisampleRate;
+  VkBool32 inheritedQueries;
+} VkPhysicalDeviceFeatures;
+typedef struct { VkDeviceSize size; VkDeviceSize alignment; uint32_t memoryTypeBits; } VkMemoryRequirements;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; VkDeviceSize size; VkFlags usage; uint32_t sharingMode; uint32_t queueFamilyIndexCount; const uint32_t* pQueueFamilyIndices; } VkBufferCreateInfo;
+typedef struct { uint32_t width; uint32_t height; uint32_t depth; } VkExtent3D;
+typedef struct { int32_t x; int32_t y; int32_t z; } VkOffset3D;
+typedef struct { uint32_t aspectMask; uint32_t mipLevel; uint32_t arrayLayer; } VkImageSubresource;
+typedef struct { uint32_t aspectMask; uint32_t mipLevel; uint32_t baseArrayLayer; uint32_t layerCount; } VkImageSubresourceLayers;
+typedef struct { uint32_t aspectMask; uint32_t baseMipLevel; uint32_t levelCount; uint32_t baseArrayLayer; uint32_t layerCount; } VkImageSubresourceRange;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; uint32_t imageType; uint32_t format; VkExtent3D extent; uint32_t mipLevels; uint32_t arrayLayers; uint32_t samples; uint32_t tiling; VkFlags usage; uint32_t sharingMode; uint32_t queueFamilyIndexCount; const uint32_t* pQueueFamilyIndices; uint32_t initialLayout; } VkImageCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; VkImage image; uint32_t viewType; uint32_t format; uint32_t components[4]; VkImageSubresourceRange subresourceRange; } VkImageViewCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; uint32_t magFilter; uint32_t minFilter; uint32_t mipmapMode; uint32_t addressModeU; uint32_t addressModeV; uint32_t addressModeW; float mipLodBias; VkBool32 anisotropyEnable; float maxAnisotropy; VkBool32 compareEnable; uint32_t compareOp; float minLod; float maxLod; uint32_t borderColor; VkBool32 unnormalizedCoordinates; } VkSamplerCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkFlags srcAccessMask; VkFlags dstAccessMask; uint32_t oldLayout; uint32_t newLayout; uint32_t srcQueueFamilyIndex; uint32_t dstQueueFamilyIndex; VkImage image; VkImageSubresourceRange subresourceRange; } VkImageMemoryBarrier;
+typedef struct { VkDeviceSize bufferOffset; uint32_t bufferRowLength; uint32_t bufferImageHeight; VkImageSubresourceLayers imageSubresource; VkOffset3D imageOffset; VkExtent3D imageExtent; } VkBufferImageCopy;
+typedef struct { VkDeviceSize resourceOffset; VkDeviceSize size; VkDeviceMemory memory; VkDeviceSize memoryOffset; VkFlags flags; } VkSparseMemoryBind;
+typedef struct { VkImage image; uint32_t bindCount; const VkSparseMemoryBind* pBinds; } VkSparseImageOpaqueMemoryBindInfo;
+typedef struct { VkImageSubresource subresource; VkOffset3D offset; VkExtent3D extent; VkDeviceMemory memory; VkDeviceSize memoryOffset; VkFlags flags; } VkSparseImageMemoryBind;
+typedef struct { VkImage image; uint32_t bindCount; const VkSparseImageMemoryBind* pBinds; } VkSparseImageMemoryBindInfo;
+typedef struct { uint32_t sType; const void* pNext; uint32_t waitSemaphoreCount; const void* pWaitSemaphores; uint32_t bufferBindCount; const void* pBufferBinds; uint32_t imageOpaqueBindCount; const VkSparseImageOpaqueMemoryBindInfo* pImageOpaqueBinds; uint32_t imageBindCount; const VkSparseImageMemoryBindInfo* pImageBinds; uint32_t signalSemaphoreCount; const void* pSignalSemaphores; } VkBindSparseInfo;
+typedef struct { uint32_t aspectMask; VkExtent3D imageGranularity; VkFlags flags; } VkSparseImageFormatProperties;
+typedef struct { VkSparseImageFormatProperties formatProperties; uint32_t imageMipTailFirstLod; VkDeviceSize imageMipTailSize; VkDeviceSize imageMipTailOffset; VkDeviceSize imageMipTailStride; } VkSparseImageMemoryRequirements;
+typedef struct { uint32_t sType; const void* pNext; VkDeviceSize allocationSize; uint32_t memoryTypeIndex; } VkMemoryAllocateInfo;
+typedef struct { uint32_t binding; uint32_t descriptorType; uint32_t descriptorCount; uint32_t stageFlags; const void* pImmutableSamplers; } VkDescriptorSetLayoutBinding;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; uint32_t bindingCount; const VkDescriptorSetLayoutBinding* pBindings; } VkDescriptorSetLayoutCreateInfo;
+typedef struct { uint32_t type; uint32_t descriptorCount; } VkDescriptorPoolSize;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; uint32_t maxSets; uint32_t poolSizeCount; const VkDescriptorPoolSize* pPoolSizes; } VkDescriptorPoolCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkDescriptorPool descriptorPool; uint32_t descriptorSetCount; const VkDescriptorSetLayout* pSetLayouts; } VkDescriptorSetAllocateInfo;
+typedef struct { VkBuffer buffer; VkDeviceSize offset; VkDeviceSize range; } VkDescriptorBufferInfo;
+typedef struct { VkSampler sampler; VkImageView imageView; uint32_t imageLayout; } VkDescriptorImageInfo;
+typedef struct { uint32_t sType; const void* pNext; VkDescriptorSet dstSet; uint32_t dstBinding; uint32_t dstArrayElement; uint32_t descriptorCount; uint32_t descriptorType; const VkDescriptorImageInfo* pImageInfo; const VkDescriptorBufferInfo* pBufferInfo; const void* pTexelBufferView; } VkWriteDescriptorSet;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; size_t codeSize; const uint32_t* pCode; } VkShaderModuleCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; uint32_t setLayoutCount; const VkDescriptorSetLayout* pSetLayouts; uint32_t pushConstantRangeCount; const void* pPushConstantRanges; } VkPipelineLayoutCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; uint32_t stage; VkShaderModule module; const char* pName; const void* pSpecializationInfo; } VkPipelineShaderStageCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; VkPipelineShaderStageCreateInfo stage; VkPipelineLayout layout; VkPipeline basePipelineHandle; int32_t basePipelineIndex; } VkComputePipelineCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; uint32_t queueFamilyIndex; } VkCommandPoolCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkCommandPool commandPool; uint32_t level; uint32_t commandBufferCount; } VkCommandBufferAllocateInfo;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; const void* pInheritanceInfo; } VkCommandBufferBeginInfo;
+typedef struct { uint32_t sType; const void* pNext; VkFlags flags; } VkFenceCreateInfo;
+typedef struct { uint32_t sType; const void* pNext; uint32_t waitSemaphoreCount; const void* pWaitSemaphores; const void* pWaitDstStageMask; uint32_t commandBufferCount; const VkCommandBuffer* pCommandBuffers; uint32_t signalSemaphoreCount; const void* pSignalSemaphores; } VkSubmitInfo;
+
+typedef void* (*PFN_vkGetInstanceProcAddr)(VkInstance, const char*);
+typedef void* (*PFN_vkGetDeviceProcAddr)(VkDevice, const char*);
+typedef VkResult (*PFN_vkCreateInstance)(const VkInstanceCreateInfo*, const void*, VkInstance*);
+typedef void (*PFN_vkDestroyInstance)(VkInstance, const void*);
+typedef VkResult (*PFN_vkEnumeratePhysicalDevices)(VkInstance, uint32_t*, VkPhysicalDevice*);
+typedef void (*PFN_vkGetPhysicalDeviceQueueFamilyProperties)(VkPhysicalDevice, uint32_t*, VkQueueFamilyProperties*);
+typedef void (*PFN_vkGetPhysicalDeviceMemoryProperties)(VkPhysicalDevice, VkPhysicalDeviceMemoryProperties*);
+typedef void (*PFN_vkGetPhysicalDeviceFeatures)(VkPhysicalDevice, VkPhysicalDeviceFeatures*);
+typedef VkResult (*PFN_vkCreateDevice)(VkPhysicalDevice, const VkDeviceCreateInfo*, const void*, VkDevice*);
+typedef void (*PFN_vkDestroyDevice)(VkDevice, const void*);
+typedef void (*PFN_vkGetDeviceQueue)(VkDevice, uint32_t, uint32_t, VkQueue*);
+typedef VkResult (*PFN_vkCreateBuffer)(VkDevice, const VkBufferCreateInfo*, const void*, VkBuffer*);
+typedef void (*PFN_vkDestroyBuffer)(VkDevice, VkBuffer, const void*);
+typedef void (*PFN_vkGetBufferMemoryRequirements)(VkDevice, VkBuffer, VkMemoryRequirements*);
+typedef VkResult (*PFN_vkCreateImage)(VkDevice, const VkImageCreateInfo*, const void*, VkImage*);
+typedef void (*PFN_vkDestroyImage)(VkDevice, VkImage, const void*);
+typedef void (*PFN_vkGetImageMemoryRequirements)(VkDevice, VkImage, VkMemoryRequirements*);
+typedef void (*PFN_vkGetImageSparseMemoryRequirements)(VkDevice, VkImage, uint32_t*, VkSparseImageMemoryRequirements*);
+typedef VkResult (*PFN_vkBindImageMemory)(VkDevice, VkImage, VkDeviceMemory, VkDeviceSize);
+typedef VkResult (*PFN_vkCreateImageView)(VkDevice, const VkImageViewCreateInfo*, const void*, VkImageView*);
+typedef void (*PFN_vkDestroyImageView)(VkDevice, VkImageView, const void*);
+typedef VkResult (*PFN_vkCreateSampler)(VkDevice, const VkSamplerCreateInfo*, const void*, VkSampler*);
+typedef void (*PFN_vkDestroySampler)(VkDevice, VkSampler, const void*);
+typedef VkResult (*PFN_vkAllocateMemory)(VkDevice, const VkMemoryAllocateInfo*, const void*, VkDeviceMemory*);
+typedef void (*PFN_vkFreeMemory)(VkDevice, VkDeviceMemory, const void*);
+typedef VkResult (*PFN_vkBindBufferMemory)(VkDevice, VkBuffer, VkDeviceMemory, VkDeviceSize);
+typedef VkResult (*PFN_vkMapMemory)(VkDevice, VkDeviceMemory, VkDeviceSize, VkDeviceSize, VkFlags, void**);
+typedef void (*PFN_vkUnmapMemory)(VkDevice, VkDeviceMemory);
+typedef VkResult (*PFN_vkCreateDescriptorSetLayout)(VkDevice, const VkDescriptorSetLayoutCreateInfo*, const void*, VkDescriptorSetLayout*);
+typedef void (*PFN_vkDestroyDescriptorSetLayout)(VkDevice, VkDescriptorSetLayout, const void*);
+typedef VkResult (*PFN_vkCreateDescriptorPool)(VkDevice, const VkDescriptorPoolCreateInfo*, const void*, VkDescriptorPool*);
+typedef void (*PFN_vkDestroyDescriptorPool)(VkDevice, VkDescriptorPool, const void*);
+typedef VkResult (*PFN_vkAllocateDescriptorSets)(VkDevice, const VkDescriptorSetAllocateInfo*, VkDescriptorSet*);
+typedef void (*PFN_vkUpdateDescriptorSets)(VkDevice, uint32_t, const VkWriteDescriptorSet*, uint32_t, const void*);
+typedef VkResult (*PFN_vkCreateShaderModule)(VkDevice, const VkShaderModuleCreateInfo*, const void*, VkShaderModule*);
+typedef void (*PFN_vkDestroyShaderModule)(VkDevice, VkShaderModule, const void*);
+typedef VkResult (*PFN_vkCreatePipelineLayout)(VkDevice, const VkPipelineLayoutCreateInfo*, const void*, VkPipelineLayout*);
+typedef void (*PFN_vkDestroyPipelineLayout)(VkDevice, VkPipelineLayout, const void*);
+typedef VkResult (*PFN_vkCreateComputePipelines)(VkDevice, VkPipeline, uint32_t, const VkComputePipelineCreateInfo*, const void*, VkPipeline*);
+typedef void (*PFN_vkDestroyPipeline)(VkDevice, VkPipeline, const void*);
+typedef VkResult (*PFN_vkCreateCommandPool)(VkDevice, const VkCommandPoolCreateInfo*, const void*, VkCommandPool*);
+typedef void (*PFN_vkDestroyCommandPool)(VkDevice, VkCommandPool, const void*);
+typedef VkResult (*PFN_vkAllocateCommandBuffers)(VkDevice, const VkCommandBufferAllocateInfo*, VkCommandBuffer*);
+typedef VkResult (*PFN_vkBeginCommandBuffer)(VkCommandBuffer, const VkCommandBufferBeginInfo*);
+typedef VkResult (*PFN_vkEndCommandBuffer)(VkCommandBuffer);
+typedef VkResult (*PFN_vkResetCommandBuffer)(VkCommandBuffer, VkFlags);
+typedef void (*PFN_vkCmdBindPipeline)(VkCommandBuffer, uint32_t, VkPipeline);
+typedef void (*PFN_vkCmdBindDescriptorSets)(VkCommandBuffer, uint32_t, VkPipelineLayout, uint32_t, uint32_t, const VkDescriptorSet*, uint32_t, const uint32_t*);
+typedef void (*PFN_vkCmdDispatch)(VkCommandBuffer, uint32_t, uint32_t, uint32_t);
+typedef void (*PFN_vkCmdPipelineBarrier)(VkCommandBuffer, VkFlags, VkFlags, VkFlags, uint32_t, const void*, uint32_t, const void*, uint32_t, const VkImageMemoryBarrier*);
+typedef void (*PFN_vkCmdCopyBufferToImage)(VkCommandBuffer, VkBuffer, VkImage, uint32_t, uint32_t, const VkBufferImageCopy*);
+typedef VkResult (*PFN_vkCreateFence)(VkDevice, const VkFenceCreateInfo*, const void*, VkFence*);
+typedef void (*PFN_vkDestroyFence)(VkDevice, VkFence, const void*);
+typedef VkResult (*PFN_vkResetFences)(VkDevice, uint32_t, const VkFence*);
+typedef VkResult (*PFN_vkGetFenceStatus)(VkDevice, VkFence);
+typedef VkResult (*PFN_vkWaitForFences)(VkDevice, uint32_t, const VkFence*, VkBool32, uint64_t);
+typedef VkResult (*PFN_vkQueueSubmit)(VkQueue, uint32_t, const VkSubmitInfo*, VkFence);
+typedef VkResult (*PFN_vkQueueBindSparse)(VkQueue, uint32_t, const VkBindSparseInfo*, VkFence);
+typedef VkResult (*PFN_vkDeviceWaitIdle)(VkDevice);
+
+typedef struct {
+  void* lib;
+  PFN_vkGetInstanceProcAddr GetInstanceProcAddr;
+  PFN_vkGetDeviceProcAddr GetDeviceProcAddr;
+  PFN_vkCreateInstance CreateInstance;
+  PFN_vkDestroyInstance DestroyInstance;
+  PFN_vkEnumeratePhysicalDevices EnumeratePhysicalDevices;
+  PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties;
+  PFN_vkGetPhysicalDeviceMemoryProperties GetPhysicalDeviceMemoryProperties;
+  PFN_vkGetPhysicalDeviceFeatures GetPhysicalDeviceFeatures;
+  PFN_vkCreateDevice CreateDevice;
+  PFN_vkDestroyDevice DestroyDevice;
+  PFN_vkGetDeviceQueue GetDeviceQueue;
+  PFN_vkCreateBuffer CreateBuffer;
+  PFN_vkDestroyBuffer DestroyBuffer;
+  PFN_vkGetBufferMemoryRequirements GetBufferMemoryRequirements;
+  PFN_vkCreateImage CreateImage;
+  PFN_vkDestroyImage DestroyImage;
+  PFN_vkGetImageMemoryRequirements GetImageMemoryRequirements;
+  PFN_vkGetImageSparseMemoryRequirements GetImageSparseMemoryRequirements;
+  PFN_vkBindImageMemory BindImageMemory;
+  PFN_vkCreateImageView CreateImageView;
+  PFN_vkDestroyImageView DestroyImageView;
+  PFN_vkCreateSampler CreateSampler;
+  PFN_vkDestroySampler DestroySampler;
+  PFN_vkAllocateMemory AllocateMemory;
+  PFN_vkFreeMemory FreeMemory;
+  PFN_vkBindBufferMemory BindBufferMemory;
+  PFN_vkMapMemory MapMemory;
+  PFN_vkUnmapMemory UnmapMemory;
+  PFN_vkCreateDescriptorSetLayout CreateDescriptorSetLayout;
+  PFN_vkDestroyDescriptorSetLayout DestroyDescriptorSetLayout;
+  PFN_vkCreateDescriptorPool CreateDescriptorPool;
+  PFN_vkDestroyDescriptorPool DestroyDescriptorPool;
+  PFN_vkAllocateDescriptorSets AllocateDescriptorSets;
+  PFN_vkUpdateDescriptorSets UpdateDescriptorSets;
+  PFN_vkCreateShaderModule CreateShaderModule;
+  PFN_vkDestroyShaderModule DestroyShaderModule;
+  PFN_vkCreatePipelineLayout CreatePipelineLayout;
+  PFN_vkDestroyPipelineLayout DestroyPipelineLayout;
+  PFN_vkCreateComputePipelines CreateComputePipelines;
+  PFN_vkDestroyPipeline DestroyPipeline;
+  PFN_vkCreateCommandPool CreateCommandPool;
+  PFN_vkDestroyCommandPool DestroyCommandPool;
+  PFN_vkAllocateCommandBuffers AllocateCommandBuffers;
+  PFN_vkBeginCommandBuffer BeginCommandBuffer;
+  PFN_vkEndCommandBuffer EndCommandBuffer;
+  PFN_vkResetCommandBuffer ResetCommandBuffer;
+  PFN_vkCmdBindPipeline CmdBindPipeline;
+  PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets;
+  PFN_vkCmdDispatch CmdDispatch;
+  PFN_vkCmdPipelineBarrier CmdPipelineBarrier;
+  PFN_vkCmdCopyBufferToImage CmdCopyBufferToImage;
+  PFN_vkCreateFence CreateFence;
+  PFN_vkDestroyFence DestroyFence;
+  PFN_vkResetFences ResetFences;
+  PFN_vkGetFenceStatus GetFenceStatus;
+  PFN_vkWaitForFences WaitForFences;
+  PFN_vkQueueSubmit QueueSubmit;
+  PFN_vkQueueBindSparse QueueBindSparse;
+  PFN_vkDeviceWaitIdle DeviceWaitIdle;
+} tvdb_vk_table;
+
+typedef struct {
+  VkBuffer buffer;
+  VkDeviceMemory memory;
+  VkDeviceSize size;
+  void* mapped;
+} tvdb_vk_buffer;
+
+typedef struct {
+  VkImage image;
+  VkDeviceMemory memory;
+  VkImageView view;
+  VkSampler sampler;
+  uint32_t nx, ny, nz;
+} tvdb_vk_image3d;
+
+typedef struct {
+  uint32_t x, y, z;
+  VkOffset3D offset;
+  VkExtent3D extent;
+} tvdb_vk_sparse_page_region;
+
+typedef struct {
+  void* libcuda;
+  void* libnvrtc;
+  CUresult (*cuInit)(unsigned int);
+  CUresult (*cuDeviceGetCount)(int*);
+  CUresult (*cuDeviceGet)(CUdevice*, int);
+  CUresult (*cuDeviceGetName)(char*, int, CUdevice);
+  CUresult (*cuCtxCreate)(CUcontext*, unsigned int, CUdevice);
+  CUresult (*cuCtxDestroy)(CUcontext);
+  CUresult (*cuCtxSynchronize)(void);
+  CUresult (*cuMemAlloc)(CUdeviceptr*, size_t);
+  CUresult (*cuMemFree)(CUdeviceptr);
+  CUresult (*cuMemcpyHtoD)(CUdeviceptr, const void*, size_t);
+  CUresult (*cuMemcpyDtoH)(void*, CUdeviceptr, size_t);
+  CUresult (*cuModuleLoadData)(CUmodule*, const void*);
+  CUresult (*cuModuleUnload)(CUmodule);
+  CUresult (*cuModuleGetFunction)(CUfunction*, CUmodule, const char*);
+  CUresult (*cuLaunchKernel)(CUfunction, unsigned int, unsigned int, unsigned int,
+                             unsigned int, unsigned int, unsigned int,
+                             unsigned int, void*, void**, void**);
+  CUresult (*cuGetErrorString)(CUresult, const char**);
+  nvrtcResult (*nvrtcCreateProgram)(nvrtcProgram*, const char*, const char*, int,
+                                    const char* const*, const char* const*);
+  nvrtcResult (*nvrtcCompileProgram)(nvrtcProgram, int, const char* const*);
+  nvrtcResult (*nvrtcGetPTXSize)(nvrtcProgram, size_t*);
+  nvrtcResult (*nvrtcGetPTX)(nvrtcProgram, char*);
+  nvrtcResult (*nvrtcGetProgramLogSize)(nvrtcProgram, size_t*);
+  nvrtcResult (*nvrtcGetProgramLog)(nvrtcProgram, char*);
+  nvrtcResult (*nvrtcDestroyProgram)(nvrtcProgram*);
+  const char* (*nvrtcGetErrorString)(nvrtcResult);
+} tvdb_cuda_table;
+
+struct tvdb_gpu_context {
+  tvdb_gpu_backend_t backend;
+  tvdb_vk_table vk;
+  VkInstance instance;
+  VkPhysicalDevice physical_device;
+  VkDevice device;
+  VkQueue queue;
+  uint32_t queue_family;
+  VkPhysicalDeviceMemoryProperties memory_props;
+  int supports_sparse_3d_images;
+  char device_name[128];
+  tvdb_cuda_table cuda;
+  CUcontext cu_ctx;
+  CUdevice cu_device;
+  CUmodule cu_module;
+};
+struct tvdb_gpu_buffer { tvdb_vk_buffer vk; };
+struct tvdb_gpu_dense_grid { tvdb_gpu_buffer_t values; int nx, ny, nz; };
+struct tvdb_gpu_sparse_grid { tvdb_gpu_buffer_t coords; tvdb_gpu_buffer_t values; size_t count; };
+struct tvdb_gpu_vulkan_sparse_image3d {
+  tvdb_gpu_context_t* ctx;
+  tvdb_vk_image3d image;
+  float ox, oy, oz, voxel_size;
+  int nx, ny, nz;
+  VkDescriptorSetLayout sample_layout;
+  VkDescriptorPool sample_pool;
+  VkDescriptorSet sample_set;
+  VkPipelineLayout sample_pipeline_layout;
+  VkPipeline sample_pipeline;
+  VkCommandPool sample_command_pool;
+  VkCommandBuffer sample_cmd;
+  VkFence sample_fence;
+  int sample_cmd_recorded;
+  int sample_in_flight;
+  tvdb_vk_buffer sample_points;
+  tvdb_vk_buffer sample_output;
+  tvdb_vk_buffer sample_params;
+  size_t sample_capacity;
+  int sample_descriptors_bound;
+  uint32_t sample_group_x;
+  VkBuffer sample_bound_points;
+  VkBuffer sample_bound_output;
+  VkBuffer sample_bound_params;
+};
+struct tvdb_gpu_vulkan_sample_batch {
+  tvdb_gpu_context_t* ctx;
+  tvdb_vk_buffer points;
+  tvdb_vk_buffer output;
+  tvdb_vk_buffer params;
+  size_t count;
+  size_t capacity;
+  VkDescriptorPool descriptor_pool;
+  VkDescriptorSet descriptor_set;
+  VkCommandPool command_pool;
+  VkCommandBuffer cmd;
+  VkFence fence;
+  const tvdb_gpu_vulkan_sparse_image3d_t* bound_image;
+  uint32_t group_x;
+  int cmd_recorded;
+  int in_flight;
+};
+
+static void tvdb_gpu_set_error(tvdb_error_t* err, tvdb_status_t st, const char* msg) {
+  if (!err) return;
+  err->status = st;
+  err->byte_offset = 0;
+  err->grid_index = -1;
+  if (msg) {
+    snprintf(err->message, sizeof(err->message), "%s", msg);
+  } else {
+    err->message[0] = '\0';
+  }
+}
+
+static void* tvdb_dyn_open(const char* name) {
+#if defined(_WIN32)
+  return (void*)LoadLibraryA(name);
+#else
+  return dlopen(name, RTLD_NOW | RTLD_LOCAL);
+#endif
+}
+
+static void* tvdb_dyn_sym(void* lib, const char* name) {
+#if defined(_WIN32)
+  return (void*)GetProcAddress((HMODULE)lib, name);
+#else
+  return dlsym(lib, name);
+#endif
+}
+
+static void tvdb_dyn_close(void* lib) {
+  if (!lib) return;
+#if defined(_WIN32)
+  FreeLibrary((HMODULE)lib);
+#else
+  dlclose(lib);
+#endif
+}
+
+static void* tvdb_load_first_library(const char* const* names, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    void* lib = tvdb_dyn_open(names[i]);
+    if (lib) return lib;
+  }
+  return NULL;
+}
+
+static void* tvdb_load_vulkan_library(tvdb_vk_table* vk) {
+#if defined(_WIN32)
+  const char* names[] = {"vulkan-1.dll"};
+#elif defined(__APPLE__)
+  const char* names[] = {"libvulkan.1.dylib", "libvulkan.dylib"};
+#else
+  const char* names[] = {"libvulkan.so.1", "libvulkan.so"};
+#endif
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+    void* lib = tvdb_dyn_open(names[i]);
+    if (!lib) continue;
+    vk->GetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)tvdb_dyn_sym(lib, "vkGetInstanceProcAddr");
+    vk->CreateInstance = (PFN_vkCreateInstance)tvdb_dyn_sym(lib, "vkCreateInstance");
+    if (vk->GetInstanceProcAddr && vk->CreateInstance) {
+      vk->lib = lib;
+      return lib;
+    }
+    tvdb_dyn_close(lib);
+  }
+  return NULL;
+}
+
+static int tvdb_load_cuda_library(tvdb_cuda_table* cu) {
+#if defined(_WIN32)
+  const char* cuda_names[] = {"nvcuda.dll"};
+  const char* nvrtc_names[] = {"nvrtc64_130_0.dll", "nvrtc64_120_0.dll", "nvrtc64_112_0.dll", "nvrtc64_102_0.dll"};
+#elif defined(__APPLE__)
+  const char* cuda_names[] = {"libcuda.dylib"};
+  const char* nvrtc_names[] = {"libnvrtc.dylib"};
+#else
+  const char* cuda_names[] = {"libcuda.so.1", "libcuda.so"};
+  const char* nvrtc_names[] = {"libnvrtc.so.13", "libnvrtc.so.12", "libnvrtc.so.11.2", "libnvrtc.so"};
+#endif
+  cu->libcuda = tvdb_load_first_library(cuda_names, sizeof(cuda_names) / sizeof(cuda_names[0]));
+  if (!cu->libcuda) return 0;
+  cu->libnvrtc = tvdb_load_first_library(nvrtc_names, sizeof(nvrtc_names) / sizeof(nvrtc_names[0]));
+  if (!cu->libnvrtc) {
+    tvdb_dyn_close(cu->libcuda);
+    memset(cu, 0, sizeof(*cu));
+    return 0;
+  }
+#define TVDB_CUDA_SYM(field, name) do { \
+  cu->field = (void*)tvdb_dyn_sym(cu->libcuda, name); \
+  if (!cu->field) goto fail; \
+} while (0)
+#define TVDB_NVRTC_SYM(field, name) do { \
+  cu->field = (void*)tvdb_dyn_sym(cu->libnvrtc, name); \
+  if (!cu->field) goto fail; \
+} while (0)
+  TVDB_CUDA_SYM(cuInit, "cuInit");
+  TVDB_CUDA_SYM(cuDeviceGetCount, "cuDeviceGetCount");
+  TVDB_CUDA_SYM(cuDeviceGet, "cuDeviceGet");
+  TVDB_CUDA_SYM(cuDeviceGetName, "cuDeviceGetName");
+  TVDB_CUDA_SYM(cuCtxCreate, "cuCtxCreate_v2");
+  TVDB_CUDA_SYM(cuCtxDestroy, "cuCtxDestroy_v2");
+  TVDB_CUDA_SYM(cuCtxSynchronize, "cuCtxSynchronize");
+  TVDB_CUDA_SYM(cuMemAlloc, "cuMemAlloc_v2");
+  TVDB_CUDA_SYM(cuMemFree, "cuMemFree_v2");
+  TVDB_CUDA_SYM(cuMemcpyHtoD, "cuMemcpyHtoD_v2");
+  TVDB_CUDA_SYM(cuMemcpyDtoH, "cuMemcpyDtoH_v2");
+  TVDB_CUDA_SYM(cuModuleLoadData, "cuModuleLoadData");
+  TVDB_CUDA_SYM(cuModuleUnload, "cuModuleUnload");
+  TVDB_CUDA_SYM(cuModuleGetFunction, "cuModuleGetFunction");
+  TVDB_CUDA_SYM(cuLaunchKernel, "cuLaunchKernel");
+  cu->cuGetErrorString = (void*)tvdb_dyn_sym(cu->libcuda, "cuGetErrorString");
+  TVDB_NVRTC_SYM(nvrtcCreateProgram, "nvrtcCreateProgram");
+  TVDB_NVRTC_SYM(nvrtcCompileProgram, "nvrtcCompileProgram");
+  TVDB_NVRTC_SYM(nvrtcGetPTXSize, "nvrtcGetPTXSize");
+  TVDB_NVRTC_SYM(nvrtcGetPTX, "nvrtcGetPTX");
+  TVDB_NVRTC_SYM(nvrtcGetProgramLogSize, "nvrtcGetProgramLogSize");
+  TVDB_NVRTC_SYM(nvrtcGetProgramLog, "nvrtcGetProgramLog");
+  TVDB_NVRTC_SYM(nvrtcDestroyProgram, "nvrtcDestroyProgram");
+  cu->nvrtcGetErrorString = (void*)tvdb_dyn_sym(cu->libnvrtc, "nvrtcGetErrorString");
+#undef TVDB_CUDA_SYM
+#undef TVDB_NVRTC_SYM
+  return 1;
+fail:
+  tvdb_dyn_close(cu->libnvrtc);
+  tvdb_dyn_close(cu->libcuda);
+  memset(cu, 0, sizeof(*cu));
+  return 0;
+}
+
+static int tvdb_vk_ok(VkResult r, tvdb_error_t* err, const char* label) {
+  if (r == VK_SUCCESS) return 1;
+  char msg[160];
+  snprintf(msg, sizeof(msg), "%s failed: %d", label, (int)r);
+  tvdb_gpu_set_error(err, TVDB_ERROR_IO, msg);
+  return 0;
+}
+
+#define TVDB_LOAD_INST(ctx, name) do { \
+  (ctx)->vk.name = (PFN_vk##name)(ctx)->vk.GetInstanceProcAddr((ctx)->instance, "vk" #name); \
+  if (!(ctx)->vk.name) { tvdb_gpu_set_error(err, TVDB_ERROR_IO, "missing Vulkan instance function: vk" #name); return TVDB_ERROR_IO; } \
+} while (0)
+
+#define TVDB_LOAD_DEV(ctx, name) do { \
+  (ctx)->vk.name = (PFN_vk##name)(ctx)->vk.GetDeviceProcAddr((ctx)->device, "vk" #name); \
+  if (!(ctx)->vk.name) { tvdb_gpu_set_error(err, TVDB_ERROR_IO, "missing Vulkan device function: vk" #name); return TVDB_ERROR_IO; } \
+} while (0)
+
+static tvdb_status_t tvdb_vk_load_instance_functions(tvdb_gpu_context_t* ctx, tvdb_error_t* err) {
+  TVDB_LOAD_INST(ctx, DestroyInstance);
+  TVDB_LOAD_INST(ctx, EnumeratePhysicalDevices);
+  TVDB_LOAD_INST(ctx, GetPhysicalDeviceQueueFamilyProperties);
+  TVDB_LOAD_INST(ctx, GetPhysicalDeviceMemoryProperties);
+  TVDB_LOAD_INST(ctx, GetPhysicalDeviceFeatures);
+  TVDB_LOAD_INST(ctx, CreateDevice);
+  ctx->vk.GetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)ctx->vk.GetInstanceProcAddr(ctx->instance, "vkGetDeviceProcAddr");
+  if (!ctx->vk.GetDeviceProcAddr) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_IO, "missing Vulkan instance function: vkGetDeviceProcAddr");
+    return TVDB_ERROR_IO;
+  }
+  return TVDB_OK;
+}
+
+static tvdb_status_t tvdb_vk_load_device_functions(tvdb_gpu_context_t* ctx, tvdb_error_t* err) {
+  TVDB_LOAD_DEV(ctx, DestroyDevice); TVDB_LOAD_DEV(ctx, GetDeviceQueue);
+  TVDB_LOAD_DEV(ctx, CreateBuffer); TVDB_LOAD_DEV(ctx, DestroyBuffer);
+  TVDB_LOAD_DEV(ctx, GetBufferMemoryRequirements);
+  TVDB_LOAD_DEV(ctx, CreateImage); TVDB_LOAD_DEV(ctx, DestroyImage);
+  TVDB_LOAD_DEV(ctx, GetImageMemoryRequirements); TVDB_LOAD_DEV(ctx, GetImageSparseMemoryRequirements);
+  TVDB_LOAD_DEV(ctx, BindImageMemory);
+  TVDB_LOAD_DEV(ctx, CreateImageView); TVDB_LOAD_DEV(ctx, DestroyImageView);
+  TVDB_LOAD_DEV(ctx, CreateSampler); TVDB_LOAD_DEV(ctx, DestroySampler);
+  TVDB_LOAD_DEV(ctx, AllocateMemory);
+  TVDB_LOAD_DEV(ctx, FreeMemory); TVDB_LOAD_DEV(ctx, BindBufferMemory);
+  TVDB_LOAD_DEV(ctx, MapMemory); TVDB_LOAD_DEV(ctx, UnmapMemory);
+  TVDB_LOAD_DEV(ctx, CreateDescriptorSetLayout); TVDB_LOAD_DEV(ctx, DestroyDescriptorSetLayout);
+  TVDB_LOAD_DEV(ctx, CreateDescriptorPool); TVDB_LOAD_DEV(ctx, DestroyDescriptorPool);
+  TVDB_LOAD_DEV(ctx, AllocateDescriptorSets); TVDB_LOAD_DEV(ctx, UpdateDescriptorSets);
+  TVDB_LOAD_DEV(ctx, CreateShaderModule); TVDB_LOAD_DEV(ctx, DestroyShaderModule);
+  TVDB_LOAD_DEV(ctx, CreatePipelineLayout); TVDB_LOAD_DEV(ctx, DestroyPipelineLayout);
+  TVDB_LOAD_DEV(ctx, CreateComputePipelines); TVDB_LOAD_DEV(ctx, DestroyPipeline);
+  TVDB_LOAD_DEV(ctx, CreateCommandPool); TVDB_LOAD_DEV(ctx, DestroyCommandPool);
+  TVDB_LOAD_DEV(ctx, AllocateCommandBuffers); TVDB_LOAD_DEV(ctx, BeginCommandBuffer);
+  TVDB_LOAD_DEV(ctx, EndCommandBuffer); TVDB_LOAD_DEV(ctx, ResetCommandBuffer);
+  TVDB_LOAD_DEV(ctx, CmdBindPipeline); TVDB_LOAD_DEV(ctx, CmdBindDescriptorSets);
+  TVDB_LOAD_DEV(ctx, CmdDispatch); TVDB_LOAD_DEV(ctx, CmdPipelineBarrier);
+  TVDB_LOAD_DEV(ctx, CmdCopyBufferToImage); TVDB_LOAD_DEV(ctx, CreateFence);
+  TVDB_LOAD_DEV(ctx, DestroyFence); TVDB_LOAD_DEV(ctx, ResetFences);
+  TVDB_LOAD_DEV(ctx, GetFenceStatus);
+  TVDB_LOAD_DEV(ctx, WaitForFences); TVDB_LOAD_DEV(ctx, QueueSubmit);
+  TVDB_LOAD_DEV(ctx, QueueBindSparse);
+  TVDB_LOAD_DEV(ctx, DeviceWaitIdle);
+  return TVDB_OK;
+}
+
+static uint32_t tvdb_vk_find_memory_type(const tvdb_gpu_context_t* ctx, uint32_t bits, uint32_t props) {
+  for (uint32_t i = 0; i < ctx->memory_props.memoryTypeCount; ++i) {
+    if ((bits & (1u << i)) && ((ctx->memory_props.memoryTypes[i].propertyFlags & props) == props)) {
+      return i;
+    }
+  }
+  return UINT32_MAX;
+}
+
+static VkDeviceSize tvdb_align_up_device_size(VkDeviceSize v, VkDeviceSize align) {
+  if (align == 0) return v;
+  return (v + align - 1u) / align * align;
+}
+
+static tvdb_status_t tvdb_vk_create_buffer(tvdb_gpu_context_t* ctx, VkDeviceSize size,
+                                           uint32_t usage, tvdb_vk_buffer* out,
+                                           tvdb_error_t* err) {
+  memset(out, 0, sizeof(*out));
+  VkBufferCreateInfo bci;
+  memset(&bci, 0, sizeof(bci));
+  bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  bci.size = size ? size : 4;
+  bci.usage = usage;
+  bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  if (!tvdb_vk_ok(ctx->vk.CreateBuffer(ctx->device, &bci, NULL, &out->buffer), err, "vkCreateBuffer")) return err ? err->status : TVDB_ERROR_IO;
+  VkMemoryRequirements req;
+  ctx->vk.GetBufferMemoryRequirements(ctx->device, out->buffer, &req);
+  uint32_t mt = tvdb_vk_find_memory_type(ctx, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  if (mt == UINT32_MAX) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "no host-visible coherent Vulkan memory type");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  VkMemoryAllocateInfo mai;
+  memset(&mai, 0, sizeof(mai));
+  mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  mai.allocationSize = req.size;
+  mai.memoryTypeIndex = mt;
+  if (!tvdb_vk_ok(ctx->vk.AllocateMemory(ctx->device, &mai, NULL, &out->memory), err, "vkAllocateMemory")) return err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(ctx->vk.BindBufferMemory(ctx->device, out->buffer, out->memory, 0), err, "vkBindBufferMemory")) return err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(ctx->vk.MapMemory(ctx->device, out->memory, 0, size ? size : 4, 0, &out->mapped), err, "vkMapMemory")) return err ? err->status : TVDB_ERROR_IO;
+  out->size = size ? size : 4;
+  return TVDB_OK;
+}
+
+static void tvdb_vk_destroy_buffer(tvdb_gpu_context_t* ctx, tvdb_vk_buffer* buf) {
+  if (!ctx || !ctx->device || !buf) return;
+  if (buf->mapped) ctx->vk.UnmapMemory(ctx->device, buf->memory);
+  if (buf->buffer) ctx->vk.DestroyBuffer(ctx->device, buf->buffer, NULL);
+  if (buf->memory) ctx->vk.FreeMemory(ctx->device, buf->memory, NULL);
+  memset(buf, 0, sizeof(*buf));
+}
+
+static void tvdb_vk_destroy_image3d(tvdb_gpu_context_t* ctx, tvdb_vk_image3d* img) {
+  if (!ctx || !ctx->device || !img) return;
+  if (img->sampler) ctx->vk.DestroySampler(ctx->device, img->sampler, NULL);
+  if (img->view) ctx->vk.DestroyImageView(ctx->device, img->view, NULL);
+  if (img->image) ctx->vk.DestroyImage(ctx->device, img->image, NULL);
+  if (img->memory) ctx->vk.FreeMemory(ctx->device, img->memory, NULL);
+  memset(img, 0, sizeof(*img));
+}
+
+static tvdb_status_t tvdb_vk_submit_one_time(tvdb_gpu_context_t* ctx,
+                                             VkCommandBuffer* out_cmd,
+                                             VkCommandPool* out_pool,
+                                             VkFence* out_fence,
+                                             tvdb_error_t* err) {
+  VkCommandPoolCreateInfo cp;
+  memset(&cp, 0, sizeof(cp));
+  cp.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  cp.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  cp.queueFamilyIndex = ctx->queue_family;
+  if (!tvdb_vk_ok(ctx->vk.CreateCommandPool(ctx->device, &cp, NULL, out_pool), err, "vkCreateCommandPool")) return err ? err->status : TVDB_ERROR_IO;
+  VkCommandBufferAllocateInfo cbai;
+  memset(&cbai, 0, sizeof(cbai));
+  cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  cbai.commandPool = *out_pool;
+  cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  cbai.commandBufferCount = 1;
+  if (!tvdb_vk_ok(ctx->vk.AllocateCommandBuffers(ctx->device, &cbai, out_cmd), err, "vkAllocateCommandBuffers")) return err ? err->status : TVDB_ERROR_IO;
+  VkFenceCreateInfo fci;
+  memset(&fci, 0, sizeof(fci));
+  fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  if (!tvdb_vk_ok(ctx->vk.CreateFence(ctx->device, &fci, NULL, out_fence), err, "vkCreateFence")) return err ? err->status : TVDB_ERROR_IO;
+  VkCommandBufferBeginInfo begin;
+  memset(&begin, 0, sizeof(begin));
+  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+  if (!tvdb_vk_ok(ctx->vk.BeginCommandBuffer(*out_cmd, &begin), err, "vkBeginCommandBuffer")) return err ? err->status : TVDB_ERROR_IO;
+  return TVDB_OK;
+}
+
+static tvdb_status_t tvdb_vk_end_submit_wait(tvdb_gpu_context_t* ctx,
+                                             VkCommandBuffer cmd,
+                                             VkCommandPool pool,
+                                             VkFence fence,
+                                             tvdb_error_t* err) {
+  if (!tvdb_vk_ok(ctx->vk.EndCommandBuffer(cmd), err, "vkEndCommandBuffer")) return err ? err->status : TVDB_ERROR_IO;
+  VkSubmitInfo si;
+  memset(&si, 0, sizeof(si));
+  si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  si.commandBufferCount = 1;
+  si.pCommandBuffers = &cmd;
+  if (!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue, 1, &si, fence), err, "vkQueueSubmit")) return err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences")) return err ? err->status : TVDB_ERROR_IO;
+  ctx->vk.DestroyFence(ctx->device, fence, NULL);
+  ctx->vk.DestroyCommandPool(ctx->device, pool, NULL);
+  return TVDB_OK;
+}
+
+static tvdb_status_t tvdb_vk_bind_sparse_image3d_all_pages(tvdb_gpu_context_t* ctx,
+                                                           tvdb_vk_image3d* out,
+                                                           const VkMemoryRequirements* req,
+                                                           tvdb_error_t* err) {
+  if (!ctx->supports_sparse_3d_images) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan sparse 3D image residency is unavailable on this context");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  uint32_t sparse_count = 0;
+  ctx->vk.GetImageSparseMemoryRequirements(ctx->device, out->image, &sparse_count, NULL);
+  if (sparse_count == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan image has no sparse memory requirements");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  VkSparseImageMemoryRequirements* sparse_reqs =
+      (VkSparseImageMemoryRequirements*)calloc(sparse_count, sizeof(*sparse_reqs));
+  if (!sparse_reqs) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  ctx->vk.GetImageSparseMemoryRequirements(ctx->device, out->image, &sparse_count, sparse_reqs);
+  const VkSparseImageMemoryRequirements* sr = NULL;
+  for (uint32_t i = 0; i < sparse_count; ++i) {
+    if (sparse_reqs[i].formatProperties.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) {
+      sr = &sparse_reqs[i];
+      break;
+    }
+  }
+  if (!sr) sr = &sparse_reqs[0];
+
+  uint32_t mt = tvdb_vk_find_memory_type(ctx, req->memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (mt == UINT32_MAX) mt = tvdb_vk_find_memory_type(ctx, req->memoryTypeBits, 0);
+  if (mt == UINT32_MAX) {
+    free(sparse_reqs);
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "no Vulkan sparse image memory type");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+
+  VkSparseImageMemoryBindInfo image_bind_info;
+  VkSparseImageOpaqueMemoryBindInfo opaque_bind_info;
+  VkSparseImageMemoryBind* binds = NULL;
+  VkSparseMemoryBind opaque_bind;
+  memset(&image_bind_info, 0, sizeof(image_bind_info));
+  memset(&opaque_bind_info, 0, sizeof(opaque_bind_info));
+  memset(&opaque_bind, 0, sizeof(opaque_bind));
+  VkDeviceSize allocation_size = 0;
+
+  if (sr->imageMipTailFirstLod == 0 && sr->imageMipTailSize > 0) {
+    allocation_size = tvdb_align_up_device_size(sr->imageMipTailSize, req->alignment);
+    opaque_bind.resourceOffset = sr->imageMipTailOffset;
+    opaque_bind.size = sr->imageMipTailSize;
+    opaque_bind.memoryOffset = 0;
+    opaque_bind.flags = 0;
+    opaque_bind_info.image = out->image;
+    opaque_bind_info.bindCount = 1;
+    opaque_bind_info.pBinds = &opaque_bind;
+  } else {
+    VkExtent3D g = sr->formatProperties.imageGranularity;
+    if (g.width == 0 || g.height == 0 || g.depth == 0) {
+      free(sparse_reqs);
+      tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "invalid Vulkan sparse image granularity");
+      return TVDB_ERROR_UNIMPLEMENTED;
+    }
+    uint32_t nx = (out->nx + g.width - 1u) / g.width;
+    uint32_t ny = (out->ny + g.height - 1u) / g.height;
+    uint32_t nz = (out->nz + g.depth - 1u) / g.depth;
+    uint64_t bind_count64 = (uint64_t)nx * (uint64_t)ny * (uint64_t)nz;
+    if (bind_count64 == 0 || bind_count64 > 1000000ull) {
+      free(sparse_reqs);
+      tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "unsupported Vulkan sparse image page count");
+      return TVDB_ERROR_UNIMPLEMENTED;
+    }
+    uint32_t bind_count = (uint32_t)bind_count64;
+    VkDeviceSize page_bytes = tvdb_align_up_device_size((VkDeviceSize)g.width * (VkDeviceSize)g.height * (VkDeviceSize)g.depth * sizeof(float), req->alignment);
+    allocation_size = page_bytes * (VkDeviceSize)bind_count;
+    binds = (VkSparseImageMemoryBind*)calloc(bind_count, sizeof(*binds));
+    if (!binds) {
+      free(sparse_reqs);
+      tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+      return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    uint32_t k = 0;
+    for (uint32_t z = 0; z < nz; ++z) {
+      for (uint32_t y = 0; y < ny; ++y) {
+        for (uint32_t x = 0; x < nx; ++x) {
+          VkSparseImageMemoryBind* b = &binds[k];
+          b->subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+          b->subresource.mipLevel = 0;
+          b->subresource.arrayLayer = 0;
+          b->offset.x = (int32_t)(x * g.width);
+          b->offset.y = (int32_t)(y * g.height);
+          b->offset.z = (int32_t)(z * g.depth);
+          b->extent.width = (x + 1u == nx) ? (out->nx - x * g.width) : g.width;
+          b->extent.height = (y + 1u == ny) ? (out->ny - y * g.height) : g.height;
+          b->extent.depth = (z + 1u == nz) ? (out->nz - z * g.depth) : g.depth;
+          b->memoryOffset = page_bytes * (VkDeviceSize)k;
+          ++k;
+        }
+      }
+    }
+    image_bind_info.image = out->image;
+    image_bind_info.bindCount = bind_count;
+    image_bind_info.pBinds = binds;
+  }
+
+  VkMemoryAllocateInfo mai;
+  memset(&mai, 0, sizeof(mai));
+  mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  mai.allocationSize = allocation_size ? allocation_size : req->alignment;
+  mai.memoryTypeIndex = mt;
+  if (!tvdb_vk_ok(ctx->vk.AllocateMemory(ctx->device, &mai, NULL, &out->memory), err, "vkAllocateMemory(sparse image)")) {
+    free(binds);
+    free(sparse_reqs);
+    return err ? err->status : TVDB_ERROR_IO;
+  }
+  if (binds) {
+    for (uint32_t i = 0; i < image_bind_info.bindCount; ++i) binds[i].memory = out->memory;
+  } else {
+    opaque_bind.memory = out->memory;
+  }
+
+  VkFence fence = VK_NULL_HANDLE;
+  VkFenceCreateInfo fci;
+  memset(&fci, 0, sizeof(fci));
+  fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  if (!tvdb_vk_ok(ctx->vk.CreateFence(ctx->device, &fci, NULL, &fence), err, "vkCreateFence(sparse)")) {
+    free(binds);
+    free(sparse_reqs);
+    return err ? err->status : TVDB_ERROR_IO;
+  }
+  VkBindSparseInfo bsi;
+  memset(&bsi, 0, sizeof(bsi));
+  bsi.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
+  if (binds) {
+    bsi.imageBindCount = 1;
+    bsi.pImageBinds = &image_bind_info;
+  } else {
+    bsi.imageOpaqueBindCount = 1;
+    bsi.pImageOpaqueBinds = &opaque_bind_info;
+  }
+  tvdb_status_t st = TVDB_OK;
+  if (!tvdb_vk_ok(ctx->vk.QueueBindSparse(ctx->queue, 1, &bsi, fence), err, "vkQueueBindSparse")) st = err ? err->status : TVDB_ERROR_IO;
+  else if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences(sparse)")) st = err ? err->status : TVDB_ERROR_IO;
+  ctx->vk.DestroyFence(ctx->device, fence, NULL);
+  free(binds);
+  free(sparse_reqs);
+  return st;
+}
+
+static int tvdb_page_region_cmp(const void* a, const void* b) {
+  const tvdb_vk_sparse_page_region* pa = (const tvdb_vk_sparse_page_region*)a;
+  const tvdb_vk_sparse_page_region* pb = (const tvdb_vk_sparse_page_region*)b;
+  if (pa->z != pb->z) return pa->z < pb->z ? -1 : 1;
+  if (pa->y != pb->y) return pa->y < pb->y ? -1 : 1;
+  if (pa->x != pb->x) return pa->x < pb->x ? -1 : 1;
+  return 0;
+}
+
+static tvdb_status_t tvdb_vk_collect_sparse_active_pages(tvdb_gpu_context_t* ctx,
+                                                         const tvdb_vk_image3d* img,
+                                                         const tvdb_sparse_grid* sparse,
+                                                         VkSparseImageMemoryRequirements* out_req,
+                                                         tvdb_vk_sparse_page_region** regions_out,
+                                                         uint32_t* region_count_out,
+                                                         int* uses_mip_tail_out,
+                                                         tvdb_error_t* err) {
+  *regions_out = NULL;
+  *region_count_out = 0;
+  *uses_mip_tail_out = 0;
+  uint32_t sparse_count = 0;
+  ctx->vk.GetImageSparseMemoryRequirements(ctx->device, img->image, &sparse_count, NULL);
+  if (sparse_count == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan image has no sparse memory requirements");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  VkSparseImageMemoryRequirements* sparse_reqs =
+      (VkSparseImageMemoryRequirements*)calloc(sparse_count, sizeof(*sparse_reqs));
+  if (!sparse_reqs) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  ctx->vk.GetImageSparseMemoryRequirements(ctx->device, img->image, &sparse_count, sparse_reqs);
+  VkSparseImageMemoryRequirements sr = sparse_reqs[0];
+  for (uint32_t i = 0; i < sparse_count; ++i) {
+    if (sparse_reqs[i].formatProperties.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) {
+      sr = sparse_reqs[i];
+      break;
+    }
+  }
+  free(sparse_reqs);
+  *out_req = sr;
+  if (sr.imageMipTailFirstLod == 0 && sr.imageMipTailSize > 0) {
+    *uses_mip_tail_out = 1;
+    return TVDB_OK;
+  }
+  VkExtent3D g = sr.formatProperties.imageGranularity;
+  if (g.width == 0 || g.height == 0 || g.depth == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "invalid Vulkan sparse image granularity");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  tvdb_vk_sparse_page_region* regions =
+      (tvdb_vk_sparse_page_region*)calloc(sparse->count ? sparse->count : 1, sizeof(*regions));
+  if (!regions) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  uint32_t count = 0;
+  for (size_t i = 0; i < sparse->count; ++i) {
+    int x = sparse->coords[i].x, y = sparse->coords[i].y, z = sparse->coords[i].z;
+    if (x < 0 || y < 0 || z < 0 || x >= (int)img->nx || y >= (int)img->ny || z >= (int)img->nz) continue;
+    regions[count].x = (uint32_t)x / g.width;
+    regions[count].y = (uint32_t)y / g.height;
+    regions[count].z = (uint32_t)z / g.depth;
+    ++count;
+  }
+  if (count == 0) {
+    *regions_out = regions;
+    *region_count_out = 0;
+    return TVDB_OK;
+  }
+  qsort(regions, count, sizeof(*regions), tvdb_page_region_cmp);
+  uint32_t unique = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (unique == 0 || regions[i].x != regions[unique-1].x ||
+        regions[i].y != regions[unique-1].y || regions[i].z != regions[unique-1].z) {
+      regions[unique++] = regions[i];
+    }
+  }
+  for (uint32_t i = 0; i < unique; ++i) {
+    uint32_t ox = regions[i].x * g.width;
+    uint32_t oy = regions[i].y * g.height;
+    uint32_t oz = regions[i].z * g.depth;
+    regions[i].offset.x = (int32_t)ox;
+    regions[i].offset.y = (int32_t)oy;
+    regions[i].offset.z = (int32_t)oz;
+    regions[i].extent.width = (ox + g.width > img->nx) ? (img->nx - ox) : g.width;
+    regions[i].extent.height = (oy + g.height > img->ny) ? (img->ny - oy) : g.height;
+    regions[i].extent.depth = (oz + g.depth > img->nz) ? (img->nz - oz) : g.depth;
+  }
+  *regions_out = regions;
+  *region_count_out = unique;
+  return TVDB_OK;
+}
+
+static tvdb_status_t tvdb_vk_bind_sparse_image3d_regions(tvdb_gpu_context_t* ctx,
+                                                         tvdb_vk_image3d* out,
+                                                         const VkMemoryRequirements* req,
+                                                         const VkSparseImageMemoryRequirements* sr,
+                                                         const tvdb_vk_sparse_page_region* regions,
+                                                         uint32_t region_count,
+                                                         int uses_mip_tail,
+                                                         tvdb_error_t* err) {
+  uint32_t mt = tvdb_vk_find_memory_type(ctx, req->memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+  if (mt == UINT32_MAX) mt = tvdb_vk_find_memory_type(ctx, req->memoryTypeBits, 0);
+  if (mt == UINT32_MAX) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "no Vulkan sparse image memory type");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  VkDeviceSize allocation_size = 0;
+  VkSparseImageMemoryBind* binds = NULL;
+  VkSparseMemoryBind opaque_bind;
+  memset(&opaque_bind, 0, sizeof(opaque_bind));
+  if (uses_mip_tail) {
+    allocation_size = tvdb_align_up_device_size(sr->imageMipTailSize, req->alignment);
+    opaque_bind.resourceOffset = sr->imageMipTailOffset;
+    opaque_bind.size = sr->imageMipTailSize;
+  } else {
+    VkExtent3D g = sr->formatProperties.imageGranularity;
+    VkDeviceSize page_bytes = tvdb_align_up_device_size((VkDeviceSize)g.width * (VkDeviceSize)g.height * (VkDeviceSize)g.depth * sizeof(float), req->alignment);
+    allocation_size = page_bytes * (VkDeviceSize)region_count;
+    binds = (VkSparseImageMemoryBind*)calloc(region_count ? region_count : 1, sizeof(*binds));
+    if (!binds) {
+      tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+      return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+    for (uint32_t i = 0; i < region_count; ++i) {
+      binds[i].subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      binds[i].offset = regions[i].offset;
+      binds[i].extent = regions[i].extent;
+      binds[i].memoryOffset = page_bytes * (VkDeviceSize)i;
+    }
+  }
+  VkMemoryAllocateInfo mai;
+  memset(&mai, 0, sizeof(mai));
+  mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  mai.allocationSize = allocation_size ? allocation_size : req->alignment;
+  mai.memoryTypeIndex = mt;
+  if (!tvdb_vk_ok(ctx->vk.AllocateMemory(ctx->device, &mai, NULL, &out->memory), err, "vkAllocateMemory(partial sparse image)")) {
+    free(binds);
+    return err ? err->status : TVDB_ERROR_IO;
+  }
+  for (uint32_t i = 0; i < region_count; ++i) binds[i].memory = out->memory;
+  opaque_bind.memory = out->memory;
+
+  VkSparseImageMemoryBindInfo image_bind_info;
+  VkSparseImageOpaqueMemoryBindInfo opaque_bind_info;
+  memset(&image_bind_info, 0, sizeof(image_bind_info));
+  memset(&opaque_bind_info, 0, sizeof(opaque_bind_info));
+  image_bind_info.image = out->image;
+  image_bind_info.bindCount = region_count;
+  image_bind_info.pBinds = binds;
+  opaque_bind_info.image = out->image;
+  opaque_bind_info.bindCount = uses_mip_tail ? 1u : 0u;
+  opaque_bind_info.pBinds = uses_mip_tail ? &opaque_bind : NULL;
+
+  VkFence fence = VK_NULL_HANDLE;
+  VkFenceCreateInfo fci;
+  memset(&fci, 0, sizeof(fci));
+  fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  if (!tvdb_vk_ok(ctx->vk.CreateFence(ctx->device, &fci, NULL, &fence), err, "vkCreateFence(partial sparse)")) {
+    free(binds);
+    return err ? err->status : TVDB_ERROR_IO;
+  }
+  VkBindSparseInfo bsi;
+  memset(&bsi, 0, sizeof(bsi));
+  bsi.sType = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
+  if (uses_mip_tail) {
+    bsi.imageOpaqueBindCount = 1;
+    bsi.pImageOpaqueBinds = &opaque_bind_info;
+  } else {
+    bsi.imageBindCount = 1;
+    bsi.pImageBinds = &image_bind_info;
+  }
+  tvdb_status_t st = TVDB_OK;
+  if (!tvdb_vk_ok(ctx->vk.QueueBindSparse(ctx->queue, 1, &bsi, fence), err, "vkQueueBindSparse(partial)")) st = err ? err->status : TVDB_ERROR_IO;
+  else if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences(partial sparse)")) st = err ? err->status : TVDB_ERROR_IO;
+  ctx->vk.DestroyFence(ctx->device, fence, NULL);
+  free(binds);
+  return st;
+}
+
+static tvdb_status_t tvdb_vk_create_image3d_from_dense(tvdb_gpu_context_t* ctx,
+                                                       const tvdb_dense_grid* grid,
+                                                       int use_sparse_residency,
+                                                       tvdb_vk_image3d* out,
+                                                       tvdb_error_t* err) {
+  memset(out, 0, sizeof(*out));
+  out->nx = (uint32_t)grid->nx;
+  out->ny = (uint32_t)grid->ny;
+  out->nz = (uint32_t)grid->nz;
+
+  VkImageCreateInfo ici;
+  memset(&ici, 0, sizeof(ici));
+  ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  if (use_sparse_residency) {
+    if (!ctx->supports_sparse_3d_images) {
+      tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan sparse 3D image residency is unavailable on this context");
+      return TVDB_ERROR_UNIMPLEMENTED;
+    }
+    ici.flags = VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
+  }
+  ici.imageType = VK_IMAGE_TYPE_3D;
+  ici.format = VK_FORMAT_R32_SFLOAT;
+  ici.extent.width = out->nx;
+  ici.extent.height = out->ny;
+  ici.extent.depth = out->nz;
+  ici.mipLevels = 1;
+  ici.arrayLayers = 1;
+  ici.samples = VK_SAMPLE_COUNT_1_BIT;
+  ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (!tvdb_vk_ok(ctx->vk.CreateImage(ctx->device, &ici, NULL, &out->image), err, "vkCreateImage")) return err ? err->status : TVDB_ERROR_IO;
+
+  VkMemoryRequirements req;
+  ctx->vk.GetImageMemoryRequirements(ctx->device, out->image, &req);
+  if (use_sparse_residency) {
+    tvdb_status_t sparse_st = tvdb_vk_bind_sparse_image3d_all_pages(ctx, out, &req, err);
+    if (sparse_st != TVDB_OK) return sparse_st;
+  } else {
+    uint32_t mt = tvdb_vk_find_memory_type(ctx, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mt == UINT32_MAX) mt = tvdb_vk_find_memory_type(ctx, req.memoryTypeBits, 0);
+    if (mt == UINT32_MAX) {
+      tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "no Vulkan image memory type");
+      return TVDB_ERROR_UNIMPLEMENTED;
+    }
+    VkMemoryAllocateInfo mai;
+    memset(&mai, 0, sizeof(mai));
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = mt;
+    if (!tvdb_vk_ok(ctx->vk.AllocateMemory(ctx->device, &mai, NULL, &out->memory), err, "vkAllocateMemory(image)")) return err ? err->status : TVDB_ERROR_IO;
+    if (!tvdb_vk_ok(ctx->vk.BindImageMemory(ctx->device, out->image, out->memory, 0), err, "vkBindImageMemory")) return err ? err->status : TVDB_ERROR_IO;
+  }
+
+  tvdb_vk_buffer staging;
+  tvdb_status_t st = tvdb_vk_create_buffer(ctx,
+      (VkDeviceSize)((size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz * sizeof(float)),
+      VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, err);
+  if (st != TVDB_OK) return st;
+  memcpy(staging.mapped, grid->data, (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz * sizeof(float));
+
+  VkCommandBuffer cmd = NULL;
+  VkCommandPool pool = VK_NULL_HANDLE;
+  VkFence fence = VK_NULL_HANDLE;
+  st = tvdb_vk_submit_one_time(ctx, &cmd, &pool, &fence, err);
+  if (st != TVDB_OK) goto done_staging;
+
+  VkImageMemoryBarrier b0;
+  memset(&b0, 0, sizeof(b0));
+  b0.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  b0.srcAccessMask = 0;
+  b0.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  b0.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  b0.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b0.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b0.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b0.image = out->image;
+  b0.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  b0.subresourceRange.levelCount = 1;
+  b0.subresourceRange.layerCount = 1;
+  ctx->vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &b0);
+  VkBufferImageCopy copy;
+  memset(&copy, 0, sizeof(copy));
+  copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  copy.imageSubresource.layerCount = 1;
+  copy.imageExtent.width = out->nx;
+  copy.imageExtent.height = out->ny;
+  copy.imageExtent.depth = out->nz;
+  ctx->vk.CmdCopyBufferToImage(cmd, staging.buffer, out->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+  VkImageMemoryBarrier b1 = b0;
+  b1.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  b1.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  b1.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b1.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  ctx->vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &b1);
+  st = tvdb_vk_end_submit_wait(ctx, cmd, pool, fence, err);
+  cmd = NULL; pool = VK_NULL_HANDLE; fence = VK_NULL_HANDLE;
+  if (st != TVDB_OK) goto done_staging;
+
+  VkImageViewCreateInfo ivci;
+  memset(&ivci, 0, sizeof(ivci));
+  ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  ivci.image = out->image;
+  ivci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+  ivci.format = VK_FORMAT_R32_SFLOAT;
+  ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  ivci.subresourceRange.levelCount = 1;
+  ivci.subresourceRange.layerCount = 1;
+  if (!tvdb_vk_ok(ctx->vk.CreateImageView(ctx->device, &ivci, NULL, &out->view), err, "vkCreateImageView")) { st = err ? err->status : TVDB_ERROR_IO; goto done_staging; }
+
+  VkSamplerCreateInfo sci;
+  memset(&sci, 0, sizeof(sci));
+  sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  sci.magFilter = VK_FILTER_LINEAR;
+  sci.minFilter = VK_FILTER_LINEAR;
+  sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sci.maxLod = 0.0f;
+  sci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+  if (!tvdb_vk_ok(ctx->vk.CreateSampler(ctx->device, &sci, NULL, &out->sampler), err, "vkCreateSampler")) { st = err ? err->status : TVDB_ERROR_IO; goto done_staging; }
+  st = TVDB_OK;
+
+done_staging:
+  if (fence) ctx->vk.DestroyFence(ctx->device, fence, NULL);
+  if (pool) ctx->vk.DestroyCommandPool(ctx->device, pool, NULL);
+  tvdb_vk_destroy_buffer(ctx, &staging);
+  if (st != TVDB_OK) tvdb_vk_destroy_image3d(ctx, out);
+  return st;
+}
+
+static tvdb_status_t tvdb_vk_create_sparse_image3d_from_sparse_grid(tvdb_gpu_context_t* ctx,
+                                                                    const tvdb_sparse_grid* sparse,
+                                                                    float background,
+                                                                    int nx, int ny, int nz,
+                                                                    tvdb_vk_image3d* out,
+                                                                    tvdb_error_t* err) {
+  memset(out, 0, sizeof(*out));
+  if (!ctx->supports_sparse_3d_images) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan sparse 3D image residency is unavailable on this context");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  out->nx = (uint32_t)nx;
+  out->ny = (uint32_t)ny;
+  out->nz = (uint32_t)nz;
+
+  VkImageCreateInfo ici;
+  memset(&ici, 0, sizeof(ici));
+  ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  ici.flags = VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
+  ici.imageType = VK_IMAGE_TYPE_3D;
+  ici.format = VK_FORMAT_R32_SFLOAT;
+  ici.extent.width = out->nx;
+  ici.extent.height = out->ny;
+  ici.extent.depth = out->nz;
+  ici.mipLevels = 1;
+  ici.arrayLayers = 1;
+  ici.samples = VK_SAMPLE_COUNT_1_BIT;
+  ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+  ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (!tvdb_vk_ok(ctx->vk.CreateImage(ctx->device, &ici, NULL, &out->image), err, "vkCreateImage(partial sparse)")) return err ? err->status : TVDB_ERROR_IO;
+
+  VkMemoryRequirements req;
+  ctx->vk.GetImageMemoryRequirements(ctx->device, out->image, &req);
+  VkSparseImageMemoryRequirements sparse_req;
+  tvdb_vk_sparse_page_region* regions = NULL;
+  uint32_t region_count = 0;
+  int uses_mip_tail = 0;
+  tvdb_status_t st = tvdb_vk_collect_sparse_active_pages(ctx, out, sparse, &sparse_req, &regions, &region_count, &uses_mip_tail, err);
+  if (st != TVDB_OK) goto done_regions;
+  if (!uses_mip_tail && region_count == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "sparse image upload has no active resident pages");
+    st = TVDB_ERROR_INVALID_ARGUMENT;
+    goto done_regions;
+  }
+  st = tvdb_vk_bind_sparse_image3d_regions(ctx, out, &req, &sparse_req, regions, region_count, uses_mip_tail, err);
+  if (st != TVDB_OK) goto done_regions;
+
+  size_t voxel_count = (size_t)nx * (size_t)ny * (size_t)nz;
+  tvdb_vk_buffer staging;
+  st = tvdb_vk_create_buffer(ctx, (VkDeviceSize)(voxel_count * sizeof(float)),
+                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, err);
+  if (st != TVDB_OK) goto done_regions;
+  float* sdata = (float*)staging.mapped;
+  for (size_t i = 0; i < voxel_count; ++i) sdata[i] = background;
+  for (size_t i = 0; i < sparse->count; ++i) {
+    int x = sparse->coords[i].x, y = sparse->coords[i].y, z = sparse->coords[i].z;
+    if (x >= 0 && y >= 0 && z >= 0 && x < nx && y < ny && z < nz) {
+      sdata[(size_t)x + (size_t)nx * ((size_t)y + (size_t)ny * (size_t)z)] = sparse->values[i];
+    }
+  }
+
+  VkCommandBuffer cmd = NULL;
+  VkCommandPool pool = VK_NULL_HANDLE;
+  VkFence fence = VK_NULL_HANDLE;
+  st = tvdb_vk_submit_one_time(ctx, &cmd, &pool, &fence, err);
+  if (st != TVDB_OK) goto done_staging;
+  VkImageMemoryBarrier b0;
+  memset(&b0, 0, sizeof(b0));
+  b0.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+  b0.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  b0.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  b0.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b0.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b0.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b0.image = out->image;
+  b0.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  b0.subresourceRange.levelCount = 1;
+  b0.subresourceRange.layerCount = 1;
+  ctx->vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &b0);
+  if (uses_mip_tail) {
+    VkBufferImageCopy copy;
+    memset(&copy, 0, sizeof(copy));
+    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.layerCount = 1;
+    copy.imageExtent.width = out->nx;
+    copy.imageExtent.height = out->ny;
+    copy.imageExtent.depth = out->nz;
+    ctx->vk.CmdCopyBufferToImage(cmd, staging.buffer, out->image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+  } else {
+    VkBufferImageCopy* copies = (VkBufferImageCopy*)calloc(region_count, sizeof(*copies));
+    if (!copies) {
+      tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+      st = TVDB_ERROR_OUT_OF_MEMORY;
+      goto done_cmd;
+    }
+    for (uint32_t i = 0; i < region_count; ++i) {
+      copies[i].bufferOffset = ((VkDeviceSize)regions[i].offset.x +
+          (VkDeviceSize)nx * ((VkDeviceSize)regions[i].offset.y + (VkDeviceSize)ny * (VkDeviceSize)regions[i].offset.z)) * sizeof(float);
+      copies[i].bufferRowLength = (uint32_t)nx;
+      copies[i].bufferImageHeight = (uint32_t)ny;
+      copies[i].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+      copies[i].imageSubresource.layerCount = 1;
+      copies[i].imageOffset = regions[i].offset;
+      copies[i].imageExtent = regions[i].extent;
+    }
+    ctx->vk.CmdCopyBufferToImage(cmd, staging.buffer, out->image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, copies);
+    free(copies);
+  }
+  VkImageMemoryBarrier b1 = b0;
+  b1.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  b1.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  b1.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  b1.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  ctx->vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &b1);
+done_cmd:
+  if (st == TVDB_OK) st = tvdb_vk_end_submit_wait(ctx, cmd, pool, fence, err);
+  else {
+    if (fence) ctx->vk.DestroyFence(ctx->device, fence, NULL);
+    if (pool) ctx->vk.DestroyCommandPool(ctx->device, pool, NULL);
+  }
+  cmd = NULL; pool = VK_NULL_HANDLE; fence = VK_NULL_HANDLE;
+  if (st != TVDB_OK) goto done_staging;
+
+  VkImageViewCreateInfo ivci;
+  memset(&ivci, 0, sizeof(ivci));
+  ivci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  ivci.image = out->image;
+  ivci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+  ivci.format = VK_FORMAT_R32_SFLOAT;
+  ivci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  ivci.subresourceRange.levelCount = 1;
+  ivci.subresourceRange.layerCount = 1;
+  if (!tvdb_vk_ok(ctx->vk.CreateImageView(ctx->device, &ivci, NULL, &out->view), err, "vkCreateImageView(partial sparse)")) { st = err ? err->status : TVDB_ERROR_IO; goto done_staging; }
+  VkSamplerCreateInfo sci;
+  memset(&sci, 0, sizeof(sci));
+  sci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  sci.magFilter = VK_FILTER_LINEAR;
+  sci.minFilter = VK_FILTER_LINEAR;
+  sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sci.maxLod = 0.0f;
+  sci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+  if (!tvdb_vk_ok(ctx->vk.CreateSampler(ctx->device, &sci, NULL, &out->sampler), err, "vkCreateSampler(partial sparse)")) { st = err ? err->status : TVDB_ERROR_IO; goto done_staging; }
+
+done_staging:
+  tvdb_vk_destroy_buffer(ctx, &staging);
+done_regions:
+  free(regions);
+  if (st != TVDB_OK) tvdb_vk_destroy_image3d(ctx, out);
+  return st;
+}
+
+typedef struct {
+  const uint8_t* spv;
+  uint32_t spv_len;
+  uint32_t descriptor_count;
+  const tvdb_vk_buffer* buffers[5];
+  const tvdb_vk_image3d* images[5];
+  uint32_t descriptor_types[5];
+  uint32_t group_x;
+} tvdb_vk_dispatch_desc;
+
+static tvdb_status_t tvdb_vk_dispatch(tvdb_gpu_context_t* ctx, const tvdb_vk_dispatch_desc* d, tvdb_error_t* err) {
+  if (!d->spv || d->spv_len == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan SPIR-V blobs are unavailable; rebuild with glslangValidator or use generated include");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  VkDescriptorSetLayoutBinding bindings[5];
+  memset(bindings, 0, sizeof(bindings));
+  for (uint32_t i = 0; i < d->descriptor_count; ++i) {
+    bindings[i].binding = i;
+    bindings[i].descriptorCount = 1;
+    bindings[i].descriptorType = d->descriptor_types[i];
+    bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  }
+  VkDescriptorSetLayoutCreateInfo dlci;
+  memset(&dlci, 0, sizeof(dlci));
+  dlci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  dlci.bindingCount = d->descriptor_count;
+  dlci.pBindings = bindings;
+  VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+  if (!tvdb_vk_ok(ctx->vk.CreateDescriptorSetLayout(ctx->device, &dlci, NULL, &layout), err, "vkCreateDescriptorSetLayout")) return err ? err->status : TVDB_ERROR_IO;
+
+  VkDescriptorPoolSize pool_sizes[3];
+  memset(pool_sizes, 0, sizeof(pool_sizes));
+  uint32_t storage_count = 0, uniform_count = 0, image_count = 0;
+  for (uint32_t i = 0; i < d->descriptor_count; ++i) {
+    if (d->descriptor_types[i] == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) ++uniform_count;
+    else if (d->descriptor_types[i] == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) ++image_count;
+    else ++storage_count;
+  }
+  pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; pool_sizes[0].descriptorCount = storage_count;
+  pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; pool_sizes[1].descriptorCount = uniform_count;
+  pool_sizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; pool_sizes[2].descriptorCount = image_count;
+  VkDescriptorPoolCreateInfo dpci;
+  memset(&dpci, 0, sizeof(dpci));
+  dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  dpci.maxSets = 1;
+  dpci.poolSizeCount = image_count ? 3 : (uniform_count ? 2 : 1);
+  dpci.pPoolSizes = pool_sizes;
+  VkDescriptorPool pool = VK_NULL_HANDLE;
+  if (!tvdb_vk_ok(ctx->vk.CreateDescriptorPool(ctx->device, &dpci, NULL, &pool), err, "vkCreateDescriptorPool")) goto fail_layout;
+  VkDescriptorSetAllocateInfo dsai;
+  memset(&dsai, 0, sizeof(dsai));
+  dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  dsai.descriptorPool = pool;
+  dsai.descriptorSetCount = 1;
+  dsai.pSetLayouts = &layout;
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (!tvdb_vk_ok(ctx->vk.AllocateDescriptorSets(ctx->device, &dsai, &set), err, "vkAllocateDescriptorSets")) goto fail_pool;
+
+  VkDescriptorBufferInfo infos[5];
+  VkDescriptorImageInfo image_infos[5];
+  VkWriteDescriptorSet writes[5];
+  memset(infos, 0, sizeof(infos));
+  memset(image_infos, 0, sizeof(image_infos));
+  memset(writes, 0, sizeof(writes));
+  for (uint32_t i = 0; i < d->descriptor_count; ++i) {
+    writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[i].dstSet = set;
+    writes[i].dstBinding = i;
+    writes[i].descriptorCount = 1;
+    writes[i].descriptorType = d->descriptor_types[i];
+    if (d->descriptor_types[i] == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+      image_infos[i].sampler = d->images[i]->sampler;
+      image_infos[i].imageView = d->images[i]->view;
+      image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      writes[i].pImageInfo = &image_infos[i];
+    } else {
+      infos[i].buffer = d->buffers[i]->buffer;
+      infos[i].offset = 0;
+      infos[i].range = d->buffers[i]->size;
+      writes[i].pBufferInfo = &infos[i];
+    }
+  }
+  ctx->vk.UpdateDescriptorSets(ctx->device, d->descriptor_count, writes, 0, NULL);
+
+  VkShaderModule shader = VK_NULL_HANDLE;
+  VkShaderModuleCreateInfo smci;
+  memset(&smci, 0, sizeof(smci));
+  smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  smci.codeSize = d->spv_len;
+  smci.pCode = (const uint32_t*)d->spv;
+  if (!tvdb_vk_ok(ctx->vk.CreateShaderModule(ctx->device, &smci, NULL, &shader), err, "vkCreateShaderModule")) goto fail_pool;
+
+  VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+  VkPipelineLayoutCreateInfo plci;
+  memset(&plci, 0, sizeof(plci));
+  plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  plci.setLayoutCount = 1;
+  plci.pSetLayouts = &layout;
+  if (!tvdb_vk_ok(ctx->vk.CreatePipelineLayout(ctx->device, &plci, NULL, &pipeline_layout), err, "vkCreatePipelineLayout")) goto fail_shader;
+
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  VkComputePipelineCreateInfo cpci;
+  memset(&cpci, 0, sizeof(cpci));
+  cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  cpci.stage.module = shader;
+  cpci.stage.pName = "main";
+  cpci.layout = pipeline_layout;
+  if (!tvdb_vk_ok(ctx->vk.CreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &cpci, NULL, &pipeline), err, "vkCreateComputePipelines")) goto fail_pl;
+
+  VkCommandPool cmd_pool = VK_NULL_HANDLE;
+  VkCommandPoolCreateInfo cp;
+  memset(&cp, 0, sizeof(cp));
+  cp.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  cp.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  cp.queueFamilyIndex = ctx->queue_family;
+  if (!tvdb_vk_ok(ctx->vk.CreateCommandPool(ctx->device, &cp, NULL, &cmd_pool), err, "vkCreateCommandPool")) goto fail_pipe;
+  VkCommandBuffer cmd = NULL;
+  VkCommandBufferAllocateInfo cbai;
+  memset(&cbai, 0, sizeof(cbai));
+  cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  cbai.commandPool = cmd_pool;
+  cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  cbai.commandBufferCount = 1;
+  if (!tvdb_vk_ok(ctx->vk.AllocateCommandBuffers(ctx->device, &cbai, &cmd), err, "vkAllocateCommandBuffers")) goto fail_cmdpool;
+
+  VkFence fence = VK_NULL_HANDLE;
+  VkFenceCreateInfo fci;
+  memset(&fci, 0, sizeof(fci));
+  fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  if (!tvdb_vk_ok(ctx->vk.CreateFence(ctx->device, &fci, NULL, &fence), err, "vkCreateFence")) goto fail_cmdpool;
+
+  VkCommandBufferBeginInfo begin;
+  memset(&begin, 0, sizeof(begin));
+  begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  if (!tvdb_vk_ok(ctx->vk.BeginCommandBuffer(cmd, &begin), err, "vkBeginCommandBuffer")) goto fail_fence;
+  ctx->vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  ctx->vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &set, 0, NULL);
+  ctx->vk.CmdDispatch(cmd, d->group_x, 1, 1);
+  if (!tvdb_vk_ok(ctx->vk.EndCommandBuffer(cmd), err, "vkEndCommandBuffer")) goto fail_fence;
+  VkSubmitInfo si;
+  memset(&si, 0, sizeof(si));
+  si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  si.commandBufferCount = 1;
+  si.pCommandBuffers = &cmd;
+  if (!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue, 1, &si, fence), err, "vkQueueSubmit")) goto fail_fence;
+  if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences")) goto fail_fence;
+
+  ctx->vk.DestroyFence(ctx->device, fence, NULL);
+  ctx->vk.DestroyCommandPool(ctx->device, cmd_pool, NULL);
+  ctx->vk.DestroyPipeline(ctx->device, pipeline, NULL);
+  ctx->vk.DestroyPipelineLayout(ctx->device, pipeline_layout, NULL);
+  ctx->vk.DestroyShaderModule(ctx->device, shader, NULL);
+  ctx->vk.DestroyDescriptorPool(ctx->device, pool, NULL);
+  ctx->vk.DestroyDescriptorSetLayout(ctx->device, layout, NULL);
+  return TVDB_OK;
+
+fail_fence:
+  if (fence) ctx->vk.DestroyFence(ctx->device, fence, NULL);
+fail_cmdpool:
+  if (cmd_pool) ctx->vk.DestroyCommandPool(ctx->device, cmd_pool, NULL);
+fail_pipe:
+  if (pipeline) ctx->vk.DestroyPipeline(ctx->device, pipeline, NULL);
+fail_pl:
+  if (pipeline_layout) ctx->vk.DestroyPipelineLayout(ctx->device, pipeline_layout, NULL);
+fail_shader:
+  if (shader) ctx->vk.DestroyShaderModule(ctx->device, shader, NULL);
+fail_pool:
+  if (pool) ctx->vk.DestroyDescriptorPool(ctx->device, pool, NULL);
+fail_layout:
+  if (layout) ctx->vk.DestroyDescriptorSetLayout(ctx->device, layout, NULL);
+  return err ? err->status : TVDB_ERROR_IO;
+}
+
+static const char* kTvdbCudaSource =
+"struct tvdb_float4 { float x, y, z, w; };\n"
+"struct tvdb_int4 { int x, y, z, w; };\n"
+"extern \"C\" __global__ void tvdb_cuda_csg(const float* a, const float* b, float* out_values, unsigned int count, int op) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= count) return;\n"
+"  float va = a[i];\n"
+"  float vb = b[i];\n"
+"  out_values[i] = op == 0 ? fminf(va, vb) : (op == 1 ? fmaxf(va, vb) : fmaxf(va, -vb));\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_sdf_sphere(float* out_values, int nx, int ny, int nz,\n"
+"                                                 float ox, float oy, float oz, float vs,\n"
+"                                                 float cx, float cy, float cz, float radius,\n"
+"                                                 float background, unsigned int count) {\n"
+"  unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (idx >= count) return;\n"
+"  int iz = (int)(idx / (unsigned int)(nx * ny));\n"
+"  int rem = (int)(idx - (unsigned int)(iz * nx * ny));\n"
+"  int iy = rem / nx;\n"
+"  int ix = rem - iy * nx;\n"
+"  float wx = ox + ((float)ix + 0.5f) * vs;\n"
+"  float wy = oy + ((float)iy + 0.5f) * vs;\n"
+"  float wz = oz + ((float)iz + 0.5f) * vs;\n"
+"  float dx = wx - cx, dy = wy - cy, dz = wz - cz;\n"
+"  float d = sqrtf(dx * dx + dy * dy + dz * dz) - radius;\n"
+"  out_values[idx] = fminf(fmaxf(d, -background), background);\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_sdf_box(float* out_values, int nx, int ny, int nz,\n"
+"                                              float ox, float oy, float oz, float vs,\n"
+"                                              float cx, float cy, float cz,\n"
+"                                              float hx, float hy, float hz,\n"
+"                                              float background, unsigned int count) {\n"
+"  unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (idx >= count) return;\n"
+"  int iz = (int)(idx / (unsigned int)(nx * ny));\n"
+"  int rem = (int)(idx - (unsigned int)(iz * nx * ny));\n"
+"  int iy = rem / nx;\n"
+"  int ix = rem - iy * nx;\n"
+"  float wx = ox + ((float)ix + 0.5f) * vs;\n"
+"  float wy = oy + ((float)iy + 0.5f) * vs;\n"
+"  float wz = oz + ((float)iz + 0.5f) * vs;\n"
+"  float qx = fabsf(wx - cx) - hx;\n"
+"  float qy = fabsf(wy - cy) - hy;\n"
+"  float qz = fabsf(wz - cz) - hz;\n"
+"  float oxv = fmaxf(qx, 0.0f), oyv = fmaxf(qy, 0.0f), ozv = fmaxf(qz, 0.0f);\n"
+"  float outside = sqrtf(oxv * oxv + oyv * oyv + ozv * ozv);\n"
+"  float inside = fminf(fmaxf(qx, fmaxf(qy, qz)), 0.0f);\n"
+"  float d = outside + inside;\n"
+"  out_values[idx] = fminf(fmaxf(d, -background), background);\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_sdf_torus(float* out_values, int nx, int ny, int nz,\n"
+"                                                float ox, float oy, float oz, float vs,\n"
+"                                                float cx, float cy, float cz,\n"
+"                                                float major_radius, float minor_radius,\n"
+"                                                float background, unsigned int count) {\n"
+"  unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (idx >= count) return;\n"
+"  int iz = (int)(idx / (unsigned int)(nx * ny));\n"
+"  int rem = (int)(idx - (unsigned int)(iz * nx * ny));\n"
+"  int iy = rem / nx;\n"
+"  int ix = rem - iy * nx;\n"
+"  float wx = ox + ((float)ix + 0.5f) * vs;\n"
+"  float wy = oy + ((float)iy + 0.5f) * vs;\n"
+"  float wz = oz + ((float)iz + 0.5f) * vs;\n"
+"  float dx = wx - cx, dy = wy - cy, dz = wz - cz;\n"
+"  float qx = sqrtf(dx * dx + dz * dz) - major_radius;\n"
+"  float d = sqrtf(qx * qx + dy * dy) - minor_radius;\n"
+"  out_values[idx] = fminf(fmaxf(d, -background), background);\n"
+"}\n"
+"__device__ float tvdb_fetch(const float* grid, int nx, int ny, int nz, int x, int y, int z) {\n"
+"  x = x < 0 ? 0 : (x >= nx ? nx - 1 : x);\n"
+"  y = y < 0 ? 0 : (y >= ny ? ny - 1 : y);\n"
+"  z = z < 0 ? 0 : (z >= nz ? nz - 1 : z);\n"
+"  return grid[x + nx * (y + ny * z)];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_sample(const float* grid, const tvdb_float4* pts, float* out_values,\n"
+"                                             int nx, int ny, int nz, float ox, float oy, float oz, float vs,\n"
+"                                             unsigned int count) {\n"
+"  unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (idx >= count) return;\n"
+"  tvdb_float4 p = pts[idx];\n"
+"  float fx = (p.x - ox) / vs - 0.5f;\n"
+"  float fy = (p.y - oy) / vs - 0.5f;\n"
+"  float fz = (p.z - oz) / vs - 0.5f;\n"
+"  int ix = (int)floorf(fx); int iy = (int)floorf(fy); int iz = (int)floorf(fz);\n"
+"  float tx = fx - (float)ix; float ty = fy - (float)iy; float tz = fz - (float)iz;\n"
+"  float c000 = tvdb_fetch(grid, nx, ny, nz, ix, iy, iz);\n"
+"  float c100 = tvdb_fetch(grid, nx, ny, nz, ix+1, iy, iz);\n"
+"  float c010 = tvdb_fetch(grid, nx, ny, nz, ix, iy+1, iz);\n"
+"  float c110 = tvdb_fetch(grid, nx, ny, nz, ix+1, iy+1, iz);\n"
+"  float c001 = tvdb_fetch(grid, nx, ny, nz, ix, iy, iz+1);\n"
+"  float c101 = tvdb_fetch(grid, nx, ny, nz, ix+1, iy, iz+1);\n"
+"  float c011 = tvdb_fetch(grid, nx, ny, nz, ix, iy+1, iz+1);\n"
+"  float c111 = tvdb_fetch(grid, nx, ny, nz, ix+1, iy+1, iz+1);\n"
+"  float c00 = c000 + (c100 - c000) * tx;\n"
+"  float c10 = c010 + (c110 - c010) * tx;\n"
+"  float c01 = c001 + (c101 - c001) * tx;\n"
+"  float c11 = c011 + (c111 - c011) * tx;\n"
+"  float c0 = c00 + (c10 - c00) * ty;\n"
+"  float c1 = c01 + (c11 - c01) * ty;\n"
+"  out_values[idx] = c0 + (c1 - c0) * tz;\n"
+"}\n"
+"__device__ float tvdb_sparse_lookup(const tvdb_int4* coords, const float* values, unsigned int count, int x, int y, int z, float pad_value) {\n"
+"  for (unsigned int i = 0; i < count; ++i) {\n"
+"    tvdb_int4 c = coords[i];\n"
+"    if (c.x == x && c.y == y && c.z == z) return values[i];\n"
+"  }\n"
+"  return pad_value;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_sparse_conv(const tvdb_int4* coords, const float* values, const float* kernel,\n"
+"                                                  float* out_values, unsigned int count, int kx, int ky, int kz,\n"
+"                                                  float pad_value) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= count) return;\n"
+"  tvdb_int4 c = coords[i];\n"
+"  int ax = kx / 2; int ay = ky / 2; int az = kz / 2;\n"
+"  float acc = 0.0f;\n"
+"  for (int dk = 0; dk < kz; ++dk) {\n"
+"    for (int dj = 0; dj < ky; ++dj) {\n"
+"      for (int di = 0; di < kx; ++di) {\n"
+"        int ki = (dk * ky + dj) * kx + di;\n"
+"        acc += kernel[ki] * tvdb_sparse_lookup(coords, values, count, c.x + di - ax, c.y + dj - ay, c.z + dk - az, pad_value);\n"
+"      }\n"
+"    }\n"
+"  }\n"
+"  out_values[i] = acc;\n"
+"}\n"
+"__device__ int tvdb_active_index(const tvdb_int4* active, unsigned int na, int x, int y, int z) {\n"
+"  for (unsigned int i = 0; i < na; ++i) {\n"
+"    tvdb_int4 c = active[i];\n"
+"    if (c.x == x && c.y == y && c.z == z) return (int)i;\n"
+"  }\n"
+"  return -1;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_ijk_to_index(const tvdb_int4* active, const tvdb_int4* query,\n"
+"                                                   int* out_index, unsigned int na, unsigned int nq) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= nq) return;\n"
+"  tvdb_int4 q = query[i];\n"
+"  out_index[i] = tvdb_active_index(active, na, q.x, q.y, q.z);\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_points_in_grid(const tvdb_int4* active, const tvdb_float4* pts,\n"
+"                                                     int* out_index, unsigned int na, unsigned int np,\n"
+"                                                     float vx, float vy, float vz, float ox, float oy, float oz) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= np) return;\n"
+"  tvdb_float4 p = pts[i];\n"
+"  int x = (int)floorf((p.x - ox) / vx);\n"
+"  int y = (int)floorf((p.y - oy) / vy);\n"
+"  int z = (int)floorf((p.z - oz) / vz);\n"
+"  out_index[i] = tvdb_active_index(active, na, x, y, z);\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_neighbor_counts(const tvdb_int4* active, int* out_counts,\n"
+"                                                      unsigned int na, int connectivity) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= na) return;\n"
+"  tvdb_int4 c = active[i];\n"
+"  int cnt = 0;\n"
+"  if (connectivity == 26) {\n"
+"    for (int dz = -1; dz <= 1; ++dz)\n"
+"      for (int dy = -1; dy <= 1; ++dy)\n"
+"        for (int dx = -1; dx <= 1; ++dx) {\n"
+"          if (dx == 0 && dy == 0 && dz == 0) continue;\n"
+"          if (tvdb_active_index(active, na, c.x + dx, c.y + dy, c.z + dz) >= 0) ++cnt;\n"
+"        }\n"
+"  } else {\n"
+"    const int o[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};\n"
+"    for (int t = 0; t < 6; ++t)\n"
+"      if (tvdb_active_index(active, na, c.x + o[t][0], c.y + o[t][1], c.z + o[t][2]) >= 0) ++cnt;\n"
+"  }\n"
+"  out_counts[i] = cnt;\n"
+"}\n";
+
+static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
+                                tvdb_status_t st, const char* label, CUresult r) {
+  char msg[512];
+  const char* cuda_msg = NULL;
+  if (ctx && ctx->cuda.cuGetErrorString) ctx->cuda.cuGetErrorString(r, &cuda_msg);
+  if (cuda_msg) snprintf(msg, sizeof(msg), "%s failed: %s (%d)", label, cuda_msg, r);
+  else snprintf(msg, sizeof(msg), "%s failed: %d", label, r);
+  tvdb_gpu_set_error(err, st, msg);
+}
+
+static int tvdb_cuda_ok(tvdb_gpu_context_t* ctx, tvdb_error_t* err, const char* label, CUresult r) {
+  if (r == CUDA_SUCCESS) return 1;
+  tvdb_cuda_set_error(ctx, err, TVDB_ERROR_IO, label, r);
+  return 0;
+}
+
+static tvdb_status_t tvdb_cuda_get_module(tvdb_gpu_context_t* ctx, CUmodule* module, tvdb_error_t* err) {
+  if (ctx->cu_module) {
+    *module = ctx->cu_module;
+    return TVDB_OK;
+  }
+  nvrtcProgram prog = NULL;
+  nvrtcResult nr = ctx->cuda.nvrtcCreateProgram(&prog, kTvdbCudaSource, "tinyvdb_gpu.cu", 0, NULL, NULL);
+  if (nr != NVRTC_SUCCESS) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_IO, "nvrtcCreateProgram failed");
+    return TVDB_ERROR_IO;
+  }
+  const char* opts[] = {"--std=c++11"};
+  nr = ctx->cuda.nvrtcCompileProgram(prog, 1, opts);
+  if (nr != NVRTC_SUCCESS) {
+    size_t log_size = 0;
+    ctx->cuda.nvrtcGetProgramLogSize(prog, &log_size);
+    char* log = (char*)calloc(log_size ? log_size : 1, 1);
+    if (log) ctx->cuda.nvrtcGetProgramLog(prog, log);
+    tvdb_gpu_set_error(err, TVDB_ERROR_IO, log ? log : "nvrtcCompileProgram failed");
+    free(log);
+    ctx->cuda.nvrtcDestroyProgram(&prog);
+    return TVDB_ERROR_IO;
+  }
+  size_t ptx_size = 0;
+  nr = ctx->cuda.nvrtcGetPTXSize(prog, &ptx_size);
+  if (nr != NVRTC_SUCCESS || ptx_size == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_IO, "nvrtcGetPTXSize failed");
+    ctx->cuda.nvrtcDestroyProgram(&prog);
+    return TVDB_ERROR_IO;
+  }
+  char* ptx = (char*)malloc(ptx_size);
+  if (!ptx) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    ctx->cuda.nvrtcDestroyProgram(&prog);
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  nr = ctx->cuda.nvrtcGetPTX(prog, ptx);
+  ctx->cuda.nvrtcDestroyProgram(&prog);
+  if (nr != NVRTC_SUCCESS) {
+    free(ptx);
+    tvdb_gpu_set_error(err, TVDB_ERROR_IO, "nvrtcGetPTX failed");
+    return TVDB_ERROR_IO;
+  }
+  CUresult cr = ctx->cuda.cuModuleLoadData(&ctx->cu_module, ptx);
+  free(ptx);
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleLoadData", cr)) return err ? err->status : TVDB_ERROR_IO;
+  *module = ctx->cu_module;
+  return TVDB_OK;
+}
+
+static tvdb_status_t tvdb_cuda_alloc_copy_in(tvdb_gpu_context_t* ctx, CUdeviceptr* dst,
+                                             const void* src, size_t size, tvdb_error_t* err) {
+  if (!tvdb_cuda_ok(ctx, err, "cuMemAlloc", ctx->cuda.cuMemAlloc(dst, size ? size : 4))) return err ? err->status : TVDB_ERROR_IO;
+  if (src && size) {
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyHtoD", ctx->cuda.cuMemcpyHtoD(*dst, src, size))) {
+      ctx->cuda.cuMemFree(*dst);
+      *dst = 0;
+      return err ? err->status : TVDB_ERROR_IO;
+    }
+  }
+  return TVDB_OK;
+}
+
+size_t tvdb_gpu_enumerate_devices(tvdb_gpu_backend_t backend, tvdb_gpu_device_info_t* devices, size_t capacity) {
+  size_t n = 0;
+  if (backend == TVDB_GPU_BACKEND_AUTO || backend == TVDB_GPU_BACKEND_VULKAN) {
+    tvdb_vk_table vk;
+    memset(&vk, 0, sizeof(vk));
+    if (tvdb_load_vulkan_library(&vk)) {
+      if (devices && n < capacity) {
+        memset(&devices[n], 0, sizeof(devices[n]));
+        devices[n].backend = TVDB_GPU_BACKEND_VULKAN;
+        devices[n].available = 1;
+        devices[n].supports_sparse_3d_images = 0;
+        snprintf(devices[n].name, sizeof(devices[n].name), "Vulkan runtime");
+      }
+      ++n;
+      tvdb_dyn_close(vk.lib);
+    }
+  }
+  if (backend == TVDB_GPU_BACKEND_AUTO || backend == TVDB_GPU_BACKEND_CUDA) {
+    tvdb_cuda_table cu;
+    memset(&cu, 0, sizeof(cu));
+    if (tvdb_load_cuda_library(&cu)) {
+      if (devices && n < capacity) {
+        memset(&devices[n], 0, sizeof(devices[n]));
+        devices[n].backend = TVDB_GPU_BACKEND_CUDA;
+        devices[n].available = 1;
+        snprintf(devices[n].name, sizeof(devices[n].name), "CUDA driver + NVRTC runtime");
+      }
+      ++n;
+      tvdb_dyn_close(cu.libnvrtc);
+      tvdb_dyn_close(cu.libcuda);
+    }
+  }
+  return n;
+}
+
+static tvdb_status_t tvdb_cuda_context_create(uint32_t device_index,
+                                              tvdb_gpu_context_t** out,
+                                              tvdb_error_t* err) {
+  tvdb_gpu_context_t* ctx = (tvdb_gpu_context_t*)calloc(1, sizeof(*ctx));
+  if (!ctx) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  ctx->backend = TVDB_GPU_BACKEND_CUDA;
+  if (!tvdb_load_cuda_library(&ctx->cuda)) {
+    free(ctx);
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "CUDA driver and NVRTC runtime libraries not found");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuInit", ctx->cuda.cuInit(0))) goto fail;
+  int count = 0;
+  if (!tvdb_cuda_ok(ctx, err, "cuDeviceGetCount", ctx->cuda.cuDeviceGetCount(&count))) goto fail;
+  if (count <= 0 || device_index >= (uint32_t)count) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "requested CUDA device not found");
+    goto fail;
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuDeviceGet", ctx->cuda.cuDeviceGet(&ctx->cu_device, (int)device_index))) goto fail;
+  ctx->cuda.cuDeviceGetName(ctx->device_name, (int)sizeof(ctx->device_name), ctx->cu_device);
+  if (ctx->device_name[0] == '\0') {
+    snprintf(ctx->device_name, sizeof(ctx->device_name), "CUDA device %u", device_index);
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxCreate", ctx->cuda.cuCtxCreate(&ctx->cu_ctx, 0, ctx->cu_device))) goto fail;
+  *out = ctx;
+  return TVDB_OK;
+fail:
+  tvdb_gpu_context_destroy(ctx);
+  return err ? err->status : TVDB_ERROR_IO;
+}
+
+static tvdb_status_t tvdb_vulkan_context_create(uint32_t device_index,
+                                                tvdb_gpu_context_t** out,
+                                                tvdb_error_t* err) {
+  tvdb_gpu_context_t* ctx = (tvdb_gpu_context_t*)calloc(1, sizeof(*ctx));
+  if (!ctx) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  ctx->backend = TVDB_GPU_BACKEND_VULKAN;
+  if (!tvdb_load_vulkan_library(&ctx->vk)) {
+    free(ctx);
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan loader not found");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  VkApplicationInfo ai;
+  memset(&ai, 0, sizeof(ai));
+  ai.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+  ai.pApplicationName = "tinyvdb_gpu";
+  ai.apiVersion = VK_API_VERSION_1_0;
+  VkInstanceCreateInfo ici;
+  memset(&ici, 0, sizeof(ici));
+  ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+  ici.pApplicationInfo = &ai;
+  if (!tvdb_vk_ok(ctx->vk.CreateInstance(&ici, NULL, &ctx->instance), err, "vkCreateInstance")) goto fail;
+  if (tvdb_vk_load_instance_functions(ctx, err) != TVDB_OK) goto fail;
+  uint32_t count = 0;
+  if (!tvdb_vk_ok(ctx->vk.EnumeratePhysicalDevices(ctx->instance, &count, NULL), err, "vkEnumeratePhysicalDevices")) goto fail;
+  if (count == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "no Vulkan physical devices");
+    goto fail;
+  }
+  VkPhysicalDevice* pds = (VkPhysicalDevice*)calloc(count, sizeof(VkPhysicalDevice));
+  if (!pds) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    goto fail;
+  }
+  ctx->vk.EnumeratePhysicalDevices(ctx->instance, &count, pds);
+  uint32_t seen_compute = 0;
+  uint32_t selected_queue_flags = 0;
+  for (uint32_t p = 0; p < count && !ctx->physical_device; ++p) {
+    uint32_t qcount = 0;
+    ctx->vk.GetPhysicalDeviceQueueFamilyProperties(pds[p], &qcount, NULL);
+    VkQueueFamilyProperties* qprops = (VkQueueFamilyProperties*)calloc(qcount ? qcount : 1, sizeof(*qprops));
+    if (!qprops) continue;
+    ctx->vk.GetPhysicalDeviceQueueFamilyProperties(pds[p], &qcount, qprops);
+    for (uint32_t q = 0; q < qcount; ++q) {
+      if (qprops[q].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+        if (seen_compute == device_index) {
+          ctx->physical_device = pds[p];
+          ctx->queue_family = q;
+          selected_queue_flags = qprops[q].queueFlags;
+          break;
+        }
+        ++seen_compute;
+      }
+    }
+    free(qprops);
+  }
+  free(pds);
+  if (!ctx->physical_device) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "requested Vulkan compute device not found");
+    goto fail;
+  }
+  VkPhysicalDeviceFeatures features;
+  memset(&features, 0, sizeof(features));
+  ctx->vk.GetPhysicalDeviceFeatures(ctx->physical_device, &features);
+  ctx->supports_sparse_3d_images =
+      (features.sparseBinding && features.sparseResidencyImage3D &&
+       (selected_queue_flags & VK_QUEUE_SPARSE_BINDING_BIT)) ? 1 : 0;
+  ctx->vk.GetPhysicalDeviceMemoryProperties(ctx->physical_device, &ctx->memory_props);
+  float prio = 1.0f;
+  VkDeviceQueueCreateInfo qci;
+  memset(&qci, 0, sizeof(qci));
+  qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+  qci.queueFamilyIndex = ctx->queue_family;
+  qci.queueCount = 1;
+  qci.pQueuePriorities = &prio;
+  VkDeviceCreateInfo dci;
+  VkPhysicalDeviceFeatures enabled_features;
+  memset(&enabled_features, 0, sizeof(enabled_features));
+  if (ctx->supports_sparse_3d_images) {
+    enabled_features.sparseBinding = VK_TRUE;
+    enabled_features.sparseResidencyImage3D = VK_TRUE;
+  }
+  memset(&dci, 0, sizeof(dci));
+  dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+  dci.queueCreateInfoCount = 1;
+  dci.pQueueCreateInfos = &qci;
+  dci.pEnabledFeatures = &enabled_features;
+  if (!tvdb_vk_ok(ctx->vk.CreateDevice(ctx->physical_device, &dci, NULL, &ctx->device), err, "vkCreateDevice")) goto fail;
+  if (tvdb_vk_load_device_functions(ctx, err) != TVDB_OK) goto fail;
+  ctx->vk.GetDeviceQueue(ctx->device, ctx->queue_family, 0, &ctx->queue);
+  snprintf(ctx->device_name, sizeof(ctx->device_name), "Vulkan compute device %u", device_index);
+  *out = ctx;
+  return TVDB_OK;
+fail:
+  tvdb_gpu_context_destroy(ctx);
+  return err ? err->status : TVDB_ERROR_IO;
+}
+
+tvdb_status_t tvdb_gpu_context_create(tvdb_gpu_backend_t backend, uint32_t device_index,
+                                      tvdb_gpu_context_t** out, tvdb_error_t* err) {
+  if (!out) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL output context");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  *out = NULL;
+  if (backend == TVDB_GPU_BACKEND_VULKAN) {
+    return tvdb_vulkan_context_create(device_index, out, err);
+  }
+  if (backend == TVDB_GPU_BACKEND_CUDA) {
+    return tvdb_cuda_context_create(device_index, out, err);
+  }
+  if (backend != TVDB_GPU_BACKEND_AUTO) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "unknown GPU backend");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+
+  tvdb_error_t first_err;
+  memset(&first_err, 0, sizeof(first_err));
+  tvdb_status_t st = tvdb_vulkan_context_create(device_index, out, &first_err);
+  if (st == TVDB_OK) return TVDB_OK;
+  st = tvdb_cuda_context_create(device_index, out, err);
+  if (st == TVDB_OK) return TVDB_OK;
+  if (err && err->message[0] == '\0') *err = first_err;
+  return err ? err->status : st;
+}
+
+void tvdb_gpu_context_destroy(tvdb_gpu_context_t* ctx) {
+  if (!ctx) return;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    if (ctx->cu_module && ctx->cuda.cuModuleUnload) ctx->cuda.cuModuleUnload(ctx->cu_module);
+    if (ctx->cu_ctx && ctx->cuda.cuCtxDestroy) ctx->cuda.cuCtxDestroy(ctx->cu_ctx);
+    tvdb_dyn_close(ctx->cuda.libnvrtc);
+    tvdb_dyn_close(ctx->cuda.libcuda);
+  } else {
+    if (ctx->device && ctx->vk.DeviceWaitIdle) ctx->vk.DeviceWaitIdle(ctx->device);
+    if (ctx->device && ctx->vk.DestroyDevice) ctx->vk.DestroyDevice(ctx->device, NULL);
+    if (ctx->instance && ctx->vk.DestroyInstance) ctx->vk.DestroyInstance(ctx->instance, NULL);
+    tvdb_dyn_close(ctx->vk.lib);
+  }
+  free(ctx);
+}
+
+tvdb_status_t tvdb_gpu_context_info(const tvdb_gpu_context_t* ctx, tvdb_gpu_context_info_t* out, tvdb_error_t* err) {
+  if (!ctx || !out) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL argument");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  memset(out, 0, sizeof(*out));
+  out->backend = ctx->backend;
+  out->supports_sparse_3d_images = ctx->supports_sparse_3d_images;
+  snprintf(out->device_name, sizeof(out->device_name), "%s", ctx->device_name);
+  return TVDB_OK;
+}
+
+static int tvdb_dense_same_shape(const tvdb_dense_grid* a, const tvdb_dense_grid* b, const tvdb_dense_grid* c) {
+  return a && b && c && a->data && b->data && c->data &&
+         a->nx == b->nx && a->ny == b->ny && a->nz == b->nz &&
+         a->nx == c->nx && a->ny == c->ny && a->nz == c->nz;
+}
+
+static int tvdb_gpu_make_sphere_grid(float radius, const float center[3],
+                                     float voxel_size, float half_width,
+                                     tvdb_dense_grid* out, float* bg_out) {
+  if (!center || !out || radius <= 0.0f || voxel_size <= 0.0f) return 0;
+  float hw = half_width > 0.0f ? half_width : 3.0f;
+  float bg = hw * voxel_size;
+  float ext = radius + bg;
+  int n[3];
+  float lo[3];
+  for (int a = 0; a < 3; ++a) {
+    lo[a] = center[a] - ext;
+    float hi = center[a] + ext;
+    float span = hi - lo[a];
+    n[a] = (int)ceilf(span / voxel_size) + 1;
+    if (n[a] < 1) n[a] = 1;
+  }
+  tvdb_dense_grid_init(out, n[0], n[1], n[2]);
+  if (!out->data) return 0;
+  out->voxel_size = voxel_size;
+  out->ox = lo[0] - 0.5f * voxel_size;
+  out->oy = lo[1] - 0.5f * voxel_size;
+  out->oz = lo[2] - 0.5f * voxel_size;
+  if (bg_out) *bg_out = bg;
+  return 1;
+}
+
+static int tvdb_gpu_make_box_grid(const float half_extents[3], const float center[3],
+                                  float voxel_size, float half_width,
+                                  tvdb_dense_grid* out, float* bg_out) {
+  if (!half_extents || !center || !out || voxel_size <= 0.0f) return 0;
+  if (half_extents[0] <= 0.0f || half_extents[1] <= 0.0f || half_extents[2] <= 0.0f) return 0;
+  float hw = half_width > 0.0f ? half_width : 3.0f;
+  float bg = hw * voxel_size;
+  int n[3];
+  float lo[3];
+  for (int a = 0; a < 3; ++a) {
+    lo[a] = center[a] - half_extents[a] - bg;
+    float hi = center[a] + half_extents[a] + bg;
+    float span = hi - lo[a];
+    n[a] = (int)ceilf(span / voxel_size) + 1;
+    if (n[a] < 1) n[a] = 1;
+  }
+  tvdb_dense_grid_init(out, n[0], n[1], n[2]);
+  if (!out->data) return 0;
+  out->voxel_size = voxel_size;
+  out->ox = lo[0] - 0.5f * voxel_size;
+  out->oy = lo[1] - 0.5f * voxel_size;
+  out->oz = lo[2] - 0.5f * voxel_size;
+  if (bg_out) *bg_out = bg;
+  return 1;
+}
+
+static int tvdb_gpu_make_torus_grid(float major_radius, float minor_radius,
+                                    const float center[3], float voxel_size,
+                                    float half_width, tvdb_dense_grid* out,
+                                    float* bg_out) {
+  if (!center || !out || major_radius <= 0.0f || minor_radius <= 0.0f || voxel_size <= 0.0f) return 0;
+  float hw = half_width > 0.0f ? half_width : 3.0f;
+  float bg = hw * voxel_size;
+  float ext_xz = major_radius + minor_radius + bg;
+  float ext_y = minor_radius + bg;
+  float lo[3] = {center[0] - ext_xz, center[1] - ext_y, center[2] - ext_xz};
+  float hi[3] = {center[0] + ext_xz, center[1] + ext_y, center[2] + ext_xz};
+  int n[3];
+  for (int a = 0; a < 3; ++a) {
+    float span = hi[a] - lo[a];
+    n[a] = (int)ceilf(span / voxel_size) + 1;
+    if (n[a] < 1) n[a] = 1;
+  }
+  tvdb_dense_grid_init(out, n[0], n[1], n[2]);
+  if (!out->data) return 0;
+  out->voxel_size = voxel_size;
+  out->ox = lo[0] - 0.5f * voxel_size;
+  out->oy = lo[1] - 0.5f * voxel_size;
+  out->oz = lo[2] - 0.5f * voxel_size;
+  if (bg_out) *bg_out = bg;
+  return 1;
+}
+
+static tvdb_status_t tvdb_cuda_csg_dense(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* a,
+                                         const tvdb_dense_grid* b, int op,
+                                         tvdb_dense_grid* out, tvdb_error_t* err) {
+  size_t n = (size_t)a->nx * (size_t)a->ny * (size_t)a->nz;
+  CUmodule module = NULL;
+  CUfunction fn = NULL;
+  CUdeviceptr da = 0, db = 0, dout = 0;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_csg"))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &da, a->data, n * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &db, b->data, n * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, n * sizeof(float), err)) != TVDB_OK) goto done;
+  unsigned int count = (unsigned int)n;
+  void* args[] = {&da, &db, &dout, &count, &op};
+  unsigned int block = 256;
+  unsigned int grid = (count + block - 1u) / block;
+  if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out->data, dout, n * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  st = TVDB_OK;
+done:
+  if (dout) ctx->cuda.cuMemFree(dout);
+  if (db) ctx->cuda.cuMemFree(db);
+  if (da) ctx->cuda.cuMemFree(da);
+  return st;
+}
+
+static tvdb_status_t tvdb_cuda_sdf_sphere_dense(tvdb_gpu_context_t* ctx,
+                                                float radius,
+                                                const float center[3],
+                                                float background,
+                                                tvdb_dense_grid* out,
+                                                tvdb_error_t* err) {
+  size_t n = (size_t)out->nx * (size_t)out->ny * (size_t)out->nz;
+  CUmodule module = NULL;
+  CUfunction fn = NULL;
+  CUdeviceptr dout = 0;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_sdf_sphere"))) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, n * sizeof(float), err)) != TVDB_OK) goto done;
+  int nx = out->nx, ny = out->ny, nz = out->nz;
+  float ox = out->ox, oy = out->oy, oz = out->oz, vs = out->voxel_size;
+  float cx = center[0], cy = center[1], cz = center[2];
+  unsigned int count = (unsigned int)n;
+  void* args[] = {&dout, &nx, &ny, &nz, &ox, &oy, &oz, &vs,
+                  &cx, &cy, &cz, &radius, &background, &count};
+  unsigned int block = 256;
+  unsigned int grid = (count + block - 1u) / block;
+  if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out->data, dout, n * sizeof(float)))) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  st = TVDB_OK;
+done:
+  if (dout) ctx->cuda.cuMemFree(dout);
+  return st;
+}
+
+static tvdb_status_t tvdb_cuda_sdf_box_dense(tvdb_gpu_context_t* ctx,
+                                             const float half_extents[3],
+                                             const float center[3],
+                                             float background,
+                                             tvdb_dense_grid* out,
+                                             tvdb_error_t* err) {
+  size_t n = (size_t)out->nx * (size_t)out->ny * (size_t)out->nz;
+  CUmodule module = NULL;
+  CUfunction fn = NULL;
+  CUdeviceptr dout = 0;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_sdf_box"))) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, n * sizeof(float), err)) != TVDB_OK) goto done;
+  int nx = out->nx, ny = out->ny, nz = out->nz;
+  float ox = out->ox, oy = out->oy, oz = out->oz, vs = out->voxel_size;
+  float cx = center[0], cy = center[1], cz = center[2];
+  float hx = half_extents[0], hy = half_extents[1], hz = half_extents[2];
+  unsigned int count = (unsigned int)n;
+  void* args[] = {&dout, &nx, &ny, &nz, &ox, &oy, &oz, &vs,
+                  &cx, &cy, &cz, &hx, &hy, &hz, &background, &count};
+  unsigned int block = 256;
+  unsigned int grid = (count + block - 1u) / block;
+  if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out->data, dout, n * sizeof(float)))) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  st = TVDB_OK;
+done:
+  if (dout) ctx->cuda.cuMemFree(dout);
+  return st;
+}
+
+static tvdb_status_t tvdb_cuda_sdf_torus_dense(tvdb_gpu_context_t* ctx,
+                                               float major_radius,
+                                               float minor_radius,
+                                               const float center[3],
+                                               float background,
+                                               tvdb_dense_grid* out,
+                                               tvdb_error_t* err) {
+  size_t n = (size_t)out->nx * (size_t)out->ny * (size_t)out->nz;
+  CUmodule module = NULL;
+  CUfunction fn = NULL;
+  CUdeviceptr dout = 0;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_sdf_torus"))) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, n * sizeof(float), err)) != TVDB_OK) goto done;
+  int nx = out->nx, ny = out->ny, nz = out->nz;
+  float ox = out->ox, oy = out->oy, oz = out->oz, vs = out->voxel_size;
+  float cx = center[0], cy = center[1], cz = center[2];
+  unsigned int count = (unsigned int)n;
+  void* args[] = {&dout, &nx, &ny, &nz, &ox, &oy, &oz, &vs,
+                  &cx, &cy, &cz, &major_radius, &minor_radius, &background, &count};
+  unsigned int block = 256;
+  unsigned int grid = (count + block - 1u) / block;
+  if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out->data, dout, n * sizeof(float)))) {
+    st = err ? err->status : TVDB_ERROR_IO;
+    goto done;
+  }
+  st = TVDB_OK;
+done:
+  if (dout) ctx->cuda.cuMemFree(dout);
+  return st;
+}
+
+static tvdb_status_t tvdb_cuda_sample_dense(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid_in,
+                                            const tvdb_vec3f* pts, size_t n,
+                                            float* out_values, tvdb_error_t* err) {
+  size_t voxels = (size_t)grid_in->nx * (size_t)grid_in->ny * (size_t)grid_in->nz;
+  CUmodule module = NULL;
+  CUfunction fn = NULL;
+  CUdeviceptr dg = 0, dp = 0, dout = 0;
+  float* p4 = NULL;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  p4 = (float*)calloc(n ? n : 1, 4u * sizeof(float));
+  if (!p4) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); st = TVDB_ERROR_OUT_OF_MEMORY; goto done; }
+  for (size_t i = 0; i < n; ++i) {
+    p4[4*i+0] = pts[i].x; p4[4*i+1] = pts[i].y; p4[4*i+2] = pts[i].z; p4[4*i+3] = 0.0f;
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_sample"))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dg, grid_in->data, voxels * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, p4, n * 4u * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, n * sizeof(float), err)) != TVDB_OK) goto done;
+  int nx = grid_in->nx, ny = grid_in->ny, nz = grid_in->nz;
+  float ox = grid_in->ox, oy = grid_in->oy, oz = grid_in->oz, vs = grid_in->voxel_size;
+  unsigned int count = (unsigned int)n;
+  void* args[] = {&dg, &dp, &dout, &nx, &ny, &nz, &ox, &oy, &oz, &vs, &count};
+  unsigned int block = 128;
+  unsigned int grid_blocks = (count + block - 1u) / block;
+  if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid_blocks, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out_values, dout, n * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  st = TVDB_OK;
+done:
+  free(p4);
+  if (dout) ctx->cuda.cuMemFree(dout);
+  if (dp) ctx->cuda.cuMemFree(dp);
+  if (dg) ctx->cuda.cuMemFree(dg);
+  return st;
+}
+
+static tvdb_status_t tvdb_cuda_sparse_conv(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
+                                           const float* kernel, int kx, int ky, int kz,
+                                           float pad_value, tvdb_sparse_grid* out,
+                                           tvdb_error_t* err) {
+  CUmodule module = NULL;
+  CUfunction fn = NULL;
+  CUdeviceptr dc = 0, dv = 0, dk = 0, dout = 0;
+  int32_t* c4 = NULL;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  c4 = (int32_t*)calloc(in->count ? in->count : 1, 4u * sizeof(int32_t));
+  if (!c4) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); st = TVDB_ERROR_OUT_OF_MEMORY; goto done; }
+  for (size_t i = 0; i < in->count; ++i) {
+    c4[4*i+0] = in->coords[i].x; c4[4*i+1] = in->coords[i].y; c4[4*i+2] = in->coords[i].z; c4[4*i+3] = 0;
+    out->coords[i] = in->coords[i];
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_sparse_conv"))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dc, c4, in->count * 4u * sizeof(int32_t), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dv, in->values, in->count * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dk, kernel, (size_t)kx * (size_t)ky * (size_t)kz * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, in->count * sizeof(float), err)) != TVDB_OK) goto done;
+  unsigned int count = (unsigned int)in->count;
+  void* args[] = {&dc, &dv, &dk, &dout, &count, &kx, &ky, &kz, &pad_value};
+  unsigned int block = 128;
+  unsigned int grid = (count + block - 1u) / block;
+  if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out->values, dout, in->count * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  out->count = in->count;
+  st = TVDB_OK;
+done:
+  free(c4);
+  if (dout) ctx->cuda.cuMemFree(dout);
+  if (dk) ctx->cuda.cuMemFree(dk);
+  if (dv) ctx->cuda.cuMemFree(dv);
+  if (dc) ctx->cuda.cuMemFree(dc);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_csg_dense(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* a,
+                                 const tvdb_dense_grid* b, int op,
+                                 tvdb_dense_grid* out, tvdb_error_t* err) {
+  if (!ctx || !tvdb_dense_same_shape(a, b, out) || op < 0 || op > 2) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid dense CSG arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    return tvdb_cuda_csg_dense(ctx, a, b, op, out, err);
+  }
+  size_t n = (size_t)a->nx * (size_t)a->ny * (size_t)a->nz;
+  tvdb_vk_buffer ba, bb, bo, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &ba, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bb, err)) != TVDB_OK) goto done_a;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto done_b;
+  if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_o;
+  memcpy(ba.mapped, a->data, n * sizeof(float));
+  memcpy(bb.mapped, b->data, n * sizeof(float));
+  uint32_t params[4] = {(uint32_t)n, (uint32_t)op, 0, 0};
+  memcpy(bp.mapped, params, sizeof(params));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuCsgSpv; d.spv_len = kTvdbGpuCsgSpv_len; d.descriptor_count = 4;
+  d.buffers[0] = &ba; d.buffers[1] = &bb; d.buffers[2] = &bo; d.buffers[3] = &bp;
+  d.descriptor_types[0] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 255u) / 256u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out->data, bo.mapped, n * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+done_o: tvdb_vk_destroy_buffer(ctx, &bo);
+done_b: tvdb_vk_destroy_buffer(ctx, &bb);
+done_a: tvdb_vk_destroy_buffer(ctx, &ba);
+  return st;
+}
+
+static tvdb_status_t tvdb_vk_sdf_sphere_dense(tvdb_gpu_context_t* ctx,
+                                              float radius,
+                                              const float center[3],
+                                              float background,
+                                              tvdb_dense_grid* out,
+                                              tvdb_error_t* err) {
+  size_t n = (size_t)out->nx * (size_t)out->ny * (size_t)out->nz;
+  tvdb_vk_buffer bo, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_o;
+  struct { int32_t dim[4]; float ov[4]; float cr[4]; float bc[4]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = out->nx; par.dim[1] = out->ny; par.dim[2] = out->nz;
+  par.dim[3] = (int32_t)n;
+  par.ov[0] = out->ox; par.ov[1] = out->oy; par.ov[2] = out->oz; par.ov[3] = out->voxel_size;
+  par.cr[0] = center[0]; par.cr[1] = center[1]; par.cr[2] = center[2]; par.cr[3] = radius;
+  par.bc[0] = background;
+  memcpy(bp.mapped, &par, sizeof(par));
+
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuSdfSphereSpv;
+  d.spv_len = kTvdbGpuSdfSphereSpv_len;
+  d.descriptor_count = 2;
+  d.buffers[0] = &bo;
+  d.buffers[1] = &bp;
+  d.descriptor_types[0] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 255u) / 256u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out->data, bo.mapped, n * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+done_o:
+  tvdb_vk_destroy_buffer(ctx, &bo);
+  return st;
+}
+
+static tvdb_status_t tvdb_vk_sdf_box_dense(tvdb_gpu_context_t* ctx,
+                                           const float half_extents[3],
+                                           const float center[3],
+                                           float background,
+                                           tvdb_dense_grid* out,
+                                           tvdb_error_t* err) {
+  size_t n = (size_t)out->nx * (size_t)out->ny * (size_t)out->nz;
+  tvdb_vk_buffer bo, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_o;
+  struct { int32_t dim[4]; float ov[4]; float cp[4]; float hb[4]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = out->nx; par.dim[1] = out->ny; par.dim[2] = out->nz; par.dim[3] = (int32_t)n;
+  par.ov[0] = out->ox; par.ov[1] = out->oy; par.ov[2] = out->oz; par.ov[3] = out->voxel_size;
+  par.cp[0] = center[0]; par.cp[1] = center[1]; par.cp[2] = center[2];
+  par.hb[0] = half_extents[0]; par.hb[1] = half_extents[1]; par.hb[2] = half_extents[2]; par.hb[3] = background;
+  memcpy(bp.mapped, &par, sizeof(par));
+
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuSdfBoxSpv;
+  d.spv_len = kTvdbGpuSdfBoxSpv_len;
+  d.descriptor_count = 2;
+  d.buffers[0] = &bo;
+  d.buffers[1] = &bp;
+  d.descriptor_types[0] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 255u) / 256u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out->data, bo.mapped, n * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+done_o:
+  tvdb_vk_destroy_buffer(ctx, &bo);
+  return st;
+}
+
+static tvdb_status_t tvdb_vk_sdf_torus_dense(tvdb_gpu_context_t* ctx,
+                                             float major_radius,
+                                             float minor_radius,
+                                             const float center[3],
+                                             float background,
+                                             tvdb_dense_grid* out,
+                                             tvdb_error_t* err) {
+  size_t n = (size_t)out->nx * (size_t)out->ny * (size_t)out->nz;
+  tvdb_vk_buffer bo, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_o;
+  struct { int32_t dim[4]; float ov[4]; float cm[4]; float mb[4]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = out->nx; par.dim[1] = out->ny; par.dim[2] = out->nz; par.dim[3] = (int32_t)n;
+  par.ov[0] = out->ox; par.ov[1] = out->oy; par.ov[2] = out->oz; par.ov[3] = out->voxel_size;
+  par.cm[0] = center[0]; par.cm[1] = center[1]; par.cm[2] = center[2]; par.cm[3] = major_radius;
+  par.mb[0] = minor_radius; par.mb[1] = background;
+  memcpy(bp.mapped, &par, sizeof(par));
+
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuSdfTorusSpv;
+  d.spv_len = kTvdbGpuSdfTorusSpv_len;
+  d.descriptor_count = 2;
+  d.buffers[0] = &bo;
+  d.buffers[1] = &bp;
+  d.descriptor_types[0] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 255u) / 256u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out->data, bo.mapped, n * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+done_o:
+  tvdb_vk_destroy_buffer(ctx, &bo);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_level_set_sphere(tvdb_gpu_context_t* ctx,
+                                        float radius,
+                                        const float center[3],
+                                        float voxel_size,
+                                        float half_width,
+                                        tvdb_dense_grid* out,
+                                        tvdb_error_t* err) {
+  if (!ctx || !center || !out || radius <= 0.0f || voxel_size <= 0.0f) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid GPU sphere SDF arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  memset(out, 0, sizeof(*out));
+  float background = 0.0f;
+  if (!tvdb_gpu_make_sphere_grid(radius, center, voxel_size, half_width, out, &background)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "failed to allocate GPU sphere SDF grid");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  tvdb_status_t st = TVDB_OK;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    st = tvdb_cuda_sdf_sphere_dense(ctx, radius, center, background, out, err);
+  } else {
+    st = tvdb_vk_sdf_sphere_dense(ctx, radius, center, background, out, err);
+  }
+  if (st != TVDB_OK) {
+    tvdb_dense_grid_free(out);
+    memset(out, 0, sizeof(*out));
+  }
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_level_set_box(tvdb_gpu_context_t* ctx,
+                                     const float half_extents[3],
+                                     const float center[3],
+                                     float voxel_size,
+                                     float half_width,
+                                     tvdb_dense_grid* out,
+                                     tvdb_error_t* err) {
+  if (!ctx || !half_extents || !center || !out || voxel_size <= 0.0f ||
+      half_extents[0] <= 0.0f || half_extents[1] <= 0.0f || half_extents[2] <= 0.0f) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid GPU box SDF arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  memset(out, 0, sizeof(*out));
+  float background = 0.0f;
+  if (!tvdb_gpu_make_box_grid(half_extents, center, voxel_size, half_width, out, &background)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "failed to allocate GPU box SDF grid");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  tvdb_status_t st = TVDB_OK;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    st = tvdb_cuda_sdf_box_dense(ctx, half_extents, center, background, out, err);
+  } else {
+    st = tvdb_vk_sdf_box_dense(ctx, half_extents, center, background, out, err);
+  }
+  if (st != TVDB_OK) {
+    tvdb_dense_grid_free(out);
+    memset(out, 0, sizeof(*out));
+  }
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_level_set_torus(tvdb_gpu_context_t* ctx,
+                                       float major_radius,
+                                       float minor_radius,
+                                       const float center[3],
+                                       float voxel_size,
+                                       float half_width,
+                                       tvdb_dense_grid* out,
+                                       tvdb_error_t* err) {
+  if (!ctx || !center || !out || major_radius <= 0.0f || minor_radius <= 0.0f || voxel_size <= 0.0f) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid GPU torus SDF arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  memset(out, 0, sizeof(*out));
+  float background = 0.0f;
+  if (!tvdb_gpu_make_torus_grid(major_radius, minor_radius, center, voxel_size, half_width, out, &background)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "failed to allocate GPU torus SDF grid");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  tvdb_status_t st = TVDB_OK;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    st = tvdb_cuda_sdf_torus_dense(ctx, major_radius, minor_radius, center, background, out, err);
+  } else {
+    st = tvdb_vk_sdf_torus_dense(ctx, major_radius, minor_radius, center, background, out, err);
+  }
+  if (st != TVDB_OK) {
+    tvdb_dense_grid_free(out);
+    memset(out, 0, sizeof(*out));
+  }
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_sample_trilinear_dense_batch(tvdb_gpu_context_t* ctx,
+                                                    const tvdb_dense_grid* grid,
+                                                    const tvdb_vec3f* pts,
+                                                    size_t n,
+                                                    float* out_values,
+                                                    tvdb_error_t* err) {
+  if (!ctx || !grid || !grid->data || !pts || !out_values) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid sample arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    return tvdb_cuda_sample_dense(ctx, grid, pts, n, out_values, err);
+  }
+  size_t voxels = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
+  tvdb_vk_buffer bg, bpnts, bo, bpar;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, voxels * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bg, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bpnts, err)) != TVDB_OK) goto done_g;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto done_pnts;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bpar, err)) != TVDB_OK) goto done_o;
+  memcpy(bg.mapped, grid->data, voxels * sizeof(float));
+  float* p4 = (float*)bpnts.mapped;
+  for (size_t i = 0; i < n; ++i) {
+    p4[4*i+0] = pts[i].x; p4[4*i+1] = pts[i].y; p4[4*i+2] = pts[i].z; p4[4*i+3] = 0.0f;
+  }
+  struct { int32_t dim[4]; float ov[4]; uint32_t count; uint32_t pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = grid->nx; par.dim[1] = grid->ny; par.dim[2] = grid->nz;
+  par.ov[0] = grid->ox; par.ov[1] = grid->oy; par.ov[2] = grid->oz; par.ov[3] = grid->voxel_size;
+  par.count = (uint32_t)n;
+  memcpy(bpar.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuSampleSpv; d.spv_len = kTvdbGpuSampleSpv_len; d.descriptor_count = 4;
+  d.buffers[0] = &bg; d.buffers[1] = &bpnts; d.buffers[2] = &bo; d.buffers[3] = &bpar;
+  d.descriptor_types[0] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out_values, bo.mapped, n * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bpar);
+done_o: tvdb_vk_destroy_buffer(ctx, &bo);
+done_pnts: tvdb_vk_destroy_buffer(ctx, &bpnts);
+done_g: tvdb_vk_destroy_buffer(ctx, &bg);
+  return st;
+}
+
+static tvdb_status_t tvdb_vk_sample_dense_image3d(tvdb_gpu_context_t* ctx,
+                                                  const tvdb_dense_grid* grid,
+                                                  const tvdb_vec3f* pts,
+                                                  size_t n,
+                                                  float* out_values,
+                                                  int use_sparse_residency,
+                                                  tvdb_error_t* err) {
+  if (!ctx || ctx->backend != TVDB_GPU_BACKEND_VULKAN) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan image3D sampling requires a Vulkan context");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  if (!grid || !grid->data || !pts || !out_values || grid->nx <= 0 || grid->ny <= 0 || grid->nz <= 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid image3D sample arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_vk_image3d image;
+  tvdb_vk_buffer bpnts, bo, bpar;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_image3d_from_dense(ctx, grid, use_sparse_residency, &image, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bpnts, err)) != TVDB_OK) goto done_image;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto done_pnts;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bpar, err)) != TVDB_OK) goto done_o;
+  float* p4 = (float*)bpnts.mapped;
+  for (size_t i = 0; i < n; ++i) {
+    p4[4*i+0] = pts[i].x; p4[4*i+1] = pts[i].y; p4[4*i+2] = pts[i].z; p4[4*i+3] = 0.0f;
+  }
+  struct { int32_t dim[4]; float ov[4]; uint32_t count; uint32_t pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = grid->nx; par.dim[1] = grid->ny; par.dim[2] = grid->nz;
+  par.ov[0] = grid->ox; par.ov[1] = grid->oy; par.ov[2] = grid->oz; par.ov[3] = grid->voxel_size;
+  par.count = (uint32_t)n;
+  memcpy(bpar.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuSampleImageSpv; d.spv_len = kTvdbGpuSampleImageSpv_len; d.descriptor_count = 4;
+  d.images[0] = &image; d.buffers[1] = &bpnts; d.buffers[2] = &bo; d.buffers[3] = &bpar;
+  d.descriptor_types[0] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out_values, bo.mapped, n * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bpar);
+done_o: tvdb_vk_destroy_buffer(ctx, &bo);
+done_pnts: tvdb_vk_destroy_buffer(ctx, &bpnts);
+done_image: tvdb_vk_destroy_image3d(ctx, &image);
+  return st;
+}
+
+static tvdb_status_t tvdb_vk_sample_existing_image3d(tvdb_gpu_context_t* ctx,
+                                                     const tvdb_vk_image3d* image,
+                                                     float ox, float oy, float oz,
+                                                     float voxel_size,
+                                                     const tvdb_vec3f* pts,
+                                                     size_t n,
+                                                     float* out_values,
+                                                     tvdb_error_t* err) {
+  if (!ctx || ctx->backend != TVDB_GPU_BACKEND_VULKAN || !image || !image->image) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid persistent image3D sample arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (!pts || !out_values) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid persistent image3D sample buffers");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_vk_buffer bpnts, bo, bpar;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bpnts, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto done_pnts;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bpar, err)) != TVDB_OK) goto done_o;
+  float* p4 = (float*)bpnts.mapped;
+  for (size_t i = 0; i < n; ++i) {
+    p4[4*i+0] = pts[i].x; p4[4*i+1] = pts[i].y; p4[4*i+2] = pts[i].z; p4[4*i+3] = 0.0f;
+  }
+  struct { int32_t dim[4]; float ov[4]; uint32_t count; uint32_t pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = (int32_t)image->nx; par.dim[1] = (int32_t)image->ny; par.dim[2] = (int32_t)image->nz;
+  par.ov[0] = ox; par.ov[1] = oy; par.ov[2] = oz; par.ov[3] = voxel_size;
+  par.count = (uint32_t)n;
+  memcpy(bpar.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuSampleImageSpv; d.spv_len = kTvdbGpuSampleImageSpv_len; d.descriptor_count = 4;
+  d.images[0] = image; d.buffers[1] = &bpnts; d.buffers[2] = &bo; d.buffers[3] = &bpar;
+  d.descriptor_types[0] = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+  d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out_values, bo.mapped, n * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bpar);
+done_o: tvdb_vk_destroy_buffer(ctx, &bo);
+done_pnts: tvdb_vk_destroy_buffer(ctx, &bpnts);
+  return st;
+}
+
+static void tvdb_vk_destroy_sparse_image3d_dispatch(tvdb_gpu_vulkan_sparse_image3d_t* image) {
+  if (!image || !image->ctx) return;
+  tvdb_gpu_context_t* ctx = image->ctx;
+  tvdb_vk_destroy_buffer(ctx, &image->sample_params);
+  tvdb_vk_destroy_buffer(ctx, &image->sample_output);
+  tvdb_vk_destroy_buffer(ctx, &image->sample_points);
+  if (image->sample_fence) ctx->vk.DestroyFence(ctx->device, image->sample_fence, NULL);
+  if (image->sample_command_pool) ctx->vk.DestroyCommandPool(ctx->device, image->sample_command_pool, NULL);
+  if (image->sample_pipeline) ctx->vk.DestroyPipeline(ctx->device, image->sample_pipeline, NULL);
+  if (image->sample_pipeline_layout) ctx->vk.DestroyPipelineLayout(ctx->device, image->sample_pipeline_layout, NULL);
+  if (image->sample_pool) ctx->vk.DestroyDescriptorPool(ctx->device, image->sample_pool, NULL);
+  if (image->sample_layout) ctx->vk.DestroyDescriptorSetLayout(ctx->device, image->sample_layout, NULL);
+  image->sample_fence = VK_NULL_HANDLE;
+  image->sample_command_pool = VK_NULL_HANDLE;
+  image->sample_cmd = NULL;
+  image->sample_pipeline = VK_NULL_HANDLE;
+  image->sample_pipeline_layout = VK_NULL_HANDLE;
+  image->sample_pool = VK_NULL_HANDLE;
+  image->sample_set = VK_NULL_HANDLE;
+  image->sample_layout = VK_NULL_HANDLE;
+  image->sample_cmd_recorded = 0;
+  image->sample_in_flight = 0;
+  image->sample_capacity = 0;
+  image->sample_descriptors_bound = 0;
+  image->sample_group_x = 0;
+  image->sample_bound_points = VK_NULL_HANDLE;
+  image->sample_bound_output = VK_NULL_HANDLE;
+  image->sample_bound_params = VK_NULL_HANDLE;
+}
+
+static tvdb_status_t tvdb_vk_create_sparse_image3d_dispatch(tvdb_gpu_vulkan_sparse_image3d_t* image,
+                                                            tvdb_error_t* err) {
+  tvdb_gpu_context_t* ctx = image->ctx;
+  if (!kTvdbGpuSampleImageSpv || kTvdbGpuSampleImageSpv_len == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan image sampler SPIR-V blob is unavailable");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  VkDescriptorSetLayoutBinding bindings[4];
+  memset(bindings, 0, sizeof(bindings));
+  bindings[0].binding = 0; bindings[0].descriptorCount = 1; bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  bindings[1].binding = 1; bindings[1].descriptorCount = 1; bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  bindings[2].binding = 2; bindings[2].descriptorCount = 1; bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  bindings[3].binding = 3; bindings[3].descriptorCount = 1; bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  VkDescriptorSetLayoutCreateInfo dlci;
+  memset(&dlci, 0, sizeof(dlci));
+  dlci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  dlci.bindingCount = 4;
+  dlci.pBindings = bindings;
+  if (!tvdb_vk_ok(ctx->vk.CreateDescriptorSetLayout(ctx->device, &dlci, NULL, &image->sample_layout), err, "vkCreateDescriptorSetLayout(persistent sample)")) goto fail;
+
+  VkDescriptorPoolSize pool_sizes[3];
+  memset(pool_sizes, 0, sizeof(pool_sizes));
+  pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; pool_sizes[0].descriptorCount = 2;
+  pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; pool_sizes[1].descriptorCount = 1;
+  pool_sizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; pool_sizes[2].descriptorCount = 1;
+  VkDescriptorPoolCreateInfo dpci;
+  memset(&dpci, 0, sizeof(dpci));
+  dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  dpci.maxSets = 1;
+  dpci.poolSizeCount = 3;
+  dpci.pPoolSizes = pool_sizes;
+  if (!tvdb_vk_ok(ctx->vk.CreateDescriptorPool(ctx->device, &dpci, NULL, &image->sample_pool), err, "vkCreateDescriptorPool(persistent sample)")) goto fail;
+  VkDescriptorSetAllocateInfo dsai;
+  memset(&dsai, 0, sizeof(dsai));
+  dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  dsai.descriptorPool = image->sample_pool;
+  dsai.descriptorSetCount = 1;
+  dsai.pSetLayouts = &image->sample_layout;
+  if (!tvdb_vk_ok(ctx->vk.AllocateDescriptorSets(ctx->device, &dsai, &image->sample_set), err, "vkAllocateDescriptorSets(persistent sample)")) goto fail;
+
+  VkShaderModule shader = VK_NULL_HANDLE;
+  VkShaderModuleCreateInfo smci;
+  memset(&smci, 0, sizeof(smci));
+  smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+  smci.codeSize = kTvdbGpuSampleImageSpv_len;
+  smci.pCode = (const uint32_t*)kTvdbGpuSampleImageSpv;
+  if (!tvdb_vk_ok(ctx->vk.CreateShaderModule(ctx->device, &smci, NULL, &shader), err, "vkCreateShaderModule(persistent sample)")) goto fail;
+  VkPipelineLayoutCreateInfo plci;
+  memset(&plci, 0, sizeof(plci));
+  plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+  plci.setLayoutCount = 1;
+  plci.pSetLayouts = &image->sample_layout;
+  if (!tvdb_vk_ok(ctx->vk.CreatePipelineLayout(ctx->device, &plci, NULL, &image->sample_pipeline_layout), err, "vkCreatePipelineLayout(persistent sample)")) {
+    ctx->vk.DestroyShaderModule(ctx->device, shader, NULL);
+    goto fail;
+  }
+  VkComputePipelineCreateInfo cpci;
+  memset(&cpci, 0, sizeof(cpci));
+  cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+  cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+  cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+  cpci.stage.module = shader;
+  cpci.stage.pName = "main";
+  cpci.layout = image->sample_pipeline_layout;
+  int ok = tvdb_vk_ok(ctx->vk.CreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &cpci, NULL, &image->sample_pipeline), err, "vkCreateComputePipelines(persistent sample)");
+  ctx->vk.DestroyShaderModule(ctx->device, shader, NULL);
+  if (!ok) goto fail;
+
+  VkCommandPoolCreateInfo cmdpool;
+  memset(&cmdpool, 0, sizeof(cmdpool));
+  cmdpool.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  cmdpool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  cmdpool.queueFamilyIndex = ctx->queue_family;
+  if (!tvdb_vk_ok(ctx->vk.CreateCommandPool(ctx->device, &cmdpool, NULL, &image->sample_command_pool), err, "vkCreateCommandPool(persistent sample)")) goto fail;
+  VkCommandBufferAllocateInfo cbai;
+  memset(&cbai, 0, sizeof(cbai));
+  cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  cbai.commandPool = image->sample_command_pool;
+  cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  cbai.commandBufferCount = 1;
+  if (!tvdb_vk_ok(ctx->vk.AllocateCommandBuffers(ctx->device, &cbai, &image->sample_cmd), err, "vkAllocateCommandBuffers(persistent sample)")) goto fail;
+  VkFenceCreateInfo fci;
+  memset(&fci, 0, sizeof(fci));
+  fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  if (!tvdb_vk_ok(ctx->vk.CreateFence(ctx->device, &fci, NULL, &image->sample_fence), err, "vkCreateFence(persistent sample)")) goto fail;
+  return TVDB_OK;
+
+fail:
+  tvdb_vk_destroy_sparse_image3d_dispatch(image);
+  return err ? err->status : TVDB_ERROR_IO;
+}
+
+static tvdb_status_t tvdb_vk_sparse_image3d_ensure_sample_workspace(tvdb_gpu_vulkan_sparse_image3d_t* image,
+                                                                    size_t n,
+                                                                    tvdb_error_t* err) {
+  tvdb_gpu_context_t* ctx = image->ctx;
+  size_t cap = n ? n : 1;
+  if (image->sample_capacity >= cap && image->sample_descriptors_bound &&
+      image->sample_bound_points == image->sample_points.buffer &&
+      image->sample_bound_output == image->sample_output.buffer &&
+      image->sample_bound_params == image->sample_params.buffer) return TVDB_OK;
+  if (image->sample_capacity < cap) {
+    tvdb_vk_destroy_buffer(ctx, &image->sample_params);
+    tvdb_vk_destroy_buffer(ctx, &image->sample_output);
+    tvdb_vk_destroy_buffer(ctx, &image->sample_points);
+    image->sample_capacity = 0;
+    image->sample_descriptors_bound = 0;
+    tvdb_status_t st;
+    if ((st = tvdb_vk_create_buffer(ctx, cap * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &image->sample_points, err)) != TVDB_OK) return st;
+    if ((st = tvdb_vk_create_buffer(ctx, cap * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &image->sample_output, err)) != TVDB_OK) return st;
+    if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &image->sample_params, err)) != TVDB_OK) return st;
+    image->sample_capacity = cap;
+  }
+
+  VkDescriptorImageInfo image_info;
+  VkDescriptorBufferInfo buffer_infos[3];
+  VkWriteDescriptorSet writes[4];
+  memset(&image_info, 0, sizeof(image_info));
+  memset(buffer_infos, 0, sizeof(buffer_infos));
+  memset(writes, 0, sizeof(writes));
+  image_info.sampler = image->image.sampler;
+  image_info.imageView = image->image.view;
+  image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  buffer_infos[0].buffer = image->sample_points.buffer; buffer_infos[0].range = image->sample_points.size;
+  buffer_infos[1].buffer = image->sample_output.buffer; buffer_infos[1].range = image->sample_output.size;
+  buffer_infos[2].buffer = image->sample_params.buffer; buffer_infos[2].range = image->sample_params.size;
+  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[0].dstSet = image->sample_set; writes[0].dstBinding = 0; writes[0].descriptorCount = 1; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &image_info;
+  writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[1].dstSet = image->sample_set; writes[1].dstBinding = 1; writes[1].descriptorCount = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[1].pBufferInfo = &buffer_infos[0];
+  writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[2].dstSet = image->sample_set; writes[2].dstBinding = 2; writes[2].descriptorCount = 1; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[2].pBufferInfo = &buffer_infos[1];
+  writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[3].dstSet = image->sample_set; writes[3].dstBinding = 3; writes[3].descriptorCount = 1; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[3].pBufferInfo = &buffer_infos[2];
+  ctx->vk.UpdateDescriptorSets(ctx->device, 4, writes, 0, NULL);
+  image->sample_descriptors_bound = 1;
+  image->sample_bound_points = image->sample_points.buffer;
+  image->sample_bound_output = image->sample_output.buffer;
+  image->sample_bound_params = image->sample_params.buffer;
+  return TVDB_OK;
+}
+
+static int tvdb_vk_sparse_image3d_bind_sample_buffers(tvdb_gpu_vulkan_sparse_image3d_t* image,
+                                                      const tvdb_vk_buffer* points,
+                                                      const tvdb_vk_buffer* output,
+                                                      const tvdb_vk_buffer* params) {
+  if (image->sample_descriptors_bound &&
+      image->sample_bound_points == points->buffer &&
+      image->sample_bound_output == output->buffer &&
+      image->sample_bound_params == params->buffer) {
+    return 0;
+  }
+  tvdb_gpu_context_t* ctx = image->ctx;
+  VkDescriptorImageInfo image_info;
+  VkDescriptorBufferInfo buffer_infos[3];
+  VkWriteDescriptorSet writes[4];
+  memset(&image_info, 0, sizeof(image_info));
+  memset(buffer_infos, 0, sizeof(buffer_infos));
+  memset(writes, 0, sizeof(writes));
+  image_info.sampler = image->image.sampler;
+  image_info.imageView = image->image.view;
+  image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  buffer_infos[0].buffer = points->buffer; buffer_infos[0].range = points->size;
+  buffer_infos[1].buffer = output->buffer; buffer_infos[1].range = output->size;
+  buffer_infos[2].buffer = params->buffer; buffer_infos[2].range = params->size;
+  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[0].dstSet = image->sample_set; writes[0].dstBinding = 0; writes[0].descriptorCount = 1; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &image_info;
+  writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[1].dstSet = image->sample_set; writes[1].dstBinding = 1; writes[1].descriptorCount = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[1].pBufferInfo = &buffer_infos[0];
+  writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[2].dstSet = image->sample_set; writes[2].dstBinding = 2; writes[2].descriptorCount = 1; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[2].pBufferInfo = &buffer_infos[1];
+  writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[3].dstSet = image->sample_set; writes[3].dstBinding = 3; writes[3].descriptorCount = 1; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[3].pBufferInfo = &buffer_infos[2];
+  ctx->vk.UpdateDescriptorSets(ctx->device, 4, writes, 0, NULL);
+  image->sample_descriptors_bound = 1;
+  image->sample_bound_points = points->buffer;
+  image->sample_bound_output = output->buffer;
+  image->sample_bound_params = params->buffer;
+  return 1;
+}
+
+static tvdb_status_t tvdb_vk_sparse_image3d_submit_sample(tvdb_gpu_vulkan_sparse_image3d_t* image,
+                                                          uint32_t group_x,
+                                                          int descriptors_changed,
+                                                          int wait,
+                                                          tvdb_error_t* err) {
+  tvdb_gpu_context_t* ctx = image->ctx;
+  if (image->sample_in_flight) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "persistent sample dispatch already in flight");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (!tvdb_vk_ok(ctx->vk.ResetFences(ctx->device, 1, &image->sample_fence), err, "vkResetFences(persistent sample)")) return err ? err->status : TVDB_ERROR_IO;
+  if (!image->sample_cmd_recorded || image->sample_group_x != group_x || descriptors_changed) {
+    if (image->sample_cmd_recorded) {
+      if (!tvdb_vk_ok(ctx->vk.ResetCommandBuffer(image->sample_cmd, 0), err, "vkResetCommandBuffer(persistent sample)")) return err ? err->status : TVDB_ERROR_IO;
+    }
+    VkCommandBufferBeginInfo begin;
+    memset(&begin, 0, sizeof(begin));
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    if (!tvdb_vk_ok(ctx->vk.BeginCommandBuffer(image->sample_cmd, &begin), err, "vkBeginCommandBuffer(persistent sample)")) return err ? err->status : TVDB_ERROR_IO;
+    ctx->vk.CmdBindPipeline(image->sample_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, image->sample_pipeline);
+    ctx->vk.CmdBindDescriptorSets(image->sample_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, image->sample_pipeline_layout, 0, 1, &image->sample_set, 0, NULL);
+    ctx->vk.CmdDispatch(image->sample_cmd, group_x, 1, 1);
+    if (!tvdb_vk_ok(ctx->vk.EndCommandBuffer(image->sample_cmd), err, "vkEndCommandBuffer(persistent sample)")) return err ? err->status : TVDB_ERROR_IO;
+    image->sample_cmd_recorded = 1;
+    image->sample_group_x = group_x;
+  }
+  VkSubmitInfo si;
+  memset(&si, 0, sizeof(si));
+  si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  si.commandBufferCount = 1;
+  si.pCommandBuffers = &image->sample_cmd;
+  if (!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue, 1, &si, image->sample_fence), err, "vkQueueSubmit(persistent sample)")) return err ? err->status : TVDB_ERROR_IO;
+  image->sample_in_flight = 1;
+  if (wait) {
+    if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &image->sample_fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences(persistent sample)")) return err ? err->status : TVDB_ERROR_IO;
+    image->sample_in_flight = 0;
+  }
+  return TVDB_OK;
+}
+
+static void tvdb_vk_destroy_sample_batch_dispatch(tvdb_gpu_vulkan_sample_batch_t* batch) {
+  if (!batch || !batch->ctx) return;
+  tvdb_gpu_context_t* ctx = batch->ctx;
+  if (batch->fence) ctx->vk.DestroyFence(ctx->device, batch->fence, NULL);
+  if (batch->command_pool) ctx->vk.DestroyCommandPool(ctx->device, batch->command_pool, NULL);
+  if (batch->descriptor_pool) ctx->vk.DestroyDescriptorPool(ctx->device, batch->descriptor_pool, NULL);
+  batch->fence = VK_NULL_HANDLE;
+  batch->command_pool = VK_NULL_HANDLE;
+  batch->cmd = NULL;
+  batch->descriptor_pool = VK_NULL_HANDLE;
+  batch->descriptor_set = VK_NULL_HANDLE;
+  batch->bound_image = NULL;
+  batch->group_x = 0;
+  batch->cmd_recorded = 0;
+  batch->in_flight = 0;
+}
+
+static tvdb_status_t tvdb_vk_sample_batch_ensure_dispatch(tvdb_gpu_vulkan_sparse_image3d_t* image,
+                                                          tvdb_gpu_vulkan_sample_batch_t* batch,
+                                                          tvdb_error_t* err) {
+  tvdb_gpu_context_t* ctx = batch->ctx;
+  if (batch->descriptor_set && batch->cmd && batch->fence) return TVDB_OK;
+  tvdb_vk_destroy_sample_batch_dispatch(batch);
+  VkDescriptorPoolSize pool_sizes[3];
+  memset(pool_sizes, 0, sizeof(pool_sizes));
+  pool_sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; pool_sizes[0].descriptorCount = 2;
+  pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; pool_sizes[1].descriptorCount = 1;
+  pool_sizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; pool_sizes[2].descriptorCount = 1;
+  VkDescriptorPoolCreateInfo dpci;
+  memset(&dpci, 0, sizeof(dpci));
+  dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+  dpci.maxSets = 1;
+  dpci.poolSizeCount = 3;
+  dpci.pPoolSizes = pool_sizes;
+  if (!tvdb_vk_ok(ctx->vk.CreateDescriptorPool(ctx->device, &dpci, NULL, &batch->descriptor_pool), err, "vkCreateDescriptorPool(batch sample)")) goto fail;
+  VkDescriptorSetAllocateInfo dsai;
+  memset(&dsai, 0, sizeof(dsai));
+  dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  dsai.descriptorPool = batch->descriptor_pool;
+  dsai.descriptorSetCount = 1;
+  dsai.pSetLayouts = &image->sample_layout;
+  if (!tvdb_vk_ok(ctx->vk.AllocateDescriptorSets(ctx->device, &dsai, &batch->descriptor_set), err, "vkAllocateDescriptorSets(batch sample)")) goto fail;
+
+  VkCommandPoolCreateInfo cpci;
+  memset(&cpci, 0, sizeof(cpci));
+  cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  cpci.queueFamilyIndex = ctx->queue_family;
+  if (!tvdb_vk_ok(ctx->vk.CreateCommandPool(ctx->device, &cpci, NULL, &batch->command_pool), err, "vkCreateCommandPool(batch sample)")) goto fail;
+  VkCommandBufferAllocateInfo cbai;
+  memset(&cbai, 0, sizeof(cbai));
+  cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  cbai.commandPool = batch->command_pool;
+  cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  cbai.commandBufferCount = 1;
+  if (!tvdb_vk_ok(ctx->vk.AllocateCommandBuffers(ctx->device, &cbai, &batch->cmd), err, "vkAllocateCommandBuffers(batch sample)")) goto fail;
+  VkFenceCreateInfo fci;
+  memset(&fci, 0, sizeof(fci));
+  fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  if (!tvdb_vk_ok(ctx->vk.CreateFence(ctx->device, &fci, NULL, &batch->fence), err, "vkCreateFence(batch sample)")) goto fail;
+  return TVDB_OK;
+fail:
+  tvdb_vk_destroy_sample_batch_dispatch(batch);
+  return err ? err->status : TVDB_ERROR_IO;
+}
+
+static void tvdb_vk_sample_batch_update_descriptors(tvdb_gpu_vulkan_sparse_image3d_t* image,
+                                                    tvdb_gpu_vulkan_sample_batch_t* batch) {
+  tvdb_gpu_context_t* ctx = batch->ctx;
+  VkDescriptorImageInfo image_info;
+  VkDescriptorBufferInfo buffer_infos[3];
+  VkWriteDescriptorSet writes[4];
+  memset(&image_info, 0, sizeof(image_info));
+  memset(buffer_infos, 0, sizeof(buffer_infos));
+  memset(writes, 0, sizeof(writes));
+  image_info.sampler = image->image.sampler;
+  image_info.imageView = image->image.view;
+  image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  buffer_infos[0].buffer = batch->points.buffer; buffer_infos[0].range = batch->points.size;
+  buffer_infos[1].buffer = batch->output.buffer; buffer_infos[1].range = batch->output.size;
+  buffer_infos[2].buffer = batch->params.buffer; buffer_infos[2].range = batch->params.size;
+  writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[0].dstSet = batch->descriptor_set; writes[0].dstBinding = 0; writes[0].descriptorCount = 1; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &image_info;
+  writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[1].dstSet = batch->descriptor_set; writes[1].dstBinding = 1; writes[1].descriptorCount = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[1].pBufferInfo = &buffer_infos[0];
+  writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[2].dstSet = batch->descriptor_set; writes[2].dstBinding = 2; writes[2].descriptorCount = 1; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[2].pBufferInfo = &buffer_infos[1];
+  writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[3].dstSet = batch->descriptor_set; writes[3].dstBinding = 3; writes[3].descriptorCount = 1; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[3].pBufferInfo = &buffer_infos[2];
+  ctx->vk.UpdateDescriptorSets(ctx->device, 4, writes, 0, NULL);
+}
+
+static tvdb_status_t tvdb_vk_sample_batch_submit(tvdb_gpu_vulkan_sparse_image3d_t* image,
+                                                 tvdb_gpu_vulkan_sample_batch_t* batch,
+                                                 int wait,
+                                                 tvdb_error_t* err) {
+  tvdb_gpu_context_t* ctx = batch->ctx;
+  if (batch->in_flight) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "sample batch dispatch already in flight");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_status_t st = tvdb_vk_sample_batch_ensure_dispatch(image, batch, err);
+  if (st != TVDB_OK) return st;
+  uint32_t group_x = (uint32_t)((batch->count + 127u) / 128u);
+  if (batch->bound_image != image) {
+    tvdb_vk_sample_batch_update_descriptors(image, batch);
+    batch->cmd_recorded = 0;
+    batch->bound_image = image;
+  }
+  if (!tvdb_vk_ok(ctx->vk.ResetFences(ctx->device, 1, &batch->fence), err, "vkResetFences(batch sample)")) return err ? err->status : TVDB_ERROR_IO;
+  if (!batch->cmd_recorded || batch->group_x != group_x) {
+    if (batch->cmd_recorded) {
+      if (!tvdb_vk_ok(ctx->vk.ResetCommandBuffer(batch->cmd, 0), err, "vkResetCommandBuffer(batch sample)")) return err ? err->status : TVDB_ERROR_IO;
+    }
+    VkCommandBufferBeginInfo begin;
+    memset(&begin, 0, sizeof(begin));
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    if (!tvdb_vk_ok(ctx->vk.BeginCommandBuffer(batch->cmd, &begin), err, "vkBeginCommandBuffer(batch sample)")) return err ? err->status : TVDB_ERROR_IO;
+    ctx->vk.CmdBindPipeline(batch->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, image->sample_pipeline);
+    ctx->vk.CmdBindDescriptorSets(batch->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, image->sample_pipeline_layout, 0, 1, &batch->descriptor_set, 0, NULL);
+    ctx->vk.CmdDispatch(batch->cmd, group_x, 1, 1);
+    if (!tvdb_vk_ok(ctx->vk.EndCommandBuffer(batch->cmd), err, "vkEndCommandBuffer(batch sample)")) return err ? err->status : TVDB_ERROR_IO;
+    batch->cmd_recorded = 1;
+    batch->group_x = group_x;
+  }
+  VkSubmitInfo si;
+  memset(&si, 0, sizeof(si));
+  si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  si.commandBufferCount = 1;
+  si.pCommandBuffers = &batch->cmd;
+  if (!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue, 1, &si, batch->fence), err, "vkQueueSubmit(batch sample)")) return err ? err->status : TVDB_ERROR_IO;
+  batch->in_flight = 1;
+  if (wait) {
+    if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &batch->fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences(batch sample)")) return err ? err->status : TVDB_ERROR_IO;
+    batch->in_flight = 0;
+  }
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gpu_sample_trilinear_dense_batch_vulkan_image3d(tvdb_gpu_context_t* ctx,
+                                                                   const tvdb_dense_grid* grid,
+                                                                   const tvdb_vec3f* pts,
+                                                                   size_t n,
+                                                                   float* out_values,
+                                                                   tvdb_error_t* err) {
+  return tvdb_vk_sample_dense_image3d(ctx, grid, pts, n, out_values, 0, err);
+}
+
+tvdb_status_t tvdb_gpu_sample_trilinear_dense_batch_vulkan_sparse_image3d(tvdb_gpu_context_t* ctx,
+                                                                          const tvdb_dense_grid* grid,
+                                                                          const tvdb_vec3f* pts,
+                                                                          size_t n,
+                                                                          float* out_values,
+                                                                          tvdb_error_t* err) {
+  return tvdb_vk_sample_dense_image3d(ctx, grid, pts, n, out_values, 1, err);
+}
+
+tvdb_status_t tvdb_gpu_sample_trilinear_sparse_vulkan_sparse_image3d(tvdb_gpu_context_t* ctx,
+                                                                     const tvdb_sparse_grid* sparse,
+                                                                     float background,
+                                                                     int nx, int ny, int nz,
+                                                                     const tvdb_vec3f* pts,
+                                                                     size_t n,
+                                                                     float* out_values,
+                                                                     tvdb_error_t* err) {
+  if (!ctx || ctx->backend != TVDB_GPU_BACKEND_VULKAN) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan sparse image3D sampling requires a Vulkan context");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  if (!sparse || !sparse->coords || !sparse->values || nx <= 0 || ny <= 0 || nz <= 0 || !pts || !out_values) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid sparse image3D sample arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_vk_image3d image;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_sparse_image3d_from_sparse_grid(ctx, sparse, background, nx, ny, nz, &image, err)) != TVDB_OK) return st;
+  st = tvdb_vk_sample_existing_image3d(ctx, &image, sparse->ox, sparse->oy, sparse->oz,
+                                       sparse->voxel_size, pts, n, out_values, err);
+  tvdb_vk_destroy_image3d(ctx, &image);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_vulkan_sparse_image3d_create(tvdb_gpu_context_t* ctx,
+                                                    const tvdb_sparse_grid* sparse,
+                                                    float background,
+                                                    int nx, int ny, int nz,
+                                                    tvdb_gpu_vulkan_sparse_image3d_t** out,
+                                                    tvdb_error_t* err) {
+  if (!out) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL output sparse image");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  *out = NULL;
+  if (!ctx || ctx->backend != TVDB_GPU_BACKEND_VULKAN) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "persistent sparse image requires a Vulkan context");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  if (!sparse) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL sparse grid");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_gpu_vulkan_sparse_image3d_t* img =
+      (tvdb_gpu_vulkan_sparse_image3d_t*)calloc(1, sizeof(*img));
+  if (!img) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  img->ctx = ctx;
+  img->ox = sparse->ox; img->oy = sparse->oy; img->oz = sparse->oz;
+  img->voxel_size = sparse->voxel_size;
+  img->nx = nx; img->ny = ny; img->nz = nz;
+  tvdb_status_t st = tvdb_vk_create_sparse_image3d_from_sparse_grid(ctx, sparse, background,
+                                                                    nx, ny, nz, &img->image, err);
+  if (st != TVDB_OK) {
+    free(img);
+    return st;
+  }
+  st = tvdb_vk_create_sparse_image3d_dispatch(img, err);
+  if (st != TVDB_OK) {
+    tvdb_vk_destroy_image3d(ctx, &img->image);
+    free(img);
+    return st;
+  }
+  *out = img;
+  return TVDB_OK;
+}
+
+void tvdb_gpu_vulkan_sparse_image3d_destroy(tvdb_gpu_vulkan_sparse_image3d_t* image) {
+  if (!image) return;
+  tvdb_vk_destroy_sparse_image3d_dispatch(image);
+  tvdb_vk_destroy_image3d(image->ctx, &image->image);
+  free(image);
+}
+
+tvdb_status_t tvdb_gpu_vulkan_sparse_image3d_sample(tvdb_gpu_vulkan_sparse_image3d_t* image,
+                                                    const tvdb_vec3f* pts,
+                                                    size_t n,
+                                                    float* out_values,
+                                                    tvdb_error_t* err) {
+  if (!image) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL persistent sparse image");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_gpu_context_t* ctx = image->ctx;
+  if (!pts || !out_values) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid persistent sparse image sample buffers");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (n == 0) return TVDB_OK;
+  tvdb_status_t st = tvdb_vk_sparse_image3d_ensure_sample_workspace(image, n, err);
+  if (st != TVDB_OK) return st;
+  float* p4 = (float*)image->sample_points.mapped;
+  for (size_t i = 0; i < n; ++i) {
+    p4[4*i+0] = pts[i].x; p4[4*i+1] = pts[i].y; p4[4*i+2] = pts[i].z; p4[4*i+3] = 0.0f;
+  }
+  struct { int32_t dim[4]; float ov[4]; uint32_t count; uint32_t pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = image->nx; par.dim[1] = image->ny; par.dim[2] = image->nz;
+  par.ov[0] = image->ox; par.ov[1] = image->oy; par.ov[2] = image->oz; par.ov[3] = image->voxel_size;
+  par.count = (uint32_t)n;
+  memcpy(image->sample_params.mapped, &par, sizeof(par));
+
+  st = tvdb_vk_sparse_image3d_submit_sample(image, (uint32_t)((n + 127u) / 128u), 0, 1, err);
+  if (st != TVDB_OK) return st;
+  memcpy(out_values, image->sample_output.mapped, n * sizeof(float));
+  return TVDB_OK;
+}
+
+static void tvdb_vk_fill_point_buffer(tvdb_vk_buffer* buf, const tvdb_vec3f* pts, size_t n) {
+  float* p4 = (float*)buf->mapped;
+  for (size_t i = 0; i < n; ++i) {
+    p4[4*i+0] = pts[i].x;
+    p4[4*i+1] = pts[i].y;
+    p4[4*i+2] = pts[i].z;
+    p4[4*i+3] = 0.0f;
+  }
+}
+
+tvdb_status_t tvdb_gpu_vulkan_sample_batch_create(tvdb_gpu_context_t* ctx,
+                                                  const tvdb_vec3f* pts,
+                                                  size_t n,
+                                                  tvdb_gpu_vulkan_sample_batch_t** out,
+                                                  tvdb_error_t* err) {
+  if (!out) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL output sample batch");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  *out = NULL;
+  if (!ctx || ctx->backend != TVDB_GPU_BACKEND_VULKAN || !pts) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid Vulkan sample batch arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_gpu_vulkan_sample_batch_t* batch =
+      (tvdb_gpu_vulkan_sample_batch_t*)calloc(1, sizeof(*batch));
+  if (!batch) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  batch->ctx = ctx;
+  tvdb_status_t st = tvdb_gpu_vulkan_sample_batch_update_points(batch, pts, n, err);
+  if (st != TVDB_OK) {
+    tvdb_gpu_vulkan_sample_batch_destroy(batch);
+    return st;
+  }
+  *out = batch;
+  return TVDB_OK;
+}
+
+void tvdb_gpu_vulkan_sample_batch_destroy(tvdb_gpu_vulkan_sample_batch_t* batch) {
+  if (!batch) return;
+  tvdb_gpu_context_t* ctx = batch->ctx;
+  tvdb_vk_destroy_sample_batch_dispatch(batch);
+  tvdb_vk_destroy_buffer(ctx, &batch->params);
+  tvdb_vk_destroy_buffer(ctx, &batch->output);
+  tvdb_vk_destroy_buffer(ctx, &batch->points);
+  free(batch);
+}
+
+tvdb_status_t tvdb_gpu_vulkan_sample_batch_update_points(tvdb_gpu_vulkan_sample_batch_t* batch,
+                                                         const tvdb_vec3f* pts,
+                                                         size_t n,
+                                                         tvdb_error_t* err) {
+  if (!batch || !batch->ctx || !pts) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid sample batch update arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_gpu_context_t* ctx = batch->ctx;
+  size_t cap = n ? n : 1;
+  if (batch->capacity < cap) {
+    tvdb_vk_destroy_sample_batch_dispatch(batch);
+    tvdb_vk_destroy_buffer(ctx, &batch->params);
+    tvdb_vk_destroy_buffer(ctx, &batch->output);
+    tvdb_vk_destroy_buffer(ctx, &batch->points);
+    batch->capacity = 0;
+    tvdb_status_t st;
+    if ((st = tvdb_vk_create_buffer(ctx, cap * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &batch->points, err)) != TVDB_OK) return st;
+    if ((st = tvdb_vk_create_buffer(ctx, cap * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &batch->output, err)) != TVDB_OK) return st;
+    if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &batch->params, err)) != TVDB_OK) return st;
+    batch->capacity = cap;
+  }
+  batch->count = n;
+  tvdb_vk_fill_point_buffer(&batch->points, pts, n);
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gpu_vulkan_sparse_image3d_sample_batch(tvdb_gpu_vulkan_sparse_image3d_t* image,
+                                                          tvdb_gpu_vulkan_sample_batch_t* batch,
+                                                          tvdb_error_t* err) {
+  if (!image || !batch || image->ctx != batch->ctx) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid sparse image sample batch arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (batch->count == 0) return TVDB_OK;
+  struct { int32_t dim[4]; float ov[4]; uint32_t count; uint32_t pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = image->nx; par.dim[1] = image->ny; par.dim[2] = image->nz;
+  par.ov[0] = image->ox; par.ov[1] = image->oy; par.ov[2] = image->oz; par.ov[3] = image->voxel_size;
+  par.count = (uint32_t)batch->count;
+  memcpy(batch->params.mapped, &par, sizeof(par));
+  return tvdb_vk_sample_batch_submit(image, batch, 1, err);
+}
+
+tvdb_status_t tvdb_gpu_vulkan_sparse_image3d_sample_batch_submit(tvdb_gpu_vulkan_sparse_image3d_t* image,
+                                                                 tvdb_gpu_vulkan_sample_batch_t* batch,
+                                                                 tvdb_error_t* err) {
+  if (!image || !batch || image->ctx != batch->ctx) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid sparse image async sample batch arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (batch->count == 0) return TVDB_OK;
+  struct { int32_t dim[4]; float ov[4]; uint32_t count; uint32_t pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = image->nx; par.dim[1] = image->ny; par.dim[2] = image->nz;
+  par.ov[0] = image->ox; par.ov[1] = image->oy; par.ov[2] = image->oz; par.ov[3] = image->voxel_size;
+  par.count = (uint32_t)batch->count;
+  memcpy(batch->params.mapped, &par, sizeof(par));
+  return tvdb_vk_sample_batch_submit(image, batch, 0, err);
+}
+
+tvdb_status_t tvdb_gpu_vulkan_sample_batch_poll(tvdb_gpu_vulkan_sample_batch_t* batch,
+                                                int* done,
+                                                tvdb_error_t* err) {
+  if (!batch || !done) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid sample batch poll arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (!batch->in_flight) {
+    *done = 1;
+    return TVDB_OK;
+  }
+  VkResult r = batch->ctx->vk.GetFenceStatus(batch->ctx->device, batch->fence);
+  if (r == VK_SUCCESS) {
+    batch->in_flight = 0;
+    *done = 1;
+    return TVDB_OK;
+  }
+  if (r == VK_NOT_READY) {
+    *done = 0;
+    return TVDB_OK;
+  }
+  tvdb_vk_ok(r, err, "vkGetFenceStatus(batch sample)");
+  return err ? err->status : TVDB_ERROR_IO;
+}
+
+tvdb_status_t tvdb_gpu_vulkan_sample_batch_wait(tvdb_gpu_vulkan_sample_batch_t* batch,
+                                                tvdb_error_t* err) {
+  if (!batch) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL sample batch wait");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (!batch->in_flight) return TVDB_OK;
+  if (!tvdb_vk_ok(batch->ctx->vk.WaitForFences(batch->ctx->device, 1, &batch->fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences(batch async sample)")) return err ? err->status : TVDB_ERROR_IO;
+  batch->in_flight = 0;
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gpu_vulkan_sample_batch_readback(tvdb_gpu_vulkan_sample_batch_t* batch,
+                                                    float* out_values,
+                                                    size_t n,
+                                                    tvdb_error_t* err) {
+  if (!batch || !out_values || n > batch->count) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid sample batch readback arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  memcpy(out_values, batch->output.mapped, n * sizeof(float));
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gpu_sparse_conv3d(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
+                                     const float* kernel, int kx, int ky, int kz,
+                                     float pad_value, tvdb_sparse_grid* out,
+                                     tvdb_error_t* err) {
+  if (!ctx || !in || !kernel || !out || kx <= 0 || ky <= 0 || kz <= 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid sparse conv arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  out->count = 0; out->voxel_size = in->voxel_size; out->ox = in->ox; out->oy = in->oy; out->oz = in->oz;
+  if (!tvdb_sparse_grid_reserve(out, in->count)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  if (in->count == 0) return TVDB_OK;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    return tvdb_cuda_sparse_conv(ctx, in, kernel, kx, ky, kz, pad_value, out, err);
+  }
+  tvdb_vk_buffer bc, bv, bk, bo, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, in->count * 4u * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bc, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, in->count * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bv, err)) != TVDB_OK) goto done_c;
+  if ((st = tvdb_vk_create_buffer(ctx, (size_t)kx * (size_t)ky * (size_t)kz * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bk, err)) != TVDB_OK) goto done_v;
+  if ((st = tvdb_vk_create_buffer(ctx, in->count * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto done_k;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_o;
+  int32_t* c4 = (int32_t*)bc.mapped;
+  for (size_t i = 0; i < in->count; ++i) {
+    c4[4*i+0] = in->coords[i].x; c4[4*i+1] = in->coords[i].y; c4[4*i+2] = in->coords[i].z; c4[4*i+3] = 0;
+    out->coords[i] = in->coords[i];
+  }
+  memcpy(bv.mapped, in->values, in->count * sizeof(float));
+  memcpy(bk.mapped, kernel, (size_t)kx * (size_t)ky * (size_t)kz * sizeof(float));
+  struct { uint32_t count; uint32_t pad0[3]; int32_t kdim[4]; float pad_value; uint32_t pad1[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.count = (uint32_t)in->count; par.kdim[0] = kx; par.kdim[1] = ky; par.kdim[2] = kz; par.pad_value = pad_value;
+  memcpy(bp.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuSparseConvSpv; d.spv_len = kTvdbGpuSparseConvSpv_len; d.descriptor_count = 5;
+  d.buffers[0] = &bc; d.buffers[1] = &bv; d.buffers[2] = &bk; d.buffers[3] = &bo; d.buffers[4] = &bp;
+  for (int i = 0; i < 4; ++i) d.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((in->count + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) {
+    memcpy(out->values, bo.mapped, in->count * sizeof(float));
+    out->count = in->count;
+  }
+  tvdb_vk_destroy_buffer(ctx, &bp);
+done_o: tvdb_vk_destroy_buffer(ctx, &bo);
+done_k: tvdb_vk_destroy_buffer(ctx, &bk);
+done_v: tvdb_vk_destroy_buffer(ctx, &bv);
+done_c: tvdb_vk_destroy_buffer(ctx, &bc);
+  return st;
+}
+
+// ---- spatial queries --------------------------------------------------------
+// Brute-force linear scan of the active coord set (one thread per query /
+// active voxel), mirroring tinyvdb_grid_index.c. Indices are int32 on device;
+// public wrappers widen/narrow on readback.
+
+// Pack int32 xyz triples into ivec4 (x,y,z,0) for std430 ivec4 buffers.
+static void tvdb_pack_int4(int32_t* dst, const int32_t* src, size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    dst[4*i+0] = src[3*i+0]; dst[4*i+1] = src[3*i+1]; dst[4*i+2] = src[3*i+2]; dst[4*i+3] = 0;
+  }
+}
+
+// index kernel: out[i] = first-seen index of query[i] in active, or -1.
+static tvdb_status_t tvdb_cuda_index_query(tvdb_gpu_context_t* ctx,
+    const int32_t* active, size_t na, const int32_t* query, size_t nq,
+    int32_t* out, tvdb_error_t* err) {
+  CUmodule module = NULL; CUfunction fn = NULL;
+  CUdeviceptr da = 0, dq = 0, dout = 0;
+  int32_t* a4 = NULL; int32_t* q4 = NULL;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  a4 = (int32_t*)calloc(na ? na : 1, 4u * sizeof(int32_t));
+  q4 = (int32_t*)calloc(nq ? nq : 1, 4u * sizeof(int32_t));
+  if (!a4 || !q4) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); st = TVDB_ERROR_OUT_OF_MEMORY; goto done; }
+  tvdb_pack_int4(a4, active, na);
+  tvdb_pack_int4(q4, query, nq);
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_ijk_to_index"))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &da, a4, (na ? na : 1) * 4u * sizeof(int32_t), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dq, q4, (nq ? nq : 1) * 4u * sizeof(int32_t), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, nq * sizeof(int32_t), err)) != TVDB_OK) goto done;
+  unsigned int una = (unsigned int)na, unq = (unsigned int)nq;
+  void* args[] = {&da, &dq, &dout, &una, &unq};
+  unsigned int block = 128, grid = (unq + block - 1u) / block;
+  if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out, dout, nq * sizeof(int32_t)))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  st = TVDB_OK;
+done:
+  free(a4); free(q4);
+  if (dout) ctx->cuda.cuMemFree(dout);
+  if (dq) ctx->cuda.cuMemFree(dq);
+  if (da) ctx->cuda.cuMemFree(da);
+  return st;
+}
+
+static tvdb_status_t tvdb_vk_index_query(tvdb_gpu_context_t* ctx,
+    const int32_t* active, size_t na, const int32_t* query, size_t nq,
+    int32_t* out, tvdb_error_t* err) {
+  tvdb_vk_buffer ba, bq, bo, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, (na ? na : 1) * 4u * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &ba, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, nq * 4u * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bq, err)) != TVDB_OK) goto done_a;
+  if ((st = tvdb_vk_create_buffer(ctx, nq * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto done_q;
+  if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_o;
+  tvdb_pack_int4((int32_t*)ba.mapped, active, na);
+  tvdb_pack_int4((int32_t*)bq.mapped, query, nq);
+  struct { uint32_t na, nq, pad[2]; } par = {(uint32_t)na, (uint32_t)nq, {0, 0}};
+  memcpy(bp.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuIjkToIndexSpv; d.spv_len = kTvdbGpuIjkToIndexSpv_len; d.descriptor_count = 4;
+  d.buffers[0] = &ba; d.buffers[1] = &bq; d.buffers[2] = &bo; d.buffers[3] = &bp;
+  d.descriptor_types[0] = d.descriptor_types[1] = d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((nq + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out, bo.mapped, nq * sizeof(int32_t));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+done_o: tvdb_vk_destroy_buffer(ctx, &bo);
+done_q: tvdb_vk_destroy_buffer(ctx, &bq);
+done_a: tvdb_vk_destroy_buffer(ctx, &ba);
+  return st;
+}
+
+static tvdb_status_t tvdb_gpu_index_query(tvdb_gpu_context_t* ctx,
+    const int32_t* active, size_t na, const int32_t* query, size_t nq,
+    int32_t* out, tvdb_error_t* err) {
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA)
+    return tvdb_cuda_index_query(ctx, active, na, query, nq, out, err);
+  return tvdb_vk_index_query(ctx, active, na, query, nq, out, err);
+}
+
+tvdb_status_t tvdb_gpu_coords_in_grid(tvdb_gpu_context_t* ctx,
+    const int32_t* active, size_t na, const int32_t* query, size_t nq,
+    uint8_t* out, tvdb_error_t* err) {
+  if (!ctx || (!active && na) || (!query && nq) || (!out && nq)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid coords_in_grid arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (nq == 0) return TVDB_OK;
+  int32_t* idx = (int32_t*)malloc(nq * sizeof(int32_t));
+  if (!idx) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  tvdb_status_t st = tvdb_gpu_index_query(ctx, active, na, query, nq, idx, err);
+  if (st == TVDB_OK)
+    for (size_t i = 0; i < nq; ++i) out[i] = idx[i] >= 0 ? 1 : 0;
+  free(idx);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_ijk_to_index(tvdb_gpu_context_t* ctx,
+    const int32_t* active, size_t na, const int32_t* query, size_t nq,
+    int64_t* out, tvdb_error_t* err) {
+  if (!ctx || (!active && na) || (!query && nq) || (!out && nq)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid ijk_to_index arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (nq == 0) return TVDB_OK;
+  int32_t* idx = (int32_t*)malloc(nq * sizeof(int32_t));
+  if (!idx) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  tvdb_status_t st = tvdb_gpu_index_query(ctx, active, na, query, nq, idx, err);
+  if (st == TVDB_OK)
+    for (size_t i = 0; i < nq; ++i) out[i] = (int64_t)idx[i];
+  free(idx);
+  return st;
+}
+
+// points kernel: out[i] = index of floor((p-origin)/voxel_size) in active, or -1.
+static tvdb_status_t tvdb_cuda_points_query(tvdb_gpu_context_t* ctx,
+    const float* points, size_t np, const float voxel_size[3], const float origin[3],
+    const int32_t* active, size_t na, int32_t* out, tvdb_error_t* err) {
+  CUmodule module = NULL; CUfunction fn = NULL;
+  CUdeviceptr da = 0, dp = 0, dout = 0;
+  int32_t* a4 = NULL; float* p4 = NULL;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  a4 = (int32_t*)calloc(na ? na : 1, 4u * sizeof(int32_t));
+  p4 = (float*)calloc(np ? np : 1, 4u * sizeof(float));
+  if (!a4 || !p4) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); st = TVDB_ERROR_OUT_OF_MEMORY; goto done; }
+  tvdb_pack_int4(a4, active, na);
+  for (size_t i = 0; i < np; ++i) { p4[4*i+0] = points[3*i+0]; p4[4*i+1] = points[3*i+1]; p4[4*i+2] = points[3*i+2]; p4[4*i+3] = 0.0f; }
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_points_in_grid"))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &da, a4, (na ? na : 1) * 4u * sizeof(int32_t), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, p4, (np ? np : 1) * 4u * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, np * sizeof(int32_t), err)) != TVDB_OK) goto done;
+  unsigned int una = (unsigned int)na, unp = (unsigned int)np;
+  float vx = voxel_size[0], vy = voxel_size[1], vz = voxel_size[2];
+  float ox = origin[0], oy = origin[1], oz = origin[2];
+  void* args[] = {&da, &dp, &dout, &una, &unp, &vx, &vy, &vz, &ox, &oy, &oz};
+  unsigned int block = 128, grid = (unp + block - 1u) / block;
+  if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out, dout, np * sizeof(int32_t)))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  st = TVDB_OK;
+done:
+  free(a4); free(p4);
+  if (dout) ctx->cuda.cuMemFree(dout);
+  if (dp) ctx->cuda.cuMemFree(dp);
+  if (da) ctx->cuda.cuMemFree(da);
+  return st;
+}
+
+static tvdb_status_t tvdb_vk_points_query(tvdb_gpu_context_t* ctx,
+    const float* points, size_t np, const float voxel_size[3], const float origin[3],
+    const int32_t* active, size_t na, int32_t* out, tvdb_error_t* err) {
+  tvdb_vk_buffer ba, bpts, bo, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, (na ? na : 1) * 4u * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &ba, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, np * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bpts, err)) != TVDB_OK) goto done_a;
+  if ((st = tvdb_vk_create_buffer(ctx, np * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto done_pts;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_o;
+  tvdb_pack_int4((int32_t*)ba.mapped, active, na);
+  { float* pm = (float*)bpts.mapped;
+    for (size_t i = 0; i < np; ++i) { pm[4*i+0] = points[3*i+0]; pm[4*i+1] = points[3*i+1]; pm[4*i+2] = points[3*i+2]; pm[4*i+3] = 0.0f; } }
+  struct { uint32_t na, np, pad[2]; float vs[4]; float origin[4]; } par;
+  memset(&par, 0, sizeof(par));
+  par.na = (uint32_t)na; par.np = (uint32_t)np;
+  par.vs[0] = voxel_size[0]; par.vs[1] = voxel_size[1]; par.vs[2] = voxel_size[2];
+  par.origin[0] = origin[0]; par.origin[1] = origin[1]; par.origin[2] = origin[2];
+  memcpy(bp.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuPointsInGridSpv; d.spv_len = kTvdbGpuPointsInGridSpv_len; d.descriptor_count = 4;
+  d.buffers[0] = &ba; d.buffers[1] = &bpts; d.buffers[2] = &bo; d.buffers[3] = &bp;
+  d.descriptor_types[0] = d.descriptor_types[1] = d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((np + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out, bo.mapped, np * sizeof(int32_t));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+done_o: tvdb_vk_destroy_buffer(ctx, &bo);
+done_pts: tvdb_vk_destroy_buffer(ctx, &bpts);
+done_a: tvdb_vk_destroy_buffer(ctx, &ba);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_points_in_grid(tvdb_gpu_context_t* ctx,
+    const float* points, size_t np, const float voxel_size[3], const float origin[3],
+    const int32_t* active, size_t na, uint8_t* out, tvdb_error_t* err) {
+  if (!ctx || (!points && np) || !voxel_size || !origin || (!active && na) || (!out && np)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid points_in_grid arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (voxel_size[0] <= 0.0f || voxel_size[1] <= 0.0f || voxel_size[2] <= 0.0f) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "voxel_size must be positive");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (np == 0) return TVDB_OK;
+  int32_t* idx = (int32_t*)malloc(np * sizeof(int32_t));
+  if (!idx) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  tvdb_status_t st = (ctx->backend == TVDB_GPU_BACKEND_CUDA)
+      ? tvdb_cuda_points_query(ctx, points, np, voxel_size, origin, active, na, idx, err)
+      : tvdb_vk_points_query(ctx, points, np, voxel_size, origin, active, na, idx, err);
+  if (st == TVDB_OK)
+    for (size_t i = 0; i < np; ++i) out[i] = idx[i] >= 0 ? 1 : 0;
+  free(idx);
+  return st;
+}
+
+// neighbor kernel: out[i] = # active neighbors of active[i] (6- or 26-conn).
+static tvdb_status_t tvdb_cuda_neighbor_counts_impl(tvdb_gpu_context_t* ctx,
+    const int32_t* active, size_t na, int connectivity, int32_t* out, tvdb_error_t* err) {
+  CUmodule module = NULL; CUfunction fn = NULL;
+  CUdeviceptr da = 0, dout = 0;
+  int32_t* a4 = NULL;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  a4 = (int32_t*)calloc(na, 4u * sizeof(int32_t));
+  if (!a4) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); st = TVDB_ERROR_OUT_OF_MEMORY; goto done; }
+  tvdb_pack_int4(a4, active, na);
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_neighbor_counts"))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &da, a4, na * 4u * sizeof(int32_t), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, na * sizeof(int32_t), err)) != TVDB_OK) goto done;
+  unsigned int una = (unsigned int)na;
+  void* args[] = {&da, &dout, &una, &connectivity};
+  unsigned int block = 128, grid = (una + block - 1u) / block;
+  if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out, dout, na * sizeof(int32_t)))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  st = TVDB_OK;
+done:
+  free(a4);
+  if (dout) ctx->cuda.cuMemFree(dout);
+  if (da) ctx->cuda.cuMemFree(da);
+  return st;
+}
+
+static tvdb_status_t tvdb_vk_neighbor_counts_impl(tvdb_gpu_context_t* ctx,
+    const int32_t* active, size_t na, int connectivity, int32_t* out, tvdb_error_t* err) {
+  tvdb_vk_buffer ba, bo, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, na * 4u * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &ba, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, na * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto done_a;
+  if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_o;
+  tvdb_pack_int4((int32_t*)ba.mapped, active, na);
+  struct { uint32_t na; int32_t connectivity; uint32_t pad[2]; } par = {(uint32_t)na, connectivity, {0, 0}};
+  memcpy(bp.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuNeighborCountsSpv; d.spv_len = kTvdbGpuNeighborCountsSpv_len; d.descriptor_count = 3;
+  d.buffers[0] = &ba; d.buffers[1] = &bo; d.buffers[2] = &bp;
+  d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((na + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out, bo.mapped, na * sizeof(int32_t));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+done_o: tvdb_vk_destroy_buffer(ctx, &bo);
+done_a: tvdb_vk_destroy_buffer(ctx, &ba);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_neighbor_counts(tvdb_gpu_context_t* ctx,
+    const int32_t* active, size_t na, int connectivity,
+    int32_t* out_counts, tvdb_error_t* err) {
+  if (!ctx || (!active && na) || (!out_counts && na) || (connectivity != 6 && connectivity != 26)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid neighbor_counts arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (na == 0) return TVDB_OK;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA)
+    return tvdb_cuda_neighbor_counts_impl(ctx, active, na, connectivity, out_counts, err);
+  return tvdb_vk_neighbor_counts_impl(ctx, active, na, connectivity, out_counts, err);
+}

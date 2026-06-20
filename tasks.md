@@ -10,7 +10,7 @@ what's covered).
 
 Gap analysis vs OpenVDB `openvdb/tools/` and fvdb-core ops (reviewed
 2026-06-19). All items below are algorithmically CPU-portable and
-consistent with tinyvdb's header-first, no-CUDA design; each was
+consistent with tinyvdb's header-first, CPU-core design; each was
 grep-verified absent from `src/*.h`. Ordered high→low value within
 each theme. Notes point at the nearest existing primitive to reuse.
 
@@ -108,10 +108,136 @@ each theme. Notes point at the nearest existing primitive to reuse.
       `voxelize_points` / `sample_trilinear` (parallels OpenVDB
       `PointsToMask`/`PointScatter`). Covered by `test_grid_index` (py).
 
-### Out of scope (CUDA / tensor framework)
+### Optional GPU backend (runtime-loaded, no SDK dependency)
 
-Fundamentally outside tinyvdb's "header-first, dependency-free, pure-C
-public API" design — listed for visibility, not on the near-term roadmap.
+- [x] **Vulkan compute backend v1.** `tinyvdb_gpu.{h,c}` adds an optional
+      `tinyvdb_gpu` target and C API for runtime-loaded GPU contexts with no
+      compile-time Vulkan SDK/CUDA SDK headers or link libraries. Vulkan uses
+      local ABI definitions, `dlopen`/`LoadLibrary`, `vkGetInstanceProcAddr`,
+      `vkGetDeviceProcAddr`, and SPIR-V compute kernels for analytic sphere/box/torus
+      SDF generation, dense CSG, dense trilinear batch sampling,
+      same-topology sparse conv3d, and an experimental sampled-image dense
+      trilinear path with both regular and
+      sparse-resident image allocation benchmarked against the SSBO sampler.
+      Covered by `test_gpu_backend` (skips with code 77 when no Vulkan
+      runtime/device is available).
+- [x] **CUDA driver-loader API.** `tvdb_gpu_enumerate_devices` detects
+      `libcuda`/`nvcuda.dll` plus `libnvrtc`, and the public backend enum/context
+      API supports CUDA contexts.
+- [x] **CUDA kernels.** Runtime-loaded CUDA Driver API + NVRTC kernels matching
+      the Vulkan v1 operation set: analytic sphere/box/torus SDF generation, dense CSG,
+      dense trilinear batch sampling, and same-topology sparse conv3d. Covered
+      by `test_gpu_backend` when CUDA device access is available.
+- [x] **GPU analytic SDF primitive generation.**
+      `tvdb_gpu_level_set_sphere`, `tvdb_gpu_level_set_box`, and
+      `tvdb_gpu_level_set_torus` mirror the CPU grid sizing/origin conventions
+      and fill dense narrow-band SDFs on Vulkan compute or CUDA/NVRTC. Covered
+      by `test_gpu_backend` against CPU metadata and voxel-value parity.
+- [x] **Vulkan sparse 3D image binding path.** Context info exposes a
+      sparse-image capability field and dense sampling has a
+      `sparseBinding` + `sparseResidencyImage3D` path that binds all pages
+      resident, uploads through a staging buffer, samples through `sampler3D`,
+      and benchmarks against the SSBO fallback.
+- [x] **Partial sparse 3D residency for active sparse voxels.** Sparse-grid
+      upload binds only pages touched by active coordinates, copies only those
+      page regions from staging, samples through `sampler3D`, and benchmarks
+      against dense SSBO upload on the same logical grid.
+- [x] **Persistent Vulkan sparse image resources.** Public opaque
+      `tvdb_gpu_vulkan_sparse_image3d_t` objects keep sparse image allocation,
+      page binds, upload, image view, and sampler alive across repeated sample
+      calls; benchmark covers one-shot partial sparse upload versus persistent
+      sparse image sampling.
+- [x] **Persistent Vulkan dispatch resources.** Persistent sparse-image objects
+      reuse sample point/output/uniform buffers, descriptor set bindings,
+      command buffer, fence, and compute pipeline across repeated sample calls,
+      growing the workspace only when sample count exceeds capacity.
+- [x] **Device-resident query batches.** Public
+      `tvdb_gpu_vulkan_sample_batch_t` objects keep point/result/param buffers
+      resident across repeated sparse-image sample dispatches, with explicit
+      readback separated from dispatch timing.
+- [x] **VRAM-budgeted GPU benchmarks.** `test_gpu_backend` keeps default GPU
+      memory use small and supports opt-in `TVDB_GPU_TEST_VRAM_MB=1024` or
+      `2048` stress runs. The planner treats the value as a hard ceiling,
+      clamps requests to 2 GiB, and uses a conservative fraction of the budget
+      to avoid disrupting other processes on 8 GiB cards.
+- [x] **Async/nonblocking Vulkan queue API.** Persistent sparse-image batch
+      sampling has submit/poll/wait variants using runtime-loaded
+      `vkGetFenceStatus`, so callers can separate queue submission from
+      synchronization and readback.
+- [x] **Multi-in-flight Vulkan query batches.** Async state now lives on
+      `tvdb_gpu_vulkan_sample_batch_t`: each batch owns descriptor/command/fence
+      state, so multiple batches can be submitted against the same persistent
+      sparse image and polled/waited independently.
+
+**Reference GPU op inventory (OpenVDB / NanoVDB / fvdb-core, reviewed
+2026-06-20)**
+
+- **OpenVDB core:** no CUDA/GPU implementation found under
+      `openvdb/openvdb/openvdb`; GPU-facing work in the local checkout lives in
+      NanoVDB and fvdb-core.
+- **NanoVDB CUDA:** device buffers/handles, grid upload/download,
+      points/voxels-to-grid, multi-GPU points-to-grid, index-to-grid,
+      topology builder, dilate/prune/refine/coarsen/merge, signed flood fill,
+      checksum/stats/validator, blind data append, and voxel block manager.
+- **fvdb-core CUDA/PyTorch:** grid construction/topology, sampling/splatting,
+      transforms, pooling, dense/sparse inject, spatial queries, ray ops, TSDF,
+      marching cubes, sparse convolution, volume render, Gaussian splatting,
+      fused SSIM, and JaggedTensor/GridBatch operations.
+
+**Prioritized GPU backend roadmap**
+
+- [ ] **P0: device-to-device buffer interop.** Sample batches are currently
+      host-visible Vulkan buffers owned by tinyvdb. Add import/export or
+      caller-provided buffer hooks for Vulkan and CUDA so sample/query results
+      can stay on device.
+- [ ] **P0: GPU sparse topology ops.** Add runtime-loaded Vulkan/CUDA kernels
+      for sparse dilate, prune, refine, coarsen, and merge, paralleling
+      NanoVDB CUDA topology tools and the existing CPU sparse/topology ops.
+- [~] **P0: GPU spatial queries.** `tvdb_gpu_coords_in_grid`,
+      `tvdb_gpu_points_in_grid`, `tvdb_gpu_ijk_to_index`, and
+      `tvdb_gpu_neighbor_counts` (6/26) over a flat active-coord set, on Vulkan
+      and CUDA/NVRTC, mirroring the CPU `tinyvdb_grid_index.{h,c}` helpers via
+      brute-force linear-scan kernels (one thread per query/active voxel).
+      Covered by `test_gpu_backend` (GPU-vs-CPU parity). *Still open:* GPU
+      active-coordinate extraction from a dense grid (needs stream compaction /
+      prefix-sum).
+- [ ] **P0: GPU ray and volume queries.** Add voxels/segments along rays,
+      uniform ray samples, ray-SDF intersection, and volume render kernels with
+      conservative VRAM-bounded tests.
+- [ ] **P0: GPU TSDF integration and marching cubes.** Port the existing CPU
+      TSDF fusion and marching-cubes surface extraction to the runtime-loaded
+      GPU backend.
+- [ ] **P1: GPU grid construction.** Build sparse grids on GPU from points,
+      voxel/ijk lists, dense masks, and triangle meshes, taking inspiration from
+      NanoVDB `pointsToGrid`/`voxelsToGrid` and fvdb GridBatch factories.
+- [ ] **P1: sparse convolution upgrades.** Add transposed convolution,
+      arbitrary stride, output-grid builders, and a faster near-dense backend
+      beyond the current same-topology sparse conv3d.
+- [ ] **P1: GPU sampling/splatting gradients.** Add trilinear/Bezier-style
+      sample and splat gradient kernels without requiring PyTorch autograd.
+- [ ] **P1: GPU diagnostics.** Add NanoVDB-style stats, checksum, and validator
+      kernels for device-resident dense/sparse data.
+- [ ] **P1: signed flood fill and sparse background robustness.** Add GPU
+      signed flood fill plus portable inactive-page/background fallback for
+      sparse-image sampling near unbound regions.
+- [ ] **P2: GPU Gaussian-splat rasterizer.** Add CUDA/Vulkan forward and
+      backward rasterization to complement the existing CPU Gaussian splat
+      implementation.
+- [ ] **P2: batched sparse data abstractions.** Evaluate a tinyvdb-native
+      subset of fvdb `JaggedTensor`/`GridBatch` for batched GPU workloads while
+      preserving the dependency-free C API.
+- [ ] **P2: PyTorch integration.** Expose selected GPU ops through PyTorch
+      tensors/autograd only as an optional layer outside the core C API.
+- [ ] **P2: Gaussian training helpers.** Consider fused SSIM, Gaussian
+      projection/SH/MCMC helpers after the rasterizer and batching layers exist.
+- [ ] **P2: multi-GPU construction/scheduling.** Defer NanoVDB/fvdb-style
+      multi-GPU grid construction until single-GPU construction and device
+      interop are stable.
+
+### Out of scope (tensor framework)
+
+Framework-level integrations remain outside tinyvdb's dependency-free C API
+core — listed for visibility, not on the near-term roadmap.
 
 - [ ] **Jagged Tensor API.** Sparse variable-length data container
       (parallels `fvdb::JaggedTensor`).
@@ -124,7 +250,7 @@ public API" design — listed for visibility, not on the near-term roadmap.
       graph as `torch.autograd.Function` subclasses.)
 - [ ] **High-performance GPU dispatch system.** Generic kernel dispatch
       mechanism for sparse grid topology/types (parallels
-      `fvdb::dispatch`).
+      `fvdb::dispatch`) beyond the small v1 runtime-loaded backend.
 - [ ] **GPU Gaussian-splat rasterizer.** A CUDA forward+backward to
       complement the CPU forward (`tvdb_gaussian_rasterize_forward`)
       and the CPU backward (`tvdb_gaussian_rasterize_backward`,
@@ -132,7 +258,7 @@ public API" design — listed for visibility, not on the near-term roadmap.
 
 ## Test coverage (current)
 
-19 ctests register under `build/`:
+19 ctests register under `build/` when `TINYVDB_BUILD_GPU=ON`:
 
 | target | what |
 | --- | --- |
@@ -154,6 +280,7 @@ public API" design — listed for visibility, not on the near-term roadmap.
 | `test_reference_roundtrip` | libopenvdb-generated reference grids (bool/float/double/int32/int64/vec3s) round-trip through tinyvdb. Cross-tool byte-format guard |
 | `test_gaussian_backward` | Gaussian-splat rasterizer backward pass: 16×16 image from 4 random gaussians, all 36 analytic gradients checked against central FD |
 | `test_nanovdb_reference` | nanovdb_convert-produced `.nvdb` corpus: hierarchical accessor + trilinear sampler + CRC32 checksum validation + VDB→NanoVDB conversion exactness |
+| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling, same-topology sparse conv3d against CPU, and spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 parity vs CPU on a 4³ active block + outside coords); skips with code 77 if no runtime backend/device is available |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate/erode/CSG/update_from_sparse → save → reload |
 | `test_dense_writer` (py) | Dense + sparse `.vdb` writer/reader: float SDF (raw + numpy), all compression modes, multi-leaf, analytic sphere, plus typed `write_dense_grid`/`read_dense_grid` and `write_sparse_grid`/`read_sparse_grid` round-trips for `float64`/`int32`/`int64`/`vec3f`/`bool` with grid-type-string checks |
 

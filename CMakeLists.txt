@@ -15,6 +15,7 @@ option(TINYVDB_BUILD_TVDBVIEW "Build tvdbview OpenGL VDB viewer example" ON)
 option(TINYVDB_BUILD_PYTHON "Build Python extension" OFF)
 option(TINYVDB_OPENMP "Enable OpenMP parallelism in mesh/ops kernels" OFF)
 option(TINYVDB_SIMD "Enable SSE2/AVX2/F16C SIMD paths (x86-64 only; scalar fallback otherwise)" ON)
+option(TINYVDB_BUILD_GPU "Build optional runtime-loaded GPU backend (Vulkan first, CUDA via Driver API + NVRTC)" ON)
 
 # cmake modules
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
@@ -134,11 +135,75 @@ endif()
 target_include_directories(tinyvdb PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(tinyvdb PRIVATE TINYVDB_IO_IMPLEMENTATION MINIZ_NO_STDIO)
 
+# Optional GPU backend. It does not link Vulkan/CUDA SDK libraries and does not
+# require SDK headers; drivers are loaded at runtime.
+if(TINYVDB_BUILD_GPU)
+  find_program(TINYVDB_GLSLANG_VALIDATOR glslangValidator)
+  find_program(TINYVDB_XXD_EXECUTABLE xxd)
+  if(TINYVDB_GLSLANG_VALIDATOR AND TINYVDB_XXD_EXECUTABLE)
+    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    foreach(_shader csg sample sample_image sparse_conv sdf_sphere sdf_box sdf_torus ijk_to_index points_in_grid neighbor_counts)
+      set(_src ${PROJECT_SOURCE_DIR}/src/tinyvdb_gpu_${_shader}.comp)
+      set(_spv ${CMAKE_CURRENT_BINARY_DIR}/generated/tinyvdb_gpu_${_shader}.spv)
+      set(_tmp ${CMAKE_CURRENT_BINARY_DIR}/generated/tinyvdb_gpu_${_shader}_spv.tmp)
+      set(_inc ${CMAKE_CURRENT_BINARY_DIR}/generated/tinyvdb_gpu_${_shader}_spv.inc)
+      if(_shader STREQUAL "csg")
+        set(_array kTvdbGpuCsgSpv)
+      elseif(_shader STREQUAL "sample")
+        set(_array kTvdbGpuSampleSpv)
+      elseif(_shader STREQUAL "sample_image")
+        set(_array kTvdbGpuSampleImageSpv)
+      elseif(_shader STREQUAL "sparse_conv")
+        set(_array kTvdbGpuSparseConvSpv)
+      elseif(_shader STREQUAL "sdf_sphere")
+        set(_array kTvdbGpuSdfSphereSpv)
+      elseif(_shader STREQUAL "sdf_box")
+        set(_array kTvdbGpuSdfBoxSpv)
+      elseif(_shader STREQUAL "sdf_torus")
+        set(_array kTvdbGpuSdfTorusSpv)
+      elseif(_shader STREQUAL "ijk_to_index")
+        set(_array kTvdbGpuIjkToIndexSpv)
+      elseif(_shader STREQUAL "points_in_grid")
+        set(_array kTvdbGpuPointsInGridSpv)
+      else()
+        set(_array kTvdbGpuNeighborCountsSpv)
+      endif()
+      add_custom_command(
+        OUTPUT ${_inc}
+        COMMAND ${TINYVDB_GLSLANG_VALIDATOR} -V ${_src} -o ${_spv}
+        COMMAND ${TINYVDB_XXD_EXECUTABLE} -i ${_spv} ${_tmp}
+        COMMAND ${CMAKE_COMMAND}
+                -DINPUT=${_tmp}
+                -DOUTPUT=${_inc}
+                -DARRAY_NAME=${_array}
+                -P ${PROJECT_SOURCE_DIR}/src/tinyvdb_gpu_spv.cmake
+        DEPENDS ${_src} ${PROJECT_SOURCE_DIR}/src/tinyvdb_gpu_spv.cmake
+        VERBATIM)
+      list(APPEND TINYVDB_GPU_SHADER_INCS ${_inc})
+    endforeach()
+  else()
+    set(TINYVDB_GPU_SHADER_INCS ${PROJECT_SOURCE_DIR}/src/tinyvdb_gpu_spv_fallback.inc)
+  endif()
+  add_custom_target(tinyvdb_gpu_spv DEPENDS ${TINYVDB_GPU_SHADER_INCS})
+  add_library(tinyvdb_gpu STATIC ${PROJECT_SOURCE_DIR}/src/tinyvdb_gpu.c ${TINYVDB_GPU_SHADER_INCS})
+  add_dependencies(tinyvdb_gpu tinyvdb_gpu_spv)
+  set_source_files_properties(${TINYVDB_GPU_SHADER_INCS} PROPERTIES GENERATED TRUE HEADER_FILE_ONLY TRUE)
+  target_include_directories(tinyvdb_gpu PUBLIC ${PROJECT_SOURCE_DIR}/src)
+  target_include_directories(tinyvdb_gpu PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+  target_link_libraries(tinyvdb_gpu PUBLIC tinyvdb_mesh_ops)
+  if(NOT WIN32)
+    target_link_libraries(tinyvdb_gpu PRIVATE ${CMAKE_DL_LIBS})
+  endif()
+endif()
+
 # When building the Python extension, static libs linked into modules must be PIC
 if(TINYVDB_BUILD_PYTHON)
     set_target_properties(tinyvdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
     set_target_properties(tinyvdb_mesh_ops PROPERTIES POSITION_INDEPENDENT_CODE ON)
     set_target_properties(tinyvdb_nanovdb PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    if(TINYVDB_BUILD_GPU)
+      set_target_properties(tinyvdb_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
 endif()
 
 # Force system zlib for iOS
@@ -277,6 +342,13 @@ if(TINYVDB_BUILD_TESTS)
                               ${PROJECT_SOURCE_DIR}/src)
   add_test(NAME test_nanovdb_reference
            COMMAND test_nanovdb_reference ${PROJECT_SOURCE_DIR})
+
+  if(TINYVDB_BUILD_GPU)
+    add_executable(test_gpu_backend ${PROJECT_SOURCE_DIR}/tests/test_gpu_backend.c)
+    target_link_libraries(test_gpu_backend PRIVATE tinyvdb_gpu tinyvdb_mesh_ops m)
+    add_test(NAME test_gpu_backend COMMAND test_gpu_backend)
+    set_tests_properties(test_gpu_backend PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
 
   if(TINYVDB_BUILD_PYTHON)
     find_program(PYTHON3_EXE NAMES python3 python)

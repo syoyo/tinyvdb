@@ -23,6 +23,7 @@ C and C++).
 | `tinyvdb_sparse.h` / `tinyvdb_sparse_tree.h` | Flat sparse-grid representation (hash-based CSG/morphology, sparse 3D conv); operations on a loaded `tvdb_grid_t` (leaf iter, dilate/erode active or topology, tree-aware CSG, from-scratch rebuilders) |
 | `tinyvdb_autograd.h` | Per-op CPU VJPs (sample, splat, CSG, sparse_conv3d) — framework-free |
 | `tinyvdb_simd.h` | Optional SSE4.2/AVX2/F16C primitives gated on `TINYVDB_SIMD` |
+| `tinyvdb_gpu.h` | Optional runtime-loaded GPU backend: Vulkan and CUDA kernels for analytic sphere/box/torus SDF generation, dense CSG, dense trilinear batch sampling, and same-topology sparse conv3d |
 
 ## Features
 
@@ -102,6 +103,26 @@ C and C++).
 * [x] CPU autograd: per-op VJPs for sample, splat, CSG, and
   sparse_conv3d — gradient-checked against finite differences
 
+### GPU backend (`tinyvdb_gpu.h`)
+
+* [x] Optional `tinyvdb_gpu` C target (`TINYVDB_BUILD_GPU=ON`) with no
+  compile-time Vulkan SDK, CUDA SDK, `vulkan.h`, `cuda.h`, `nvcc`, or SDK
+  library requirement.
+* [x] Runtime-loaded Vulkan compute backend (`libvulkan` / `vulkan-1.dll`)
+  using local ABI definitions and SPIR-V kernels generated at build time when
+  `glslangValidator` and `xxd` are available.
+* [x] Runtime-loaded CUDA Driver API + NVRTC backend (`libcuda`/`nvcuda.dll`
+  plus `libnvrtc`) that compiles kernels to PTX at runtime.
+* [x] Blocking high-level C entrypoints for analytic sphere/box/torus SDF generation,
+  dense CSG, dense trilinear batch sampling, and same-topology
+  `tvdb_sparse_conv3d` on Vulkan and CUDA.
+* [x] Vulkan sparse 3D image capability is reported in the context info field.
+  Dense sampling has experimental regular and sparse-resident Vulkan
+  `sampler3D` paths benchmarked against the default SSBO sampler, plus a
+  persistent partial-residency path that binds only pages containing active
+  sparse voxels, reuses sampler dispatch resources across queries, and supports
+  device-resident query batches with batch-owned async submit/poll/wait.
+
 ### Gaussian-splat rasterizer (`tinyvdb_nanovdb.h`)
 
 * [x] CPU forward (`tvdb_gaussian_rasterize_forward`): per-tile
@@ -136,8 +157,16 @@ the test suite (build with `-DTINYVDB_BUILD_TESTS=ON` and run `ctest`):
 * **Gaussian-splat rasterizer**: backward-pass gradients are
   gradient-checked against central finite differences for every
   parameter.
+* **GPU backend**: when a Vulkan runtime/device is available,
+  `test_gpu_backend` compares GPU analytic sphere/box/torus SDF generation, dense CSG,
+  dense sampling, and sparse conv3d against the CPU implementations. The test
+  skips cleanly when no runtime backend is available. Set
+  `TVDB_GPU_TEST_VRAM_MB=1024` or `2048` for the opt-in larger Vulkan
+  sparse-image benchmark; the planner treats this as a hard ceiling and uses a
+  conservative fraction of it to avoid exhausting shared 8 GiB GPUs.
 
-The test suite has 15 ctest targets — see `tasks.md` for the full table.
+The test suite has 19 ctest targets when optional GPU tests are enabled — see
+`tasks.md` for the full table.
 
 ## Supported VDB versions
 

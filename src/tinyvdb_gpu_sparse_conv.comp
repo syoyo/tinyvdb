@@ -1,0 +1,38 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer CoordBuffer { ivec4 coords[]; };
+layout(std430, set = 0, binding = 1) readonly buffer ValueBuffer { float values[]; };
+layout(std430, set = 0, binding = 2) readonly buffer KernelBuffer { float kernel[]; };
+layout(std430, set = 0, binding = 3) buffer OutValueBuffer { float out_values[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  uint count;
+  ivec4 kdim;
+  float pad_value;
+} u;
+
+float lookup(ivec3 q) {
+  for (uint i = 0; i < u.count; ++i) {
+    if (coords[i].xyz == q) return values[i];
+  }
+  return u.pad_value;
+}
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.count) return;
+  ivec3 c = coords[i].xyz;
+  int ax = u.kdim.x / 2;
+  int ay = u.kdim.y / 2;
+  int az = u.kdim.z / 2;
+  float acc = 0.0;
+  for (int dk = 0; dk < u.kdim.z; ++dk) {
+    for (int dj = 0; dj < u.kdim.y; ++dj) {
+      for (int di = 0; di < u.kdim.x; ++di) {
+        uint ki = uint((dk * u.kdim.y + dj) * u.kdim.x + di);
+        ivec3 q = c + ivec3(di - ax, dj - ay, dk - az);
+        acc += kernel[ki] * lookup(q);
+      }
+    }
+  }
+  out_values[i] = acc;
+}
