@@ -1,0 +1,88 @@
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer DensityBuffer { float density[]; };
+layout(std430, set = 0, binding = 1) buffer ImageBuffer { float out_image[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;          // nx, ny, nz, width
+  ivec4 wh;           // height, 0, 0, 0
+  vec4 grid_origin;   // ox, oy, oz, voxel_size
+  vec4 lo;            // grid AABB min
+  vec4 hi;            // grid AABB max
+  vec4 eye;
+  vec4 fwd;           // camera basis (precomputed, normalized)
+  vec4 right;
+  vec4 cup;
+  vec4 cam;           // tan_half, aspect, sigma, step
+  vec4 cam2;          // background, 0, 0, 0
+} u;
+
+// World-space trilinear read with edge clamp (matches tvdb_sample_trilinear_dense).
+float fetch(int x, int y, int z) {
+  x = clamp(x, 0, u.dim.x - 1);
+  y = clamp(y, 0, u.dim.y - 1);
+  z = clamp(z, 0, u.dim.z - 1);
+  return density[(z * u.dim.y + y) * u.dim.x + x];
+}
+float sample_dense(vec3 w) {
+  float vs = u.grid_origin.w;
+  float fx = (w.x - u.grid_origin.x) / vs - 0.5;
+  float fy = (w.y - u.grid_origin.y) / vs - 0.5;
+  float fz = (w.z - u.grid_origin.z) / vs - 0.5;
+  int ix = int(floor(fx)), iy = int(floor(fy)), iz = int(floor(fz));
+  float tx = fx - float(ix), ty = fy - float(iy), tz = fz - float(iz);
+  float c00 = mix(fetch(ix,iy,iz),     fetch(ix+1,iy,iz),     tx);
+  float c10 = mix(fetch(ix,iy+1,iz),   fetch(ix+1,iy+1,iz),   tx);
+  float c01 = mix(fetch(ix,iy,iz+1),   fetch(ix+1,iy,iz+1),   tx);
+  float c11 = mix(fetch(ix,iy+1,iz+1), fetch(ix+1,iy+1,iz+1), tx);
+  return mix(mix(c00, c10, ty), mix(c01, c11, ty), tz);
+}
+
+// Ray-AABB slab clip to the forward ray (matches render.c ray_aabb).
+bool ray_aabb(vec3 o, vec3 d, out float t0, out float t1) {
+  float tmin = 0.0, tmax = 1e30;
+  for (int a = 0; a < 3; ++a) {
+    float da = d[a], oa = o[a], loa = u.lo[a], hia = u.hi[a];
+    if (abs(da) < 1e-12) {
+      if (oa < loa || oa > hia) return false;
+    } else {
+      float inv = 1.0 / da;
+      float ta = (loa - oa) * inv, tb = (hia - oa) * inv;
+      if (ta > tb) { float t = ta; ta = tb; tb = t; }
+      if (ta > tmin) tmin = ta;
+      if (tb < tmax) tmax = tb;
+      if (tmin > tmax) return false;
+    }
+  }
+  t0 = tmin; t1 = tmax;
+  return true;
+}
+
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  int width = u.dim.w, height = u.wh.x;
+  if (gid >= uint(width * height)) return;
+  int px = int(gid) % width;
+  int py = int(gid) / width;
+
+  float tan_half = u.cam.x, aspect = u.cam.y, sigma = u.cam.z, step = u.cam.w;
+  float background = u.cam2.x;
+
+  float sx = (2.0 * (float(px) + 0.5) / float(width) - 1.0) * aspect * tan_half;
+  float sy = (1.0 - 2.0 * (float(py) + 0.5) / float(height)) * tan_half;
+  vec3 dir = u.fwd.xyz + sx * u.right.xyz + sy * u.cup.xyz;
+  dir = normalize(dir);
+
+  vec3 eye = u.eye.xyz;
+  float t0, t1, transmit = 1.0;
+  if (ray_aabb(eye, dir, t0, t1) && t1 > t0) {
+    for (float t = t0 + 0.5 * step; t < t1 && transmit > 1e-3; t += step) {
+      vec3 w = eye + t * dir;
+      float d = sample_dense(w);
+      if (d <= 0.0) continue;
+      float alpha = 1.0 - exp(-d * sigma * step);
+      transmit *= (1.0 - alpha);
+    }
+  }
+  float opacity = 1.0 - transmit;
+  out_image[py * width + px] = opacity + transmit * background;
+}

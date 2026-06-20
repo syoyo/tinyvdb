@@ -2,6 +2,7 @@
 #include "tinyvdb_grid_index.h"
 #include "tinyvdb_levelset.h"
 #include "tinyvdb_ops.h"
+#include "tinyvdb_render.h"
 #include "tinyvdb_sample.h"
 #include "tinyvdb_sparse.h"
 #include "tinyvdb_topology.h"
@@ -703,6 +704,45 @@ static void test_topology(tvdb_gpu_context_t* ctx) {
   }
 }
 
+static void test_volume_render(tvdb_gpu_context_t* ctx) {
+  // Radial fog blob centred at world origin.
+  tvdb_dense_grid dens;
+  tvdb_dense_grid_init(&dens, 32, 32, 32);
+  dens.voxel_size = 0.1f;
+  dens.ox = dens.oy = dens.oz = -1.6f;
+  for (int z = 0; z < 32; ++z)
+    for (int y = 0; y < 32; ++y)
+      for (int x = 0; x < 32; ++x) {
+        float wx = dens.ox + ((float)x + 0.5f) * dens.voxel_size;
+        float wy = dens.oy + ((float)y + 0.5f) * dens.voxel_size;
+        float wz = dens.oz + ((float)z + 0.5f) * dens.voxel_size;
+        float r = sqrtf(wx*wx + wy*wy + wz*wz);
+        dens.data[(size_t)(z*32 + y)*32 + x] = r < 1.0f ? (1.0f - r) * 5.0f : 0.0f;
+      }
+
+  const float eye[3] = {0.0f, 0.0f, -5.0f};
+  const float center[3] = {0.0f, 0.0f, 0.0f};
+  const float up[3] = {0.0f, 1.0f, 0.0f};
+  const int W = 64, H = 64;
+  float* cpu = (float*)malloc((size_t)W * H * sizeof(float));
+  float* gpu = (float*)malloc((size_t)W * H * sizeof(float));
+  EXPECT(tvdb_volume_render(&dens, eye, center, up, 0.6f, W, H, 1.0f, 0.05f, 0.0f, cpu));
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  tvdb_status_t st = tvdb_gpu_volume_render(ctx, &dens, eye, center, up, 0.6f, W, H, 1.0f, 0.05f, 0.0f, gpu, &err);
+  if (st != TVDB_OK) {
+    fprintf(stderr, "gpu volume_render failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    float max_err = 0.0f, center_val = gpu[(H/2)*W + W/2], corner_val = gpu[0];
+    for (int i = 0; i < W*H; ++i) { float e = fabsf(cpu[i] - gpu[i]); if (e > max_err) max_err = e; }
+    EXPECT(max_err <= 2e-3f);
+    EXPECT(center_val > corner_val);  // blob brighter at image centre
+  }
+  free(cpu); free(gpu);
+  tvdb_dense_grid_free(&dens);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -729,6 +769,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_sparse_conv(ctx);
   test_spatial_queries(ctx);
   test_topology(ctx);
+  test_volume_render(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

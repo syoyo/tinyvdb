@@ -28,6 +28,7 @@
 #include "tinyvdb_gpu_prune_spv.inc"
 #include "tinyvdb_gpu_coarsen_spv.inc"
 #include "tinyvdb_gpu_refine_spv.inc"
+#include "tinyvdb_gpu_volume_render_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -1854,6 +1855,52 @@ static const char* kTvdbCudaSource =
 "  float c01 = c001 + (c101 - c001) * tx; float c11 = c011 + (c111 - c011) * tx;\n"
 "  float c0 = c00 + (c10 - c00) * ty; float c1 = c01 + (c11 - c01) * ty;\n"
 "  out_data[gid] = c0 + (c1 - c0) * tz;\n"
+"}\n"
+"__device__ float tvdb_sample_world(const float* g, int nx, int ny, int nz,\n"
+"                                    float ox, float oy, float oz, float vs, float wx, float wy, float wz) {\n"
+"  float fx = (wx - ox) / vs - 0.5f, fy = (wy - oy) / vs - 0.5f, fz = (wz - oz) / vs - 0.5f;\n"
+"  int ix = (int)floorf(fx), iy = (int)floorf(fy), iz = (int)floorf(fz);\n"
+"  float tx = fx - ix, ty = fy - iy, tz = fz - iz;\n"
+"  float c00 = tvdb_fetch(g,nx,ny,nz,ix,iy,iz)     + (tvdb_fetch(g,nx,ny,nz,ix+1,iy,iz)     - tvdb_fetch(g,nx,ny,nz,ix,iy,iz))     * tx;\n"
+"  float c10 = tvdb_fetch(g,nx,ny,nz,ix,iy+1,iz)   + (tvdb_fetch(g,nx,ny,nz,ix+1,iy+1,iz)   - tvdb_fetch(g,nx,ny,nz,ix,iy+1,iz))   * tx;\n"
+"  float c01 = tvdb_fetch(g,nx,ny,nz,ix,iy,iz+1)   + (tvdb_fetch(g,nx,ny,nz,ix+1,iy,iz+1)   - tvdb_fetch(g,nx,ny,nz,ix,iy,iz+1))   * tx;\n"
+"  float c11 = tvdb_fetch(g,nx,ny,nz,ix,iy+1,iz+1) + (tvdb_fetch(g,nx,ny,nz,ix+1,iy+1,iz+1) - tvdb_fetch(g,nx,ny,nz,ix,iy+1,iz+1)) * tx;\n"
+"  float c0 = c00 + (c10 - c00) * ty, c1 = c01 + (c11 - c01) * ty;\n"
+"  return c0 + (c1 - c0) * tz;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_volume_render(const float* density, float* out_image,\n"
+"    int nx, int ny, int nz, float ox, float oy, float oz, float vs,\n"
+"    float lox, float loy, float loz, float hix, float hiy, float hiz,\n"
+"    float ex, float ey, float ez, float fwx, float fwy, float fwz,\n"
+"    float rx, float ry, float rz, float ux, float uy, float uz,\n"
+"    float tan_half, float aspect, float sigma, float step, float background,\n"
+"    int width, int height) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (gid >= (unsigned int)(width * height)) return;\n"
+"  int px = (int)gid % width, py = (int)gid / width;\n"
+"  float sx = (2.0f * ((float)px + 0.5f) / (float)width - 1.0f) * aspect * tan_half;\n"
+"  float sy = (1.0f - 2.0f * ((float)py + 0.5f) / (float)height) * tan_half;\n"
+"  float dx = fwx + sx*rx + sy*ux, dy = fwy + sx*ry + sy*uy, dz = fwz + sx*rz + sy*uz;\n"
+"  float dl = sqrtf(dx*dx + dy*dy + dz*dz); if (dl > 0.0f) { dx/=dl; dy/=dl; dz/=dl; }\n"
+"  float o[3] = {ex, ey, ez}, d[3] = {dx, dy, dz}, lo[3] = {lox, loy, loz}, hi[3] = {hix, hiy, hiz};\n"
+"  float tmin = 0.0f, tmax = 1e30f; bool hit = true;\n"
+"  for (int a = 0; a < 3; ++a) {\n"
+"    if (fabsf(d[a]) < 1e-12f) { if (o[a] < lo[a] || o[a] > hi[a]) { hit = false; break; } }\n"
+"    else { float inv = 1.0f / d[a]; float ta = (lo[a]-o[a])*inv, tb = (hi[a]-o[a])*inv;\n"
+"      if (ta > tb) { float t = ta; ta = tb; tb = t; } if (ta > tmin) tmin = ta; if (tb < tmax) tmax = tb;\n"
+"      if (tmin > tmax) { hit = false; break; } } }\n"
+"  float transmit = 1.0f;\n"
+"  if (hit && tmax > tmin) {\n"
+"    for (float t = tmin + 0.5f*step; t < tmax && transmit > 1e-3f; t += step) {\n"
+"      float wx = ex + t*dx, wy = ey + t*dy, wz = ez + t*dz;\n"
+"      float den = tvdb_sample_world(density, nx, ny, nz, ox, oy, oz, vs, wx, wy, wz);\n"
+"      if (den <= 0.0f) continue;\n"
+"      float alpha = 1.0f - expf(-den * sigma * step);\n"
+"      transmit *= (1.0f - alpha);\n"
+"    }\n"
+"  }\n"
+"  float opacity = 1.0f - transmit;\n"
+"  out_image[py * width + px] = opacity + transmit * background;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -4133,5 +4180,114 @@ rdone:
   tvdb_vk_destroy_buffer(ctx, &bp);
 rdone_o: tvdb_vk_destroy_buffer(ctx, &bo);
 rdone_i: tvdb_vk_destroy_buffer(ctx, &bi);
+  return st;
+}
+
+// ---- volume render ----------------------------------------------------------
+
+static void tvdb_v3_sub(const float a[3], const float b[3], float o[3]) {
+  o[0] = a[0]-b[0]; o[1] = a[1]-b[1]; o[2] = a[2]-b[2];
+}
+static void tvdb_v3_cross(const float a[3], const float b[3], float o[3]) {
+  o[0] = a[1]*b[2]-a[2]*b[1]; o[1] = a[2]*b[0]-a[0]*b[2]; o[2] = a[0]*b[1]-a[1]*b[0];
+}
+static void tvdb_v3_norm(float a[3]) {
+  float l = sqrtf(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]);
+  if (l > 0.0f) { a[0]/=l; a[1]/=l; a[2]/=l; }
+}
+
+tvdb_status_t tvdb_gpu_volume_render(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* density,
+                                     const float eye[3], const float center[3],
+                                     const float up[3], float fov_y, int width, int height,
+                                     float sigma, float step, float background,
+                                     float* out_image, tvdb_error_t* err) {
+  if (!ctx || !density || !density->data || !eye || !center || !up || !out_image ||
+      width < 1 || height < 1 || step <= 0.0f || fov_y <= 0.0f) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid volume_render arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  // Camera basis (matches render.c, including the up-parallel fallback).
+  float fwd[3]; tvdb_v3_sub(center, eye, fwd); tvdb_v3_norm(fwd);
+  float right[3]; tvdb_v3_cross(fwd, up, right);
+  if (right[0]*right[0] + right[1]*right[1] + right[2]*right[2] < 1e-12f) {
+    float alt[3] = {1.0f, 0.0f, 0.0f};
+    if (fabsf(fwd[0]) > 0.9f) { alt[0] = 0.0f; alt[1] = 1.0f; }
+    tvdb_v3_cross(fwd, alt, right);
+  }
+  tvdb_v3_norm(right);
+  float cup[3]; tvdb_v3_cross(right, fwd, cup);
+  float tan_half = tanf(0.5f * fov_y);
+  float aspect = (float)width / (float)height;
+  float lo[3] = {density->ox, density->oy, density->oz};
+  float hi[3] = {density->ox + density->nx * density->voxel_size,
+                 density->oy + density->ny * density->voxel_size,
+                 density->oz + density->nz * density->voxel_size};
+  size_t nin = (size_t)density->nx * (size_t)density->ny * (size_t)density->nz;
+  size_t npix = (size_t)width * (size_t)height;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dd = 0, dimg = 0;
+    tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+    if (st != TVDB_OK) return st;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_volume_render"))) return err ? err->status : TVDB_ERROR_IO;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, density->data, nin * sizeof(float), err)) != TVDB_OK) goto vdone;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dimg, NULL, npix * sizeof(float), err)) != TVDB_OK) goto vdone;
+    int nx = density->nx, ny = density->ny, nz = density->nz;
+    float ox = density->ox, oy = density->oy, oz = density->oz, vs = density->voxel_size;
+    float ex = eye[0], ey = eye[1], ez = eye[2];
+    float fwx = fwd[0], fwy = fwd[1], fwz = fwd[2];
+    float rx = right[0], ry = right[1], rz = right[2];
+    float ux = cup[0], uy = cup[1], uz = cup[2];
+    float lox = lo[0], loy = lo[1], loz = lo[2], hix = hi[0], hiy = hi[1], hiz = hi[2];
+    void* args[] = {&dd, &dimg, &nx, &ny, &nz, &ox, &oy, &oz, &vs,
+                    &lox, &loy, &loz, &hix, &hiy, &hiz,
+                    &ex, &ey, &ez, &fwx, &fwy, &fwz, &rx, &ry, &rz, &ux, &uy, &uz,
+                    &tan_half, &aspect, &sigma, &step, &background, &width, &height};
+    unsigned int block = 64, grid = ((unsigned int)npix + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto vdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto vdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out_image, dimg, npix * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto vdone; }
+    st = TVDB_OK;
+vdone:
+    if (dimg) ctx->cuda.cuMemFree(dimg);
+    if (dd) ctx->cuda.cuMemFree(dd);
+    return st;
+  }
+
+  tvdb_vk_buffer bd, bo, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, nin * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bd, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, npix * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto vdone_d;
+  if ((st = tvdb_vk_create_buffer(ctx, 176, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto vdone_o;
+  memcpy(bd.mapped, density->data, nin * sizeof(float));
+  struct {
+    int32_t dim[4]; int32_t wh[4]; float grid_origin[4]; float lo[4]; float hi[4];
+    float eye[4]; float fwd[4]; float right[4]; float cup[4]; float cam[4]; float cam2[4];
+  } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = density->nx; par.dim[1] = density->ny; par.dim[2] = density->nz; par.dim[3] = width;
+  par.wh[0] = height;
+  par.grid_origin[0] = density->ox; par.grid_origin[1] = density->oy; par.grid_origin[2] = density->oz; par.grid_origin[3] = density->voxel_size;
+  par.lo[0] = lo[0]; par.lo[1] = lo[1]; par.lo[2] = lo[2];
+  par.hi[0] = hi[0]; par.hi[1] = hi[1]; par.hi[2] = hi[2];
+  par.eye[0] = eye[0]; par.eye[1] = eye[1]; par.eye[2] = eye[2];
+  par.fwd[0] = fwd[0]; par.fwd[1] = fwd[1]; par.fwd[2] = fwd[2];
+  par.right[0] = right[0]; par.right[1] = right[1]; par.right[2] = right[2];
+  par.cup[0] = cup[0]; par.cup[1] = cup[1]; par.cup[2] = cup[2];
+  par.cam[0] = tan_half; par.cam[1] = aspect; par.cam[2] = sigma; par.cam[3] = step;
+  par.cam2[0] = background;
+  memcpy(bp.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuVolumeRenderSpv; d.spv_len = kTvdbGpuVolumeRenderSpv_len; d.descriptor_count = 3;
+  d.buffers[0] = &bd; d.buffers[1] = &bo; d.buffers[2] = &bp;
+  d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((npix + 63u) / 64u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out_image, bo.mapped, npix * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+vdone_o: tvdb_vk_destroy_buffer(ctx, &bo);
+vdone_d: tvdb_vk_destroy_buffer(ctx, &bd);
   return st;
 }

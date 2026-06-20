@@ -26,3 +26,5 @@ static const uint8_t kTvdbGpuCoarsenSpv[] = {0};
 static const uint32_t kTvdbGpuCoarsenSpv_len = 0;
 static const uint8_t kTvdbGpuRefineSpv[] = {0};
 static const uint32_t kTvdbGpuRefineSpv_len = 0;
+static const uint8_t kTvdbGpuVolumeRenderSpv[] = {0};
+static const uint32_t kTvdbGpuVolumeRenderSpv_len = 0;

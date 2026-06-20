@@ -237,6 +237,16 @@ tvdb_status_t tvdb_gpu_coarsen(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* i
 tvdb_status_t tvdb_gpu_refine(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* in,
                               int factor, tvdb_dense_grid* out, tvdb_error_t* err);
 
+// Emission-absorption volume render of a density grid with a pinhole camera
+// (parallels tvdb_volume_render). One GPU thread per pixel; ray-AABB clip +
+// front-to-back march. `out_image` is width*height floats (row-major, top row
+// first), caller-allocated.
+tvdb_status_t tvdb_gpu_volume_render(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* density,
+                                     const float eye[3], const float center[3],
+                                     const float up[3], float fov_y, int width, int height,
+                                     float sigma, float step, float background,
+                                     float* out_image, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif
