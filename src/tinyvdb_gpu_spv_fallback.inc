@@ -32,3 +32,5 @@ static const uint8_t kTvdbGpuRaySamplesSpv[] = {0};
 static const uint32_t kTvdbGpuRaySamplesSpv_len = 0;
 static const uint8_t kTvdbGpuVoxelsAlongRaySpv[] = {0};
 static const uint32_t kTvdbGpuVoxelsAlongRaySpv_len = 0;
+static const uint8_t kTvdbGpuSegmentsAlongRaySpv[] = {0};
+static const uint32_t kTvdbGpuSegmentsAlongRaySpv_len = 0;

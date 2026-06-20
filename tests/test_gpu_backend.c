@@ -817,6 +817,44 @@ static void test_ray_queries(tvdb_gpu_context_t* ctx) {
   }
   free(gpu_vox); free(gpu_cnt);
   tvdb_dense_grid_free(&grid);
+
+  // --- segments_along_ray: rays through a sphere SDF -> one inside run each --
+  tvdb_dense_grid sdf;
+  make_sphere(&sdf);  // sphere radius 1, centre ~(0.1,-0.1,0.2)
+  enum { NSR = 3 };
+  tvdb_ray srays[NSR] = {
+    {{-3.0f, -0.1f, 0.2f}, {1.0f, 0.0f, 0.0f}, 0.0f, 6.0f},
+    {{0.1f, -3.0f, 0.2f},  {0.0f, 1.0f, 0.0f}, 0.0f, 6.0f},
+    {{-2.0f, -2.0f, 0.2f}, {1.0f, 1.0f, 0.0f}, 0.0f, 6.0f},
+  };
+  float sflat[NSR * 8];
+  for (int i = 0; i < NSR; ++i) {
+    sflat[8*i+0] = srays[i].origin.x; sflat[8*i+1] = srays[i].origin.y; sflat[8*i+2] = srays[i].origin.z;
+    sflat[8*i+3] = srays[i].tmin;
+    sflat[8*i+4] = srays[i].dir.x; sflat[8*i+5] = srays[i].dir.y; sflat[8*i+6] = srays[i].dir.z;
+    sflat[8*i+7] = srays[i].tmax;
+  }
+  const size_t scap = 8, sc = 256;
+  float* gpu_pairs = (float*)malloc(NSR * scap * 2 * sizeof(float));
+  int32_t* gpu_pc = (int32_t*)malloc(NSR * sizeof(int32_t));
+  if (tvdb_gpu_segments_along_ray(ctx, &sdf, sflat, NSR, 0.0f, sc, scap, gpu_pairs, gpu_pc, &err) != TVDB_OK) {
+    fprintf(stderr, "segments_along_ray failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    for (int r = 0; r < NSR; ++r) {
+      float cpu_pairs[16];
+      size_t cpu_np = tvdb_segments_along_ray(&sdf, &srays[r], 0.0f, sc, cpu_pairs, scap);
+      EXPECT((size_t)gpu_pc[r] == cpu_np);
+      EXPECT(cpu_np == 1);  // each ray crosses the sphere once
+      size_t m = (size_t)gpu_pc[r] < cpu_np ? (size_t)gpu_pc[r] : cpu_np;
+      for (size_t p = 0; p < m && p < scap; ++p) {
+        EXPECT_NEAR(gpu_pairs[((size_t)r*scap + p)*2 + 0], cpu_pairs[2*p+0], 1e-3f);
+        EXPECT_NEAR(gpu_pairs[((size_t)r*scap + p)*2 + 1], cpu_pairs[2*p+1], 1e-3f);
+      }
+    }
+  }
+  free(gpu_pairs); free(gpu_pc);
+  tvdb_dense_grid_free(&sdf);
 }
 
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {

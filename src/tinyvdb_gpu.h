@@ -266,6 +266,15 @@ tvdb_status_t tvdb_gpu_voxels_along_ray(tvdb_gpu_context_t* ctx, const tvdb_dens
                                         const float* rays, size_t n_rays, size_t cap,
                                         int32_t* out_voxels, int32_t* out_counts, tvdb_error_t* err);
 
+// SDF-zero crossings per ray as (entry,exit) t-pairs for each inside run
+// (parallels tvdb_segments_along_ray; ray-SDF intersection = first pair).
+// Writes up to `cap` pairs into out_t_pairs[ray*cap*2 ...] and the per-ray
+// total pair count into out_counts[ray] (may exceed cap). `step_count` >= 2.
+tvdb_status_t tvdb_gpu_segments_along_ray(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                          const float* rays, size_t n_rays, float isovalue,
+                                          size_t step_count, size_t cap,
+                                          float* out_t_pairs, int32_t* out_counts, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

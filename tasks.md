@@ -190,9 +190,12 @@ each theme. Notes point at the nearest existing primitive to reuse.
       host-visible Vulkan buffers owned by tinyvdb. Add import/export or
       caller-provided buffer hooks for Vulkan and CUDA so sample/query results
       can stay on device.
-- [ ] **P0: GPU sparse topology ops.** Add runtime-loaded Vulkan/CUDA kernels
-      for sparse dilate, prune, refine, coarsen, and merge, paralleling
-      NanoVDB CUDA topology tools and the existing CPU sparse/topology ops.
+- [~] **P0: GPU sparse topology ops.** Dense `tvdb_gpu_dilate`/`tvdb_gpu_erode`
+      (6-neighbor min/max morphology), `tvdb_gpu_prune`, `tvdb_gpu_coarsen`
+      (block average), and `tvdb_gpu_refine` (trilinear upsample) on Vulkan and
+      CUDA/NVRTC, mirroring `tinyvdb_ops.c`/`tinyvdb_topology.c`. Covered by
+      `test_gpu_backend` (`test_topology`). *Still open:* sparse topology-growth
+      dilate/erode and merge (output-size-unknown → needs compaction).
 - [~] **P0: GPU spatial queries.** `tvdb_gpu_coords_in_grid`,
       `tvdb_gpu_points_in_grid`, `tvdb_gpu_ijk_to_index`, and
       `tvdb_gpu_neighbor_counts` (6/26) over a flat active-coord set, on Vulkan
@@ -201,9 +204,14 @@ each theme. Notes point at the nearest existing primitive to reuse.
       Covered by `test_gpu_backend` (GPU-vs-CPU parity). *Still open:* GPU
       active-coordinate extraction from a dense grid (needs stream compaction /
       prefix-sum).
-- [ ] **P0: GPU ray and volume queries.** Add voxels/segments along rays,
-      uniform ray samples, ray-SDF intersection, and volume render kernels with
-      conservative VRAM-bounded tests.
+- [x] **P0: GPU ray and volume queries.** `tvdb_gpu_volume_render`
+      (emission-absorption, one thread/pixel), `tvdb_gpu_uniform_ray_samples`,
+      `tvdb_gpu_voxels_along_ray` (Amanatides-Woo DDA), and
+      `tvdb_gpu_segments_along_ray` (SDF crossings; ray-SDF intersection = first
+      pair) on Vulkan and CUDA/NVRTC, mirroring `tinyvdb_render.c`/`tinyvdb_ray.c`.
+      Covered by `test_gpu_backend` (`test_volume_render`, `test_ray_queries`);
+      DDA termination/entry are float-sensitive so the test allows a ±1
+      boundary diff with exact-prefix agreement. VRAM-trivial test data.
 - [ ] **P0: GPU TSDF integration and marching cubes.** Port the existing CPU
       TSDF fusion and marching-cubes surface extraction to the runtime-loaded
       GPU backend.
