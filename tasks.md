@@ -203,7 +203,7 @@ each theme. Notes point at the nearest existing primitive to reuse.
       handle). *Still open:* true cross-API import/export needs
       `VK_KHR_external_memory_fd`/Win32 + CUDA external-memory ABI structs
       outside the minimal local Vulkan ABI — an architectural extension.
-- [~] **P0: GPU sparse topology ops.** Dense `tvdb_gpu_dilate`/`tvdb_gpu_erode`
+- [x] **P0: GPU sparse topology ops.** Dense `tvdb_gpu_dilate`/`tvdb_gpu_erode`
       (6-neighbor min/max morphology), `tvdb_gpu_prune`, `tvdb_gpu_coarsen`
       (block average), and `tvdb_gpu_refine` (trilinear upsample), plus sparse
       `tvdb_gpu_dilate_sparse` (topology growth, min-pool, CAS atomic-min) and
@@ -213,7 +213,7 @@ each theme. Notes point at the nearest existing primitive to reuse.
       `tinyvdb_sparse.c`. Covered by `test_gpu_backend` (`test_topology`,
       `test_sparse_erode`, `test_sparse_dilate`) and `tvdb_gpu_merge_grids`
       (dense union-AABB merge with min-pool, `test_merge`). COMPLETE.
-- [~] **P0: GPU spatial queries.** `tvdb_gpu_coords_in_grid`,
+- [x] **P0: GPU spatial queries.** `tvdb_gpu_coords_in_grid`,
       `tvdb_gpu_points_in_grid`, `tvdb_gpu_ijk_to_index`, and
       `tvdb_gpu_neighbor_counts` (6/26) over a flat active-coord set, on Vulkan
       and CUDA/NVRTC, mirroring the CPU `tinyvdb_grid_index.{h,c}` helpers via
@@ -230,7 +230,7 @@ each theme. Notes point at the nearest existing primitive to reuse.
       Covered by `test_gpu_backend` (`test_volume_render`, `test_ray_queries`);
       DDA termination/entry are float-sensitive so the test allows a ±1
       boundary diff with exact-prefix agreement. VRAM-trivial test data.
-- [~] **P0: GPU TSDF integration and marching cubes.** `tvdb_gpu_integrate_tsdf`
+- [x] **P0: GPU TSDF integration and marching cubes.** `tvdb_gpu_integrate_tsdf`
       (per-voxel depth-frame fusion + weighted average) done on Vulkan and
       CUDA/NVRTC, mirroring `tvdb_integrate_tsdf`; covered by `test_gpu_backend`
       (`test_tsdf`). `tvdb_gpu_marching_cubes` (one thread/cell, emits a triangle
@@ -273,13 +273,14 @@ each theme. Notes point at the nearest existing primitive to reuse.
       (`sample.vjp(grid) == splat`), while the existing GPU trilinear sample is
       the splat VJP w.r.t. values. *Still open:* quadratic/Bezier sample+splat
       gradient kernels.
-- [~] **P1: GPU diagnostics.** `tvdb_gpu_grid_statistics`
+- [x] **P1: GPU diagnostics.** `tvdb_gpu_grid_statistics`
       (min/max/mean/stddev/sum via grid-stride partial reduction),
       `tvdb_gpu_check_fog_volume`, and `tvdb_gpu_check_level_set` (band |grad|
       reduction) on Vulkan and CUDA/NVRTC, mirroring `tinyvdb_stats.c`. Covered
       by `test_gpu_backend` (`test_stats`), plus `tvdb_gpu_grid_checksum` (an
       order-independent additive validation hash via reduction, `test_checksum`).
-      COMPLETE for dense grids.
+      COMPLETE (sparse-data stats/checksum reuse the same reductions over a
+      sparse value buffer).
 - [~] **P1: signed flood fill and sparse background robustness.**
       `tvdb_gpu_signed_flood_fill` done — exterior reachability flood through
       far voxels as iterative GPU label propagation (host seeds the boundary and
@@ -324,7 +325,7 @@ core — listed for visibility, not on the near-term roadmap.
 
 ## Test coverage (current)
 
-19 ctests register under `build/` when `TINYVDB_BUILD_GPU=ON`:
+20 ctests register under `build/` when `TINYVDB_BUILD_GPU=ON`:
 
 | target | what |
 | --- | --- |
