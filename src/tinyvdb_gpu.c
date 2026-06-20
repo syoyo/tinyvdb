@@ -24,6 +24,8 @@
 #include "tinyvdb_gpu_ijk_to_index_spv.inc"
 #include "tinyvdb_gpu_points_in_grid_spv.inc"
 #include "tinyvdb_gpu_neighbor_counts_spv.inc"
+#include "tinyvdb_gpu_morph_spv.inc"
+#include "tinyvdb_gpu_prune_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -1776,6 +1778,34 @@ static const char* kTvdbCudaSource =
 "      if (tvdb_active_index(active, na, c.x + o[t][0], c.y + o[t][1], c.z + o[t][2]) >= 0) ++cnt;\n"
 "  }\n"
 "  out_counts[i] = cnt;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_morph(const float* in_data, float* out_data,\n"
+"                                            int nx, int ny, int nz, int is_dilate) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = (unsigned int)(nx * ny * nz);\n"
+"  if (gid >= total) return;\n"
+"  int iz = (int)(gid / (unsigned int)(nx * ny));\n"
+"  int rem = (int)(gid - (unsigned int)(iz * nx * ny));\n"
+"  int iy = rem / nx; int ix = rem - iy * nx;\n"
+"  float r = in_data[gid];\n"
+"  float xm = tvdb_fetch(in_data, nx, ny, nz, ix - 1, iy, iz);\n"
+"  float xp = tvdb_fetch(in_data, nx, ny, nz, ix + 1, iy, iz);\n"
+"  float ym = tvdb_fetch(in_data, nx, ny, nz, ix, iy - 1, iz);\n"
+"  float yp = tvdb_fetch(in_data, nx, ny, nz, ix, iy + 1, iz);\n"
+"  float zm = tvdb_fetch(in_data, nx, ny, nz, ix, iy, iz - 1);\n"
+"  float zp = tvdb_fetch(in_data, nx, ny, nz, ix, iy, iz + 1);\n"
+"  if (is_dilate != 0) {\n"
+"    r = fminf(r, fminf(fminf(xm, xp), fminf(fminf(ym, yp), fminf(zm, zp))));\n"
+"  } else {\n"
+"    r = fmaxf(r, fmaxf(fmaxf(xm, xp), fmaxf(fmaxf(ym, yp), fmaxf(zm, zp))));\n"
+"  }\n"
+"  out_data[gid] = r;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_prune(float* data, unsigned int count,\n"
+"                                            float background, float tolerance) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= count) return;\n"
+"  if (fabsf(data[i] - background) <= tolerance) data[i] = background;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -3783,4 +3813,143 @@ tvdb_status_t tvdb_gpu_neighbor_counts(tvdb_gpu_context_t* ctx,
   if (ctx->backend == TVDB_GPU_BACKEND_CUDA)
     return tvdb_cuda_neighbor_counts_impl(ctx, active, na, connectivity, out_counts, err);
   return tvdb_vk_neighbor_counts_impl(ctx, active, na, connectivity, out_counts, err);
+}
+
+// ---- dense topology / morphology -------------------------------------------
+
+static tvdb_status_t tvdb_vk_morph(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                   int iterations, int is_dilate, tvdb_error_t* err) {
+  size_t n = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
+  tvdb_vk_buffer ba, bb, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &ba, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bb, err)) != TVDB_OK) goto done_a;
+  if ((st = tvdb_vk_create_buffer(ctx, 32, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_b;
+  memcpy(ba.mapped, grid->data, n * sizeof(float));
+  struct { int32_t dim[4]; int32_t is_dilate; int32_t pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = grid->nx; par.dim[1] = grid->ny; par.dim[2] = grid->nz; par.is_dilate = is_dilate;
+  memcpy(bp.mapped, &par, sizeof(par));
+  tvdb_vk_buffer* src = &ba; tvdb_vk_buffer* dst = &bb;
+  for (int it = 0; it < iterations; ++it) {
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = kTvdbGpuMorphSpv; d.spv_len = kTvdbGpuMorphSpv_len; d.descriptor_count = 3;
+    d.buffers[0] = src; d.buffers[1] = dst; d.buffers[2] = &bp;
+    d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    d.group_x = (uint32_t)((n + 127u) / 128u);
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st != TVDB_OK) goto done_p;
+    tvdb_vk_buffer* tmp = src; src = dst; dst = tmp;
+  }
+  memcpy(grid->data, src->mapped, n * sizeof(float));
+done_p: tvdb_vk_destroy_buffer(ctx, &bp);
+done_b: tvdb_vk_destroy_buffer(ctx, &bb);
+done_a: tvdb_vk_destroy_buffer(ctx, &ba);
+  return st;
+}
+
+static tvdb_status_t tvdb_cuda_morph_impl(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                          int iterations, int is_dilate, tvdb_error_t* err) {
+  CUmodule module = NULL; CUfunction fn = NULL;
+  CUdeviceptr da = 0, db = 0;
+  size_t n = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_morph"))) return err ? err->status : TVDB_ERROR_IO;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &da, grid->data, n * sizeof(float), err)) != TVDB_OK) goto done;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &db, NULL, n * sizeof(float), err)) != TVDB_OK) goto done;
+  int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  unsigned int block = 128, grid_blocks = ((unsigned int)n + block - 1u) / block;
+  CUdeviceptr src = da, dst = db;
+  for (int it = 0; it < iterations; ++it) {
+    void* args[] = {&src, &dst, &nx, &ny, &nz, &is_dilate};
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid_blocks, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+    CUdeviceptr tmp = src; src = dst; dst = tmp;
+  }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(grid->data, src, n * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  st = TVDB_OK;
+done:
+  if (db) ctx->cuda.cuMemFree(db);
+  if (da) ctx->cuda.cuMemFree(da);
+  return st;
+}
+
+static tvdb_status_t tvdb_gpu_morph(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                    int iterations, int is_dilate, tvdb_error_t* err) {
+  if (!ctx || !grid || !grid->data || grid->nx <= 0 || grid->ny <= 0 || grid->nz <= 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid morphology arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (iterations <= 0) return TVDB_OK;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA)
+    return tvdb_cuda_morph_impl(ctx, grid, iterations, is_dilate, err);
+  return tvdb_vk_morph(ctx, grid, iterations, is_dilate, err);
+}
+
+tvdb_status_t tvdb_gpu_dilate(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                              int iterations, tvdb_error_t* err) {
+  return tvdb_gpu_morph(ctx, grid, iterations, 1, err);
+}
+tvdb_status_t tvdb_gpu_erode(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                             int iterations, tvdb_error_t* err) {
+  return tvdb_gpu_morph(ctx, grid, iterations, 0, err);
+}
+
+static tvdb_status_t tvdb_vk_prune(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                   float background, float tolerance, tvdb_error_t* err) {
+  size_t n = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
+  tvdb_vk_buffer bd, bp;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bd, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_d;
+  memcpy(bd.mapped, grid->data, n * sizeof(float));
+  struct { uint32_t count; float background; float tolerance; uint32_t pad; } par = {(uint32_t)n, background, tolerance, 0};
+  memcpy(bp.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuPruneSpv; d.spv_len = kTvdbGpuPruneSpv_len; d.descriptor_count = 2;
+  d.buffers[0] = &bd; d.buffers[1] = &bp;
+  d.descriptor_types[0] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(grid->data, bd.mapped, n * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bp);
+done_d: tvdb_vk_destroy_buffer(ctx, &bd);
+  return st;
+}
+
+static tvdb_status_t tvdb_cuda_prune_impl(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                          float background, float tolerance, tvdb_error_t* err) {
+  CUmodule module = NULL; CUfunction fn = NULL;
+  CUdeviceptr dd = 0;
+  size_t n = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
+  tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+  if (st != TVDB_OK) return st;
+  if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_prune"))) return err ? err->status : TVDB_ERROR_IO;
+  if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, grid->data, n * sizeof(float), err)) != TVDB_OK) goto done;
+  unsigned int count = (unsigned int)n;
+  void* args[] = {&dd, &count, &background, &tolerance};
+  unsigned int block = 128, grid_blocks = (count + block - 1u) / block;
+  if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid_blocks, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(grid->data, dd, n * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
+  st = TVDB_OK;
+done:
+  if (dd) ctx->cuda.cuMemFree(dd);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_prune(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                             float background, float tolerance, tvdb_error_t* err) {
+  if (!ctx || !grid || !grid->data || grid->nx <= 0 || grid->ny <= 0 || grid->nz <= 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid prune arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA)
+    return tvdb_cuda_prune_impl(ctx, grid, background, tolerance, err);
+  return tvdb_vk_prune(ctx, grid, background, tolerance, err);
 }

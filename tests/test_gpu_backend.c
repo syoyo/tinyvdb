@@ -4,6 +4,7 @@
 #include "tinyvdb_ops.h"
 #include "tinyvdb_sample.h"
 #include "tinyvdb_sparse.h"
+#include "tinyvdb_topology.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -631,6 +632,54 @@ static void test_spatial_queries(tvdb_gpu_context_t* ctx) {
   free(cpu_cnt); free(gpu_cnt);
 }
 
+static void make_sphere(tvdb_dense_grid* g) {
+  const float center[3] = {0.1f, -0.1f, 0.2f};
+  memset(g, 0, sizeof(*g));
+  EXPECT(tvdb_level_set_sphere(1.0f, center, 0.1f, 3.0f, g));
+}
+
+static void test_topology(tvdb_gpu_context_t* ctx) {
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+
+  // dilate / erode parity vs CPU (3 iterations on a sphere SDF).
+  for (int mode = 0; mode < 2; ++mode) {
+    tvdb_dense_grid cpu, gpu;
+    make_sphere(&cpu); make_sphere(&gpu);
+    const int iters = 3;
+    tvdb_status_t st;
+    if (mode == 0) { tvdb_dilate(&cpu, iters); st = tvdb_gpu_dilate(ctx, &gpu, iters, &err); }
+    else           { tvdb_erode(&cpu, iters);  st = tvdb_gpu_erode(ctx, &gpu, iters, &err); }
+    if (st != TVDB_OK) {
+      fprintf(stderr, "gpu %s failed: %s\n", mode == 0 ? "dilate" : "erode", err.message);
+      EXPECT(0);
+    } else {
+      size_t n = (size_t)cpu.nx * (size_t)cpu.ny * (size_t)cpu.nz;
+      for (size_t i = 0; i < n; ++i) EXPECT_NEAR(gpu.data[i], cpu.data[i], 2e-5f);
+    }
+    tvdb_dense_grid_free(&cpu);
+    tvdb_dense_grid_free(&gpu);
+  }
+
+  // prune parity: the narrow-band background is +/-3; snap voxels within tol of +3.
+  {
+    tvdb_dense_grid cpu, gpu;
+    make_sphere(&cpu); make_sphere(&gpu);
+    const float bg = 3.0f, tol = 0.6f;
+    tvdb_prune_grid(&cpu, bg, tol);
+    tvdb_status_t st = tvdb_gpu_prune(ctx, &gpu, bg, tol, &err);
+    if (st != TVDB_OK) {
+      fprintf(stderr, "gpu prune failed: %s\n", err.message);
+      EXPECT(0);
+    } else {
+      size_t n = (size_t)cpu.nx * (size_t)cpu.ny * (size_t)cpu.nz;
+      for (size_t i = 0; i < n; ++i) EXPECT_NEAR(gpu.data[i], cpu.data[i], 1e-6f);
+    }
+    tvdb_dense_grid_free(&cpu);
+    tvdb_dense_grid_free(&gpu);
+  }
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -656,6 +705,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_vulkan_partial_sparse_image3d(ctx, &info);
   test_sparse_conv(ctx);
   test_spatial_queries(ctx);
+  test_topology(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

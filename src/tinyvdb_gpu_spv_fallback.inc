@@ -18,3 +18,7 @@ static const uint8_t kTvdbGpuPointsInGridSpv[] = {0};
 static const uint32_t kTvdbGpuPointsInGridSpv_len = 0;
 static const uint8_t kTvdbGpuNeighborCountsSpv[] = {0};
 static const uint32_t kTvdbGpuNeighborCountsSpv_len = 0;
+static const uint8_t kTvdbGpuMorphSpv[] = {0};
+static const uint32_t kTvdbGpuMorphSpv_len = 0;
+static const uint8_t kTvdbGpuPruneSpv[] = {0};
+static const uint32_t kTvdbGpuPruneSpv_len = 0;

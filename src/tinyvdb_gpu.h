@@ -212,6 +212,21 @@ tvdb_status_t tvdb_gpu_neighbor_counts(tvdb_gpu_context_t* ctx,
                                        int connectivity,
                                        int32_t* out_counts, tvdb_error_t* err);
 
+// Dense topology / morphology ops (GPU mirrors of tinyvdb_ops.h /
+// tinyvdb_topology.h). All operate in place on `grid->data`.
+
+// SDF morphology: dilate = 6-neighbor min, erode = 6-neighbor max, `iterations`
+// steps with edge clamp (parallels tvdb_dilate / tvdb_erode).
+tvdb_status_t tvdb_gpu_dilate(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                              int iterations, tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_erode(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                             int iterations, tvdb_error_t* err);
+
+// Snap voxels within `tolerance` of `background` exactly to it (parallels
+// tvdb_prune_grid).
+tvdb_status_t tvdb_gpu_prune(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                             float background, float tolerance, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

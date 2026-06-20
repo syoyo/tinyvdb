@@ -1,0 +1,37 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer  { float in_data[]; };
+layout(std430, set = 0, binding = 1) buffer OutBuffer { float out_data[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;       // nx, ny, nz, unused
+  int is_dilate;   // 1 = dilate (6-neighbor min), 0 = erode (6-neighbor max)
+} u;
+
+// One morphology step. SDF convention: f<0 inside. dilate = min, erode = max,
+// over self + 6 face neighbors with edge clamp (matches tvdb_at / tvdb_morph_step).
+float fetch(int x, int y, int z) {
+  x = clamp(x, 0, u.dim.x - 1);
+  y = clamp(y, 0, u.dim.y - 1);
+  z = clamp(z, 0, u.dim.z - 1);
+  return in_data[(z * u.dim.y + y) * u.dim.x + x];
+}
+
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint total = uint(u.dim.x * u.dim.y * u.dim.z);
+  if (gid >= total) return;
+  int iz = int(gid) / (u.dim.x * u.dim.y);
+  int rem = int(gid) - iz * u.dim.x * u.dim.y;
+  int iy = rem / u.dim.x;
+  int ix = rem - iy * u.dim.x;
+  float r = in_data[gid];
+  float xm = fetch(ix - 1, iy, iz), xp = fetch(ix + 1, iy, iz);
+  float ym = fetch(ix, iy - 1, iz), yp = fetch(ix, iy + 1, iz);
+  float zm = fetch(ix, iy, iz - 1), zp = fetch(ix, iy, iz + 1);
+  if (u.is_dilate != 0) {
+    r = min(r, min(min(xm, xp), min(min(ym, yp), min(zm, zp))));
+  } else {
+    r = max(r, max(max(xm, xp), max(max(ym, yp), max(zm, zp))));
+  }
+  out_data[gid] = r;
+}
