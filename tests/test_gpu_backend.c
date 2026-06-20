@@ -1595,6 +1595,45 @@ static void test_ssim(tvdb_gpu_context_t* ctx) {
   free(a); free(b);
 }
 
+static void fill_block(tvdb_sparse_grid* g, int n, float bias) {
+  tvdb_sparse_grid_init(g);
+  tvdb_sparse_grid_reserve(g, (size_t)n*n*n);
+  size_t k = 0;
+  for (int z = 0; z < n; ++z) for (int y = 0; y < n; ++y) for (int x = 0; x < n; ++x) {
+    g->coords[k].x = x; g->coords[k].y = y; g->coords[k].z = z;
+    g->values[k] = 0.1f*(float)(x+2*y+3*z) + bias; ++k;
+  }
+  g->count = (size_t)n*n*n;
+}
+
+static void test_batched_conv(tvdb_gpu_context_t* ctx) {
+  // A GridBatch of 3 different-sized grids; one batched dispatch must equal
+  // running the same-topology conv on each grid individually.
+  tvdb_sparse_grid in[3], out[3], ref;
+  fill_block(&in[0], 2, -0.5f); fill_block(&in[1], 3, 0.2f); fill_block(&in[2], 1, 1.0f);
+  for (int g = 0; g < 3; ++g) tvdb_sparse_grid_init(&out[g]);
+  tvdb_sparse_grid_init(&ref);
+  float kernel[27];
+  for (int i = 0; i < 27; ++i) kernel[i] = (float)(i % 5) * 0.05f - 0.08f;
+  const float pad = 0.25f;
+
+  tvdb_error_t err; memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_sparse_conv3d_batched(ctx, in, 3, kernel, 3, 3, 3, pad, out, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu batched conv failed: %s\n", err.message); EXPECT(0);
+  } else {
+    for (int g = 0; g < 3; ++g) {
+      EXPECT(tvdb_sparse_conv3d(&in[g], kernel, 3, 3, 3, pad, &ref));
+      EXPECT(out[g].count == ref.count);
+      for (size_t i = 0; i < ref.count && out[g].count == ref.count; ++i) {
+        EXPECT(out[g].coords[i].x == ref.coords[i].x && out[g].coords[i].y == ref.coords[i].y && out[g].coords[i].z == ref.coords[i].z);
+        EXPECT_NEAR(out[g].values[i], ref.values[i], 2e-5f);
+      }
+    }
+  }
+  for (int g = 0; g < 3; ++g) { tvdb_sparse_grid_free(&in[g]); tvdb_sparse_grid_free(&out[g]); }
+  tvdb_sparse_grid_free(&ref);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1642,6 +1681,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_gaussian_forward(ctx);
   test_gaussian_backward_gpu(ctx);
   test_ssim(ctx);
+  test_batched_conv(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

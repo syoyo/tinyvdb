@@ -458,6 +458,15 @@ tvdb_status_t tvdb_gpu_ssim(tvdb_gpu_context_t* ctx, const float* img_a, const f
                             uint32_t width, uint32_t height, uint32_t channels, float data_range,
                             float* out_mean, float* out_map, tvdb_error_t* err);
 
+// Batched sparse convolution (GridBatch / JaggedTensor-style): run a
+// same-topology sparse conv3d over `n_grids` grids in a single GPU dispatch.
+// The grids are concatenated jagged on device and each voxel's lookups are
+// confined to its own grid. `out` is an array of `n_grids` filled grids (same
+// topology as inputs). Demonstrates batched device-resident sparse workloads.
+tvdb_status_t tvdb_gpu_sparse_conv3d_batched(tvdb_gpu_context_t* ctx,
+    const tvdb_sparse_grid* in, size_t n_grids, const float* kernel, int kx, int ky, int kz,
+    float pad_value, tvdb_sparse_grid* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

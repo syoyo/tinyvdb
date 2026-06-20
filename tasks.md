@@ -296,9 +296,14 @@ each theme. Notes point at the nearest existing primitive to reuse.
       `tvdb_gaussian_rasterize_forward`/`_backward`. Covered by `test_gpu_backend`
       (`test_gaussian_forward` image+alpha parity; `test_gaussian_backward_gpu`
       per-gaussian gradient parity vs CPU). COMPLETE.
-- [ ] **P2: batched sparse data abstractions.** Evaluate a tinyvdb-native
-      subset of fvdb `JaggedTensor`/`GridBatch` for batched GPU workloads while
-      preserving the dependency-free C API.
+- [~] **P2: batched sparse data abstractions.** `tvdb_gpu_sparse_conv3d_batched`
+      demonstrates the GridBatch / JaggedTensor concept: N sparse grids are
+      concatenated jagged on device (per-voxel grid range), and a same-topology
+      conv runs over the whole batch in ONE GPU dispatch with lookups confined
+      to each voxel's own grid. Vulkan + CUDA/NVRTC; covered by
+      `test_gpu_backend` (`test_batched_conv`, vs per-grid CPU conv). *Still
+      open:* a general reusable JaggedTensor/GridBatch container type beyond this
+      batched-op demonstration.
 - [ ] **P2: PyTorch integration.** Expose selected GPU ops through PyTorch
       tensors/autograd only as an optional layer outside the core C API.
 - [~] **P2: Gaussian training helpers.** `tvdb_gpu_ssim` — windowed SSIM

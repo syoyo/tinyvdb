@@ -78,3 +78,5 @@ static const uint8_t kTvdbGpuGaussianBackwardSpv[] = {0};
 static const uint32_t kTvdbGpuGaussianBackwardSpv_len = 0;
 static const uint8_t kTvdbGpuSsimSpv[] = {0};
 static const uint32_t kTvdbGpuSsimSpv_len = 0;
+static const uint8_t kTvdbGpuSparseConvBatchedSpv[] = {0};
+static const uint32_t kTvdbGpuSparseConvBatchedSpv_len = 0;
