@@ -55,6 +55,7 @@
 #include "tinyvdb_gpu_conv_transpose_scatter_spv.inc"
 #include "tinyvdb_gpu_gaussian_forward_spv.inc"
 #include "tinyvdb_gpu_gaussian_backward_spv.inc"
+#include "tinyvdb_gpu_gaussian_sh_spv.inc"
 #include "tinyvdb_gpu_ssim_spv.inc"
 #include "tinyvdb_gpu_sparse_conv_batched_spv.inc"
 #else
@@ -2201,6 +2202,33 @@ static const char* kTvdbCudaSource =
 "        float w = wu[dx] * wv[dy] * ww[dz]; unsigned int idx = (unsigned int)((z * ny + y) * nx + x);\n"
 "        atomicAdd(&data[idx], w * v); if (has_weights) atomicAdd(&wdata[idx], w);\n"
 "      } } }\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_gaussian_sh(const float* sh, const tvdb_float4* dirs, float* out_colors,\n"
+"    unsigned int count, unsigned int degree, unsigned int K) {\n"
+"  unsigned int g = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (g >= count) return;\n"
+"  const float C0 = 0.28209479177387814f;\n"
+"  const float C1 = 0.4886025119029199f;\n"
+"  const float C2[5] = {1.0925484305920792f, -1.0925484305920792f, 0.31539156525252005f, -1.0925484305920792f, 0.5462742152960396f};\n"
+"  const float C3[7] = {-0.5900435899266435f, 2.890611442640554f, -0.4570457994644658f, 0.3731763325901154f, -0.4570457994644658f, 1.445305721320277f, -0.5900435899266435f};\n"
+"  tvdb_float4 dd = dirs[g]; float dx = dd.x, dy = dd.y, dz = dd.z;\n"
+"  float len = sqrtf(dx*dx+dy*dy+dz*dz);\n"
+"  if (len > 1e-8f) { dx/=len; dy/=len; dz/=len; } else { dx=dy=dz=0.0f; }\n"
+"  unsigned int base = (g * K) * 3u;\n"
+"  for (unsigned int c = 0u; c < 3u; ++c) {\n"
+"    const float* s = sh + base + c; float r = C0 * s[0];\n"
+"    if (degree >= 1u) {\n"
+"      r += C1 * (-dy*s[3] + dz*s[6] - dx*s[9]);\n"
+"      if (degree >= 2u) {\n"
+"        float xx=dx*dx, yy=dy*dy, zz=dz*dz, xy=dx*dy, yz=dy*dz, xz=dx*dz;\n"
+"        r += C2[0]*xy*s[12] + C2[1]*yz*s[15] + C2[2]*(2.0f*zz-xx-yy)*s[18] + C2[3]*xz*s[21] + C2[4]*(xx-yy)*s[24];\n"
+"        if (degree >= 3u) {\n"
+"          r += C3[0]*dy*(3.0f*xx-yy)*s[27] + C3[1]*xy*dz*s[30] + C3[2]*dy*(4.0f*zz-xx-yy)*s[33] + C3[3]*dz*(2.0f*zz-3.0f*xx-3.0f*yy)*s[36] + C3[4]*dx*(4.0f*zz-xx-yy)*s[39] + C3[5]*dz*(xx-yy)*s[42] + C3[6]*dx*(xx-3.0f*yy)*s[45];\n"
+"        }\n"
+"      }\n"
+"    }\n"
+"    r += 0.5f; out_colors[g*3u+c] = r > 0.0f ? r : 0.0f;\n"
+"  }\n"
 "}\n"
 "extern \"C\" __global__ void tvdb_cuda_points_to_mask(float* mask, const tvdb_float4* pts,\n"
 "    int nx, int ny, int nz, float ox, float oy, float oz, float vs, unsigned int count) {\n"
@@ -5683,6 +5711,73 @@ tvdb_status_t tvdb_gpu_splat_quadratic_dense(tvdb_gpu_context_t* ctx, tvdb_dense
                                              float* weights, tvdb_error_t* err) {
   return tvdb_gpu_splat_dense_impl(ctx, grid, points, vals, n, weights, "tvdb_cuda_splat_quadratic",
                                    kTvdbGpuSplatQuadraticSpv, kTvdbGpuSplatQuadraticSpv_len, err);
+}
+
+// ---- Gaussian spherical-harmonics color evaluation --------------------------
+
+tvdb_status_t tvdb_gpu_gaussian_sh_eval(tvdb_gpu_context_t* ctx, uint32_t num_gaussians,
+                                        uint32_t degree, const float* sh_coeffs, const float* dirs,
+                                        float* out_colors, tvdb_error_t* err) {
+  if (!ctx || degree > 3 || (num_gaussians && (!sh_coeffs || !dirs || !out_colors))) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid gaussian_sh_eval arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (num_gaussians == 0) return TVDB_OK;
+  uint32_t K = (degree + 1u) * (degree + 1u);
+  size_t n = num_gaussians;
+  size_t sh_floats = n * K * 3u;
+  size_t out_floats = n * 3u;
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dsh = 0, dd = 0, dout = 0;
+    float* d4 = (float*)malloc(n * 4u * sizeof(float));
+    if (!d4) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+    for (size_t i = 0; i < n; ++i) { d4[4*i+0]=dirs[3*i+0]; d4[4*i+1]=dirs[3*i+1]; d4[4*i+2]=dirs[3*i+2]; d4[4*i+3]=0.0f; }
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) { free(d4); return st; }
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_gaussian_sh"))) { free(d4); return err ? err->status : TVDB_ERROR_IO; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dsh, sh_coeffs, sh_floats * sizeof(float), err)) != TVDB_OK) goto shcu_free;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, d4, n * 4u * sizeof(float), err)) != TVDB_OK) goto shcu_free;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, out_floats * sizeof(float), err)) != TVDB_OK) goto shcu_free;
+    unsigned int uc = (unsigned int)n, ud = degree, uk = K;
+    void* args[] = {&dsh, &dd, &dout, &uc, &ud, &uk};
+    unsigned int block = 128, gridb = (uc + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, gridb, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto shcu_free; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto shcu_free; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out_colors, dout, out_floats * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto shcu_free; }
+    st = TVDB_OK;
+shcu_free:
+    if (dout) ctx->cuda.cuMemFree(dout);
+    if (dd) ctx->cuda.cuMemFree(dd);
+    if (dsh) ctx->cuda.cuMemFree(dsh);
+    free(d4);
+    return st;
+  }
+
+  tvdb_vk_buffer bsh, bd, bout, bu;
+  if ((st = tvdb_vk_create_buffer(ctx, sh_floats * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bsh, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, n * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bd, err)) != TVDB_OK) goto shd_sh;
+  if ((st = tvdb_vk_create_buffer(ctx, out_floats * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bout, err)) != TVDB_OK) goto shd_d;
+  if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto shd_out;
+  memcpy(bsh.mapped, sh_coeffs, sh_floats * sizeof(float));
+  { float* dm = (float*)bd.mapped;
+    for (size_t i = 0; i < n; ++i) { dm[4*i+0]=dirs[3*i+0]; dm[4*i+1]=dirs[3*i+1]; dm[4*i+2]=dirs[3*i+2]; dm[4*i+3]=0.0f; } }
+  uint32_t par[4] = {(uint32_t)n, degree, K, 0};
+  memcpy(bu.mapped, par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuGaussianShSpv; d.spv_len = kTvdbGpuGaussianShSpv_len; d.descriptor_count = 4;
+  d.buffers[0] = &bsh; d.buffers[1] = &bd; d.buffers[2] = &bout; d.buffers[3] = &bu;
+  d.descriptor_types[0] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((n + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) memcpy(out_colors, bout.mapped, out_floats * sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bu);
+shd_out: tvdb_vk_destroy_buffer(ctx, &bout);
+shd_d: tvdb_vk_destroy_buffer(ctx, &bd);
+shd_sh: tvdb_vk_destroy_buffer(ctx, &bsh);
+  return st;
 }
 
 // ---- points -> dense occupancy mask -----------------------------------------

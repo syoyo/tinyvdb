@@ -602,6 +602,17 @@ tvdb_status_t tvdb_gaussian_rasterize_backward(
 
 void tvdb_projected_gaussian_destroy(tvdb_projected_gaussian_t *gaussians);
 
+/* Evaluate view-dependent RGB color from spherical-harmonics coefficients
+ * (3D Gaussian Splatting convention). `degree` in [0,3]; `sh_coeffs` holds
+ * num_gaussians * K * 3 floats with K=(degree+1)^2 basis functions per
+ * Gaussian, laid out [(g*K + k)*3 + c] (basis-major, RGB inner). `dirs` holds
+ * num_gaussians * 3 view directions (normalized internally; a ~zero direction
+ * leaves only the DC term). `out_colors` receives num_gaussians * 3 =
+ * max(sh_result + 0.5, 0). */
+tvdb_status_t tvdb_gaussian_sh_eval(uint32_t num_gaussians, uint32_t degree,
+                                    const float *sh_coeffs, const float *dirs,
+                                    float *out_colors, tvdb_error_t *err);
+
 #ifdef __cplusplus
 }
 #endif
@@ -2670,6 +2681,52 @@ tvdb_projected_gaussian_t *tvdb_gaussian_project(const tvdb_gaussian_splat_t *sp
 
 void tvdb_projected_gaussian_destroy(tvdb_projected_gaussian_t *gaussians) {
     free(gaussians);
+}
+
+/* Spherical-harmonics basis constants (real SH, 3DGS convention). */
+tvdb_status_t tvdb_gaussian_sh_eval(uint32_t num_gaussians, uint32_t degree,
+                                    const float *sh_coeffs, const float *dirs,
+                                    float *out_colors, tvdb_error_t *err) {
+    if (degree > 3 || (num_gaussians && (!sh_coeffs || !dirs || !out_colors))) {
+        if (err) { err->status = TVDB_ERROR_INVALID_ARGUMENT;
+                   snprintf(err->message, sizeof(err->message), "invalid sh_eval arguments"); }
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+    const float C0 = 0.28209479177387814f;
+    const float C1 = 0.4886025119029199f;
+    const float C2[5] = {1.0925484305920792f, -1.0925484305920792f,
+                         0.31539156525252005f, -1.0925484305920792f, 0.5462742152960396f};
+    const float C3[7] = {-0.5900435899266435f, 2.890611442640554f, -0.4570457994644658f,
+                         0.3731763325901154f, -0.4570457994644658f, 1.445305721320277f,
+                         -0.5900435899266435f};
+    uint32_t K = (degree + 1u) * (degree + 1u);
+    for (uint32_t g = 0; g < num_gaussians; ++g) {
+        float dx = dirs[3*g+0], dy = dirs[3*g+1], dz = dirs[3*g+2];
+        float len = sqrtf(dx*dx + dy*dy + dz*dz);  /* exact, to match GPU length() */
+        if (len > 1e-8f) { dx /= len; dy /= len; dz /= len; } else { dx = dy = dz = 0.0f; }
+        for (int c = 0; c < 3; ++c) {
+            const float *sh = sh_coeffs + ((size_t)g * K) * 3 + (size_t)c;  /* sh[k] = sh[k*3] */
+            float r = C0 * sh[0];
+            if (degree >= 1) {
+                r += C1 * (-dy * sh[3*1] + dz * sh[3*2] - dx * sh[3*3]);
+                if (degree >= 2) {
+                    float xx=dx*dx, yy=dy*dy, zz=dz*dz, xy=dx*dy, yz=dy*dz, xz=dx*dz;
+                    r += C2[0]*xy*sh[3*4] + C2[1]*yz*sh[3*5] + C2[2]*(2.0f*zz-xx-yy)*sh[3*6]
+                       + C2[3]*xz*sh[3*7] + C2[4]*(xx-yy)*sh[3*8];
+                    if (degree >= 3) {
+                        r += C3[0]*dy*(3.0f*xx-yy)*sh[3*9] + C3[1]*xy*dz*sh[3*10]
+                           + C3[2]*dy*(4.0f*zz-xx-yy)*sh[3*11] + C3[3]*dz*(2.0f*zz-3.0f*xx-3.0f*yy)*sh[3*12]
+                           + C3[4]*dx*(4.0f*zz-xx-yy)*sh[3*13] + C3[5]*dz*(xx-yy)*sh[3*14]
+                           + C3[6]*dx*(xx-3.0f*yy)*sh[3*15];
+                    }
+                }
+            }
+            r += 0.5f;
+            out_colors[3*g+c] = r > 0.0f ? r : 0.0f;
+        }
+    }
+    if (err) err->status = TVDB_OK;
+    return TVDB_OK;
 }
 
 /* Forward rasterization */

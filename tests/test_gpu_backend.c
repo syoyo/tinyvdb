@@ -1056,6 +1056,36 @@ static void test_splat(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&cpu); tvdb_dense_grid_free(&gpu);
 }
 
+static void test_gaussian_sh(tvdb_gpu_context_t* ctx) {
+  // View-dependent SH color eval at degree 3 (K=16), parity vs CPU reference.
+  const uint32_t N = 200, degree = 3, K = 16;
+  float* sh = (float*)malloc((size_t)N * K * 3 * sizeof(float));
+  float* dirs = (float*)malloc((size_t)N * 3 * sizeof(float));
+  float* cpu = (float*)malloc((size_t)N * 3 * sizeof(float));
+  float* gpu = (float*)malloc((size_t)N * 3 * sizeof(float));
+  unsigned int s = 24601u;
+  for (size_t i = 0; i < (size_t)N * K * 3; ++i) {
+    s = s * 1664525u + 1013904223u; sh[i] = (float)(s >> 8) / 16777216.0f * 2.0f - 1.0f;
+  }
+  for (uint32_t g = 0; g < N; ++g) {
+    s = s * 1664525u + 1013904223u; float a = (float)(s >> 8) / 16777216.0f * 2.0f - 1.0f;
+    s = s * 1664525u + 1013904223u; float b = (float)(s >> 8) / 16777216.0f * 2.0f - 1.0f;
+    s = s * 1664525u + 1013904223u; float c = (float)(s >> 8) / 16777216.0f * 2.0f - 1.0f;
+    dirs[3*g+0] = a; dirs[3*g+1] = b; dirs[3*g+2] = c;  // unnormalized; normalized internally
+  }
+  if (N > 4) { dirs[3*4+0] = dirs[3*4+1] = dirs[3*4+2] = 0.0f; }  // degenerate dir -> DC only
+  tvdb_error_t cerr, err;
+  memset(&cerr, 0, sizeof(cerr)); memset(&err, 0, sizeof(err));
+  EXPECT(tvdb_gaussian_sh_eval(N, degree, sh, dirs, cpu, &cerr) == TVDB_OK);
+  if (tvdb_gpu_gaussian_sh_eval(ctx, N, degree, sh, dirs, gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu gaussian sh failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    for (size_t i = 0; i < (size_t)N * 3; ++i) EXPECT_NEAR(gpu[i], cpu[i], 2e-5f);
+  }
+  free(sh); free(dirs); free(cpu); free(gpu);
+}
+
 static void test_splat_quadratic(tvdb_gpu_context_t* ctx) {
   const int N = 16;
   tvdb_dense_grid cpu, gpu;
@@ -1823,6 +1853,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_flood(ctx);
   test_splat(ctx);
   test_splat_quadratic(ctx);
+  test_gaussian_sh(ctx);
   test_points_to_mask(ctx);
   test_voxelize(ctx);
   test_sparse_erode(ctx);

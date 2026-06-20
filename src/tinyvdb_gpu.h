@@ -501,6 +501,16 @@ tvdb_status_t tvdb_gpu_ssim(tvdb_gpu_context_t* ctx, const float* img_a, const f
                             uint32_t width, uint32_t height, uint32_t channels, float data_range,
                             float* out_mean, float* out_map, tvdb_error_t* err);
 
+// GPU view-dependent spherical-harmonics color evaluation (Gaussian-splat
+// helper), mirroring tvdb_gaussian_sh_eval. `degree` in [0,3]; `sh_coeffs` is
+// num_gaussians * K * 3 floats (K=(degree+1)^2, layout [(g*K+k)*3+c]); `dirs`
+// is num_gaussians * 3 view directions (normalized internally); `out_colors`
+// receives num_gaussians * 3 = max(sh_result + 0.5, 0). One thread per Gaussian
+// on Vulkan and CUDA/NVRTC.
+tvdb_status_t tvdb_gpu_gaussian_sh_eval(tvdb_gpu_context_t* ctx, uint32_t num_gaussians,
+                                        uint32_t degree, const float* sh_coeffs, const float* dirs,
+                                        float* out_colors, tvdb_error_t* err);
+
 // Batched sparse convolution (GridBatch / JaggedTensor-style): run a
 // same-topology sparse conv3d over `n_grids` grids in a single GPU dispatch.
 // The grids are concatenated jagged on device and each voxel's lookups are
