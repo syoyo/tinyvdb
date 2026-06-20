@@ -32,6 +32,7 @@
 #include "tinyvdb_gpu_ray_samples_spv.inc"
 #include "tinyvdb_gpu_voxels_along_ray_spv.inc"
 #include "tinyvdb_gpu_segments_along_ray_spv.inc"
+#include "tinyvdb_gpu_tsdf_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -1981,6 +1982,34 @@ static const char* kTvdbCudaSource =
 "  }\n"
 "  if (inside) { if (pairs < cap) { out_pairs[2u*(ri*cap+pairs)+0u] = t_enter; out_pairs[2u*(ri*cap+pairs)+1u] = tmax; } ++pairs; }\n"
 "  out_counts[ri] = (int)pairs;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_integrate_tsdf(float* tsdf, float* weights, const float* depth,\n"
+"    int nx, int ny, int nz, float ox, float oy, float oz, float vs,\n"
+"    float p0, float p1, float p2, float p3, float p4, float p5, float p6, float p7, float p8, float p9, float p10, float p11,\n"
+"    float fx, float fy, float ccx, float ccy, int width, int height,\n"
+"    float depth_min, float depth_max, float trunc_distance) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = (unsigned int)(nx * ny * nz);\n"
+"  if (gid >= total) return;\n"
+"  int iz = (int)(gid / (unsigned int)(nx * ny));\n"
+"  int rem = (int)(gid - (unsigned int)(iz * nx * ny));\n"
+"  int iy = rem / nx; int ix = rem - iy * nx;\n"
+"  float wx = ox + ((float)ix + 0.5f) * vs, wy = oy + ((float)iy + 0.5f) * vs, wz = oz + ((float)iz + 0.5f) * vs;\n"
+"  float cx = p0*wx + p1*wy + p2*wz + p3;\n"
+"  float cy = p4*wx + p5*wy + p6*wz + p7;\n"
+"  float cz = p8*wx + p9*wy + p10*wz + p11;\n"
+"  if (cz <= 0.0f) return;\n"
+"  float u = fx * (cx / cz) + ccx, v = fy * (cy / cz) + ccy;\n"
+"  int iu = (int)floorf(u + 0.5f), iv = (int)floorf(v + 0.5f);\n"
+"  if (iu < 0 || iu >= width || iv < 0 || iv >= height) return;\n"
+"  float d = depth[(size_t)iv * (size_t)width + (size_t)iu];\n"
+"  if (!(d >= depth_min && d <= depth_max)) return;\n"
+"  float sdf = d - cz;\n"
+"  if (sdf < -trunc_distance) return;\n"
+"  if (sdf > trunc_distance) sdf = trunc_distance;\n"
+"  float w_old = weights[gid], t_old = tsdf[gid], w_new = w_old + 1.0f;\n"
+"  tsdf[gid] = (t_old * w_old + sdf) / w_new;\n"
+"  weights[gid] = w_new;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -4573,5 +4602,91 @@ gd_c: tvdb_vk_destroy_buffer(ctx, &bc);
 gd_p: tvdb_vk_destroy_buffer(ctx, &bp);
 gd_r: tvdb_vk_destroy_buffer(ctx, &br);
 gd_g: tvdb_vk_destroy_buffer(ctx, &bg);
+  return st;
+}
+
+// ---- TSDF integration -------------------------------------------------------
+
+tvdb_status_t tvdb_gpu_integrate_tsdf(tvdb_gpu_context_t* ctx, tvdb_dense_grid* tsdf,
+                                      tvdb_dense_grid* weights, const tvdb_depth_frame* frame,
+                                      tvdb_error_t* err) {
+  if (!ctx || !tsdf || !weights || !frame || !tsdf->data || !weights->data || !frame->depth ||
+      tsdf->nx != weights->nx || tsdf->ny != weights->ny || tsdf->nz != weights->nz ||
+      frame->width < 1 || frame->height < 1) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid integrate_tsdf arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  float pose_cw[12];
+  tvdb_invert_rigid_pose(frame->pose, pose_cw);
+  size_t nv = (size_t)tsdf->nx * (size_t)tsdf->ny * (size_t)tsdf->nz;
+  size_t ndepth = (size_t)frame->width * (size_t)frame->height;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dt = 0, dw = 0, dd = 0;
+    tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+    if (st != TVDB_OK) return st;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_integrate_tsdf"))) return err ? err->status : TVDB_ERROR_IO;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dt, tsdf->data, nv * sizeof(float), err)) != TVDB_OK) goto tdone;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dw, weights->data, nv * sizeof(float), err)) != TVDB_OK) goto tdone;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, frame->depth, ndepth * sizeof(float), err)) != TVDB_OK) goto tdone;
+    int nx = tsdf->nx, ny = tsdf->ny, nz = tsdf->nz;
+    float ox = tsdf->ox, oy = tsdf->oy, oz = tsdf->oz, vs = tsdf->voxel_size;
+    float p[12]; for (int i = 0; i < 12; ++i) p[i] = pose_cw[i];
+    float fx = frame->fx, fy = frame->fy, ccx = frame->cx, ccy = frame->cy;
+    int width = frame->width, height = frame->height;
+    float dmin = frame->depth_min, dmax = frame->depth_max, trunc = frame->trunc_distance;
+    void* args[] = {&dt, &dw, &dd, &nx, &ny, &nz, &ox, &oy, &oz, &vs,
+                    &p[0],&p[1],&p[2],&p[3],&p[4],&p[5],&p[6],&p[7],&p[8],&p[9],&p[10],&p[11],
+                    &fx, &fy, &ccx, &ccy, &width, &height, &dmin, &dmax, &trunc};
+    unsigned int block = 128, grid = ((unsigned int)nv + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto tdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto tdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(tsdf->data, dt, nv * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto tdone; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(weights->data, dw, nv * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto tdone; }
+    st = TVDB_OK;
+tdone:
+    if (dd) ctx->cuda.cuMemFree(dd);
+    if (dw) ctx->cuda.cuMemFree(dw);
+    if (dt) ctx->cuda.cuMemFree(dt);
+    return st;
+  }
+
+  tvdb_vk_buffer bt, bw, bd, bu;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, nv * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bt, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, nv * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bw, err)) != TVDB_OK) goto td_t;
+  if ((st = tvdb_vk_create_buffer(ctx, ndepth * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bd, err)) != TVDB_OK) goto td_w;
+  if ((st = tvdb_vk_create_buffer(ctx, 128, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto td_d;
+  memcpy(bt.mapped, tsdf->data, nv * sizeof(float));
+  memcpy(bw.mapped, weights->data, nv * sizeof(float));
+  memcpy(bd.mapped, frame->depth, ndepth * sizeof(float));
+  struct {
+    int32_t dim[4]; float grid[4]; float pose0[4]; float pose1[4]; float pose2[4];
+    float intr[4]; int32_t fdim[4]; float rng[4];
+  } par;
+  memset(&par, 0, sizeof(par));
+  par.dim[0] = tsdf->nx; par.dim[1] = tsdf->ny; par.dim[2] = tsdf->nz;
+  par.grid[0] = tsdf->ox; par.grid[1] = tsdf->oy; par.grid[2] = tsdf->oz; par.grid[3] = tsdf->voxel_size;
+  for (int i = 0; i < 4; ++i) { par.pose0[i] = pose_cw[i]; par.pose1[i] = pose_cw[4+i]; par.pose2[i] = pose_cw[8+i]; }
+  par.intr[0] = frame->fx; par.intr[1] = frame->fy; par.intr[2] = frame->cx; par.intr[3] = frame->cy;
+  par.fdim[0] = frame->width; par.fdim[1] = frame->height;
+  par.rng[0] = frame->depth_min; par.rng[1] = frame->depth_max; par.rng[2] = frame->trunc_distance;
+  memcpy(bu.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuTsdfSpv; d.spv_len = kTvdbGpuTsdfSpv_len; d.descriptor_count = 4;
+  d.buffers[0] = &bt; d.buffers[1] = &bw; d.buffers[2] = &bd; d.buffers[3] = &bu;
+  d.descriptor_types[0] = d.descriptor_types[1] = d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((nv + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  if (st == TVDB_OK) {
+    memcpy(tsdf->data, bt.mapped, nv * sizeof(float));
+    memcpy(weights->data, bw.mapped, nv * sizeof(float));
+  }
+  tvdb_vk_destroy_buffer(ctx, &bu);
+td_d: tvdb_vk_destroy_buffer(ctx, &bd);
+td_w: tvdb_vk_destroy_buffer(ctx, &bw);
+td_t: tvdb_vk_destroy_buffer(ctx, &bt);
   return st;
 }

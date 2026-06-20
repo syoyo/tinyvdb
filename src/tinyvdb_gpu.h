@@ -13,6 +13,7 @@
 #include "tinyvdb_io.h"     // tvdb_status_t, tvdb_error_t
 #include "tinyvdb_mesh.h"   // tvdb_dense_grid, tvdb_vec3f
 #include "tinyvdb_sparse.h" // tvdb_sparse_grid
+#include "tinyvdb_tsdf.h"   // tvdb_depth_frame
 
 #ifdef __cplusplus
 extern "C" {
@@ -274,6 +275,14 @@ tvdb_status_t tvdb_gpu_segments_along_ray(tvdb_gpu_context_t* ctx, const tvdb_de
                                           const float* rays, size_t n_rays, float isovalue,
                                           size_t step_count, size_t cap,
                                           float* out_t_pairs, int32_t* out_counts, tvdb_error_t* err);
+
+// Integrate a depth frame into an existing TSDF + weight grid (parallels
+// tvdb_integrate_tsdf). One GPU thread per voxel; `tsdf`/`weights` must be the
+// same shape and are updated in place. On the first call initialize tsdf to
+// trunc_distance and weights to 0.
+tvdb_status_t tvdb_gpu_integrate_tsdf(tvdb_gpu_context_t* ctx, tvdb_dense_grid* tsdf,
+                                      tvdb_dense_grid* weights, const tvdb_depth_frame* frame,
+                                      tvdb_error_t* err);
 
 #ifdef __cplusplus
 }

@@ -7,6 +7,7 @@
 #include "tinyvdb_sample.h"
 #include "tinyvdb_sparse.h"
 #include "tinyvdb_topology.h"
+#include "tinyvdb_tsdf.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -857,6 +858,53 @@ static void test_ray_queries(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&sdf);
 }
 
+static void init_tsdf_pair(tvdb_dense_grid* tsdf, tvdb_dense_grid* w, float trunc) {
+  tvdb_dense_grid_init(tsdf, 24, 24, 24);
+  tvdb_dense_grid_init(w, 24, 24, 24);
+  tsdf->voxel_size = w->voxel_size = 0.05f;
+  tsdf->ox = w->ox = -0.6f; tsdf->oy = w->oy = -0.6f; tsdf->oz = w->oz = 0.5f;
+  size_t n = 24*24*24;
+  for (size_t i = 0; i < n; ++i) { tsdf->data[i] = trunc; w->data[i] = 0.0f; }
+}
+
+static void test_tsdf(tvdb_gpu_context_t* ctx) {
+  const float trunc = 0.1f;
+  const int W = 64, H = 64;
+  float* depth = (float*)malloc((size_t)W * H * sizeof(float));
+  for (int i = 0; i < W*H; ++i) depth[i] = 1.0f;  // fronto-parallel plane at z=1
+
+  tvdb_depth_frame frame;
+  memset(&frame, 0, sizeof(frame));
+  frame.width = W; frame.height = H; frame.depth = depth;
+  frame.fx = 128.0f; frame.fy = 128.0f; frame.cx = 32.0f; frame.cy = 32.0f;
+  // world<-camera identity (camera at origin looking +z).
+  frame.pose[0] = 1.0f; frame.pose[5] = 1.0f; frame.pose[10] = 1.0f;
+  frame.trunc_distance = trunc; frame.depth_min = 0.1f; frame.depth_max = 3.0f;
+
+  tvdb_dense_grid tc, wc, tg, wg;
+  init_tsdf_pair(&tc, &wc, trunc);
+  init_tsdf_pair(&tg, &wg, trunc);
+  EXPECT(tvdb_integrate_tsdf(&tc, &wc, &frame));
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  tvdb_status_t st = tvdb_gpu_integrate_tsdf(ctx, &tg, &wg, &frame, &err);
+  if (st != TVDB_OK) {
+    fprintf(stderr, "gpu integrate_tsdf failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    size_t n = 24*24*24, updated = 0;
+    for (size_t i = 0; i < n; ++i) {
+      EXPECT_NEAR(tg.data[i], tc.data[i], 1e-5f);
+      EXPECT_NEAR(wg.data[i], wc.data[i], 1e-5f);
+      if (wc.data[i] > 0.5f) ++updated;
+    }
+    EXPECT(updated > 0);  // some voxels integrated the frame
+  }
+  tvdb_dense_grid_free(&tc); tvdb_dense_grid_free(&wc);
+  tvdb_dense_grid_free(&tg); tvdb_dense_grid_free(&wg);
+  free(depth);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -885,6 +933,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_topology(ctx);
   test_volume_render(ctx);
   test_ray_queries(ctx);
+  test_tsdf(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }
