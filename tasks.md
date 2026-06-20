@@ -343,14 +343,21 @@ each theme. Notes point at the nearest existing primitive to reuse.
       `tvdb_gaussian_rasterize_forward`/`_backward`. Covered by `test_gpu_backend`
       (`test_gaussian_forward` image+alpha parity; `test_gaussian_backward_gpu`
       per-gaussian gradient parity vs CPU). COMPLETE.
-- [~] **P2: batched sparse data abstractions.** `tvdb_gpu_sparse_conv3d_batched`
+- [x] **P2: batched sparse data abstractions.** `tvdb_gpu_sparse_conv3d_batched`
       demonstrates the GridBatch / JaggedTensor concept: N sparse grids are
       concatenated jagged on device (per-voxel grid range), and a same-topology
       conv runs over the whole batch in ONE GPU dispatch with lookups confined
       to each voxel's own grid. Vulkan + CUDA/NVRTC; covered by
-      `test_gpu_backend` (`test_batched_conv`, vs per-grid CPU conv). *Still
-      open:* a general reusable JaggedTensor/GridBatch container type beyond this
-      batched-op demonstration.
+      `test_gpu_backend` (`test_batched_conv`, vs per-grid CPU conv). A general
+      reusable container now backs this: `tinyvdb_jagged.{h,c}` provides
+      `tvdb_jagged_t` (flat data + jagged offsets; build/from-lists, accessors,
+      list-dim concat, per-list sum/mean/max/min reductions) and
+      `tvdb_grid_batch_t` (N sparse grids jagged-concatenated with per-grid
+      transforms; read-only per-grid `tvdb_sparse_grid` views, a JaggedTensor
+      value bridge, and per-grid `ijk_to_index`). The views feed the batched GPU
+      op directly. Covered by `test_jagged` (CPU container unit tests) and
+      `test_gpu_backend` (`test_grid_batch_gpu`: build a batch, drive the batched
+      conv via its views, parity vs per-grid CPU conv).
 - [ ] **P2: PyTorch integration.** Expose selected GPU ops through PyTorch
       tensors/autograd only as an optional layer outside the core C API.
 - [~] **P2: Gaussian training helpers.** `tvdb_gpu_ssim` — windowed SSIM
@@ -387,11 +394,16 @@ each theme. Notes point at the nearest existing primitive to reuse.
 Framework-level integrations remain outside tinyvdb's dependency-free C API
 core — listed for visibility, not on the near-term roadmap.
 
-- [ ] **Jagged Tensor API.** Sparse variable-length data container
-      (parallels `fvdb::JaggedTensor`).
-- [ ] **GridBatch abstraction.** Spatial indexing container for
-      high-performance batched GPU operations
-      (parallels `fvdb::GridBatch`).
+- [x] **Jagged Tensor API.** Sparse variable-length data container
+      (parallels `fvdb::JaggedTensor`). Implemented on CPU as `tvdb_jagged_t`
+      in `tinyvdb_jagged.{h,c}` (flat data + jagged offsets, multi-channel,
+      list-dim concat, per-list reductions); see the P2 batched-abstractions
+      entry. Only the PyTorch tensor binding remains out of scope.
+- [x] **GridBatch abstraction.** Spatial indexing container for
+      high-performance batched GPU operations (parallels `fvdb::GridBatch`).
+      Implemented on CPU as `tvdb_grid_batch_t` in `tinyvdb_jagged.{h,c}`
+      (jagged batch of sparse grids + per-grid transforms, per-grid views that
+      feed the batched GPU ops, JaggedTensor bridge, per-grid spatial query).
 - [ ] **PyTorch autograd integration** for spatial operations.
       (CPU per-op VJPs are already in `tinyvdb_autograd.{h,c}`; this
       task is specifically about wiring them into PyTorch's autograd
@@ -406,12 +418,13 @@ core — listed for visibility, not on the near-term roadmap.
 
 ## Test coverage (current)
 
-20 ctests register under `build/` when `TINYVDB_BUILD_GPU=ON`:
+21 ctests register under `build/` when `TINYVDB_BUILD_GPU=ON`:
 
 | target | what |
 | --- | --- |
 | `test_ops` | Phase 1-6 dense ops smoke (volume, surface_area, dilate, csg, gradient, Poisson recovery, advection, sampling, TSDF, topology, ray, sparse) |
 | `test_grid_index` | Coordinate utilities (`world_to_ijk`/`ijk_to_world` and `morton_encode`/`decode` round-trips incl. negatives), spatial queries (`voxelize_points` dedup; `coords_in_grid`/`points_in_grid`/`ijk_to_index`; `neighbor_counts` on a 2³ block = 3 face / 7 vertex), quadratic sampling (exact on a linear field), point rasterization/scatter, and `volume_render` (sphere-fog center brighter than corner; empty grid = background) |
+| `test_jagged` | JaggedTensor / GridBatch containers: `tvdb_jagged_t` build/from-lists, list accessors, multi-channel + list-dim concat, per-list sum/mean/max/min; `tvdb_grid_batch_t` build-from-grids, read-only per-grid views, JaggedTensor value bridge, and per-grid `ijk_to_index` |
 | `test_resample_advect` | Resampling (`resample_grid` reproduces a linear field exactly for trilinear/triquadratic; preserves a sphere SDF zero-crossing), signed flood fill (restores a wiped sphere interior to -band), and advection (all schemes RK1-4/MacCormack/BFECC shift a linear field exactly; MacCormack less diffusive than RK1 on a bump round-trip) |
 | `test_stats_ops` | Statistics (`grid_statistics`/`grid_histogram` on a known linear field), diagnostics (`check_level_set` clean ≈1 vs damaged ≈3; `check_fog_volume` fog-valid vs raw-SDF-invalid), vector operators (`magnitude`=5 on (3,4,0); `normalize`; `cpt` maps a sphere band onto the sphere), composite (`comp_max/min/sum/mult`), and filters (`median_filter` removes an impulse; `mean_curvature_flow` shrinks a sphere) |
 | `test_levelset` | Level-set primitive generators (sphere/box/torus/capsule): analytic SDF recomputed and matched at every voxel; platonic solids (tetra/cube/octa/dodeca/icosa) bracketed between inscribed/circumscribed spheres; `sdf_to_fog_volume` range/empty-exterior, `sdf_interior_mask` sign-consistency, `sdf_segmentation` (two spheres → exact 2-way interior partition), `sdf_extract_enclosed_regions` (spherical-shell cavity mask) and `level_set_euler_characteristic`/`level_set_genus` (sphere 2/0, torus 0/1, two spheres 4/0, two tori 0/2) and `level_set_rebuild` (damaged sphere renormalized: euler 2, zero crossing ~R; torus resampled keeps genus 1) |
@@ -428,7 +441,7 @@ core — listed for visibility, not on the near-term roadmap.
 | `test_reference_roundtrip` | libopenvdb-generated reference grids (bool/float/double/int32/int64/vec3s) round-trip through tinyvdb. Cross-tool byte-format guard |
 | `test_gaussian_backward` | Gaussian-splat rasterizer backward pass: 16×16 image from 4 random gaussians, all 36 analytic gradients checked against central FD |
 | `test_nanovdb_reference` | nanovdb_convert-produced `.nvdb` corpus: hierarchical accessor + trilinear sampler + CRC32 checksum validation + VDB→NanoVDB conversion exactness |
-| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear + triquadratic batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling (incl. unbound-region background fallback), same-topology sparse conv3d against CPU (near-dense index-grid fast path + brute-force fallback), spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear + triquadratic splat, points→mask, sparse `voxelize_points` (dense + unbounded hash-set paths), sparse dilate/erode, dense `merge_grids`, dense→sparse active-coord extraction, triangle-mesh→SDF, marching cubes, strided + transposed sparse conv, a device-resident buffer round-trip, cross-API external-memory interop (Vulkan→CUDA opaque-fd share, bit-exact, skips if unsupported), the Gaussian-splat rasterizer (forward + backward), 3D→2D projection, spherical-harmonics color eval, SSIM, batched sparse conv, and multi-context scheduling — all parity-checked vs CPU (41 test cases); skips with code 77 if no runtime backend/device is available |
+| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear + triquadratic batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling (incl. unbound-region background fallback), same-topology sparse conv3d against CPU (near-dense index-grid fast path + brute-force fallback), spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear + triquadratic splat, points→mask, sparse `voxelize_points` (dense + unbounded hash-set paths), sparse dilate/erode, dense `merge_grids`, dense→sparse active-coord extraction, triangle-mesh→SDF, marching cubes, strided + transposed sparse conv, a device-resident buffer round-trip, cross-API external-memory interop (Vulkan→CUDA opaque-fd share, bit-exact, skips if unsupported), the Gaussian-splat rasterizer (forward + backward), 3D→2D projection, spherical-harmonics color eval, SSIM, batched sparse conv (incl. driving it through the GridBatch container's views), and multi-context scheduling — all parity-checked vs CPU (42 test cases); skips with code 77 if no runtime backend/device is available |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate/erode/CSG/update_from_sparse → save → reload |
 | `test_dense_writer` (py) | Dense + sparse `.vdb` writer/reader: float SDF (raw + numpy), all compression modes, multi-leaf, analytic sphere, plus typed `write_dense_grid`/`read_dense_grid` and `write_sparse_grid`/`read_sparse_grid` round-trips for `float64`/`int32`/`int64`/`vec3f`/`bool` with grid-type-string checks |
 

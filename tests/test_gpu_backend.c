@@ -1,5 +1,6 @@
 #include "tinyvdb_gpu.h"
 #include "tinyvdb_grid_index.h"
+#include "tinyvdb_jagged.h"
 #include "tinyvdb_levelset.h"
 #include "tinyvdb_ops.h"
 #include "tinyvdb_ray.h"
@@ -1939,6 +1940,51 @@ static void test_batched_conv(tvdb_gpu_context_t* ctx) {
   tvdb_sparse_grid_free(&ref);
 }
 
+// Drive the batched GPU conv through the GridBatch container: build a batch from
+// N grids, feed its read-only views to the batched op, and check the result
+// equals per-grid CPU conv. Also validate the JaggedTensor value bridge.
+static void test_grid_batch_gpu(tvdb_gpu_context_t* ctx) {
+  tvdb_sparse_grid in[3], out[3], ref;
+  fill_block(&in[0], 2, -0.3f); fill_block(&in[1], 3, 0.4f); fill_block(&in[2], 2, 0.9f);
+  for (int g = 0; g < 3; ++g) tvdb_sparse_grid_init(&out[g]);
+  tvdb_sparse_grid_init(&ref);
+  float kernel[27];
+  for (int i = 0; i < 27; ++i) kernel[i] = (float)(i % 6) * 0.04f - 0.07f;
+  const float pad = 0.15f;
+
+  tvdb_grid_batch_t gb;
+  EXPECT(tvdb_grid_batch_from_grids(&gb, in, 3));
+  EXPECT(tvdb_grid_batch_size(&gb) == 3);
+  // JaggedTensor bridge over the batch values must match each grid's values.
+  tvdb_jagged_t vj;
+  EXPECT(tvdb_grid_batch_values_jagged(&gb, &vj));
+  EXPECT(tvdb_jagged_total(&vj) == (int64_t)(in[0].count + in[1].count + in[2].count));
+  for (int g = 0; g < 3; ++g) {
+    int64_t s = 0; float* gv = tvdb_jagged_list_ptr(&vj, g, &s);
+    EXPECT(s == (int64_t)in[g].count);
+    for (size_t i = 0; i < in[g].count; ++i) EXPECT_NEAR(gv[i], in[g].values[i], 0.0f);
+  }
+  tvdb_jagged_free(&vj);
+
+  // Feed the batch's read-only views to the batched GPU op.
+  tvdb_sparse_grid views[3];
+  EXPECT(tvdb_grid_batch_views(&gb, views));
+  tvdb_error_t err; memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_sparse_conv3d_batched(ctx, views, 3, kernel, 3, 3, 3, pad, out, &err) != TVDB_OK) {
+    fprintf(stderr, "grid-batch gpu conv failed: %s\n", err.message); EXPECT(0);
+  } else {
+    for (int g = 0; g < 3; ++g) {
+      EXPECT(tvdb_sparse_conv3d(&in[g], kernel, 3, 3, 3, pad, &ref));
+      EXPECT(out[g].count == ref.count);
+      for (size_t i = 0; i < ref.count && out[g].count == ref.count; ++i)
+        EXPECT_NEAR(out[g].values[i], ref.values[i], 2e-5f);
+    }
+  }
+  tvdb_grid_batch_free(&gb);  // frees batch storage; views must not be freed
+  for (int g = 0; g < 3; ++g) { tvdb_sparse_grid_free(&in[g]); tvdb_sparse_grid_free(&out[g]); }
+  tvdb_sparse_grid_free(&ref);
+}
+
 static void test_multi_gpu(tvdb_gpu_context_t* ctx) {
   // Partition a 4-grid batch across multiple GPU contexts. If the other backend
   // is available we use two distinct contexts (a real multi-device-style split);
@@ -2082,6 +2128,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_gaussian_backward_gpu(ctx);
   test_ssim(ctx);
   test_batched_conv(ctx);
+  test_grid_batch_gpu(ctx);
   test_multi_gpu(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
