@@ -129,6 +129,14 @@ int main(void) {
     EXPECT(v1.count == 2 && NEAR(v1.voxel_size, 0.2f) && NEAR(v1.ox, 5.0f), "view transform");
     EXPECT(v1.coords[0].x == 10 && NEAR(v1.values[1], g1.values[1]), "view data");
 
+    // View safety: a view (capacity==0) must not be growable, and freeing it must
+    // not free the batch's storage (it just resets the view handle).
+    EXPECT(v1.capacity == 0, "view capacity 0");
+    EXPECT(!tvdb_sparse_grid_reserve(&v1, 100), "reserve refuses a view");
+    tvdb_sparse_grid_free(&v1);  // must NOT free into the batch allocation
+    EXPECT(v1.coords == NULL && v1.count == 0, "freed view reset");
+    EXPECT(gb.coords[gb.offsets[1]].x == 10, "batch storage intact after view free");
+
     // values_jagged bridge: per-grid offsets + values match.
     tvdb_jagged_t vj;
     EXPECT(tvdb_grid_batch_values_jagged(&gb, &vj), "values_jagged");

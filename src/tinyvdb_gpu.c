@@ -6457,6 +6457,9 @@ md_m: tvdb_vk_destroy_buffer(ctx, &bm);
 // ---- sparse voxelize (dense occupancy + atomic-counter compaction) ----------
 
 static size_t tvdb_next_pow2_size(size_t v) {
+  // Guard against overflow: above the top bit, `p <<= 1` would wrap to 0 and
+  // spin forever. Return 0 so the caller's size cap rejects it.
+  if (v > (~(size_t)0 >> 1) + 1) return 0;
   size_t p = 1; while (p < v) p <<= 1; return p;
 }
 
@@ -6489,12 +6492,12 @@ static size_t tvdb_dedup_int3(int32_t* c, size_t n) {
 static tvdb_status_t tvdb_gpu_voxelize_hashed(tvdb_gpu_context_t* ctx, const float* points, size_t n,
                                               const float voxel_size[3], const float origin[3],
                                               int32_t** out_coords, size_t* out_count, tvdb_error_t* err) {
-  size_t cap = tvdb_next_pow2_size(n * 2u);  // load factor <= 0.5
-  if (cap < 16u) cap = 16u;
-  if (cap > (size_t)700000000) {  // ~8.4 GB of keys; refuse rather than thrash VRAM
+  size_t cap = tvdb_next_pow2_size(n * 2u);  // load factor <= 0.5 (0 on overflow)
+  if (cap == 0 || cap > (size_t)700000000) {  // overflow, or ~8.4 GB of keys: refuse rather than thrash VRAM
     tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "voxelize hash table too large");
     return TVDB_ERROR_INVALID_ARGUMENT;
   }
+  if (cap < 16u) cap = 16u;
   uint32_t mask = (uint32_t)(cap - 1u);
   int32_t* coords = (int32_t*)malloc(n * 3u * sizeof(int32_t));  // candidates (<= n unique voxels)
   if (!coords) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }

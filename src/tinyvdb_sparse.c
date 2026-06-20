@@ -14,14 +14,23 @@ void tvdb_sparse_grid_init(tvdb_sparse_grid* sg) {
 }
 
 void tvdb_sparse_grid_free(tvdb_sparse_grid* sg) {
-  free(sg->coords); sg->coords = NULL;
-  free(sg->values); sg->values = NULL;
+  // capacity==0 with non-NULL coords is a non-owning view (e.g. tvdb_grid_batch_view):
+  // its arrays point into another allocation, so reset the handle without freeing.
+  if (sg->capacity > 0) {
+    free(sg->coords);
+    free(sg->values);
+  }
+  sg->coords = NULL;
+  sg->values = NULL;
   sg->count = 0;
   sg->capacity = 0;
 }
 
 bool tvdb_sparse_grid_reserve(tvdb_sparse_grid* sg, size_t capacity) {
   if (capacity <= sg->capacity) return true;
+  // Refuse to grow a non-owning view (capacity==0 but arrays already set):
+  // realloc'ing its interior pointer would corrupt the backing allocation.
+  if (sg->capacity == 0 && sg->coords != NULL) return false;
   void* nc = realloc(sg->coords, capacity * sizeof(tvdb_vec3i));
   void* nv = realloc(sg->values, capacity * sizeof(float));
   if (!nc || !nv) {
