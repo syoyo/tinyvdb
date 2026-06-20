@@ -319,12 +319,21 @@ each theme. Notes point at the nearest existing primitive to reuse.
       order-independent additive validation hash via reduction, `test_checksum`).
       COMPLETE (sparse-data stats/checksum reuse the same reductions over a
       sparse value buffer).
-- [~] **P1: signed flood fill and sparse background robustness.**
+- [x] **P1: signed flood fill and sparse background robustness.**
       `tvdb_gpu_signed_flood_fill` done — exterior reachability flood through
       far voxels as iterative GPU label propagation (host seeds the boundary and
       assigns final signs), mirroring `tvdb_signed_flood_fill`; covered by
-      `test_gpu_backend` (`test_flood`). *Still open:* portable inactive-page /
-      background fallback for sparse-image sampling near unbound regions.
+      `test_gpu_backend` (`test_flood`). The partial sparse-image path now has a
+      portable **background fallback**: a single shared physical page is sparse-
+      aliased to every page with no active voxel and filled with the background
+      value, so sampling unbound regions returns the background instead of
+      undefined memory (no reliance on the non-portable residency shader
+      feature — just `vkQueueBindSparse` aliasing). Both the one-shot and
+      persistent sparse-image builders get it; the upload becomes a single
+      full-image copy when every page is backed. Covered by `test_gpu_backend`
+      (`test_sparse_image_background`: a corner block sampled across the whole
+      volume, unbound samples must equal the background and match the dense path
+      — verified to fail without the fallback, where unbound reads return 0).
 - [x] **P2: GPU Gaussian-splat rasterizer.** `tvdb_gpu_gaussian_rasterize_forward`
       (tile-based depth-sorted front-to-back alpha blend; per-tile entries built
       and depth-sorted host-side, composited one thread/pixel for bit-for-bit CPU
@@ -419,7 +428,7 @@ core — listed for visibility, not on the near-term roadmap.
 | `test_reference_roundtrip` | libopenvdb-generated reference grids (bool/float/double/int32/int64/vec3s) round-trip through tinyvdb. Cross-tool byte-format guard |
 | `test_gaussian_backward` | Gaussian-splat rasterizer backward pass: 16×16 image from 4 random gaussians, all 36 analytic gradients checked against central FD |
 | `test_nanovdb_reference` | nanovdb_convert-produced `.nvdb` corpus: hierarchical accessor + trilinear sampler + CRC32 checksum validation + VDB→NanoVDB conversion exactness |
-| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear + triquadratic batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling, same-topology sparse conv3d against CPU (near-dense index-grid fast path + brute-force fallback), spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear + triquadratic splat, points→mask, sparse `voxelize_points` (dense + unbounded hash-set paths), sparse dilate/erode, dense `merge_grids`, dense→sparse active-coord extraction, triangle-mesh→SDF, marching cubes, strided + transposed sparse conv, a device-resident buffer round-trip, cross-API external-memory interop (Vulkan→CUDA opaque-fd share, bit-exact, skips if unsupported), the Gaussian-splat rasterizer (forward + backward), 3D→2D projection, spherical-harmonics color eval, SSIM, batched sparse conv, and multi-context scheduling — all parity-checked vs CPU (40 test cases); skips with code 77 if no runtime backend/device is available |
+| `test_gpu_backend` | Optional runtime-loaded GPU backend parity for Vulkan and CUDA when available: analytic sphere/box/torus SDF generation, dense CSG union/difference, dense trilinear + triquadratic batch sampling, Vulkan regular/full-sparse/partial-sparse/persistent-sparse sampled-image benchmarks against SSBO sampling (incl. unbound-region background fallback), same-topology sparse conv3d against CPU (near-dense index-grid fast path + brute-force fallback), spatial queries (`coords_in_grid`/`points_in_grid`/`ijk_to_index`/`neighbor_counts` 6&26 on a 4³ block), dense topology (dilate/erode/prune/coarsen/refine), volume render, batched ray queries (uniform samples, DDA voxels, SDF segments), TSDF integration, grid statistics + level-set/fog validators + checksum, signed flood fill, trilinear + triquadratic splat, points→mask, sparse `voxelize_points` (dense + unbounded hash-set paths), sparse dilate/erode, dense `merge_grids`, dense→sparse active-coord extraction, triangle-mesh→SDF, marching cubes, strided + transposed sparse conv, a device-resident buffer round-trip, cross-API external-memory interop (Vulkan→CUDA opaque-fd share, bit-exact, skips if unsupported), the Gaussian-splat rasterizer (forward + backward), 3D→2D projection, spherical-harmonics color eval, SSIM, batched sparse conv, and multi-context scheduling — all parity-checked vs CPU (41 test cases); skips with code 77 if no runtime backend/device is available |
 | `test_bridge_ops_py` | Python end-to-end on `sphere.vdb`: dilate/erode/CSG/update_from_sparse → save → reload |
 | `test_dense_writer` (py) | Dense + sparse `.vdb` writer/reader: float SDF (raw + numpy), all compression modes, multi-leaf, analytic sphere, plus typed `write_dense_grid`/`read_dense_grid` and `write_sparse_grid`/`read_sparse_grid` round-trips for `float64`/`int32`/`int64`/`vec3f`/`bool` with grid-type-string checks |
 

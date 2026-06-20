@@ -1143,7 +1143,9 @@ static tvdb_status_t tvdb_vk_bind_sparse_image3d_regions(tvdb_gpu_context_t* ctx
                                                          const tvdb_vk_sparse_page_region* regions,
                                                          uint32_t region_count,
                                                          int uses_mip_tail,
+                                                         int* out_all_bound,
                                                          tvdb_error_t* err) {
+  *out_all_bound = 0;
   uint32_t mt = tvdb_vk_find_memory_type(ctx, req->memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   if (mt == UINT32_MAX) mt = tvdb_vk_find_memory_type(ctx, req->memoryTypeBits, 0);
   if (mt == UINT32_MAX) {
@@ -1152,17 +1154,32 @@ static tvdb_status_t tvdb_vk_bind_sparse_image3d_regions(tvdb_gpu_context_t* ctx
   }
   VkDeviceSize allocation_size = 0;
   VkSparseImageMemoryBind* binds = NULL;
+  uint32_t bind_count = 0;
   VkSparseMemoryBind opaque_bind;
   memset(&opaque_bind, 0, sizeof(opaque_bind));
   if (uses_mip_tail) {
     allocation_size = tvdb_align_up_device_size(sr->imageMipTailSize, req->alignment);
     opaque_bind.resourceOffset = sr->imageMipTailOffset;
     opaque_bind.size = sr->imageMipTailSize;
+    *out_all_bound = 1;  // the mip tail backs the entire image
   } else {
     VkExtent3D g = sr->formatProperties.imageGranularity;
     VkDeviceSize page_bytes = tvdb_align_up_device_size((VkDeviceSize)g.width * (VkDeviceSize)g.height * (VkDeviceSize)g.depth * sizeof(float), req->alignment);
-    allocation_size = page_bytes * (VkDeviceSize)region_count;
-    binds = (VkSparseImageMemoryBind*)calloc(region_count ? region_count : 1, sizeof(*binds));
+    uint32_t npx = (out->nx + g.width - 1) / g.width;
+    uint32_t npy = (out->ny + g.height - 1) / g.height;
+    uint32_t npz = (out->nz + g.depth - 1) / g.depth;
+    uint64_t total_pages = (uint64_t)npx * (uint64_t)npy * (uint64_t)npz;
+    // Background fallback: bind a single shared page to every page that holds no
+    // active voxel, so sampling an unbound region returns the background value
+    // (Vulkan sparse memory aliasing -- portable, no residency shader feature).
+    // Skip for absurd page counts so the bind list stays bounded.
+    int use_bg = (total_pages > (uint64_t)region_count) && (total_pages <= (uint64_t)(1u << 20));
+    uint32_t unbound = use_bg ? (uint32_t)(total_pages - region_count) : 0u;
+    uint32_t mem_pages = region_count + (use_bg ? 1u : 0u);
+    VkDeviceSize bg_offset = page_bytes * (VkDeviceSize)region_count;
+    allocation_size = page_bytes * (VkDeviceSize)(mem_pages ? mem_pages : 1u);
+    bind_count = region_count + unbound;
+    binds = (VkSparseImageMemoryBind*)calloc(bind_count ? bind_count : 1, sizeof(*binds));
     if (!binds) {
       tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
       return TVDB_ERROR_OUT_OF_MEMORY;
@@ -1172,6 +1189,30 @@ static tvdb_status_t tvdb_vk_bind_sparse_image3d_regions(tvdb_gpu_context_t* ctx
       binds[i].offset = regions[i].offset;
       binds[i].extent = regions[i].extent;
       binds[i].memoryOffset = page_bytes * (VkDeviceSize)i;
+    }
+    if (use_bg) {
+      uint8_t* active = (uint8_t*)calloc((size_t)total_pages, 1);
+      if (!active) { free(binds); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+      for (uint32_t i = 0; i < region_count; ++i)
+        active[(((uint64_t)regions[i].z * npy) + regions[i].y) * npx + regions[i].x] = 1;
+      uint32_t bi = region_count;
+      for (uint32_t pz = 0; pz < npz; ++pz)
+        for (uint32_t py = 0; py < npy; ++py)
+          for (uint32_t px = 0; px < npx; ++px) {
+            if (active[(((uint64_t)pz * npy) + py) * npx + px]) continue;
+            uint32_t ox = px * g.width, oy = py * g.height, oz = pz * g.depth;
+            binds[bi].subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            binds[bi].offset.x = (int32_t)ox; binds[bi].offset.y = (int32_t)oy; binds[bi].offset.z = (int32_t)oz;
+            binds[bi].extent.width = (ox + g.width > out->nx) ? (out->nx - ox) : g.width;
+            binds[bi].extent.height = (oy + g.height > out->ny) ? (out->ny - oy) : g.height;
+            binds[bi].extent.depth = (oz + g.depth > out->nz) ? (out->nz - oz) : g.depth;
+            binds[bi].memoryOffset = bg_offset;
+            ++bi;
+          }
+      free(active);
+      *out_all_bound = 1;  // every page is now backed (active pages + shared bg page)
+    } else if (total_pages == (uint64_t)region_count) {
+      *out_all_bound = 1;  // active pages already cover the whole image
     }
   }
   VkMemoryAllocateInfo mai;
@@ -1183,7 +1224,7 @@ static tvdb_status_t tvdb_vk_bind_sparse_image3d_regions(tvdb_gpu_context_t* ctx
     free(binds);
     return err ? err->status : TVDB_ERROR_IO;
   }
-  for (uint32_t i = 0; i < region_count; ++i) binds[i].memory = out->memory;
+  for (uint32_t i = 0; i < bind_count; ++i) binds[i].memory = out->memory;
   opaque_bind.memory = out->memory;
 
   VkSparseImageMemoryBindInfo image_bind_info;
@@ -1191,7 +1232,7 @@ static tvdb_status_t tvdb_vk_bind_sparse_image3d_regions(tvdb_gpu_context_t* ctx
   memset(&image_bind_info, 0, sizeof(image_bind_info));
   memset(&opaque_bind_info, 0, sizeof(opaque_bind_info));
   image_bind_info.image = out->image;
-  image_bind_info.bindCount = region_count;
+  image_bind_info.bindCount = bind_count;
   image_bind_info.pBinds = binds;
   opaque_bind_info.image = out->image;
   opaque_bind_info.bindCount = uses_mip_tail ? 1u : 0u;
@@ -1405,7 +1446,8 @@ static tvdb_status_t tvdb_vk_create_sparse_image3d_from_sparse_grid(tvdb_gpu_con
     st = TVDB_ERROR_INVALID_ARGUMENT;
     goto done_regions;
   }
-  st = tvdb_vk_bind_sparse_image3d_regions(ctx, out, &req, &sparse_req, regions, region_count, uses_mip_tail, err);
+  int all_bound = 0;
+  st = tvdb_vk_bind_sparse_image3d_regions(ctx, out, &req, &sparse_req, regions, region_count, uses_mip_tail, &all_bound, err);
   if (st != TVDB_OK) goto done_regions;
 
   size_t voxel_count = (size_t)nx * (size_t)ny * (size_t)nz;
@@ -1441,7 +1483,11 @@ static tvdb_status_t tvdb_vk_create_sparse_image3d_from_sparse_grid(tvdb_gpu_con
   b0.subresourceRange.layerCount = 1;
   ctx->vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0, 0, NULL, 0, NULL, 1, &b0);
-  if (uses_mip_tail) {
+  if (uses_mip_tail || all_bound) {
+    // Every page is backed (mip tail, fully-active, or the shared background
+    // page): one full-image copy writes real values to active pages and the
+    // background value everywhere else (unbound pages alias one page, all
+    // receiving the same background value, so the result is well-defined).
     VkBufferImageCopy copy;
     memset(&copy, 0, sizeof(copy));
     copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;

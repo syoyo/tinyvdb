@@ -525,6 +525,71 @@ done:
   tvdb_sparse_grid_free(&sg);
 }
 
+// Sampling a partial sparse image in UNBOUND regions must return the background
+// value (the shared-background-page fallback), not undefined memory. Without the
+// fallback the unbound samples would be garbage and mismatch the dense path.
+static void test_sparse_image_background(tvdb_gpu_context_t* ctx, const tvdb_gpu_context_info_t* info) {
+  if (info->backend != TVDB_GPU_BACKEND_VULKAN || !info->supports_sparse_3d_images) return;
+  const int N = 64;
+  const float bg = -7.0f;
+  tvdb_sparse_grid sg;
+  tvdb_sparse_grid_init(&sg);
+  if (!tvdb_sparse_grid_reserve(&sg, 64)) { EXPECT(0); return; }
+  sg.voxel_size = 0.1f; sg.ox = -0.5f; sg.oy = 0.25f; sg.oz = 1.0f;
+  size_t k = 0;
+  for (int z = 2; z < 6; ++z) for (int y = 2; y < 6; ++y) for (int x = 2; x < 6; ++x) {  // small corner block
+    sg.coords[k].x = x; sg.coords[k].y = y; sg.coords[k].z = z;
+    sg.values[k] = 0.1f * (float)x + 0.2f * (float)y - 0.05f * (float)z;
+    ++k;
+  }
+  sg.count = k;
+
+  // Dense reference grid (background everywhere, active voxels overwritten).
+  tvdb_dense_grid dense;
+  tvdb_dense_grid_init(&dense, N, N, N);
+  dense.voxel_size = sg.voxel_size; dense.ox = sg.ox; dense.oy = sg.oy; dense.oz = sg.oz;
+  for (size_t i = 0; i < (size_t)N*N*N; ++i) dense.data[i] = bg;
+  for (size_t i = 0; i < sg.count; ++i)
+    dense.data[(size_t)sg.coords[i].x + (size_t)N*((size_t)sg.coords[i].y + (size_t)N*(size_t)sg.coords[i].z)] = sg.values[i];
+
+  // Sample a coarse grid spanning the whole volume -> most points are unbound.
+  const int S = 7;
+  size_t np = (size_t)S*S*S;
+  tvdb_vec3f* pts = (tvdb_vec3f*)calloc(np, sizeof(tvdb_vec3f));
+  float* gpu_sparse = (float*)calloc(np, sizeof(float));
+  float* gpu_ssbo = (float*)calloc(np, sizeof(float));
+  size_t p = 0, far_unbound = 0;
+  for (int iz = 0; iz < S; ++iz) for (int iy = 0; iy < S; ++iy) for (int ix = 0; ix < S; ++ix) {
+    int vx = ix * (N / S), vy = iy * (N / S), vz = iz * (N / S);
+    pts[p].x = sg.ox + ((float)vx + 0.5f) * sg.voxel_size;
+    pts[p].y = sg.oy + ((float)vy + 0.5f) * sg.voxel_size;
+    pts[p].z = sg.oz + ((float)vz + 0.5f) * sg.voxel_size;
+    if (vx >= 8 || vy >= 8 || vz >= 8) ++far_unbound;  // clearly outside the active block + its pages
+    ++p;
+  }
+  EXPECT(far_unbound > 0);
+
+  tvdb_error_t err; memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_sample_trilinear_sparse_vulkan_sparse_image3d(ctx, &sg, bg, N, N, N, pts, np, gpu_sparse, &err) != TVDB_OK) {
+    fprintf(stderr, "sparse-image background sample unavailable: %s\n", err.message);
+    goto done;
+  }
+  EXPECT(tvdb_gpu_sample_trilinear_dense_batch(ctx, &dense, pts, np, gpu_ssbo, &err) == TVDB_OK);
+  // The sparse image (with the background-page fallback) must match the dense
+  // path everywhere, including unbound regions which must read exactly bg.
+  for (size_t i = 0; i < np; ++i) {
+    EXPECT_NEAR(gpu_sparse[i], gpu_ssbo[i], 2e-4f);
+    int vx = (int)(((double)pts[i].x - sg.ox) / sg.voxel_size + 0.5);
+    int vy = (int)(((double)pts[i].y - sg.oy) / sg.voxel_size + 0.5);
+    int vz = (int)(((double)pts[i].z - sg.oz) / sg.voxel_size + 0.5);
+    if (vx >= 8 || vy >= 8 || vz >= 8) EXPECT_NEAR(gpu_sparse[i], bg, 2e-4f);  // unbound -> background
+  }
+done:
+  free(pts); free(gpu_sparse); free(gpu_ssbo);
+  tvdb_dense_grid_free(&dense);
+  tvdb_sparse_grid_free(&sg);
+}
+
 static void test_sparse_conv(tvdb_gpu_context_t* ctx) {
   tvdb_sparse_grid sg, cpu, gpu;
   tvdb_sparse_grid_init(&sg);
@@ -1986,6 +2051,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_sample_quadratic(ctx);
   test_vulkan_image3d_sample_and_bench(ctx, &info);
   test_vulkan_partial_sparse_image3d(ctx, &info);
+  test_sparse_image_background(ctx, &info);
   test_sparse_conv(ctx);
   test_sparse_conv_brute(ctx);
   test_spatial_queries(ctx);
