@@ -1,0 +1,34 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) buffer OutBuffer { uint outv[]; };       // float bits, CAS atomic-min
+layout(std430, set = 0, binding = 1) readonly buffer SrcBuffer { float src[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 sdim;   // source dims
+  ivec4 odim;   // output dims
+  ivec4 off;    // source->output voxel offset
+  uint count;   // source voxel count
+} u;
+
+void amin_f(uint i, float val) {
+  uint old = outv[i], assumed;
+  do { assumed = old;
+       if (uintBitsToFloat(assumed) <= val) break;
+       old = atomicCompSwap(outv[i], assumed, floatBitsToUint(val));
+  } while (assumed != old);
+}
+
+// Min-pool one source grid into the (pre-filled-with-background) output at the
+// given voxel offset (matches the MERGE_FROM splat in tvdb_merge_grids). One
+// thread per source voxel.
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.count) return;
+  int snx = u.sdim.x, sny = u.sdim.y;
+  int iz = int(i) / (snx * sny);
+  int rem = int(i) - iz * snx * sny;
+  int iy = rem / snx;
+  int ix = rem - iy * snx;
+  int ox = ix + u.off.x, oy = iy + u.off.y, oz = iz + u.off.z;
+  if (ox < 0 || oy < 0 || oz < 0 || ox >= u.odim.x || oy >= u.odim.y || oz >= u.odim.z) return;
+  amin_f(uint((oz * u.odim.y + oy) * u.odim.x + ox), src[i]);
+}

@@ -44,6 +44,7 @@
 #include "tinyvdb_gpu_sparse_erode_spv.inc"
 #include "tinyvdb_gpu_sparse_dilate_scatter_spv.inc"
 #include "tinyvdb_gpu_sparse_finalize_spv.inc"
+#include "tinyvdb_gpu_merge_scatter_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2184,6 +2185,17 @@ static const char* kTvdbCudaSource =
 "  int ly = rem / dx; int lx = rem - ly * dx;\n"
 "  unsigned int slot = atomicAdd(counter, 1u);\n"
 "  if (slot < cap) { outd[4u*slot+0u]=lx+bx; outd[4u*slot+1u]=ly+by; outd[4u*slot+2u]=lz+bz; outd[4u*slot+3u]=__float_as_int(val[v]); }\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_merge_scatter(float* outv, const float* src,\n"
+"    int snx, int sny, int snz, int onx, int ony, int onz, int offx, int offy, int offz, unsigned int count) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= count) return;\n"
+"  int iz = (int)(i / (unsigned int)(snx * sny));\n"
+"  int rem = (int)(i - (unsigned int)(iz * snx * sny));\n"
+"  int iy = rem / snx; int ix = rem - iy * snx;\n"
+"  int ox = ix + offx, oy = iy + offy, oz = iz + offz;\n"
+"  if (ox < 0 || oy < 0 || oz < 0 || ox >= onx || oy >= ony || oz >= onz) return;\n"
+"  tvdb_atomic_min_f(&outv[(oz * ony + oy) * onx + ox], src[i]);\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -5756,6 +5768,89 @@ tvdb_status_t tvdb_gpu_dilate_sparse(tvdb_gpu_context_t* ctx, const tvdb_sparse_
     }
   }
   free(cc); free(cv);
+  return st;
+}
+
+// Min-pool one source grid into a device output buffer (CAS atomic-min).
+static tvdb_status_t tvdb_gpu_merge_one(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* src,
+    int onx, int ony, int onz, int offx, int offy, int offz,
+    tvdb_vk_buffer* bout, CUdeviceptr dout, tvdb_error_t* err) {
+  size_t ns = (size_t)src->nx * (size_t)src->ny * (size_t)src->nz;
+  if (ns == 0) return TVDB_OK;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr ds = 0;
+    tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
+    if (st != TVDB_OK) return st;
+    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_merge_scatter"))) return err?err->status:TVDB_ERROR_IO;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &ds, src->data, ns*sizeof(float), err)) != TVDB_OK) return st;
+    int snx=src->nx, sny=src->ny, snz=src->nz; unsigned int uc=(unsigned int)ns, block=128;
+    void* args[] = {&dout,&ds,&snx,&sny,&snz,&onx,&ony,&onz,&offx,&offy,&offz,&uc};
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,(uc+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { ctx->cuda.cuMemFree(ds); return err?err->status:TVDB_ERROR_IO; }
+    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { ctx->cuda.cuMemFree(ds); return err?err->status:TVDB_ERROR_IO; }
+    ctx->cuda.cuMemFree(ds);
+    return TVDB_OK;
+  }
+  tvdb_vk_buffer bs, bu;
+  tvdb_status_t st;
+  if ((st = tvdb_vk_create_buffer(ctx, ns*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bs, err)) != TVDB_OK) return st;
+  if ((st = tvdb_vk_create_buffer(ctx, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) { tvdb_vk_destroy_buffer(ctx, &bs); return st; }
+  memcpy(bs.mapped, src->data, ns*sizeof(float));
+  struct { int32_t sdim[4]; int32_t odim[4]; int32_t off[4]; uint32_t count; uint32_t pad[3]; } par;
+  memset(&par, 0, sizeof(par));
+  par.sdim[0]=src->nx; par.sdim[1]=src->ny; par.sdim[2]=src->nz;
+  par.odim[0]=onx; par.odim[1]=ony; par.odim[2]=onz;
+  par.off[0]=offx; par.off[1]=offy; par.off[2]=offz; par.count=(uint32_t)ns;
+  memcpy(bu.mapped, &par, sizeof(par));
+  tvdb_vk_dispatch_desc d;
+  memset(&d, 0, sizeof(d));
+  d.spv = kTvdbGpuMergeScatterSpv; d.spv_len = kTvdbGpuMergeScatterSpv_len; d.descriptor_count = 3;
+  d.buffers[0]=bout; d.buffers[1]=&bs; d.buffers[2]=&bu;
+  d.descriptor_types[0]=d.descriptor_types[1]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  d.descriptor_types[2]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  d.group_x = (uint32_t)((ns + 127u) / 128u);
+  st = tvdb_vk_dispatch(ctx, &d, err);
+  tvdb_vk_destroy_buffer(ctx, &bu);
+  tvdb_vk_destroy_buffer(ctx, &bs);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_merge_grids(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* a,
+                                   const tvdb_dense_grid* b, float background,
+                                   tvdb_dense_grid* out, tvdb_error_t* err) {
+  if (!ctx || !a || !b || !out || !a->data || !b->data || fabsf(a->voxel_size - b->voxel_size) > 1e-6f) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid merge_grids arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  float vs = a->voxel_size;
+  float ax1 = a->ox + a->nx*vs, ay1 = a->oy + a->ny*vs, az1 = a->oz + a->nz*vs;
+  float bx1 = b->ox + b->nx*vs, by1 = b->oy + b->ny*vs, bz1 = b->oz + b->nz*vs;
+  float ox = a->ox < b->ox ? a->ox : b->ox, oy = a->oy < b->oy ? a->oy : b->oy, oz = a->oz < b->oz ? a->oz : b->oz;
+  float mx = ax1 > bx1 ? ax1 : bx1, my = ay1 > by1 ? ay1 : by1, mz = az1 > bz1 ? az1 : bz1;
+  int nx = (int)ceilf((mx-ox)/vs), ny = (int)ceilf((my-oy)/vs), nz = (int)ceilf((mz-oz)/vs);
+  tvdb_status_t st = tvdb_gpu_init_out_grid(out, nx, ny, nz, vs, ox, oy, oz, err);
+  if (st != TVDB_OK) return st;
+  size_t nvox = (size_t)nx*(size_t)ny*(size_t)nz;
+  for (size_t i = 0; i < nvox; ++i) out->data[i] = background;
+  int sax = (int)roundf((a->ox-ox)/vs), say = (int)roundf((a->oy-oy)/vs), saz = (int)roundf((a->oz-oz)/vs);
+  int sbx = (int)roundf((b->ox-ox)/vs), sby = (int)roundf((b->oy-oy)/vs), sbz = (int)roundf((b->oz-oz)/vs);
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUdeviceptr dout = 0;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, out->data, nvox*sizeof(float), err)) != TVDB_OK) return st;
+    if ((st = tvdb_gpu_merge_one(ctx, a, nx,ny,nz, sax,say,saz, NULL, dout, err)) != TVDB_OK) { ctx->cuda.cuMemFree(dout); return st; }
+    if ((st = tvdb_gpu_merge_one(ctx, b, nx,ny,nz, sbx,sby,sbz, NULL, dout, err)) != TVDB_OK) { ctx->cuda.cuMemFree(dout); return st; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(out->data, dout, nvox*sizeof(float)))) st = err?err->status:TVDB_ERROR_IO;
+    ctx->cuda.cuMemFree(dout);
+    return st;
+  }
+
+  tvdb_vk_buffer bout;
+  if ((st = tvdb_vk_create_buffer(ctx, nvox*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bout, err)) != TVDB_OK) return st;
+  memcpy(bout.mapped, out->data, nvox*sizeof(float));
+  if ((st = tvdb_gpu_merge_one(ctx, a, nx,ny,nz, sax,say,saz, &bout, 0, err)) == TVDB_OK)
+    st = tvdb_gpu_merge_one(ctx, b, nx,ny,nz, sbx,sby,sbz, &bout, 0, err);
+  if (st == TVDB_OK) memcpy(out->data, bout.mapped, nvox*sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bout);
   return st;
 }
 

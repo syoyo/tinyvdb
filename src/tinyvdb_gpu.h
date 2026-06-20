@@ -357,6 +357,13 @@ tvdb_status_t tvdb_gpu_dilate_sparse(tvdb_gpu_context_t* ctx, const tvdb_sparse_
                                      float background, int iterations,
                                      tvdb_sparse_grid* out, tvdb_error_t* err);
 
+// Merge two dense grids (same voxel size) into an output covering both world
+// AABBs, min-pooling overlaps (SDF-union), background elsewhere (parallels
+// tvdb_merge_grids). `out` is allocated/filled by the call.
+tvdb_status_t tvdb_gpu_merge_grids(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* a,
+                                   const tvdb_dense_grid* b, float background,
+                                   tvdb_dense_grid* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

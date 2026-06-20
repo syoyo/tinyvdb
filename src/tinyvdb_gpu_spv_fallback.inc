@@ -58,3 +58,5 @@ static const uint8_t kTvdbGpuSparseDilateScatterSpv[] = {0};
 static const uint32_t kTvdbGpuSparseDilateScatterSpv_len = 0;
 static const uint8_t kTvdbGpuSparseFinalizeSpv[] = {0};
 static const uint32_t kTvdbGpuSparseFinalizeSpv_len = 0;
+static const uint8_t kTvdbGpuMergeScatterSpv[] = {0};
+static const uint32_t kTvdbGpuMergeScatterSpv_len = 0;

@@ -1200,6 +1200,33 @@ static void test_sparse_dilate(tvdb_gpu_context_t* ctx) {
   tvdb_sparse_grid_free(&in); tvdb_sparse_grid_free(&cpu); tvdb_sparse_grid_free(&gpu);
 }
 
+static void test_merge(tvdb_gpu_context_t* ctx) {
+  // Two sphere SDFs at different centres -> different grid origins; merge covers
+  // the union AABB with SDF-union (min) semantics.
+  tvdb_dense_grid a, b, cpu, gpu;
+  memset(&a, 0, sizeof(a)); memset(&b, 0, sizeof(b)); memset(&cpu, 0, sizeof(cpu)); memset(&gpu, 0, sizeof(gpu));
+  const float ca[3] = {0.0f, 0.0f, 0.0f}, cb[3] = {0.8f, 0.1f, -0.1f};
+  EXPECT(tvdb_level_set_sphere(0.5f, ca, 0.1f, 3.0f, &a));
+  EXPECT(tvdb_level_set_sphere(0.5f, cb, 0.1f, 3.0f, &b));
+  const float bg = 3.0f;
+  EXPECT(tvdb_merge_grids(&a, &b, bg, &cpu, NULL));
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_merge_grids(ctx, &a, &b, bg, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu merge_grids failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu.nx == cpu.nx && gpu.ny == cpu.ny && gpu.nz == cpu.nz);
+    EXPECT_NEAR(gpu.ox, cpu.ox, 1e-6f); EXPECT_NEAR(gpu.oy, cpu.oy, 1e-6f); EXPECT_NEAR(gpu.oz, cpu.oz, 1e-6f);
+    if (gpu.nx == cpu.nx && gpu.ny == cpu.ny && gpu.nz == cpu.nz) {
+      size_t n = (size_t)cpu.nx * cpu.ny * cpu.nz;
+      for (size_t i = 0; i < n; ++i) EXPECT_NEAR(gpu.data[i], cpu.data[i], 1e-6f);
+    }
+  }
+  tvdb_dense_grid_free(&a); tvdb_dense_grid_free(&b);
+  tvdb_dense_grid_free(&cpu); tvdb_dense_grid_free(&gpu);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1236,6 +1263,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_voxelize(ctx);
   test_sparse_erode(ctx);
   test_sparse_dilate(ctx);
+  test_merge(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

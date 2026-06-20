@@ -198,7 +198,8 @@ each theme. Notes point at the nearest existing primitive to reuse.
       bbox-local occupancy + atomic-counter compaction primitive — all on Vulkan
       and CUDA/NVRTC, mirroring `tinyvdb_ops.c`/`tinyvdb_topology.c`/
       `tinyvdb_sparse.c`. Covered by `test_gpu_backend` (`test_topology`,
-      `test_sparse_erode`, `test_sparse_dilate`). *Still open:* sparse merge.
+      `test_sparse_erode`, `test_sparse_dilate`) and `tvdb_gpu_merge_grids`
+      (dense union-AABB merge with min-pool, `test_merge`). COMPLETE.
 - [~] **P0: GPU spatial queries.** `tvdb_gpu_coords_in_grid`,
       `tvdb_gpu_points_in_grid`, `tvdb_gpu_ijk_to_index`, and
       `tvdb_gpu_neighbor_counts` (6/26) over a flat active-coord set, on Vulkan
