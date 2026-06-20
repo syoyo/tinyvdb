@@ -519,11 +519,15 @@ int tvdb_gpu_context_supports_external_memory(const tvdb_gpu_context_t* ctx);
 tvdb_status_t tvdb_gpu_buffer_create_exportable(tvdb_gpu_context_t* ctx, size_t size_bytes,
                                                 tvdb_gpu_buffer_t** out, tvdb_error_t* err);
 // Export an exportable buffer's memory as an opaque POSIX fd packed into a
-// uint64 handle. The handle is owned by the caller; a successful
-// tvdb_gpu_buffer_import consumes it (do not close it afterwards).
+// uint64 handle. The handle is owned by the caller until passed to
+// tvdb_gpu_buffer_import, which always consumes it (CUDA takes ownership on
+// success; the handle is closed on failure) — so the caller never closes it
+// after a call to import. `size_bytes` passed to import must match the size
+// used to create the exportable buffer.
 tvdb_status_t tvdb_gpu_buffer_export(tvdb_gpu_buffer_t* buf, uint64_t* out_handle, tvdb_error_t* err);
 // Import a handle from tvdb_gpu_buffer_export into a CUDA context, yielding a
-// device buffer that aliases the same memory. CUDA context only.
+// device buffer that aliases the same memory. CUDA context only. Consumes the
+// handle (see tvdb_gpu_buffer_export).
 tvdb_status_t tvdb_gpu_buffer_import(tvdb_gpu_context_t* ctx, uint64_t handle, size_t size_bytes,
                                      tvdb_gpu_buffer_t** out, tvdb_error_t* err);
 

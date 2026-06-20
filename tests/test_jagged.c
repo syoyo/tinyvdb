@@ -49,7 +49,39 @@ int main(void) {
     EXPECT(NEAR(sum[0], 6.0f) && NEAR(sum[2], 15.0f) && NEAR(sum[1], 0.0f), "sum");
     EXPECT(NEAR(mean[0], 2.0f) && NEAR(mean[2], 7.5f), "mean");
     EXPECT(NEAR(mx[0], 3.0f) && NEAR(mn[0], 1.0f) && NEAR(mx[2], 8.0f) && NEAR(mn[2], 7.0f), "max/min");
+    EXPECT(NEAR(mx[1], 0.0f) && NEAR(mn[1], 0.0f), "empty-list max/min == 0");  // documented behavior
     tvdb_jagged_free(&jt);
+  }
+
+  // ---- JaggedTensor: zero-list and empty-part concat edge cases ----
+  {
+    tvdb_jagged_t z;
+    EXPECT(tvdb_jagged_create(&z, 0, NULL, 1), "zero-list create");
+    EXPECT(tvdb_jagged_list_count(&z) == 0 && tvdb_jagged_total(&z) == 0, "zero-list shape");
+    EXPECT(tvdb_jagged_list_ptr(&z, 0, NULL) == NULL, "zero-list bad index");
+    // Concat of zero parts -> empty, channels defaults to 1.
+    tvdb_jagged_t cat0;
+    EXPECT(tvdb_jagged_concat(&cat0, NULL, 0), "concat 0 parts");
+    EXPECT(tvdb_jagged_list_count(&cat0) == 0 && cat0.channels == 1, "concat 0 parts shape");
+    // Concat including a part with an empty list.
+    float d[2] = {3.0f, 4.0f};
+    const float* lp[2] = {d, NULL};
+    int64_t lz[2] = {2, 0};
+    tvdb_jagged_t P; EXPECT(tvdb_jagged_from_lists(&P, 2, lp, lz, 1), "part w/ empty list");
+    const tvdb_jagged_t* parts[1] = {&P};
+    tvdb_jagged_t catP;
+    EXPECT(tvdb_jagged_concat(&catP, parts, 1), "concat w/ empty list");
+    EXPECT(tvdb_jagged_list_count(&catP) == 2 && tvdb_jagged_total(&catP) == 2, "concat empty-list shape");
+    EXPECT(tvdb_jagged_list_size(&catP, 1) == 0, "concat preserved empty list");
+    tvdb_jagged_free(&z); tvdb_jagged_free(&cat0); tvdb_jagged_free(&P); tvdb_jagged_free(&catP);
+  }
+
+  // ---- GridBatch: zero-grid smoke ----
+  {
+    tvdb_grid_batch_t gb0;
+    EXPECT(tvdb_grid_batch_from_grids(&gb0, NULL, 0), "zero-grid batch");
+    EXPECT(tvdb_grid_batch_size(&gb0) == 0 && tvdb_grid_batch_total_voxels(&gb0) == 0, "zero-grid shape");
+    tvdb_grid_batch_free(&gb0);
   }
 
   // ---- JaggedTensor: multi-channel + concat ----

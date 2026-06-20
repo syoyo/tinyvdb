@@ -1368,10 +1368,12 @@ static void test_gaussian_mcmc(tvdb_gpu_context_t* ctx) {
     float ql=sqrtf(qx*qx+qy*qy+qz*qz+qw*qw); if (ql<1e-6f){qw=1;ql=1;}
     quats[4*i+0]=qx/ql; quats[4*i+1]=qy/ql; quats[4*i+2]=qz/ql; quats[4*i+3]=qw/ql;
     lsc[3*i+0]=RND01-2; lsc[3*i+1]=RND01-2; lsc[3*i+2]=RND01-2;
-    opl[i]=RND01*8-4;  // logit; some near/above the 0.995 gate so gate varies
+    opl[i]=RND01*8-4;  // logit; mostly op >> 0.005 (gate ~1)
     rnd[3*i+0]=RND01*2-1; rnd[3*i+1]=RND01*2-1; rnd[3*i+2]=RND01*2-1;
   }
   #undef RND01
+  opl[0] = -8.0f;  // op ~ 0.0003 < 0.005: drives the steep gate toward 0 (exercises the suppression branch)
+  opl[1] = -5.3f;  // op ~ 0.005: right at the gate midpoint, so a wrong gate constant would diverge
   const float lr = 0.01f;
   EXPECT(tvdb_gaussian_mcmc_add_noise(N, means, quats, lsc, opl, rnd, lr, cpu_m, &cerr) == TVDB_OK);
   if (tvdb_gpu_gaussian_mcmc_add_noise(ctx, N, means, quats, lsc, opl, rnd, lr, gpu_m, &err) != TVDB_OK) {

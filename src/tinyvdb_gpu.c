@@ -10,7 +10,17 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <unistd.h>   // close() for external-memory opaque fds
 #endif
+
+// Close an exported opaque-fd handle (POSIX only; opaque-fd interop is Linux).
+static void tvdb_close_opaque_fd(uint64_t handle) {
+#if !defined(_WIN32)
+  close((int)(unsigned int)handle);
+#else
+  (void)handle;
+#endif
+}
 
 #if defined(__has_include)
 #if __has_include("tinyvdb_gpu_csg_spv.inc")
@@ -160,6 +170,7 @@ typedef struct _nvrtcProgram* nvrtcProgram;
 #define VK_QUEUE_FAMILY_IGNORED UINT32_MAX
 #define VK_IMAGE_CREATE_SPARSE_BINDING_BIT 0x00000001u
 #define VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT 0x00000002u
+#define VK_IMAGE_CREATE_SPARSE_ALIASED_BIT 0x00000004u
 #define VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT 0x00000010u
 #define VK_BUFFER_USAGE_STORAGE_BUFFER_BIT 0x00000020u
 #define VK_BUFFER_USAGE_TRANSFER_SRC_BIT 0x00000001u
@@ -530,6 +541,7 @@ struct tvdb_gpu_context {
   uint32_t queue_family;
   VkPhysicalDeviceMemoryProperties memory_props;
   int supports_sparse_3d_images;
+  int supports_sparse_aliased;   // sparseResidencyAliased: legal sparse memory aliasing
   int supports_external_memory;
   char device_name[128];
   tvdb_cuda_table cuda;
@@ -1173,10 +1185,13 @@ static tvdb_status_t tvdb_vk_bind_sparse_image3d_regions(tvdb_gpu_context_t* ctx
     uint32_t npz = (out->nz + g.depth - 1) / g.depth;
     uint64_t total_pages = (uint64_t)npx * (uint64_t)npy * (uint64_t)npz;
     // Background fallback: bind a single shared page to every page that holds no
-    // active voxel, so sampling an unbound region returns the background value
-    // (Vulkan sparse memory aliasing -- portable, no residency shader feature).
-    // Skip for absurd page counts so the bind list stays bounded.
-    int use_bg = (total_pages > (uint64_t)region_count) && (total_pages <= (uint64_t)(1u << 20));
+    // active voxel, so sampling an unbound region returns the background value.
+    // This aliases one physical page across many image regions, which is only
+    // legal with the sparseResidencyAliased feature (+ SPARSE_ALIASED_BIT on the
+    // image). Skip it otherwise (degrades to undefined unbound reads, as before),
+    // and skip for absurd page counts so the bind list stays bounded.
+    int use_bg = ctx->supports_sparse_aliased &&
+                 (total_pages > (uint64_t)region_count) && (total_pages <= (uint64_t)(1u << 20));
     uint32_t unbound = use_bg ? (uint32_t)(total_pages - region_count) : 0u;
     uint32_t mem_pages = region_count + (use_bg ? 1u : 0u);
     VkDeviceSize bg_offset = page_bytes * (VkDeviceSize)region_count;
@@ -1422,6 +1437,10 @@ static tvdb_status_t tvdb_vk_create_sparse_image3d_from_sparse_grid(tvdb_gpu_con
   memset(&ici, 0, sizeof(ici));
   ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   ici.flags = VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
+  // The background fallback aliases one physical page across all unbound pages,
+  // which is only well-defined with SPARSE_ALIASED_BIT + the sparseResidencyAliased
+  // feature. Request it when available so the fallback is spec-compliant.
+  if (ctx->supports_sparse_aliased) ici.flags |= VK_IMAGE_CREATE_SPARSE_ALIASED_BIT;
   ici.imageType = VK_IMAGE_TYPE_3D;
   ici.format = VK_FORMAT_R32_SFLOAT;
   ici.extent.width = out->nx;
@@ -2972,6 +2991,8 @@ static tvdb_status_t tvdb_vulkan_context_create(uint32_t device_index,
   ctx->supports_sparse_3d_images =
       (features.sparseBinding && features.sparseResidencyImage3D &&
        (selected_queue_flags & VK_QUEUE_SPARSE_BINDING_BIT)) ? 1 : 0;
+  ctx->supports_sparse_aliased =
+      (ctx->supports_sparse_3d_images && features.sparseResidencyAliased) ? 1 : 0;
   ctx->vk.GetPhysicalDeviceMemoryProperties(ctx->physical_device, &ctx->memory_props);
   float prio = 1.0f;
   VkDeviceQueueCreateInfo qci;
@@ -2986,6 +3007,7 @@ static tvdb_status_t tvdb_vulkan_context_create(uint32_t device_index,
   if (ctx->supports_sparse_3d_images) {
     enabled_features.sparseBinding = VK_TRUE;
     enabled_features.sparseResidencyImage3D = VK_TRUE;
+    if (ctx->supports_sparse_aliased) enabled_features.sparseResidencyAliased = VK_TRUE;
   }
   memset(&dci, 0, sizeof(dci));
   dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -8061,12 +8083,15 @@ tvdb_status_t tvdb_gpu_buffer_import(tvdb_gpu_context_t* ctx, uint64_t handle, s
     return TVDB_ERROR_INVALID_ARGUMENT;
   }
   *out = NULL;
+  // This call owns the fd: CUDA consumes it on success; on any failure here we
+  // close it so the caller never has to track a half-imported handle.
   if (ctx->backend != TVDB_GPU_BACKEND_CUDA || !ctx->cuda.cuImportExternalMemory || !ctx->cuda.cuExternalMemoryGetMappedBuffer) {
     tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "external-memory import requires a CUDA context with external-memory support");
+    tvdb_close_opaque_fd(handle);
     return TVDB_ERROR_UNIMPLEMENTED;
   }
   tvdb_gpu_buffer_t* b = (tvdb_gpu_buffer_t*)calloc(1, sizeof(*b));
-  if (!b) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  if (!b) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); tvdb_close_opaque_fd(handle); return TVDB_ERROR_OUT_OF_MEMORY; }
   b->ctx = ctx; b->backend = TVDB_GPU_BACKEND_CUDA; b->size = size_bytes; b->imported = 1;
 
   CUDA_EXTERNAL_MEMORY_HANDLE_DESC hd;
@@ -8075,7 +8100,7 @@ tvdb_status_t tvdb_gpu_buffer_import(tvdb_gpu_context_t* ctx, uint64_t handle, s
   hd.handle.fd = (int)(unsigned int)handle;
   hd.size = (unsigned long long)size_bytes;
   hd.flags = CUDA_EXTERNAL_MEMORY_DEDICATED;
-  if (!tvdb_cuda_ok(ctx, err, "cuImportExternalMemory", ctx->cuda.cuImportExternalMemory(&b->ext_mem, &hd))) { free(b); return err ? err->status : TVDB_ERROR_IO; }
+  if (!tvdb_cuda_ok(ctx, err, "cuImportExternalMemory", ctx->cuda.cuImportExternalMemory(&b->ext_mem, &hd))) { tvdb_close_opaque_fd(handle); free(b); return err ? err->status : TVDB_ERROR_IO; }
 
   CUDA_EXTERNAL_MEMORY_BUFFER_DESC bd;
   memset(&bd, 0, sizeof(bd));
