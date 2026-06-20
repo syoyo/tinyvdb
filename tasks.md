@@ -313,9 +313,15 @@ each theme. Notes point at the nearest existing primitive to reuse.
       GPU-vs-CPU-reference parity + SSIM(x,x)=1). *Still open:* Gaussian
       projection / SH evaluation / MCMC densification helpers (each a larger,
       separate subsystem).
-- [ ] **P2: multi-GPU construction/scheduling.** Defer NanoVDB/fvdb-style
-      multi-GPU grid construction until single-GPU construction and device
-      interop are stable.
+- [~] **P2: multi-GPU construction/scheduling.** `tvdb_gpu_multi_sparse_conv3d_batched`
+      partitions a grid batch into contiguous per-context chunks and runs each on
+      its own GPU context, so distinct contexts on distinct devices process
+      disjoint chunks (one context degenerates to single-GPU). Covered by
+      `test_gpu_backend` (`test_multi_gpu`: a 4-grid batch split across two
+      contexts — the Vulkan + CUDA contexts when both are present, a genuine
+      two-context split — matches the single-context result). *Still open:*
+      NanoVDB-style multi-GPU grid *construction* with peer transfers (needs
+      multi-GPU hardware + device interop to validate).
 
 ### Out of scope (tensor framework)
 

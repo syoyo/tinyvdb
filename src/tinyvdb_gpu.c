@@ -7168,3 +7168,25 @@ bc_host:
   free(in4); free(range); free(outval);
   return st;
 }
+
+// ---- multi-context (multi-GPU) scheduling -----------------------------------
+
+tvdb_status_t tvdb_gpu_multi_sparse_conv3d_batched(tvdb_gpu_context_t* const* ctxs, size_t n_ctx,
+    const tvdb_sparse_grid* in, size_t n_grids, const float* kernel, int kx, int ky, int kz,
+    float pad_value, tvdb_sparse_grid* out, tvdb_error_t* err) {
+  if (!ctxs || n_ctx == 0 || !in || !kernel || !out || n_grids == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid multi-batched conv arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  // Partition the batch into contiguous per-context chunks (proportional split).
+  for (size_t c = 0; c < n_ctx; ++c) {
+    if (!ctxs[c]) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "null context in multi-batched conv"); return TVDB_ERROR_INVALID_ARGUMENT; }
+    size_t start = (n_grids * c) / n_ctx;
+    size_t end = (n_grids * (c + 1)) / n_ctx;
+    if (end <= start) continue;
+    tvdb_status_t st = tvdb_gpu_sparse_conv3d_batched(ctxs[c], &in[start], end - start,
+                                                      kernel, kx, ky, kz, pad_value, &out[start], err);
+    if (st != TVDB_OK) return st;
+  }
+  return TVDB_OK;
+}

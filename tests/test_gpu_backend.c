@@ -1634,6 +1634,43 @@ static void test_batched_conv(tvdb_gpu_context_t* ctx) {
   tvdb_sparse_grid_free(&ref);
 }
 
+static void test_multi_gpu(tvdb_gpu_context_t* ctx) {
+  // Partition a 4-grid batch across multiple GPU contexts. If the other backend
+  // is available we use two distinct contexts (a real multi-device-style split);
+  // otherwise the same context twice. Either way the merged result must equal
+  // the single-context batched conv.
+  tvdb_sparse_grid in[4], single[4], multi[4];
+  fill_block(&in[0], 2, -0.4f); fill_block(&in[1], 3, 0.1f); fill_block(&in[2], 2, 0.7f); fill_block(&in[3], 1, -0.2f);
+  for (int g = 0; g < 4; ++g) { tvdb_sparse_grid_init(&single[g]); tvdb_sparse_grid_init(&multi[g]); }
+  float kernel[27];
+  for (int i = 0; i < 27; ++i) kernel[i] = (float)(i % 6) * 0.04f - 0.1f;
+  const float pad = 0.3f;
+
+  tvdb_error_t err; memset(&err, 0, sizeof(err));
+  EXPECT(tvdb_gpu_sparse_conv3d_batched(ctx, in, 4, kernel, 3, 3, 3, pad, single, &err) == TVDB_OK);
+
+  // Try a second, distinct context on the other backend.
+  tvdb_gpu_context_info_t info; memset(&info, 0, sizeof(info));
+  tvdb_gpu_context_info(ctx, &info, &err);
+  tvdb_gpu_backend_t other = (info.backend == TVDB_GPU_BACKEND_CUDA) ? TVDB_GPU_BACKEND_VULKAN : TVDB_GPU_BACKEND_CUDA;
+  tvdb_gpu_context_t* ctx2 = NULL;
+  tvdb_error_t e2; memset(&e2, 0, sizeof(e2));
+  int two = (tvdb_gpu_context_create(other, 0, &ctx2, &e2) == TVDB_OK);
+  tvdb_gpu_context_t* ctxs[2] = { ctx, two ? ctx2 : ctx };
+
+  if (tvdb_gpu_multi_sparse_conv3d_batched(ctxs, 2, in, 4, kernel, 3, 3, 3, pad, multi, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu multi batched conv failed: %s\n", err.message); EXPECT(0);
+  } else {
+    for (int g = 0; g < 4; ++g) {
+      EXPECT(multi[g].count == single[g].count);
+      for (size_t i = 0; i < single[g].count && multi[g].count == single[g].count; ++i)
+        EXPECT_NEAR(multi[g].values[i], single[g].values[i], 2e-5f);
+    }
+  }
+  if (two) tvdb_gpu_context_destroy(ctx2);
+  for (int g = 0; g < 4; ++g) { tvdb_sparse_grid_free(&in[g]); tvdb_sparse_grid_free(&single[g]); tvdb_sparse_grid_free(&multi[g]); }
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1682,6 +1719,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_gaussian_backward_gpu(ctx);
   test_ssim(ctx);
   test_batched_conv(ctx);
+  test_multi_gpu(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

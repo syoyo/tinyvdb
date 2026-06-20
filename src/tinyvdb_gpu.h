@@ -467,6 +467,16 @@ tvdb_status_t tvdb_gpu_sparse_conv3d_batched(tvdb_gpu_context_t* ctx,
     const tvdb_sparse_grid* in, size_t n_grids, const float* kernel, int kx, int ky, int kz,
     float pad_value, tvdb_sparse_grid* out, tvdb_error_t* err);
 
+// Multi-context (multi-GPU) scheduling: partition a grid batch into contiguous
+// chunks across `n_ctx` contexts and run the batched conv on each, so distinct
+// contexts on distinct devices process disjoint chunks in parallel. With one
+// context it degenerates to the single-context path. (Each context's chunk is
+// dispatched in turn here; callers wanting overlap can drive contexts on
+// separate host threads.)
+tvdb_status_t tvdb_gpu_multi_sparse_conv3d_batched(tvdb_gpu_context_t* const* ctxs, size_t n_ctx,
+    const tvdb_sparse_grid* in, size_t n_grids, const float* kernel, int kx, int ky, int kz,
+    float pad_value, tvdb_sparse_grid* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif
