@@ -1,0 +1,29 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer OccBuffer { uint occ[]; };
+layout(std430, set = 0, binding = 1) buffer CounterBuffer { uint counter[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer { int out_coords[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dims;    // local occupancy dims
+  ivec4 bbmin;   // ijk bbox minimum
+  uint cap;      // out_coords capacity (triples)
+} u;
+
+// Stream-compact occupied voxels into a unique coord list via an atomic
+// counter. Output order is arbitrary (set semantics, not first-seen).
+void main() {
+  uint v = gl_GlobalInvocationID.x;
+  uint total = uint(u.dims.x * u.dims.y * u.dims.z);
+  if (v >= total) return;
+  if (occ[v] == 0u) return;
+  int lz = int(v) / (u.dims.x * u.dims.y);
+  int rem = int(v) - lz * u.dims.x * u.dims.y;
+  int ly = rem / u.dims.x;
+  int lx = rem - ly * u.dims.x;
+  uint slot = atomicAdd(counter[0], 1u);
+  if (slot < u.cap) {
+    out_coords[3u*slot + 0u] = lx + u.bbmin.x;
+    out_coords[3u*slot + 1u] = ly + u.bbmin.y;
+    out_coords[3u*slot + 2u] = lz + u.bbmin.z;
+  }
+}

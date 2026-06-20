@@ -1070,6 +1070,54 @@ static void test_points_to_mask(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&mask);
 }
 
+static int cmp_i64(const void* a, const void* b) {
+  long long x = *(const long long*)a, y = *(const long long*)b;
+  return (x > y) - (x < y);
+}
+static void pack_sort(const int32_t* coords, size_t n, long long* keys) {
+  for (size_t i = 0; i < n; ++i)
+    keys[i] = (((long long)coords[3*i+0] + (1<<20)) << 42) |
+              (((long long)coords[3*i+1] + (1<<20)) << 21) |
+              ((long long)coords[3*i+2] + (1<<20));
+  qsort(keys, n, sizeof(long long), cmp_i64);
+}
+
+static void test_voxelize(tvdb_gpu_context_t* ctx) {
+  const size_t NP = 300;
+  float* flat = (float*)malloc(NP * 3 * sizeof(float));
+  unsigned int s = 9001u;
+  for (size_t i = 0; i < NP; ++i) {
+    s = s * 1664525u + 1013904223u; float a = (float)(s >> 8) / 16777216.0f;
+    s = s * 1664525u + 1013904223u; float b = (float)(s >> 8) / 16777216.0f;
+    s = s * 1664525u + 1013904223u; float c = (float)(s >> 8) / 16777216.0f;
+    flat[3*i+0] = -0.7f + a * 1.4f; flat[3*i+1] = -0.7f + b * 1.4f; flat[3*i+2] = -0.7f + c * 1.4f;
+  }
+  const float vs[3] = {0.1f, 0.1f, 0.1f};
+  const float origin[3] = {-0.8f, -0.8f, -0.8f};
+
+  int32_t* cpu_coords = NULL; size_t cpu_n = 0;
+  EXPECT(tvdb_voxelize_points(flat, NP, vs, origin, &cpu_coords, &cpu_n));
+  int32_t* gpu_coords = NULL; size_t gpu_n = 0;
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_voxelize_points(ctx, flat, NP, vs, origin, &gpu_coords, &gpu_n, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu voxelize_points failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu_n == cpu_n);
+    EXPECT(gpu_n > 0);
+    if (gpu_n == cpu_n && cpu_n > 0) {
+      long long* kc = (long long*)malloc(cpu_n * sizeof(long long));
+      long long* kg = (long long*)malloc(gpu_n * sizeof(long long));
+      pack_sort(cpu_coords, cpu_n, kc);
+      pack_sort(gpu_coords, gpu_n, kg);
+      for (size_t i = 0; i < cpu_n; ++i) EXPECT(kc[i] == kg[i]);  // same set of voxels
+      free(kc); free(kg);
+    }
+  }
+  free(cpu_coords); free(gpu_coords); free(flat);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1103,6 +1151,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_flood(ctx);
   test_splat(ctx);
   test_points_to_mask(ctx);
+  test_voxelize(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

@@ -46,3 +46,7 @@ static const uint8_t kTvdbGpuSplatSpv[] = {0};
 static const uint32_t kTvdbGpuSplatSpv_len = 0;
 static const uint8_t kTvdbGpuPointsToMaskSpv[] = {0};
 static const uint32_t kTvdbGpuPointsToMaskSpv_len = 0;
+static const uint8_t kTvdbGpuVoxelizeMarkSpv[] = {0};
+static const uint32_t kTvdbGpuVoxelizeMarkSpv_len = 0;
+static const uint8_t kTvdbGpuVoxelizeCompactSpv[] = {0};
+static const uint32_t kTvdbGpuVoxelizeCompactSpv_len = 0;

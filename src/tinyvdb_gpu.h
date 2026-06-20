@@ -330,6 +330,15 @@ tvdb_status_t tvdb_gpu_splat_trilinear_dense(tvdb_gpu_context_t* ctx, tvdb_dense
 tvdb_status_t tvdb_gpu_points_to_mask(tvdb_gpu_context_t* ctx, tvdb_dense_grid* mask,
                                       const float* points, size_t n, tvdb_error_t* err);
 
+// Sparse grid construction: world point cloud -> unique occupied voxel coords
+// (parallels tvdb_voxelize_points). `*out_coords` is malloc'd (caller frees),
+// `*out_count` is the unique-voxel count. Output order is arbitrary (set
+// semantics). Uses a dense bbox-local occupancy grid + atomic-counter
+// compaction, so the point cloud's ijk bounding-box volume must fit in VRAM.
+tvdb_status_t tvdb_gpu_voxelize_points(tvdb_gpu_context_t* ctx, const float* points, size_t n,
+                                       const float voxel_size[3], const float origin[3],
+                                       int32_t** out_coords, size_t* out_count, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif
