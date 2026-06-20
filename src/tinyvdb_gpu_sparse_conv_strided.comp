@@ -1,0 +1,39 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Input voxels: xyz = coord, w = value bits (int<->float aliased).
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer { ivec4 in_data[]; };
+layout(std430, set = 0, binding = 1) readonly buffer OutCoordBuffer { ivec4 out_coords[]; };
+layout(std430, set = 0, binding = 2) readonly buffer KernelBuffer { float kernel[]; };
+layout(std430, set = 0, binding = 3) buffer OutValBuffer { float out_values[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  uint n_in;
+  uint n_out;
+  ivec4 kdim;     // kx, ky, kz
+  int stride;
+  float pad_value;
+} u;
+
+// Brute-force lookup of an input voxel value (matches the sparse-conv idiom).
+float lookup(ivec3 q) {
+  for (uint i = 0; i < u.n_in; ++i)
+    if (in_data[i].xyz == q) return intBitsToFloat(in_data[i].w);
+  return u.pad_value;
+}
+
+// Strided sparse convolution: one thread per output coord oc; the kernel samples
+// the input around oc*stride. (stride 1 reduces to same-topology conv.)
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.n_out) return;
+  ivec3 oc = out_coords[i].xyz;
+  int ax = u.kdim.x / 2, ay = u.kdim.y / 2, az = u.kdim.z / 2;
+  float acc = 0.0;
+  for (int dk = 0; dk < u.kdim.z; ++dk)
+    for (int dj = 0; dj < u.kdim.y; ++dj)
+      for (int di = 0; di < u.kdim.x; ++di) {
+        uint ki = uint((dk * u.kdim.y + dj) * u.kdim.x + di);
+        ivec3 q = oc * u.stride + ivec3(di - ax, dj - ay, dk - az);
+        acc += kernel[ki] * lookup(q);
+      }
+  out_values[i] = acc;
+}

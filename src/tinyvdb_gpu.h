@@ -396,6 +396,16 @@ tvdb_status_t tvdb_gpu_marching_cubes(tvdb_gpu_context_t* ctx, const tvdb_dense_
                                       float isovalue, float** out_verts, size_t* out_tri_count,
                                       tvdb_error_t* err);
 
+// Strided sparse 3D convolution with output-grid building (extends
+// tvdb_gpu_sparse_conv3d): output active coords are the unique floor(coord/
+// stride) of the input set, and out[oc] = sum_k kernel[k] * input(oc*stride +
+// tap_k), with pad_value for absent voxels. stride 1 = same-topology conv. `out`
+// is filled (set semantics: output coord order is arbitrary).
+tvdb_status_t tvdb_gpu_sparse_conv3d_strided(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
+                                             const float* kernel, int kx, int ky, int kz,
+                                             int stride, float pad_value,
+                                             tvdb_sparse_grid* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

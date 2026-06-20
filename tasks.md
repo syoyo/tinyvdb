@@ -244,13 +244,15 @@ each theme. Notes point at the nearest existing primitive to reuse.
       CPU — the sign is FP-fragile at far-field/equidistant ties, as on CPU).
       *Still open:* an unbounded (hash-based) sparse construction path for point
       clouds whose ijk bbox volume exceeds VRAM.
-- [ ] **P1: sparse convolution upgrades.** Add transposed convolution,
-      arbitrary stride, output-grid builders, and a faster near-dense backend
-      beyond the current same-topology sparse conv3d. *Note:* the
-      atomic-counter compaction primitive (used by voxelize/dilate/erode) is the
-      building block for the output-grid builders; the remaining work is the
-      strided/transposed conv math plus a CPU reference to test against (the CPU
-      `tvdb_sparse_conv3d` is same-topology only).
+- [~] **P1: sparse convolution upgrades.** `tvdb_gpu_sparse_conv3d_strided`
+      adds arbitrary integer stride with output-grid building: output active
+      coords are the unique floor(coord/stride) of the input set (host dedup),
+      and `out[oc] = sum_k kernel[k] * input(oc*stride + tap)` is computed on
+      GPU (one thread/output coord, brute-force input lookup) on Vulkan and
+      CUDA/NVRTC; stride 1 reduces to the existing same-topology conv. Covered
+      by `test_gpu_backend` (`test_sparse_conv_strided`, set-compared vs a CPU
+      reference). *Still open:* transposed convolution and a faster near-dense
+      (hashed/blocked) backend.
 - [~] **P1: GPU sampling/splatting gradients.** `tvdb_gpu_splat_trilinear_dense`
       (scatter-add with portable CAS atomic-float on Vulkan, native atomicAdd on
       CUDA) mirrors `tvdb_splat_trilinear_dense`; covered by `test_gpu_backend`

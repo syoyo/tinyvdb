@@ -49,6 +49,7 @@
 #include "tinyvdb_gpu_checksum_spv.inc"
 #include "tinyvdb_gpu_mesh_to_sdf_spv.inc"
 #include "tinyvdb_gpu_marching_cubes_spv.inc"
+#include "tinyvdb_gpu_sparse_conv_strided_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2291,6 +2292,23 @@ static const char* kTvdbCudaSource =
 "    out_verts[base+3]=ev[e1][0];out_verts[base+4]=ev[e1][1];out_verts[base+5]=ev[e1][2];\n"
 "    out_verts[base+6]=ev[e2][0];out_verts[base+7]=ev[e2][1];out_verts[base+8]=ev[e2][2]; ++tc; }\n"
 "  tri_counts[gid]=tc;\n"
+"}\n"
+"__device__ float tvdb_strided_lookup(const tvdb_int4* in_data, unsigned int n_in, int x, int y, int z, float pad) {\n"
+"  for (unsigned int i=0;i<n_in;++i){ tvdb_int4 c=in_data[i]; if(c.x==x&&c.y==y&&c.z==z) return __int_as_float(c.w); }\n"
+"  return pad;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_sparse_conv_strided(const tvdb_int4* in_data, const tvdb_int4* out_coords,\n"
+"    const float* kernel, float* out_values, unsigned int n_in, unsigned int n_out, int kx, int ky, int kz,\n"
+"    int stride, float pad_value) {\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= n_out) return;\n"
+"  tvdb_int4 oc = out_coords[i];\n"
+"  int ax=kx/2, ay=ky/2, az=kz/2; float acc=0.0f;\n"
+"  for (int dk=0;dk<kz;++dk) for (int dj=0;dj<ky;++dj) for (int di=0;di<kx;++di){\n"
+"    int ki=(dk*ky+dj)*kx+di;\n"
+"    acc += kernel[ki]*tvdb_strided_lookup(in_data, n_in, oc.x*stride+di-ax, oc.y*stride+dj-ay, oc.z*stride+dk-az, pad_value);\n"
+"  }\n"
+"  out_values[i]=acc;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -6321,5 +6339,115 @@ mc_finish:
     else { size_t total = 0; tvdb_mc_gather(tcounts, cellv, cells, out, &total); *out_verts = out; *out_tri_count = total; }
   }
   free(tab); free(cellv); free(tcounts);
+  return st;
+}
+
+// ---- strided sparse convolution (output-grid building) ----------------------
+
+static int tvdb_floordiv(int a, int b) { int q = a / b, r = a % b; return (r != 0 && ((r < 0) != (b < 0))) ? q - 1 : q; }
+
+typedef struct { int64_t key; int32_t c[3]; } tvdb_oc_entry;
+static int tvdb_oc_cmp(const void* a, const void* b) {
+  int64_t x = ((const tvdb_oc_entry*)a)->key, y = ((const tvdb_oc_entry*)b)->key;
+  return (x > y) - (x < y);
+}
+
+tvdb_status_t tvdb_gpu_sparse_conv3d_strided(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
+                                             const float* kernel, int kx, int ky, int kz,
+                                             int stride, float pad_value,
+                                             tvdb_sparse_grid* out, tvdb_error_t* err) {
+  if (!ctx || !in || !kernel || !out || kx <= 0 || ky <= 0 || kz <= 0 || stride <= 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid strided sparse conv arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  out->count = 0; out->voxel_size = in->voxel_size * (float)stride; out->ox = in->ox; out->oy = in->oy; out->oz = in->oz;
+  size_t n_in = in->count;
+  if (n_in == 0) return TVDB_OK;
+
+  // Output coords = unique floor(coord/stride) of the input set.
+  tvdb_oc_entry* ent = (tvdb_oc_entry*)malloc(n_in * sizeof(tvdb_oc_entry));
+  if (!ent) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  for (size_t i = 0; i < n_in; ++i) {
+    int ox = tvdb_floordiv(in->coords[i].x, stride);
+    int oy = tvdb_floordiv(in->coords[i].y, stride);
+    int oz = tvdb_floordiv(in->coords[i].z, stride);
+    ent[i].c[0] = ox; ent[i].c[1] = oy; ent[i].c[2] = oz;
+    ent[i].key = (((int64_t)ox + (1<<20)) << 42) | (((int64_t)oy + (1<<20)) << 21) | ((int64_t)oz + (1<<20));
+  }
+  qsort(ent, n_in, sizeof(tvdb_oc_entry), tvdb_oc_cmp);
+  size_t n_out = 0;
+  for (size_t i = 0; i < n_in; ++i) if (i == 0 || ent[i].key != ent[i-1].key) {
+    ent[n_out].key = ent[i].key; ent[n_out].c[0] = ent[i].c[0]; ent[n_out].c[1] = ent[i].c[1]; ent[n_out].c[2] = ent[i].c[2]; ++n_out;
+  }
+
+  size_t kn = (size_t)kx * (size_t)ky * (size_t)kz;
+  int32_t* in4 = (int32_t*)malloc(n_in * 4u * sizeof(int32_t));
+  int32_t* outc4 = (int32_t*)malloc(n_out * 4u * sizeof(int32_t));
+  float* outval = (float*)malloc(n_out * sizeof(float));
+  if (!in4 || !outc4 || !outval) { free(ent); free(in4); free(outc4); free(outval); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  for (size_t i = 0; i < n_in; ++i) { in4[4*i+0]=in->coords[i].x; in4[4*i+1]=in->coords[i].y; in4[4*i+2]=in->coords[i].z; memcpy(&in4[4*i+3], &in->values[i], sizeof(float)); }
+  for (size_t i = 0; i < n_out; ++i) { outc4[4*i+0]=ent[i].c[0]; outc4[4*i+1]=ent[i].c[1]; outc4[4*i+2]=ent[i].c[2]; outc4[4*i+3]=0; }
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr di=0, doc=0, dk=0, dov=0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto cs_host;
+    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_sparse_conv_strided"))) { st=err?err->status:TVDB_ERROR_IO; goto cs_host; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &di, in4, n_in*4u*sizeof(int32_t), err)) != TVDB_OK) goto cs_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &doc, outc4, n_out*4u*sizeof(int32_t), err)) != TVDB_OK) goto cs_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dk, kernel, kn*sizeof(float), err)) != TVDB_OK) goto cs_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dov, NULL, n_out*sizeof(float), err)) != TVDB_OK) goto cs_dev;
+    unsigned int uni=(unsigned int)n_in, uno=(unsigned int)n_out, block=128;
+    void* args[] = {&di,&doc,&dk,&dov,&uni,&uno,&kx,&ky,&kz,&stride,&pad_value};
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,(uno+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto cs_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto cs_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(outval, dov, n_out*sizeof(float)))) { st=err?err->status:TVDB_ERROR_IO; goto cs_dev; }
+    st = TVDB_OK;
+cs_dev:
+    if (dov) ctx->cuda.cuMemFree(dov);
+    if (dk) ctx->cuda.cuMemFree(dk);
+    if (doc) ctx->cuda.cuMemFree(doc);
+    if (di) ctx->cuda.cuMemFree(di);
+    goto cs_build;
+  }
+  {
+    tvdb_vk_buffer bi, boc, bk, bov, bu;
+    if ((st = tvdb_vk_create_buffer(ctx, n_in*4u*sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bi, err)) != TVDB_OK) goto cs_host;
+    if ((st = tvdb_vk_create_buffer(ctx, n_out*4u*sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &boc, err)) != TVDB_OK) goto cs_bi;
+    if ((st = tvdb_vk_create_buffer(ctx, kn*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bk, err)) != TVDB_OK) goto cs_boc;
+    if ((st = tvdb_vk_create_buffer(ctx, n_out*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bov, err)) != TVDB_OK) goto cs_bk;
+    if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto cs_bov;
+    memcpy(bi.mapped, in4, n_in*4u*sizeof(int32_t));
+    memcpy(boc.mapped, outc4, n_out*4u*sizeof(int32_t));
+    memcpy(bk.mapped, kernel, kn*sizeof(float));
+    struct { uint32_t n_in, n_out, pad0[2]; int32_t kdim[4]; int32_t stride; float pad_value; uint32_t pad1[2]; } par;
+    memset(&par, 0, sizeof(par));
+    par.n_in=(uint32_t)n_in; par.n_out=(uint32_t)n_out; par.kdim[0]=kx; par.kdim[1]=ky; par.kdim[2]=kz; par.stride=stride; par.pad_value=pad_value;
+    memcpy(bu.mapped, &par, sizeof(par));
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = kTvdbGpuSparseConvStridedSpv; d.spv_len = kTvdbGpuSparseConvStridedSpv_len; d.descriptor_count = 5;
+    d.buffers[0]=&bi; d.buffers[1]=&boc; d.buffers[2]=&bk; d.buffers[3]=&bov; d.buffers[4]=&bu;
+    for (int i = 0; i < 4; ++i) d.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    d.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    d.group_x = (uint32_t)((n_out + 127u) / 128u);
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st == TVDB_OK) memcpy(outval, bov.mapped, n_out*sizeof(float));
+    tvdb_vk_destroy_buffer(ctx, &bu);
+cs_bov: tvdb_vk_destroy_buffer(ctx, &bov);
+cs_bk: tvdb_vk_destroy_buffer(ctx, &bk);
+cs_boc: tvdb_vk_destroy_buffer(ctx, &boc);
+cs_bi: tvdb_vk_destroy_buffer(ctx, &bi);
+  }
+cs_build:
+  if (st == TVDB_OK) {
+    if (!tvdb_sparse_grid_reserve(out, n_out ? n_out : 1)) { st = TVDB_ERROR_OUT_OF_MEMORY; tvdb_gpu_set_error(err, st, "OOM"); }
+    else {
+      for (size_t i = 0; i < n_out; ++i) { out->coords[i].x=outc4[4*i+0]; out->coords[i].y=outc4[4*i+1]; out->coords[i].z=outc4[4*i+2]; out->values[i]=outval[i]; }
+      out->count = n_out;
+    }
+  }
+cs_host:
+  free(ent); free(in4); free(outc4); free(outval);
   return st;
 }

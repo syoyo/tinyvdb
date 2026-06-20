@@ -1353,6 +1353,57 @@ static void test_marching_cubes(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&g);
 }
 
+static void test_sparse_conv_strided(tvdb_gpu_context_t* ctx) {
+  // 4x4x4 block; 3x3x3 kernel; stride 2 -> 2x2x2 output coords (floor(c/2)).
+  tvdb_sparse_grid in, gpu;
+  tvdb_sparse_grid_init(&in); tvdb_sparse_grid_init(&gpu);
+  EXPECT(tvdb_sparse_grid_reserve(&in, 64));
+  size_t k = 0;
+  for (int z = 0; z < 4; ++z) for (int y = 0; y < 4; ++y) for (int x = 0; x < 4; ++x) {
+    in.coords[k].x = x; in.coords[k].y = y; in.coords[k].z = z;
+    in.values[k] = 0.1f * (float)(x*16 + y*4 + z) - 1.0f; ++k;
+  }
+  in.count = 64;
+  float kernel[27];
+  for (int i = 0; i < 27; ++i) kernel[i] = (float)(i % 5) * 0.05f - 0.08f;
+  const int stride = 2; const float pad = 0.5f;
+
+  // CPU reference: output coords = unique floor(c/2); value = conv at oc*2.
+  int ocoord[8][3]; float oval[8]; size_t no = 0;
+  for (int oz = 0; oz < 2; ++oz) for (int oy = 0; oy < 2; ++oy) for (int ox = 0; ox < 2; ++ox) {
+    float acc = 0.0f;
+    for (int dk = 0; dk < 3; ++dk) for (int dj = 0; dj < 3; ++dj) for (int di = 0; di < 3; ++di) {
+      int qx = ox*stride + di-1, qy = oy*stride + dj-1, qz = oz*stride + dk-1;
+      float v = pad;
+      for (size_t i = 0; i < 64; ++i) if (in.coords[i].x==qx && in.coords[i].y==qy && in.coords[i].z==qz) { v = in.values[i]; break; }
+      acc += kernel[(dk*3+dj)*3+di] * v;
+    }
+    ocoord[no][0]=ox; ocoord[no][1]=oy; ocoord[no][2]=oz; oval[no]=acc; ++no;
+  }
+
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_sparse_conv3d_strided(ctx, &in, kernel, 3, 3, 3, stride, pad, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu sparse_conv_strided failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu.count == no);
+    if (gpu.count == no) {
+      kv_t* kc = (kv_t*)malloc(no * sizeof(kv_t));
+      kv_t* kg = (kv_t*)malloc(no * sizeof(kv_t));
+      for (size_t i = 0; i < no; ++i) {
+        kc[i].key = (((long long)ocoord[i][0]+(1<<20))<<42)|(((long long)ocoord[i][1]+(1<<20))<<21)|((long long)ocoord[i][2]+(1<<20));
+        kc[i].val = oval[i];
+      }
+      qsort(kc, no, sizeof(kv_t), cmp_kv);
+      build_kv(&gpu, kg);
+      for (size_t i = 0; i < no; ++i) { EXPECT(kc[i].key == kg[i].key); EXPECT_NEAR(kc[i].val, kg[i].val, 2e-5f); }
+      free(kc); free(kg);
+    }
+  }
+  tvdb_sparse_grid_free(&in); tvdb_sparse_grid_free(&gpu);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1394,6 +1445,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_checksum(ctx);
   test_mesh_to_sdf(ctx);
   test_marching_cubes(ctx);
+  test_sparse_conv_strided(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

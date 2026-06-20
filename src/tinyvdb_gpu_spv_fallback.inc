@@ -68,3 +68,5 @@ static const uint8_t kTvdbGpuMeshToSdfSpv[] = {0};
 static const uint32_t kTvdbGpuMeshToSdfSpv_len = 0;
 static const uint8_t kTvdbGpuMarchingCubesSpv[] = {0};
 static const uint32_t kTvdbGpuMarchingCubesSpv_len = 0;
+static const uint8_t kTvdbGpuSparseConvStridedSpv[] = {0};
+static const uint32_t kTvdbGpuSparseConvStridedSpv_len = 0;
