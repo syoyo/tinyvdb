@@ -1,0 +1,32 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// MCMC relocation parameter update. Inputs are interleaved (stride 5):
+// opacity, scale.x, scale.y, scale.z, ratio (as float).
+layout(std430, set = 0, binding = 0) readonly buffer In { float gin[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Binoms { float B[]; };
+layout(std430, set = 0, binding = 2) buffer OutOpac { float new_op[]; };
+layout(std430, set = 0, binding = 3) buffer OutScale { float new_scale[]; };
+layout(std140, set = 0, binding = 4) uniform Params { uint count; uint nmax; } u;
+
+void main() {
+  uint g = gl_GlobalInvocationID.x;
+  if (g >= u.count) return;
+  uint b = g * 5u;
+  float op = gin[b];
+  int ratio = int(gin[b + 4u]);
+  if (ratio < 1) ratio = 1;
+  if (ratio > int(u.nmax)) ratio = int(u.nmax);
+  float nop = 1.0 - pow(1.0 - op, 1.0 / float(ratio));
+  new_op[g] = nop;
+  float denom = 0.0;
+  for (int i = 1; i <= ratio; ++i) {
+    for (int k = 0; k <= i - 1; ++k) {
+      float sign = ((k & 1) != 0) ? -1.0 : 1.0;
+      denom += B[uint(i - 1) * u.nmax + uint(k)] * (sign / sqrt(float(k + 1))) * pow(nop, float(k + 1));
+    }
+  }
+  float coeff = (denom != 0.0) ? (op / denom) : 1.0;
+  new_scale[g*3u + 0u] = coeff * gin[b + 1u];
+  new_scale[g*3u + 1u] = coeff * gin[b + 2u];
+  new_scale[g*3u + 2u] = coeff * gin[b + 3u];
+}

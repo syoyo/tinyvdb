@@ -1295,6 +1295,75 @@ static void test_gaussian_project(tvdb_gpu_context_t* ctx) {
   free(means); free(quats); free(log_scales); free(opac); free(sh_dc);
 }
 
+static void test_gaussian_mcmc(tvdb_gpu_context_t* ctx) {
+  const uint32_t N = 150;
+  float* opac = (float*)malloc(N * sizeof(float));
+  float* scales = (float*)malloc(N * 3 * sizeof(float));
+  int32_t* ratios = (int32_t*)malloc(N * sizeof(int32_t));
+  float* cpu_op = (float*)malloc(N * sizeof(float));
+  float* gpu_op = (float*)malloc(N * sizeof(float));
+  float* cpu_sc = (float*)malloc(N * 3 * sizeof(float));
+  float* gpu_sc = (float*)malloc(N * 3 * sizeof(float));
+  unsigned int s = 8675309u;
+  #define RND01 ( (s = s*1664525u + 1013904223u), (float)(s >> 8) / 16777216.0f )
+  for (uint32_t i = 0; i < N; ++i) {
+    opac[i] = 0.02f + RND01 * 0.95f;               // (0,1)
+    scales[3*i+0] = 0.05f + RND01; scales[3*i+1] = 0.05f + RND01; scales[3*i+2] = 0.05f + RND01;
+    ratios[i] = 1 + (int)(RND01 * 8.0f);           // [1,8]
+  }
+  tvdb_error_t cerr, err; memset(&cerr, 0, sizeof(cerr)); memset(&err, 0, sizeof(err));
+  EXPECT(tvdb_gaussian_mcmc_relocation(N, opac, scales, ratios, cpu_op, cpu_sc, &cerr) == TVDB_OK);
+  if (tvdb_gpu_gaussian_mcmc_relocation(ctx, N, opac, scales, ratios, gpu_op, gpu_sc, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu mcmc relocation failed: %s\n", err.message); EXPECT(0);
+  } else {
+    for (uint32_t i = 0; i < N; ++i) {
+      EXPECT_NEAR(gpu_op[i], cpu_op[i], 2e-5f);
+      for (int d = 0; d < 3; ++d) {
+        float tol = 1e-3f * (1.0f + fabsf(cpu_sc[3*i+d]));
+        EXPECT(fabsf(gpu_sc[3*i+d] - cpu_sc[3*i+d]) <= tol);
+      }
+    }
+    // Sanity: ratio==1 is identity (opacity & scale unchanged).
+    int found_r1 = 0;
+    for (uint32_t i = 0; i < N && !found_r1; ++i) if (ratios[i] == 1) {
+      found_r1 = 1;
+      EXPECT_NEAR(cpu_op[i], opac[i], 2e-5f);
+      EXPECT_NEAR(cpu_sc[3*i+0], scales[3*i+0], 1e-4f);
+    }
+  }
+
+  // ---- add_noise ----
+  float* means = (float*)malloc(N * 3 * sizeof(float));
+  float* quats = (float*)malloc(N * 4 * sizeof(float));
+  float* lsc = (float*)malloc(N * 3 * sizeof(float));
+  float* opl = (float*)malloc(N * sizeof(float));
+  float* rnd = (float*)malloc(N * 3 * sizeof(float));
+  float* cpu_m = (float*)malloc(N * 3 * sizeof(float));
+  float* gpu_m = (float*)malloc(N * 3 * sizeof(float));
+  for (uint32_t i = 0; i < N; ++i) {
+    means[3*i+0]=RND01*2-1; means[3*i+1]=RND01*2-1; means[3*i+2]=RND01*2-1;
+    float qx=RND01*2-1, qy=RND01*2-1, qz=RND01*2-1, qw=RND01*2-1;
+    float ql=sqrtf(qx*qx+qy*qy+qz*qz+qw*qw); if (ql<1e-6f){qw=1;ql=1;}
+    quats[4*i+0]=qx/ql; quats[4*i+1]=qy/ql; quats[4*i+2]=qz/ql; quats[4*i+3]=qw/ql;
+    lsc[3*i+0]=RND01-2; lsc[3*i+1]=RND01-2; lsc[3*i+2]=RND01-2;
+    opl[i]=RND01*8-4;  // logit; some near/above the 0.995 gate so gate varies
+    rnd[3*i+0]=RND01*2-1; rnd[3*i+1]=RND01*2-1; rnd[3*i+2]=RND01*2-1;
+  }
+  #undef RND01
+  const float lr = 0.01f;
+  EXPECT(tvdb_gaussian_mcmc_add_noise(N, means, quats, lsc, opl, rnd, lr, cpu_m, &cerr) == TVDB_OK);
+  if (tvdb_gpu_gaussian_mcmc_add_noise(ctx, N, means, quats, lsc, opl, rnd, lr, gpu_m, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu mcmc add_noise failed: %s\n", err.message); EXPECT(0);
+  } else {
+    for (uint32_t i = 0; i < N * 3; ++i) {
+      float tol = 2e-4f * (1.0f + fabsf(cpu_m[i]));
+      EXPECT(fabsf(gpu_m[i] - cpu_m[i]) <= tol);
+    }
+  }
+  free(opac); free(scales); free(ratios); free(cpu_op); free(gpu_op); free(cpu_sc); free(gpu_sc);
+  free(means); free(quats); free(lsc); free(opl); free(rnd); free(cpu_m); free(gpu_m);
+}
+
 static void test_splat_quadratic(tvdb_gpu_context_t* ctx) {
   const int N = 16;
   tvdb_dense_grid cpu, gpu;
@@ -2111,6 +2180,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_splat_quadratic(ctx);
   test_gaussian_sh(ctx);
   test_gaussian_project(ctx);
+  test_gaussian_mcmc(ctx);
   test_points_to_mask(ctx);
   test_voxelize(ctx);
   test_voxelize_unbounded(ctx);

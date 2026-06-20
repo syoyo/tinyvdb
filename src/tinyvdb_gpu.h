@@ -537,6 +537,21 @@ tvdb_status_t tvdb_gpu_gaussian_project(tvdb_gpu_context_t* ctx, uint32_t num_ga
                                         float near, float far,
                                         tvdb_projected_gaussian_t* out, tvdb_error_t* err);
 
+// GPU MCMC densification helpers (parallel tvdb_gaussian_mcmc_relocation /
+// _add_noise in tinyvdb_nanovdb.h). Relocation recomputes per-copy opacity +
+// scale so splitting a Gaussian into `ratios[g]` copies preserves the render;
+// add_noise adds covariance-aware, opacity-gated exploration noise to the means
+// from a caller-supplied standard-normal `rand` buffer (deterministic). Both on
+// Vulkan + CUDA/NVRTC, one thread per Gaussian.
+tvdb_status_t tvdb_gpu_gaussian_mcmc_relocation(tvdb_gpu_context_t* ctx, uint32_t num_gaussians,
+                                                const float* opacities, const float* scales,
+                                                const int32_t* ratios, float* new_opacities,
+                                                float* new_scales, tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_gaussian_mcmc_add_noise(tvdb_gpu_context_t* ctx, uint32_t num_gaussians,
+                                               const float* means, const float* quats, const float* log_scales,
+                                               const float* opacities_logit, const float* rand, float lr,
+                                               float* out_means, tvdb_error_t* err);
+
 // Batched sparse convolution (GridBatch / JaggedTensor-style): run a
 // same-topology sparse conv3d over `n_grids` grids in a single GPU dispatch.
 // The grids are concatenated jagged on device and each voxel's lookups are

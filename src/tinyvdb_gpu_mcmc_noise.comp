@@ -1,0 +1,38 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// MCMC exploration noise. Inputs are interleaved (stride 14): mean(3), quat(4),
+// log_scale(3), opacity_logit(1), rand(3). out_means = mean + Cov*(rand*gate*lr).
+layout(std430, set = 0, binding = 0) readonly buffer In { float gin[]; };
+layout(std430, set = 0, binding = 1) buffer Out { float out_means[]; };
+layout(std140, set = 0, binding = 2) uniform Params { uint count; float lr; } u;
+
+void main() {
+  uint g = gl_GlobalInvocationID.x;
+  if (g >= u.count) return;
+  uint b = g * 14u;
+  vec3 mean = vec3(gin[b + 0u], gin[b + 1u], gin[b + 2u]);
+  float qx = gin[b + 3u], qy = gin[b + 4u], qz = gin[b + 5u], qw = gin[b + 6u];
+  vec3 ls = vec3(gin[b + 7u], gin[b + 8u], gin[b + 9u]);
+  float opl = gin[b + 10u];
+  vec3 r = vec3(gin[b + 11u], gin[b + 12u], gin[b + 13u]);
+
+  float op = 1.0 / (1.0 + exp(-opl));
+  float gate = 1.0 / (1.0 + exp(-100.0 * (0.005 - op)));
+  float sx = exp(ls.x), sy = exp(ls.y), sz = exp(ls.z);
+  float sqx = sx*sx, sqy = sy*sy, sqz = sz*sz;
+  float ql = sqrt(qx*qx + qy*qy + qz*qz + qw*qw);
+  if (ql > 1e-8) { qx /= ql; qy /= ql; qz /= ql; qw /= ql; }
+  float R0 = 1.0-2.0*(qy*qy+qz*qz), R1 = 2.0*(qx*qy-qw*qz), R2 = 2.0*(qx*qz+qw*qy);
+  float R3 = 2.0*(qx*qy+qw*qz), R4 = 1.0-2.0*(qx*qx+qz*qz), R5 = 2.0*(qy*qz-qw*qx);
+  float R6 = 2.0*(qx*qz-qw*qy), R7 = 2.0*(qy*qz+qw*qx), R8 = 1.0-2.0*(qx*qx+qy*qy);
+  float c00 = R0*R0*sqx + R1*R1*sqy + R2*R2*sqz;
+  float c01 = R0*R3*sqx + R1*R4*sqy + R2*R5*sqz;
+  float c02 = R0*R6*sqx + R1*R7*sqy + R2*R8*sqz;
+  float c11 = R3*R3*sqx + R4*R4*sqy + R5*R5*sqz;
+  float c12 = R3*R6*sqx + R4*R7*sqy + R5*R8*sqz;
+  float c22 = R6*R6*sqx + R7*R7*sqy + R8*R8*sqz;
+  float gx = r.x*gate*u.lr, gy = r.y*gate*u.lr, gz = r.z*gate*u.lr;
+  out_means[g*3u + 0u] = mean.x + (c00*gx + c01*gy + c02*gz);
+  out_means[g*3u + 1u] = mean.y + (c01*gx + c11*gy + c12*gz);
+  out_means[g*3u + 2u] = mean.z + (c02*gx + c12*gy + c22*gz);
+}

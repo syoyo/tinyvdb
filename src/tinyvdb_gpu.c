@@ -61,6 +61,8 @@
 #include "tinyvdb_gpu_gaussian_backward_spv.inc"
 #include "tinyvdb_gpu_gaussian_sh_spv.inc"
 #include "tinyvdb_gpu_gaussian_project_spv.inc"
+#include "tinyvdb_gpu_mcmc_relocation_spv.inc"
+#include "tinyvdb_gpu_mcmc_noise_spv.inc"
 #include "tinyvdb_gpu_ssim_spv.inc"
 #include "tinyvdb_gpu_sparse_conv_batched_spv.inc"
 #else
@@ -2356,6 +2358,42 @@ static const char* kTvdbCudaSource =
 "  gout[ob+0u]=x; gout[ob+1u]=y; gout[ob+2u]=conic_a; gout[ob+3u]=conic_b; gout[ob+4u]=conic_c;\n"
 "  gout[ob+5u]=opacity; gout[ob+6u]=pz; gout[ob+7u]=radius;\n"
 "  gout[ob+8u]=gin[ib+11u]; gout[ob+9u]=gin[ib+12u]; gout[ob+10u]=gin[ib+13u];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_mcmc_relocation(const float* gin, const float* B,\n"
+"    float* new_op, float* new_scale, unsigned int count, unsigned int nmax) {\n"
+"  unsigned int g = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (g >= count) return;\n"
+"  unsigned int b = g * 5u; float op = gin[b];\n"
+"  int ratio = (int)gin[b + 4u]; if (ratio < 1) ratio = 1; if (ratio > (int)nmax) ratio = (int)nmax;\n"
+"  float nop = 1.0f - powf(1.0f - op, 1.0f / (float)ratio); new_op[g] = nop;\n"
+"  float denom = 0.0f;\n"
+"  for (int i = 1; i <= ratio; ++i) for (int k = 0; k <= i - 1; ++k) {\n"
+"    float sign = (k & 1) ? -1.0f : 1.0f;\n"
+"    denom += B[(unsigned int)(i - 1) * nmax + (unsigned int)k] * (sign / sqrtf((float)(k + 1))) * powf(nop, (float)(k + 1));\n"
+"  }\n"
+"  float coeff = (denom != 0.0f) ? (op / denom) : 1.0f;\n"
+"  new_scale[g*3u+0u] = coeff * gin[b+1u]; new_scale[g*3u+1u] = coeff * gin[b+2u]; new_scale[g*3u+2u] = coeff * gin[b+3u];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_mcmc_noise(const float* gin, float* out_means,\n"
+"    unsigned int count, float lr) {\n"
+"  unsigned int g = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (g >= count) return; unsigned int b = g * 14u;\n"
+"  float mx = gin[b+0u], my = gin[b+1u], mz = gin[b+2u];\n"
+"  float qx = gin[b+3u], qy = gin[b+4u], qz = gin[b+5u], qw = gin[b+6u];\n"
+"  float lsx = gin[b+7u], lsy = gin[b+8u], lsz = gin[b+9u];\n"
+"  float opl = gin[b+10u]; float rx = gin[b+11u], ry = gin[b+12u], rz = gin[b+13u];\n"
+"  float op = 1.0f/(1.0f+expf(-opl)); float gate = 1.0f/(1.0f+expf(-100.0f*(0.005f-op)));\n"
+"  float sx = expf(lsx), sy = expf(lsy), sz = expf(lsz); float sqx = sx*sx, sqy = sy*sy, sqz = sz*sz;\n"
+"  float ql = sqrtf(qx*qx+qy*qy+qz*qz+qw*qw); if (ql > 1e-8f) { qx/=ql; qy/=ql; qz/=ql; qw/=ql; }\n"
+"  float R0 = 1.0f-2.0f*(qy*qy+qz*qz), R1 = 2.0f*(qx*qy-qw*qz), R2 = 2.0f*(qx*qz+qw*qy);\n"
+"  float R3 = 2.0f*(qx*qy+qw*qz), R4 = 1.0f-2.0f*(qx*qx+qz*qz), R5 = 2.0f*(qy*qz-qw*qx);\n"
+"  float R6 = 2.0f*(qx*qz-qw*qy), R7 = 2.0f*(qy*qz+qw*qx), R8 = 1.0f-2.0f*(qx*qx+qy*qy);\n"
+"  float c00 = R0*R0*sqx+R1*R1*sqy+R2*R2*sqz, c01 = R0*R3*sqx+R1*R4*sqy+R2*R5*sqz, c02 = R0*R6*sqx+R1*R7*sqy+R2*R8*sqz;\n"
+"  float c11 = R3*R3*sqx+R4*R4*sqy+R5*R5*sqz, c12 = R3*R6*sqx+R4*R7*sqy+R5*R8*sqz, c22 = R6*R6*sqx+R7*R7*sqy+R8*R8*sqz;\n"
+"  float gx = rx*gate*lr, gy = ry*gate*lr, gz = rz*gate*lr;\n"
+"  out_means[g*3u+0u] = mx + (c00*gx+c01*gy+c02*gz);\n"
+"  out_means[g*3u+1u] = my + (c01*gx+c11*gy+c12*gz);\n"
+"  out_means[g*3u+2u] = mz + (c02*gx+c12*gy+c22*gz);\n"
 "}\n"
 "extern \"C\" __global__ void tvdb_cuda_points_to_mask(float* mask, const tvdb_float4* pts,\n"
 "    int nx, int ny, int nz, float ox, float oy, float oz, float vs, unsigned int count) {\n"
@@ -6167,6 +6205,158 @@ pcu_free:
 pd_out: tvdb_vk_destroy_buffer(ctx, &bout);
 pd_in: tvdb_vk_destroy_buffer(ctx, &bin);
   free(in);
+  return st;
+}
+
+// ---- Gaussian MCMC densification helpers ------------------------------------
+
+tvdb_status_t tvdb_gpu_gaussian_mcmc_relocation(tvdb_gpu_context_t* ctx, uint32_t num_gaussians,
+                                                const float* opacities, const float* scales,
+                                                const int32_t* ratios, float* new_opacities,
+                                                float* new_scales, tvdb_error_t* err) {
+  if (!ctx || (num_gaussians && (!opacities || !scales || !ratios || !new_opacities || !new_scales))) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid mcmc_relocation arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (num_gaussians == 0) return TVDB_OK;
+  const uint32_t nmax = 51u;
+  size_t n = num_gaussians;
+  // Interleave inputs (stride 5: opacity, sx, sy, sz, ratio) + build binom table.
+  float* gin = (float*)malloc(n * 5u * sizeof(float));
+  float* binoms = (float*)malloc((size_t)nmax * nmax * sizeof(float));
+  if (!gin || !binoms) { free(gin); free(binoms); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  for (size_t i = 0; i < n; ++i) {
+    gin[5*i+0]=opacities[i]; gin[5*i+1]=scales[3*i+0]; gin[5*i+2]=scales[3*i+1]; gin[5*i+3]=scales[3*i+2];
+    gin[5*i+4]=(float)ratios[i];
+  }
+  for (uint32_t i = 0; i < nmax; ++i) {
+    for (uint32_t k = 0; k < nmax; ++k) binoms[i*nmax+k] = 0.0f;
+    binoms[i*nmax+0] = 1.0f;
+    for (uint32_t k = 1; k <= i; ++k) binoms[i*nmax+k] = binoms[(i-1)*nmax+(k-1)] + binoms[(i-1)*nmax+k];
+  }
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dgin = 0, dB = 0, dop = 0, dsc = 0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto rel_free_host;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_mcmc_relocation"))) { st = err ? err->status : TVDB_ERROR_IO; goto rel_free_host; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dgin, gin, n * 5u * sizeof(float), err)) != TVDB_OK) goto rel_cu;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dB, binoms, (size_t)nmax * nmax * sizeof(float), err)) != TVDB_OK) goto rel_cu;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dop, NULL, n * sizeof(float), err)) != TVDB_OK) goto rel_cu;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dsc, NULL, n * 3u * sizeof(float), err)) != TVDB_OK) goto rel_cu;
+    {
+      unsigned int uc = (unsigned int)n, un = nmax, block = 128, gb = (uc + block - 1u) / block;
+      void* args[] = {&dgin, &dB, &dop, &dsc, &uc, &un};
+      if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, gb, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto rel_cu; }
+    }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto rel_cu; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(new_opacities, dop, n * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto rel_cu; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(new_scales, dsc, n * 3u * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto rel_cu; }
+    st = TVDB_OK;
+rel_cu:
+    if (dsc) ctx->cuda.cuMemFree(dsc);
+    if (dop) ctx->cuda.cuMemFree(dop);
+    if (dB) ctx->cuda.cuMemFree(dB);
+    if (dgin) ctx->cuda.cuMemFree(dgin);
+    goto rel_free_host;
+  }
+
+  {
+    tvdb_vk_buffer bg, bb, bo, bs, bu;
+    if ((st = tvdb_vk_create_buffer(ctx, n * 5u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bg, err)) != TVDB_OK) goto rel_free_host;
+    if ((st = tvdb_vk_create_buffer(ctx, (size_t)nmax * nmax * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bb, err)) != TVDB_OK) goto rel_g;
+    if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto rel_b;
+    if ((st = tvdb_vk_create_buffer(ctx, n * 3u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bs, err)) != TVDB_OK) goto rel_o;
+    if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto rel_s;
+    memcpy(bg.mapped, gin, n * 5u * sizeof(float));
+    memcpy(bb.mapped, binoms, (size_t)nmax * nmax * sizeof(float));
+    uint32_t par[4] = {(uint32_t)n, nmax, 0, 0};
+    memcpy(bu.mapped, par, sizeof(par));
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = kTvdbGpuMcmcRelocationSpv; d.spv_len = kTvdbGpuMcmcRelocationSpv_len; d.descriptor_count = 5;
+    d.buffers[0]=&bg; d.buffers[1]=&bb; d.buffers[2]=&bo; d.buffers[3]=&bs; d.buffers[4]=&bu;
+    for (int i = 0; i < 4; ++i) d.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    d.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    d.group_x = (uint32_t)((n + 127u) / 128u);
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st == TVDB_OK) { memcpy(new_opacities, bo.mapped, n * sizeof(float)); memcpy(new_scales, bs.mapped, n * 3u * sizeof(float)); }
+    tvdb_vk_destroy_buffer(ctx, &bu);
+rel_s: tvdb_vk_destroy_buffer(ctx, &bs);
+rel_o: tvdb_vk_destroy_buffer(ctx, &bo);
+rel_b: tvdb_vk_destroy_buffer(ctx, &bb);
+rel_g: tvdb_vk_destroy_buffer(ctx, &bg);
+  }
+rel_free_host:
+  free(gin); free(binoms);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_gaussian_mcmc_add_noise(tvdb_gpu_context_t* ctx, uint32_t num_gaussians,
+                                               const float* means, const float* quats, const float* log_scales,
+                                               const float* opacities_logit, const float* rand, float lr,
+                                               float* out_means, tvdb_error_t* err) {
+  if (!ctx || (num_gaussians && (!means || !quats || !log_scales || !opacities_logit || !rand || !out_means))) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid mcmc_add_noise arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (num_gaussians == 0) return TVDB_OK;
+  size_t n = num_gaussians;
+  float* gin = (float*)malloc(n * 14u * sizeof(float));
+  if (!gin) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  for (size_t i = 0; i < n; ++i) {
+    float* d = gin + i * 14u;
+    d[0]=means[3*i+0]; d[1]=means[3*i+1]; d[2]=means[3*i+2];
+    d[3]=quats[4*i+0]; d[4]=quats[4*i+1]; d[5]=quats[4*i+2]; d[6]=quats[4*i+3];
+    d[7]=log_scales[3*i+0]; d[8]=log_scales[3*i+1]; d[9]=log_scales[3*i+2];
+    d[10]=opacities_logit[i]; d[11]=rand[3*i+0]; d[12]=rand[3*i+1]; d[13]=rand[3*i+2];
+  }
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dgin = 0, dout = 0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) { free(gin); return st; }
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_mcmc_noise"))) { free(gin); return err ? err->status : TVDB_ERROR_IO; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dgin, gin, n * 14u * sizeof(float), err)) != TVDB_OK) goto noi_cu;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, n * 3u * sizeof(float), err)) != TVDB_OK) goto noi_cu;
+    {
+      unsigned int uc = (unsigned int)n, block = 128, gb = (uc + block - 1u) / block;
+      void* args[] = {&dgin, &dout, &uc, &lr};
+      if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, gb, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto noi_cu; }
+    }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto noi_cu; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out_means, dout, n * 3u * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto noi_cu; }
+    st = TVDB_OK;
+noi_cu:
+    if (dout) ctx->cuda.cuMemFree(dout);
+    if (dgin) ctx->cuda.cuMemFree(dgin);
+    free(gin);
+    return st;
+  }
+
+  {
+    tvdb_vk_buffer bg, bo, bu;
+    if ((st = tvdb_vk_create_buffer(ctx, n * 14u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bg, err)) != TVDB_OK) { free(gin); return st; }
+    if ((st = tvdb_vk_create_buffer(ctx, n * 3u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto noi_g;
+    if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto noi_o;
+    memcpy(bg.mapped, gin, n * 14u * sizeof(float));
+    struct { uint32_t count; float lr; uint32_t pad[2]; } par;
+    memset(&par, 0, sizeof(par)); par.count = (uint32_t)n; par.lr = lr;
+    memcpy(bu.mapped, &par, sizeof(par));
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = kTvdbGpuMcmcNoiseSpv; d.spv_len = kTvdbGpuMcmcNoiseSpv_len; d.descriptor_count = 3;
+    d.buffers[0]=&bg; d.buffers[1]=&bo; d.buffers[2]=&bu;
+    d.descriptor_types[0]=d.descriptor_types[1]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    d.descriptor_types[2]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    d.group_x = (uint32_t)((n + 127u) / 128u);
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st == TVDB_OK) memcpy(out_means, bo.mapped, n * 3u * sizeof(float));
+    tvdb_vk_destroy_buffer(ctx, &bu);
+noi_o: tvdb_vk_destroy_buffer(ctx, &bo);
+noi_g: tvdb_vk_destroy_buffer(ctx, &bg);
+  }
+  free(gin);
   return st;
 }
 
