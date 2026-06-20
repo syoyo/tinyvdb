@@ -415,6 +415,20 @@ tvdb_status_t tvdb_gpu_sparse_conv3d_transpose(tvdb_gpu_context_t* ctx, const tv
                                                const float* kernel, int kx, int ky, int kz,
                                                int stride, tvdb_sparse_grid* out, tvdb_error_t* err);
 
+// Device-resident buffer interop. A caller-owned GPU buffer that stays on
+// device across uploads/downloads, with its native handle exported so the
+// caller's own Vulkan/CUDA code can consume the data without a host round-trip
+// (the foundation for keeping sample/query results on device).
+tvdb_status_t tvdb_gpu_buffer_create(tvdb_gpu_context_t* ctx, size_t size_bytes,
+                                     tvdb_gpu_buffer_t** out, tvdb_error_t* err);
+void tvdb_gpu_buffer_destroy(tvdb_gpu_buffer_t* buf);
+tvdb_status_t tvdb_gpu_buffer_upload(tvdb_gpu_buffer_t* buf, const void* src, size_t size, tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_buffer_download(tvdb_gpu_buffer_t* buf, void* dst, size_t size, tvdb_error_t* err);
+size_t tvdb_gpu_buffer_size(const tvdb_gpu_buffer_t* buf);
+// Native device handle (Vulkan VkBuffer or CUDA CUdeviceptr) as a uint64 for
+// caller-side interop; 0 if unavailable.
+uint64_t tvdb_gpu_buffer_native_handle(const tvdb_gpu_buffer_t* buf);
+
 #ifdef __cplusplus
 }
 #endif

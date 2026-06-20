@@ -1459,6 +1459,26 @@ static void test_conv_transpose(tvdb_gpu_context_t* ctx) {
   tvdb_sparse_grid_free(&in); tvdb_sparse_grid_free(&gpu);
 }
 
+static void test_buffer_interop(tvdb_gpu_context_t* ctx) {
+  // Device-resident buffer: upload -> download round-trip + native handle.
+  const size_t N = 256;
+  float src[256], dst[256];
+  for (size_t i = 0; i < N; ++i) { src[i] = 0.137f * (float)i - 3.0f; dst[i] = 0.0f; }
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  tvdb_gpu_buffer_t* buf = NULL;
+  if (tvdb_gpu_buffer_create(ctx, N * sizeof(float), &buf, &err) != TVDB_OK) {
+    fprintf(stderr, "buffer_create failed: %s\n", err.message);
+    EXPECT(0); return;
+  }
+  EXPECT(tvdb_gpu_buffer_size(buf) == N * sizeof(float));
+  EXPECT(tvdb_gpu_buffer_native_handle(buf) != 0);
+  EXPECT(tvdb_gpu_buffer_upload(buf, src, N * sizeof(float), &err) == TVDB_OK);
+  EXPECT(tvdb_gpu_buffer_download(buf, dst, N * sizeof(float), &err) == TVDB_OK);
+  for (size_t i = 0; i < N; ++i) EXPECT(dst[i] == src[i]);  // bit-exact device round-trip
+  tvdb_gpu_buffer_destroy(buf);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1502,6 +1522,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_marching_cubes(ctx);
   test_sparse_conv_strided(ctx);
   test_conv_transpose(ctx);
+  test_buffer_interop(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

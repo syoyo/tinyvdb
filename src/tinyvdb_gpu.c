@@ -481,7 +481,7 @@ struct tvdb_gpu_context {
   CUdevice cu_device;
   CUmodule cu_module;
 };
-struct tvdb_gpu_buffer { tvdb_vk_buffer vk; };
+struct tvdb_gpu_buffer { tvdb_vk_buffer vk; tvdb_gpu_context_t* ctx; tvdb_gpu_backend_t backend; CUdeviceptr cu; size_t size; };
 struct tvdb_gpu_dense_grid { tvdb_gpu_buffer_t values; int nx, ny, nz; };
 struct tvdb_gpu_sparse_grid { tvdb_gpu_buffer_t coords; tvdb_gpu_buffer_t values; size_t count; };
 struct tvdb_gpu_vulkan_sparse_image3d {
@@ -6593,4 +6593,57 @@ tc_build:
   }
   free(in4); free(outd);
   return st;
+}
+
+// ---- device-resident buffer interop -----------------------------------------
+
+tvdb_status_t tvdb_gpu_buffer_create(tvdb_gpu_context_t* ctx, size_t size_bytes,
+                                     tvdb_gpu_buffer_t** out, tvdb_error_t* err) {
+  if (!ctx || !out || size_bytes == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_create arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  *out = NULL;
+  tvdb_gpu_buffer_t* b = (tvdb_gpu_buffer_t*)calloc(1, sizeof(*b));
+  if (!b) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  b->ctx = ctx; b->backend = ctx->backend; b->size = size_bytes;
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    if (!tvdb_cuda_ok(ctx, err, "cuMemAlloc", ctx->cuda.cuMemAlloc(&b->cu, size_bytes))) { free(b); return err ? err->status : TVDB_ERROR_IO; }
+  } else {
+    tvdb_status_t st = tvdb_vk_create_buffer(ctx, size_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &b->vk, err);
+    if (st != TVDB_OK) { free(b); return st; }
+  }
+  *out = b;
+  return TVDB_OK;
+}
+
+void tvdb_gpu_buffer_destroy(tvdb_gpu_buffer_t* buf) {
+  if (!buf) return;
+  if (buf->backend == TVDB_GPU_BACKEND_CUDA) { if (buf->cu) buf->ctx->cuda.cuMemFree(buf->cu); }
+  else tvdb_vk_destroy_buffer(buf->ctx, &buf->vk);
+  free(buf);
+}
+
+tvdb_status_t tvdb_gpu_buffer_upload(tvdb_gpu_buffer_t* buf, const void* src, size_t size, tvdb_error_t* err) {
+  if (!buf || !src || size > buf->size) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_upload arguments"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  if (buf->backend == TVDB_GPU_BACKEND_CUDA) {
+    if (!tvdb_cuda_ok(buf->ctx, err, "cuMemcpyHtoD", buf->ctx->cuda.cuMemcpyHtoD(buf->cu, src, size))) return err ? err->status : TVDB_ERROR_IO;
+  } else memcpy(buf->vk.mapped, src, size);
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gpu_buffer_download(tvdb_gpu_buffer_t* buf, void* dst, size_t size, tvdb_error_t* err) {
+  if (!buf || !dst || size > buf->size) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_download arguments"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  if (buf->backend == TVDB_GPU_BACKEND_CUDA) {
+    if (!tvdb_cuda_ok(buf->ctx, err, "cuMemcpyDtoH", buf->ctx->cuda.cuMemcpyDtoH(dst, buf->cu, size))) return err ? err->status : TVDB_ERROR_IO;
+  } else memcpy(dst, buf->vk.mapped, size);
+  return TVDB_OK;
+}
+
+size_t tvdb_gpu_buffer_size(const tvdb_gpu_buffer_t* buf) { return buf ? buf->size : 0; }
+
+uint64_t tvdb_gpu_buffer_native_handle(const tvdb_gpu_buffer_t* buf) {
+  if (!buf) return 0;
+  if (buf->backend == TVDB_GPU_BACKEND_CUDA) return (uint64_t)buf->cu;
+  return (uint64_t)(uintptr_t)buf->vk.buffer;
 }

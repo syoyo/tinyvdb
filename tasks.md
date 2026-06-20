@@ -186,13 +186,15 @@ each theme. Notes point at the nearest existing primitive to reuse.
 
 **Prioritized GPU backend roadmap**
 
-- [ ] **P0: device-to-device buffer interop.** Sample batches are currently
-      host-visible Vulkan buffers owned by tinyvdb. Add import/export or
-      caller-provided buffer hooks for Vulkan and CUDA so sample/query results
-      can stay on device. *Deferred:* true cross-API interop needs
-      `VK_KHR_external_memory_fd`/Win32 + CUDA external-memory import, whose ABI
-      structs are outside the minimal local Vulkan ABI the backend currently
-      defines; this is an architectural extension rather than a compute kernel.
+- [~] **P0: device-to-device buffer interop.** Public caller-owned device buffer
+      `tvdb_gpu_buffer_t` with `tvdb_gpu_buffer_create`/`destroy`/`upload`/
+      `download`/`size` and `tvdb_gpu_buffer_native_handle` (exports the VkBuffer
+      / CUdeviceptr as a uint64) on Vulkan and CUDA — the foundation for keeping
+      results device-resident and consuming them from caller-side GPU code.
+      Covered by `test_gpu_backend` (`test_buffer_interop`, device round-trip +
+      handle). *Still open:* true cross-API import/export needs
+      `VK_KHR_external_memory_fd`/Win32 + CUDA external-memory ABI structs
+      outside the minimal local Vulkan ABI — an architectural extension.
 - [~] **P0: GPU sparse topology ops.** Dense `tvdb_gpu_dilate`/`tvdb_gpu_erode`
       (6-neighbor min/max morphology), `tvdb_gpu_prune`, `tvdb_gpu_coarsen`
       (block average), and `tvdb_gpu_refine` (trilinear upsample), plus sparse
