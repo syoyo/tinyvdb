@@ -1086,6 +1086,61 @@ static void test_gaussian_sh(tvdb_gpu_context_t* ctx) {
   free(sh); free(dirs); free(cpu); free(gpu);
 }
 
+static void pack_sort(const int32_t* coords, size_t n, long long* keys);  // defined below
+
+static void test_voxelize_unbounded(tvdb_gpu_context_t* ctx) {
+  // Points spread over a ~10^18-voxel ijk bbox (tiny voxels, huge range): the
+  // dense-occupancy path can't fit that in VRAM, so this exercises the O(n)
+  // hash-set path. Duplicate voxels (jittered points sharing a cell) test dedup.
+  const size_t NU = 400, NP = 800;
+  const float vs[3] = {0.01f, 0.01f, 0.01f};
+  const float origin[3] = {0.0f, 0.0f, 0.0f};
+  int32_t* centers = (int32_t*)malloc(NU * 3 * sizeof(int32_t));
+  float* flat = (float*)malloc(NP * 3 * sizeof(float));
+  unsigned int s = 4242u;
+  #define RND01 ( (s = s*1664525u + 1013904223u), (float)(s >> 8) / 16777216.0f )
+  for (size_t u = 0; u < NU; ++u)
+    for (int a = 0; a < 3; ++a)
+      centers[3*u+a] = (int32_t)(RND01 * 1000000.0f) - 500000;  // within +-2^20 for pack_sort
+  for (size_t i = 0; i < NP; ++i) {
+    size_t u = i % NU;
+    for (int a = 0; a < 3; ++a) {
+      float jitter = (RND01 - 0.5f) * 0.6f * vs[a];  // stays inside the voxel
+      flat[3*i+a] = origin[a] + ((float)centers[3*u+a] + 0.5f) * vs[a] + jitter;
+    }
+  }
+  #undef RND01
+
+  int32_t* cpu_coords = NULL; size_t cpu_n = 0;
+  EXPECT(tvdb_voxelize_points(flat, NP, vs, origin, &cpu_coords, &cpu_n));
+  EXPECT(cpu_n > 0 && cpu_n <= NU);
+  tvdb_error_t err; memset(&err, 0, sizeof(err));
+
+  // Explicit unbounded entry point and the auto-fallback wrapper must agree.
+  for (int which = 0; which < 2; ++which) {
+    int32_t* gpu_coords = NULL; size_t gpu_n = 0;
+    tvdb_status_t st = which == 0
+      ? tvdb_gpu_voxelize_points_unbounded(ctx, flat, NP, vs, origin, &gpu_coords, &gpu_n, &err)
+      : tvdb_gpu_voxelize_points(ctx, flat, NP, vs, origin, &gpu_coords, &gpu_n, &err);
+    if (st != TVDB_OK) {
+      fprintf(stderr, "gpu voxelize unbounded (%d) failed: %s\n", which, err.message);
+      EXPECT(0);
+    } else {
+      EXPECT(gpu_n == cpu_n);
+      if (gpu_n == cpu_n && cpu_n > 0) {
+        long long* kc = (long long*)malloc(cpu_n * sizeof(long long));
+        long long* kg = (long long*)malloc(gpu_n * sizeof(long long));
+        pack_sort(cpu_coords, cpu_n, kc);
+        pack_sort(gpu_coords, gpu_n, kg);
+        for (size_t i = 0; i < cpu_n; ++i) EXPECT(kc[i] == kg[i]);  // same voxel set
+        free(kc); free(kg);
+      }
+    }
+    free(gpu_coords);
+  }
+  free(cpu_coords); free(centers); free(flat);
+}
+
 static void test_gaussian_project(tvdb_gpu_context_t* ctx) {
   // Project 3D Gaussians to 2D conics, parity vs CPU tvdb_gaussian_project.
   const uint32_t N = 100;
@@ -1917,6 +1972,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_gaussian_project(ctx);
   test_points_to_mask(ctx);
   test_voxelize(ctx);
+  test_voxelize_unbounded(ctx);
   test_sparse_erode(ctx);
   test_sparse_dilate(ctx);
   test_merge(ctx);

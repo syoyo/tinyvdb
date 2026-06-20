@@ -354,10 +354,21 @@ tvdb_status_t tvdb_gpu_points_to_mask(tvdb_gpu_context_t* ctx, tvdb_dense_grid* 
 // (parallels tvdb_voxelize_points). `*out_coords` is malloc'd (caller frees),
 // `*out_count` is the unique-voxel count. Output order is arbitrary (set
 // semantics). Uses a dense bbox-local occupancy grid + atomic-counter
-// compaction, so the point cloud's ijk bounding-box volume must fit in VRAM.
+// compaction when the ijk bounding box fits in VRAM, and automatically falls
+// back to the O(n) hash-set path (tvdb_gpu_voxelize_points_unbounded) when it
+// does not.
 tvdb_status_t tvdb_gpu_voxelize_points(tvdb_gpu_context_t* ctx, const float* points, size_t n,
                                        const float voxel_size[3], const float origin[3],
                                        int32_t** out_coords, size_t* out_count, tvdb_error_t* err);
+
+// Unbounded sparse grid construction: same result as tvdb_gpu_voxelize_points
+// but always via an open-addressing GPU hash set sized O(point count), so the
+// memory is independent of the ijk bounding-box volume (for point clouds spread
+// over a huge region). A host-side dedup finalizes the set exactly. Vulkan and
+// CUDA/NVRTC.
+tvdb_status_t tvdb_gpu_voxelize_points_unbounded(tvdb_gpu_context_t* ctx, const float* points, size_t n,
+                                                 const float voxel_size[3], const float origin[3],
+                                                 int32_t** out_coords, size_t* out_count, tvdb_error_t* err);
 
 // Sparse erode (parallels tvdb_erode_sparse): keep an active voxel only if all
 // 6 face neighbors are active, with max-pooled value; `iterations` steps. `out`

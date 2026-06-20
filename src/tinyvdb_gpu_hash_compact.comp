@@ -1,0 +1,23 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Stream-compact the occupied hash slots into a dense coord list via an atomic
+// counter (one thread per slot).
+layout(std430, set = 0, binding = 0) readonly buffer StateBuf { uint state[]; };
+layout(std430, set = 0, binding = 1) readonly buffer KeyBuf { int keys[]; };
+layout(std430, set = 0, binding = 2) buffer CountBuf { uint counter; };
+layout(std430, set = 0, binding = 3) buffer OutBuf { int outc[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  uint cap;
+  uint pad0, pad1, pad2;
+} u;
+
+void main() {
+  uint s = gl_GlobalInvocationID.x;
+  if (s >= u.cap) return;
+  if (state[s] == 0u) return;
+  uint idx = atomicAdd(counter, 1u);
+  if (idx >= u.cap) return;
+  outc[idx*3u + 0u] = keys[s*3u + 0u];
+  outc[idx*3u + 1u] = keys[s*3u + 1u];
+  outc[idx*3u + 2u] = keys[s*3u + 2u];
+}

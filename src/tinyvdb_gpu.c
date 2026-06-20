@@ -42,6 +42,8 @@
 #include "tinyvdb_gpu_points_to_mask_spv.inc"
 #include "tinyvdb_gpu_voxelize_mark_spv.inc"
 #include "tinyvdb_gpu_voxelize_compact_spv.inc"
+#include "tinyvdb_gpu_hash_insert_spv.inc"
+#include "tinyvdb_gpu_hash_compact_spv.inc"
 #include "tinyvdb_gpu_sparse_mark_spv.inc"
 #include "tinyvdb_gpu_sparse_erode_spv.inc"
 #include "tinyvdb_gpu_sparse_dilate_scatter_spv.inc"
@@ -2309,6 +2311,32 @@ static const char* kTvdbCudaSource =
 "  int ly = rem / dx; int lx = rem - ly * dx;\n"
 "  unsigned int slot = atomicAdd(counter, 1u);\n"
 "  if (slot < cap) { out_coords[3u*slot+0u] = lx + bx; out_coords[3u*slot+1u] = ly + by; out_coords[3u*slot+2u] = lz + bz; }\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_hash_insert(unsigned int* state, int* keys, const tvdb_float4* pts,\n"
+"    float vx, float vy, float vz, float ox, float oy, float oz, unsigned int count, unsigned int cap, unsigned int mask) {\n"
+"  unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (p >= count) return;\n"
+"  tvdb_float4 q = pts[p];\n"
+"  int ix = (int)floorf((q.x - ox) / vx);\n"
+"  int iy = (int)floorf((q.y - oy) / vy);\n"
+"  int iz = (int)floorf((q.z - oz) / vz);\n"
+"  unsigned int h = ((unsigned int)ix * 73856093u) ^ ((unsigned int)iy * 19349663u) ^ ((unsigned int)iz * 83492791u);\n"
+"  unsigned int slot = h & mask;\n"
+"  for (unsigned int probe = 0u; probe < cap; ++probe) {\n"
+"    unsigned int prev = atomicCAS(&state[slot], 0u, 1u);\n"
+"    if (prev == 0u) { keys[slot*3u+0u]=ix; keys[slot*3u+1u]=iy; keys[slot*3u+2u]=iz; return; }\n"
+"    if (keys[slot*3u+0u]==ix && keys[slot*3u+1u]==iy && keys[slot*3u+2u]==iz) return;\n"
+"    slot = (slot + 1u) & mask;\n"
+"  }\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_hash_compact(const unsigned int* state, const int* keys,\n"
+"    unsigned int* counter, int* out_coords, unsigned int cap) {\n"
+"  unsigned int s = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (s >= cap) return;\n"
+"  if (state[s] == 0u) return;\n"
+"  unsigned int idx = atomicAdd(counter, 1u);\n"
+"  if (idx >= cap) return;\n"
+"  out_coords[3u*idx+0u] = keys[s*3u+0u]; out_coords[3u*idx+1u] = keys[s*3u+1u]; out_coords[3u*idx+2u] = keys[s*3u+2u];\n"
 "}\n"
 "extern \"C\" __global__ void tvdb_cuda_sparse_mark(unsigned int* occ, float* val, const tvdb_int4* coords,\n"
 "    const float* invals, int dx, int dy, int dz, int bx, int by, int bz, unsigned int count) {\n"
@@ -5980,6 +6008,165 @@ md_m: tvdb_vk_destroy_buffer(ctx, &bm);
 
 // ---- sparse voxelize (dense occupancy + atomic-counter compaction) ----------
 
+static size_t tvdb_next_pow2_size(size_t v) {
+  size_t p = 1; while (p < v) p <<= 1; return p;
+}
+
+static int tvdb_cmp_int3(const void* a, const void* b) {
+  const int32_t* x = (const int32_t*)a; const int32_t* y = (const int32_t*)b;
+  if (x[0] != y[0]) return x[0] < y[0] ? -1 : 1;
+  if (x[1] != y[1]) return x[1] < y[1] ? -1 : 1;
+  if (x[2] != y[2]) return x[2] < y[2] ? -1 : 1;
+  return 0;
+}
+
+// Sort + remove duplicate ijk triples in place; returns the unique count.
+static size_t tvdb_dedup_int3(int32_t* c, size_t n) {
+  if (n == 0) return 0;
+  qsort(c, n, 3u * sizeof(int32_t), tvdb_cmp_int3);
+  size_t w = 1;
+  for (size_t i = 1; i < n; ++i) {
+    if (tvdb_cmp_int3(c + 3*i, c + 3*(w-1)) != 0) {
+      if (w != i) { c[3*w+0]=c[3*i+0]; c[3*w+1]=c[3*i+1]; c[3*w+2]=c[3*i+2]; }
+      ++w;
+    }
+  }
+  return w;
+}
+
+// Unbounded (hash-based) voxelization: an open-addressing GPU hash set sized
+// O(point count) builds the unique occupied-voxel set with memory independent
+// of the ijk bounding-box volume. A host-side dedup finalizes the result so it
+// is exact regardless of any insertion race.
+static tvdb_status_t tvdb_gpu_voxelize_hashed(tvdb_gpu_context_t* ctx, const float* points, size_t n,
+                                              const float voxel_size[3], const float origin[3],
+                                              int32_t** out_coords, size_t* out_count, tvdb_error_t* err) {
+  size_t cap = tvdb_next_pow2_size(n * 2u);  // load factor <= 0.5
+  if (cap < 16u) cap = 16u;
+  if (cap > (size_t)700000000) {  // ~8.4 GB of keys; refuse rather than thrash VRAM
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "voxelize hash table too large");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  uint32_t mask = (uint32_t)(cap - 1u);
+  int32_t* coords = (int32_t*)malloc(n * 3u * sizeof(int32_t));  // candidates (<= n unique voxels)
+  if (!coords) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  uint32_t cand = 0;
+  tvdb_status_t st;
+  float vx = voxel_size[0], vy = voxel_size[1], vz = voxel_size[2];
+  float ox = origin[0], oy = origin[1], oz = origin[2];
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fi = NULL, fc = NULL;
+    CUdeviceptr dstate = 0, dkeys = 0, dp = 0, dcnt = 0, dout = 0;
+    float* p4 = (float*)malloc(n * 4u * sizeof(float));
+    uint32_t* zstate = (uint32_t*)calloc(cap, sizeof(uint32_t));
+    if (!p4 || !zstate) { free(p4); free(zstate); free(coords); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+    for (size_t i = 0; i < n; ++i) { p4[4*i+0]=points[3*i+0]; p4[4*i+1]=points[3*i+1]; p4[4*i+2]=points[3*i+2]; p4[4*i+3]=0.0f; }
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto hcu_host;
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fi, module, "tvdb_cuda_hash_insert"))) { st = err ? err->status : TVDB_ERROR_IO; goto hcu_host; }
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fc, module, "tvdb_cuda_hash_compact"))) { st = err ? err->status : TVDB_ERROR_IO; goto hcu_host; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dstate, zstate, cap * sizeof(uint32_t), err)) != TVDB_OK) goto hcu_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dkeys, NULL, cap * 3u * sizeof(int32_t), err)) != TVDB_OK) goto hcu_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, p4, n * 4u * sizeof(float), err)) != TVDB_OK) goto hcu_dev;
+    uint32_t zero = 0;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dcnt, &zero, sizeof(uint32_t), err)) != TVDB_OK) goto hcu_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, cap * 3u * sizeof(int32_t), err)) != TVDB_OK) goto hcu_dev;
+    unsigned int uc = (unsigned int)n, ucap = (unsigned int)cap, umask = mask;
+    void* iargs[] = {&dstate, &dkeys, &dp, &vx, &vy, &vz, &ox, &oy, &oz, &uc, &ucap, &umask};
+    unsigned int block = 128, gi = (uc + block - 1u) / block, gc = (ucap + block - 1u) / block;
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fi, gi, 1, 1, block, 1, 1, 0, NULL, iargs, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto hcu_dev; }
+    void* cargs[] = {&dstate, &dkeys, &dcnt, &dout, &ucap};
+    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fc, gc, 1, 1, block, 1, 1, 0, NULL, cargs, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto hcu_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto hcu_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(&cand, dcnt, sizeof(uint32_t)))) { st = err ? err->status : TVDB_ERROR_IO; goto hcu_dev; }
+    if (cand > n) cand = (uint32_t)n;
+    if (cand && !tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(coords, dout, (size_t)cand * 3u * sizeof(int32_t)))) { st = err ? err->status : TVDB_ERROR_IO; goto hcu_dev; }
+    st = TVDB_OK;
+hcu_dev:
+    if (dout) ctx->cuda.cuMemFree(dout);
+    if (dcnt) ctx->cuda.cuMemFree(dcnt);
+    if (dp) ctx->cuda.cuMemFree(dp);
+    if (dkeys) ctx->cuda.cuMemFree(dkeys);
+    if (dstate) ctx->cuda.cuMemFree(dstate);
+hcu_host:
+    free(p4); free(zstate);
+    if (st != TVDB_OK) { free(coords); return st; }
+  } else {
+    tvdb_vk_buffer bstate, bkeys, bp, bcnt, bout, bui, buc;
+    if ((st = tvdb_vk_create_buffer(ctx, cap * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bstate, err)) != TVDB_OK) { free(coords); return st; }
+    if ((st = tvdb_vk_create_buffer(ctx, cap * 3u * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bkeys, err)) != TVDB_OK) goto hd_state;
+    if ((st = tvdb_vk_create_buffer(ctx, n * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bp, err)) != TVDB_OK) goto hd_keys;
+    if ((st = tvdb_vk_create_buffer(ctx, sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bcnt, err)) != TVDB_OK) goto hd_p;
+    if ((st = tvdb_vk_create_buffer(ctx, cap * 3u * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bout, err)) != TVDB_OK) goto hd_cnt;
+    if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bui, err)) != TVDB_OK) goto hd_out;
+    if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &buc, err)) != TVDB_OK) goto hd_ui;
+    memset(bstate.mapped, 0, cap * sizeof(uint32_t));
+    *(uint32_t*)bcnt.mapped = 0u;
+    { float* pm = (float*)bp.mapped;
+      for (size_t i = 0; i < n; ++i) { pm[4*i+0]=points[3*i+0]; pm[4*i+1]=points[3*i+1]; pm[4*i+2]=points[3*i+2]; pm[4*i+3]=0.0f; } }
+    struct { float vs[4]; float origin[4]; uint32_t count; uint32_t cap; uint32_t mask; uint32_t pad; } ipar;
+    memset(&ipar, 0, sizeof(ipar));
+    ipar.vs[0]=vx; ipar.vs[1]=vy; ipar.vs[2]=vz; ipar.origin[0]=ox; ipar.origin[1]=oy; ipar.origin[2]=oz;
+    ipar.count=(uint32_t)n; ipar.cap=(uint32_t)cap; ipar.mask=mask;
+    memcpy(bui.mapped, &ipar, sizeof(ipar));
+    struct { uint32_t cap; uint32_t pad[3]; } cpar;
+    memset(&cpar, 0, sizeof(cpar)); cpar.cap=(uint32_t)cap;
+    memcpy(buc.mapped, &cpar, sizeof(cpar));
+    {
+      tvdb_vk_dispatch_desc di;
+      memset(&di, 0, sizeof(di));
+      di.spv = kTvdbGpuHashInsertSpv; di.spv_len = kTvdbGpuHashInsertSpv_len; di.descriptor_count = 4;
+      di.buffers[0]=&bstate; di.buffers[1]=&bkeys; di.buffers[2]=&bp; di.buffers[3]=&bui;
+      di.descriptor_types[0]=di.descriptor_types[1]=di.descriptor_types[2]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      di.descriptor_types[3]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      di.group_x = (uint32_t)((n + 127u) / 128u);
+      st = tvdb_vk_dispatch(ctx, &di, err);
+    }
+    if (st == TVDB_OK) {
+      tvdb_vk_dispatch_desc dc;
+      memset(&dc, 0, sizeof(dc));
+      dc.spv = kTvdbGpuHashCompactSpv; dc.spv_len = kTvdbGpuHashCompactSpv_len; dc.descriptor_count = 5;
+      dc.buffers[0]=&bstate; dc.buffers[1]=&bkeys; dc.buffers[2]=&bcnt; dc.buffers[3]=&bout; dc.buffers[4]=&buc;
+      dc.descriptor_types[0]=dc.descriptor_types[1]=dc.descriptor_types[2]=dc.descriptor_types[3]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      dc.descriptor_types[4]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+      dc.group_x = (uint32_t)((cap + 127u) / 128u);
+      st = tvdb_vk_dispatch(ctx, &dc, err);
+    }
+    if (st == TVDB_OK) {
+      cand = *(uint32_t*)bcnt.mapped;
+      if (cand > n) cand = (uint32_t)n;
+      memcpy(coords, bout.mapped, (size_t)cand * 3u * sizeof(int32_t));
+    }
+    tvdb_vk_destroy_buffer(ctx, &buc);
+hd_ui: tvdb_vk_destroy_buffer(ctx, &bui);
+hd_out: tvdb_vk_destroy_buffer(ctx, &bout);
+hd_cnt: tvdb_vk_destroy_buffer(ctx, &bcnt);
+hd_p: tvdb_vk_destroy_buffer(ctx, &bp);
+hd_keys: tvdb_vk_destroy_buffer(ctx, &bkeys);
+hd_state: tvdb_vk_destroy_buffer(ctx, &bstate);
+    if (st != TVDB_OK) { free(coords); return st; }
+  }
+
+  size_t uniq = tvdb_dedup_int3(coords, cand);
+  *out_coords = coords;
+  *out_count = uniq;
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gpu_voxelize_points_unbounded(tvdb_gpu_context_t* ctx, const float* points, size_t n,
+                                                 const float voxel_size[3], const float origin[3],
+                                                 int32_t** out_coords, size_t* out_count, tvdb_error_t* err) {
+  if (out_coords) *out_coords = NULL;
+  if (out_count) *out_count = 0;
+  if (!ctx || !out_coords || !out_count || !voxel_size || !origin || (!points && n) ||
+      voxel_size[0] <= 0.0f || voxel_size[1] <= 0.0f || voxel_size[2] <= 0.0f) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid voxelize_points_unbounded arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (n == 0) return TVDB_OK;
+  return tvdb_gpu_voxelize_hashed(ctx, points, n, voxel_size, origin, out_coords, out_count, err);
+}
+
 tvdb_status_t tvdb_gpu_voxelize_points(tvdb_gpu_context_t* ctx, const float* points, size_t n,
                                        const float voxel_size[3], const float origin[3],
                                        int32_t** out_coords, size_t* out_count, tvdb_error_t* err) {
@@ -6009,8 +6196,9 @@ tvdb_status_t tvdb_gpu_voxelize_points(tvdb_gpu_context_t* ctx, const float* poi
   long long dz = (long long)bbmax[2] - bbmin[2] + 1;
   long long vol = dx * dy * dz;
   if (vol <= 0 || vol > (long long)400000000) {  // ~1.6 GB of uint occupancy
-    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "voxelize bbox too large for GPU dense occupancy");
-    return TVDB_ERROR_INVALID_ARGUMENT;
+    // Dense bbox occupancy would exceed VRAM; use the O(n) hash-set path, whose
+    // memory is independent of the bounding-box volume.
+    return tvdb_gpu_voxelize_hashed(ctx, points, n, voxel_size, origin, out_coords, out_count, err);
   }
   size_t volume = (size_t)vol;
   int32_t* coords = (int32_t*)malloc(n * 3u * sizeof(int32_t));
