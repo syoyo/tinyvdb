@@ -72,3 +72,7 @@ static const uint8_t kTvdbGpuSparseConvStridedSpv[] = {0};
 static const uint32_t kTvdbGpuSparseConvStridedSpv_len = 0;
 static const uint8_t kTvdbGpuConvTransposeScatterSpv[] = {0};
 static const uint32_t kTvdbGpuConvTransposeScatterSpv_len = 0;
+static const uint8_t kTvdbGpuGaussianForwardSpv[] = {0};
+static const uint32_t kTvdbGpuGaussianForwardSpv_len = 0;
+static const uint8_t kTvdbGpuGaussianBackwardSpv[] = {0};
+static const uint32_t kTvdbGpuGaussianBackwardSpv_len = 0;

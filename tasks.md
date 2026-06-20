@@ -287,9 +287,15 @@ each theme. Notes point at the nearest existing primitive to reuse.
       assigns final signs), mirroring `tvdb_signed_flood_fill`; covered by
       `test_gpu_backend` (`test_flood`). *Still open:* portable inactive-page /
       background fallback for sparse-image sampling near unbound regions.
-- [ ] **P2: GPU Gaussian-splat rasterizer.** Add CUDA/Vulkan forward and
-      backward rasterization to complement the existing CPU Gaussian splat
-      implementation.
+- [x] **P2: GPU Gaussian-splat rasterizer.** `tvdb_gpu_gaussian_rasterize_forward`
+      (tile-based depth-sorted front-to-back alpha blend; per-tile entries built
+      and depth-sorted host-side, composited one thread/pixel for bit-for-bit CPU
+      order) and `tvdb_gpu_gaussian_rasterize_backward` (reverse replay with local
+      per-pixel T/S state, per-gaussian gradients scatter-added via CAS
+      atomic-float) on Vulkan and CUDA/NVRTC, mirroring
+      `tvdb_gaussian_rasterize_forward`/`_backward`. Covered by `test_gpu_backend`
+      (`test_gaussian_forward` image+alpha parity; `test_gaussian_backward_gpu`
+      per-gaussian gradient parity vs CPU). COMPLETE.
 - [ ] **P2: batched sparse data abstractions.** Evaluate a tinyvdb-native
       subset of fvdb `JaggedTensor`/`GridBatch` for batched GPU workloads while
       preserving the dependency-free C API.

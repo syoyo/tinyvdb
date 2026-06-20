@@ -15,6 +15,7 @@
 #include "tinyvdb_sparse.h" // tvdb_sparse_grid
 #include "tinyvdb_stats.h"  // tvdb_grid_stats_t
 #include "tinyvdb_tsdf.h"   // tvdb_depth_frame
+#include "tinyvdb_nanovdb.h" // tvdb_projected_gaussian_t, tvdb_raster_output_t, tvdb_gaussian_grad_t
 
 #ifdef __cplusplus
 extern "C" {
@@ -428,6 +429,26 @@ size_t tvdb_gpu_buffer_size(const tvdb_gpu_buffer_t* buf);
 // Native device handle (Vulkan VkBuffer or CUDA CUdeviceptr) as a uint64 for
 // caller-side interop; 0 if unavailable.
 uint64_t tvdb_gpu_buffer_native_handle(const tvdb_gpu_buffer_t* buf);
+
+// GPU Gaussian-splat rasterizer forward (parallels
+// tvdb_gaussian_rasterize_forward): tile-based depth-sorted front-to-back alpha
+// blend. The per-tile entry list is built and depth-sorted host-side (same as
+// the CPU), then composited one thread per pixel — bit-for-bit the CPU order.
+// `out` is allocated/filled (image, alpha, last_ids). num_features <= 3.
+tvdb_status_t tvdb_gpu_gaussian_rasterize_forward(tvdb_gpu_context_t* ctx,
+    const tvdb_projected_gaussian_t* gaussians, uint32_t num_gaussians,
+    uint32_t width, uint32_t height, uint32_t num_features,
+    float background[3], float alpha_threshold, tvdb_raster_output_t* out, tvdb_error_t* err);
+
+// GPU Gaussian-splat rasterizer backward (parallels
+// tvdb_gaussian_rasterize_backward): replays the depth-sorted blend in reverse,
+// one thread per pixel with local T/S state, scatter-adding per-gaussian
+// gradients (CAS atomic-add). `grad_out` must be pre-initialized
+// (tvdb_gaussian_grad_init) and matching shape; contributions are accumulated.
+tvdb_status_t tvdb_gpu_gaussian_rasterize_backward(tvdb_gpu_context_t* ctx,
+    const tvdb_projected_gaussian_t* gaussians, uint32_t num_gaussians,
+    const tvdb_raster_output_t* fwd, const float* dL_dC, const float* dL_dA,
+    float background[3], float alpha_threshold, tvdb_gaussian_grad_t* grad_out, tvdb_error_t* err);
 
 #ifdef __cplusplus
 }

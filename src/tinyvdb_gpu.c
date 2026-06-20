@@ -51,6 +51,8 @@
 #include "tinyvdb_gpu_marching_cubes_spv.inc"
 #include "tinyvdb_gpu_sparse_conv_strided_spv.inc"
 #include "tinyvdb_gpu_conv_transpose_scatter_spv.inc"
+#include "tinyvdb_gpu_gaussian_forward_spv.inc"
+#include "tinyvdb_gpu_gaussian_backward_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2327,6 +2329,58 @@ static const char* kTvdbCudaSource =
 "    int ox=c.x*stride+di-ax-bx, oy=c.y*stride+dj-ay-by, oz=c.z*stride+dk-az-bz;\n"
 "    unsigned int lin=(unsigned int)((oz*dy+oy)*dx+ox);\n"
 "    tvdb_atomic_add_f(&v2[lin], kernel[ki]*v); occ[lin]=1u;\n"
+"  }\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_gaussian_forward(const float* gauss, const tvdb_int4* entries,\n"
+"    float* out_image, float* out_aux, unsigned int W, unsigned int H, unsigned int NF, unsigned int TS,\n"
+"    unsigned int num_entries, float alpha_threshold, float bg0, float bg1, float bg2) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (gid >= W*H) return;\n"
+"  int px = (int)(gid % W), py = (int)(gid / W);\n"
+"  int my_tx = px/(int)TS, my_ty = py/(int)TS;\n"
+"  float bg[3] = {bg0,bg1,bg2}; float img[3]; for (unsigned int f=0;f<NF;++f) img[f]=bg[f];\n"
+"  float a_acc = 0.0f; int last = -1;\n"
+"  for (unsigned int e=0;e<num_entries;++e){ tvdb_int4 ent=entries[e];\n"
+"    if (ent.y!=my_tx || ent.z!=my_ty) continue;\n"
+"    unsigned int g=(unsigned int)ent.x*12u;\n"
+"    float dx=(float)px-gauss[g+0], dy=(float)py-gauss[g+1];\n"
+"    float sigma=0.5f*(gauss[g+2]*dx*dx + 2.0f*gauss[g+3]*dx*dy + gauss[g+4]*dy*dy);\n"
+"    if (sigma>10.0f) continue;\n"
+"    float ga=gauss[g+5]*expf(-sigma); if (ga<alpha_threshold) continue;\n"
+"    float T=1.0f-a_acc; if (T<0.001f) continue;\n"
+"    a_acc += ga*T; for (unsigned int f=0;f<NF;++f) img[f]+=gauss[g+8+f]*ga*T; last=ent.x;\n"
+"  }\n"
+"  for (unsigned int f=0;f<NF;++f) out_image[gid*NF+f]=img[f];\n"
+"  out_aux[gid*2u+0u]=a_acc; out_aux[gid*2u+1u]=__int_as_float(last);\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_gaussian_backward(const float* gauss, const tvdb_int4* entries,\n"
+"    const float* pixel, float* grad, unsigned int W, unsigned int H, unsigned int F, unsigned int TS,\n"
+"    unsigned int num_entries, float alpha_threshold, int has_dLdA, float bg0, float bg1, float bg2) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (gid >= W*H) return;\n"
+"  int px=(int)(gid%W), py=(int)(gid/W); int my_tx=px/(int)TS, my_ty=py/(int)TS;\n"
+"  unsigned int stride=F+2u, base=gid*stride; float bg[3]={bg0,bg1,bg2};\n"
+"  float Tfin=1.0f-pixel[base+F]; if (Tfin<0.0f) Tfin=0.0f;\n"
+"  float Tc=Tfin; float Sc[3]; for (unsigned int f=0;f<F;++f) Sc[f]=Tfin*bg[f];\n"
+"  float dLdA = has_dLdA ? pixel[base+F+1u] : 0.0f;\n"
+"  for (unsigned int e=num_entries; e>0u; --e){ tvdb_int4 ent=entries[e-1u];\n"
+"    if (ent.y!=my_tx || ent.z!=my_ty) continue;\n"
+"    unsigned int g=(unsigned int)ent.x*12u;\n"
+"    float a_c=gauss[g+2],b_c=gauss[g+3],c_c=gauss[g+4],opac=gauss[g+5];\n"
+"    float dx=(float)px-gauss[g+0], dy=(float)py-gauss[g+1];\n"
+"    float sigma=0.5f*(a_c*dx*dx+2.0f*b_c*dx*dy+c_c*dy*dy); if (sigma>10.0f) continue;\n"
+"    float G=expf(-sigma); float alpha=opac*G; if (alpha<alpha_threshold) continue;\n"
+"    float one_m=1.0f-alpha; if (one_m<1e-7f) one_m=1e-7f; float T_pre=Tc/one_m; if (T_pre<0.001f) continue;\n"
+"    unsigned int gb=(unsigned int)ent.x*(6u+F); float w=T_pre*alpha; float dotCf=0.0f,dotCS=0.0f;\n"
+"    for (unsigned int f=0;f<F;++f){ float dLdCf=pixel[base+f]; float feat=gauss[g+8u+f]; dotCf+=dLdCf*feat; dotCS+=dLdCf*Sc[f]; tvdb_atomic_add_f(&grad[gb+6u+f], dLdCf*w); }\n"
+"    float dL_dalpha=T_pre*dotCf - dotCS/one_m; if (has_dLdA) dL_dalpha += dLdA*Tfin/one_m;\n"
+"    tvdb_atomic_add_f(&grad[gb+5u], dL_dalpha*G); float dL_dsigma=-alpha*dL_dalpha;\n"
+"    tvdb_atomic_add_f(&grad[gb+0u], dL_dsigma*-(a_c*dx+b_c*dy));\n"
+"    tvdb_atomic_add_f(&grad[gb+1u], dL_dsigma*-(b_c*dx+c_c*dy));\n"
+"    tvdb_atomic_add_f(&grad[gb+2u], dL_dsigma*0.5f*dx*dx);\n"
+"    tvdb_atomic_add_f(&grad[gb+3u], dL_dsigma*dx*dy);\n"
+"    tvdb_atomic_add_f(&grad[gb+4u], dL_dsigma*0.5f*dy*dy);\n"
+"    for (unsigned int f=0;f<F;++f) Sc[f]+=w*gauss[g+8u+f]; Tc=T_pre;\n"
 "  }\n"
 "}\n";
 
@@ -6646,4 +6700,257 @@ uint64_t tvdb_gpu_buffer_native_handle(const tvdb_gpu_buffer_t* buf) {
   if (!buf) return 0;
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) return (uint64_t)buf->cu;
   return (uint64_t)(uintptr_t)buf->vk.buffer;
+}
+
+// ---- Gaussian-splat rasterizer (forward) ------------------------------------
+
+#define TVDB_GPU_GAUSS_TILE 16
+
+typedef struct { uint32_t gid; float depth; int32_t tx, ty; } tvdb_gauss_entry;
+static int tvdb_gauss_entry_cmp(const void* a, const void* b) {
+  const tvdb_gauss_entry* e = (const tvdb_gauss_entry*)a; const tvdb_gauss_entry* k = (const tvdb_gauss_entry*)b;
+  if (e->tx != k->tx) return e->tx < k->tx ? -1 : 1;
+  if (e->ty != k->ty) return e->ty < k->ty ? -1 : 1;
+  if (e->depth != k->depth) return e->depth < k->depth ? -1 : 1;
+  return 0;
+}
+
+tvdb_status_t tvdb_gpu_gaussian_rasterize_forward(tvdb_gpu_context_t* ctx,
+    const tvdb_projected_gaussian_t* gaussians, uint32_t num_gaussians,
+    uint32_t width, uint32_t height, uint32_t num_features,
+    float background[3], float alpha_threshold, tvdb_raster_output_t* out, tvdb_error_t* err) {
+  if (!ctx || !gaussians || !out || width == 0 || height == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid gaussian forward arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (num_features == 0) num_features = 3;
+  if (num_features > 3) num_features = 3;
+  if (alpha_threshold <= 0.0f) alpha_threshold = 0.005f;
+  const uint32_t TS = TVDB_GPU_GAUSS_TILE;
+  uint32_t ntx = (width + TS - 1) / TS, nty = (height + TS - 1) / TS;
+  size_t npix = (size_t)width * height;
+
+  memset(out, 0, sizeof(*out));
+  out->width = width; out->height = height; out->num_features = num_features; out->owns_data = 1;
+  out->image = (float*)calloc(npix * num_features, sizeof(float));
+  out->alpha = (float*)calloc(npix, sizeof(float));
+  out->last_ids = (int32_t*)malloc(npix * sizeof(int32_t));
+  if (!out->image || !out->alpha || !out->last_ids) { tvdb_raster_output_destroy(out); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+
+  // Build per-(gaussian,tile) entries and depth-sort (same order as the CPU).
+  size_t max_entries = (size_t)num_gaussians * 16u + 1u;
+  tvdb_gauss_entry* ent = (tvdb_gauss_entry*)malloc(max_entries * sizeof(tvdb_gauss_entry));
+  if (!ent) { tvdb_raster_output_destroy(out); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  size_t ne = 0;
+  for (uint32_t i = 0; i < num_gaussians; ++i) {
+    if (gaussians[i].radius <= 0.0f || gaussians[i].opacity <= 0.0f) continue;
+    int32_t cx = (int32_t)gaussians[i].x, cy = (int32_t)gaussians[i].y, r = (int32_t)(gaussians[i].radius + 0.5f);
+    int32_t tx0 = cx/(int32_t)TS, ty0 = cy/(int32_t)TS, tx1 = (cx+r)/(int32_t)TS, ty1 = (cy+r)/(int32_t)TS;
+    for (int32_t ty = ty0; ty <= ty1; ++ty) for (int32_t tx = tx0; tx <= tx1; ++tx) {
+      if (tx < 0 || ty < 0 || (uint32_t)tx >= ntx || (uint32_t)ty >= nty) continue;
+      if (ne >= max_entries) continue;
+      ent[ne].gid = i; ent[ne].depth = gaussians[i].depth; ent[ne].tx = tx; ent[ne].ty = ty; ++ne;
+    }
+  }
+  qsort(ent, ne, sizeof(tvdb_gauss_entry), tvdb_gauss_entry_cmp);
+
+  float* gpack = (float*)malloc((size_t)num_gaussians * 12u * sizeof(float));
+  int32_t* e4 = (int32_t*)malloc((ne ? ne : 1) * 4u * sizeof(int32_t));
+  float* aux = (float*)malloc(npix * 2u * sizeof(float));
+  if (!gpack || !e4 || !aux) { free(ent); free(gpack); free(e4); free(aux); tvdb_raster_output_destroy(out); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  for (uint32_t i = 0; i < num_gaussians; ++i) {
+    const tvdb_projected_gaussian_t* g = &gaussians[i]; float* d = &gpack[i*12u];
+    d[0]=g->x; d[1]=g->y; d[2]=g->conic_a; d[3]=g->conic_b; d[4]=g->conic_c; d[5]=g->opacity;
+    d[6]=g->depth; d[7]=g->radius; d[8]=g->feature[0]; d[9]=g->feature[1]; d[10]=g->feature[2]; d[11]=0.0f;
+  }
+  for (size_t i = 0; i < ne; ++i) { e4[4*i+0]=(int32_t)ent[i].gid; e4[4*i+1]=ent[i].tx; e4[4*i+2]=ent[i].ty; e4[4*i+3]=0; }
+  float bg0 = background ? background[0] : 0.0f, bg1 = background ? background[1] : 0.0f, bg2 = background ? background[2] : 0.0f;
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dg=0, de=0, dim=0, da=0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto gf_finish;
+    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_gaussian_forward"))) { st=err?err->status:TVDB_ERROR_IO; goto gf_finish; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dg, gpack, (size_t)num_gaussians*12u*sizeof(float), err)) != TVDB_OK) goto gf_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &de, e4, (ne?ne:1)*4u*sizeof(int32_t), err)) != TVDB_OK) goto gf_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dim, NULL, npix*num_features*sizeof(float), err)) != TVDB_OK) goto gf_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &da, NULL, npix*2u*sizeof(float), err)) != TVDB_OK) goto gf_dev;
+    unsigned int W=width, H=height, NF=num_features, uTS=TS, une=(unsigned int)ne, block=64;
+    void* args[] = {&dg,&de,&dim,&da,&W,&H,&NF,&uTS,&une,&alpha_threshold,&bg0,&bg1,&bg2};
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,((unsigned int)npix+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto gf_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto gf_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(out->image, dim, npix*num_features*sizeof(float)))) { st=err?err->status:TVDB_ERROR_IO; goto gf_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(aux, da, npix*2u*sizeof(float)))) { st=err?err->status:TVDB_ERROR_IO; goto gf_dev; }
+    st = TVDB_OK;
+gf_dev:
+    if (da) ctx->cuda.cuMemFree(da); if (dim) ctx->cuda.cuMemFree(dim); if (de) ctx->cuda.cuMemFree(de); if (dg) ctx->cuda.cuMemFree(dg);
+    goto gf_finish;
+  }
+  {
+    tvdb_vk_buffer bg, be, bim, ba, bu;
+    if ((st = tvdb_vk_create_buffer(ctx, (size_t)num_gaussians*12u*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bg, err)) != TVDB_OK) goto gf_finish;
+    if ((st = tvdb_vk_create_buffer(ctx, (ne?ne:1)*4u*sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &be, err)) != TVDB_OK) goto gd_g;
+    if ((st = tvdb_vk_create_buffer(ctx, npix*num_features*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bim, err)) != TVDB_OK) goto gd_e;
+    if ((st = tvdb_vk_create_buffer(ctx, npix*2u*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &ba, err)) != TVDB_OK) goto gd_im;
+    if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto gd_a;
+    memcpy(bg.mapped, gpack, (size_t)num_gaussians*12u*sizeof(float));
+    if (ne) memcpy(be.mapped, e4, ne*4u*sizeof(int32_t));
+    struct { uint32_t dim[4]; uint32_t num_entries; float alpha_threshold; float pad[2]; float background[4]; } par;
+    memset(&par, 0, sizeof(par));
+    par.dim[0]=width; par.dim[1]=height; par.dim[2]=num_features; par.dim[3]=TS; par.num_entries=(uint32_t)ne; par.alpha_threshold=alpha_threshold;
+    par.background[0]=bg0; par.background[1]=bg1; par.background[2]=bg2;
+    memcpy(bu.mapped, &par, sizeof(par));
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = kTvdbGpuGaussianForwardSpv; d.spv_len = kTvdbGpuGaussianForwardSpv_len; d.descriptor_count = 5;
+    d.buffers[0]=&bg; d.buffers[1]=&be; d.buffers[2]=&bim; d.buffers[3]=&ba; d.buffers[4]=&bu;
+    for (int i = 0; i < 4; ++i) d.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    d.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    d.group_x = (uint32_t)((npix + 63u) / 64u);
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st == TVDB_OK) { memcpy(out->image, bim.mapped, npix*num_features*sizeof(float)); memcpy(aux, ba.mapped, npix*2u*sizeof(float)); }
+    tvdb_vk_destroy_buffer(ctx, &bu);
+gd_a: tvdb_vk_destroy_buffer(ctx, &ba);
+gd_im: tvdb_vk_destroy_buffer(ctx, &bim);
+gd_e: tvdb_vk_destroy_buffer(ctx, &be);
+gd_g: tvdb_vk_destroy_buffer(ctx, &bg);
+  }
+gf_finish:
+  if (st == TVDB_OK) {
+    for (size_t p = 0; p < npix; ++p) { out->alpha[p] = aux[2*p+0]; int32_t bits; memcpy(&bits, &aux[2*p+1], sizeof(int32_t)); out->last_ids[p] = bits; }
+  } else tvdb_raster_output_destroy(out);
+  free(ent); free(gpack); free(e4); free(aux);
+  return st;
+}
+
+// ---- Gaussian-splat rasterizer (backward) -----------------------------------
+
+// Build + depth-sort the per-(gaussian,tile) entry list (same order as forward).
+static int32_t* tvdb_gauss_build_entries(const tvdb_projected_gaussian_t* g, uint32_t ng,
+                                         uint32_t width, uint32_t height, size_t* out_ne) {
+  const uint32_t TS = TVDB_GPU_GAUSS_TILE;
+  uint32_t ntx = (width + TS - 1) / TS, nty = (height + TS - 1) / TS;
+  size_t cap = (size_t)ng * 16u + 1u;
+  tvdb_gauss_entry* ent = (tvdb_gauss_entry*)malloc(cap * sizeof(tvdb_gauss_entry));
+  if (!ent) { *out_ne = 0; return NULL; }
+  size_t ne = 0;
+  for (uint32_t i = 0; i < ng; ++i) {
+    if (g[i].radius <= 0.0f || g[i].opacity <= 0.0f) continue;
+    int32_t cx = (int32_t)g[i].x, cy = (int32_t)g[i].y, r = (int32_t)(g[i].radius + 0.5f);
+    int32_t tx0 = cx/(int32_t)TS, ty0 = cy/(int32_t)TS, tx1 = (cx+r)/(int32_t)TS, ty1 = (cy+r)/(int32_t)TS;
+    for (int32_t ty = ty0; ty <= ty1; ++ty) for (int32_t tx = tx0; tx <= tx1; ++tx) {
+      if (tx < 0 || ty < 0 || (uint32_t)tx >= ntx || (uint32_t)ty >= nty) continue;
+      if (ne >= cap) continue;
+      ent[ne].gid = i; ent[ne].depth = g[i].depth; ent[ne].tx = tx; ent[ne].ty = ty; ++ne;
+    }
+  }
+  qsort(ent, ne, sizeof(tvdb_gauss_entry), tvdb_gauss_entry_cmp);
+  int32_t* e4 = (int32_t*)malloc((ne ? ne : 1) * 4u * sizeof(int32_t));
+  if (!e4) { free(ent); *out_ne = 0; return NULL; }
+  for (size_t i = 0; i < ne; ++i) { e4[4*i+0]=(int32_t)ent[i].gid; e4[4*i+1]=ent[i].tx; e4[4*i+2]=ent[i].ty; e4[4*i+3]=0; }
+  free(ent);
+  *out_ne = ne;
+  return e4;
+}
+
+tvdb_status_t tvdb_gpu_gaussian_rasterize_backward(tvdb_gpu_context_t* ctx,
+    const tvdb_projected_gaussian_t* gaussians, uint32_t num_gaussians,
+    const tvdb_raster_output_t* fwd, const float* dL_dC, const float* dL_dA,
+    float background[3], float alpha_threshold, tvdb_gaussian_grad_t* grad_out, tvdb_error_t* err) {
+  if (!ctx || !gaussians || !fwd || !dL_dC || !grad_out ||
+      grad_out->num_gaussians != num_gaussians || grad_out->num_features != fwd->num_features) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid gaussian backward arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  uint32_t W = fwd->width, H = fwd->height, F = fwd->num_features;
+  if (alpha_threshold <= 0.0f) alpha_threshold = 0.005f;
+  const uint32_t TS = TVDB_GPU_GAUSS_TILE;
+  size_t npix = (size_t)W * H;
+  int has_dLdA = dL_dA ? 1 : 0;
+  size_t gstride = 6u + F;
+
+  size_t ne = 0;
+  int32_t* e4 = tvdb_gauss_build_entries(gaussians, num_gaussians, W, H, &ne);
+  if (!e4) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+
+  float* gpack = (float*)malloc((size_t)num_gaussians * 12u * sizeof(float));
+  float* pix = (float*)malloc(npix * (F + 2u) * sizeof(float));
+  float* gradf = (float*)calloc((size_t)num_gaussians * gstride, sizeof(float));
+  if (!gpack || !pix || !gradf) { free(e4); free(gpack); free(pix); free(gradf); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  for (uint32_t i = 0; i < num_gaussians; ++i) {
+    const tvdb_projected_gaussian_t* g = &gaussians[i]; float* d = &gpack[i*12u];
+    d[0]=g->x; d[1]=g->y; d[2]=g->conic_a; d[3]=g->conic_b; d[4]=g->conic_c; d[5]=g->opacity;
+    d[6]=g->depth; d[7]=g->radius; d[8]=g->feature[0]; d[9]=g->feature[1]; d[10]=g->feature[2]; d[11]=0.0f;
+  }
+  for (size_t p = 0; p < npix; ++p) {
+    float* d = &pix[p * (F + 2u)];
+    for (uint32_t f = 0; f < F; ++f) d[f] = dL_dC[p * F + f];
+    d[F] = fwd->alpha[p];
+    d[F + 1u] = has_dLdA ? dL_dA[p] : 0.0f;
+  }
+  float bg0 = background ? background[0] : 0.0f, bg1 = background ? background[1] : 0.0f, bg2 = background ? background[2] : 0.0f;
+  tvdb_status_t st;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dg=0, de=0, dp=0, dgr=0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto gb_done;
+    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_gaussian_backward"))) { st=err?err->status:TVDB_ERROR_IO; goto gb_done; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dg, gpack, (size_t)num_gaussians*12u*sizeof(float), err)) != TVDB_OK) goto gb_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &de, e4, (ne?ne:1)*4u*sizeof(int32_t), err)) != TVDB_OK) goto gb_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, pix, npix*(F+2u)*sizeof(float), err)) != TVDB_OK) goto gb_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dgr, gradf, (size_t)num_gaussians*gstride*sizeof(float), err)) != TVDB_OK) goto gb_dev;
+    unsigned int uW=W,uH=H,uF=F,uTS=TS,une=(unsigned int)ne,block=64;
+    void* args[] = {&dg,&de,&dp,&dgr,&uW,&uH,&uF,&uTS,&une,&alpha_threshold,&has_dLdA,&bg0,&bg1,&bg2};
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,((unsigned int)npix+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto gb_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto gb_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(gradf, dgr, (size_t)num_gaussians*gstride*sizeof(float)))) { st=err?err->status:TVDB_ERROR_IO; goto gb_dev; }
+    st = TVDB_OK;
+gb_dev:
+    if (dgr) ctx->cuda.cuMemFree(dgr); if (dp) ctx->cuda.cuMemFree(dp); if (de) ctx->cuda.cuMemFree(de); if (dg) ctx->cuda.cuMemFree(dg);
+    goto gb_accum;
+  }
+  {
+    tvdb_vk_buffer bg, be, bp, bgr, bu;
+    if ((st = tvdb_vk_create_buffer(ctx, (size_t)num_gaussians*12u*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bg, err)) != TVDB_OK) goto gb_done;
+    if ((st = tvdb_vk_create_buffer(ctx, (ne?ne:1)*4u*sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &be, err)) != TVDB_OK) goto gbd_g;
+    if ((st = tvdb_vk_create_buffer(ctx, npix*(F+2u)*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bp, err)) != TVDB_OK) goto gbd_e;
+    if ((st = tvdb_vk_create_buffer(ctx, (size_t)num_gaussians*gstride*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bgr, err)) != TVDB_OK) goto gbd_p;
+    if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto gbd_gr;
+    memcpy(bg.mapped, gpack, (size_t)num_gaussians*12u*sizeof(float));
+    if (ne) memcpy(be.mapped, e4, ne*4u*sizeof(int32_t));
+    memcpy(bp.mapped, pix, npix*(F+2u)*sizeof(float));
+    memset(bgr.mapped, 0, (size_t)num_gaussians*gstride*sizeof(float));
+    struct { uint32_t dim[4]; uint32_t num_entries; float alpha_threshold; uint32_t has_dLdA; uint32_t pad; float background[4]; } par;
+    memset(&par, 0, sizeof(par));
+    par.dim[0]=W; par.dim[1]=H; par.dim[2]=F; par.dim[3]=TS; par.num_entries=(uint32_t)ne; par.alpha_threshold=alpha_threshold; par.has_dLdA=(uint32_t)has_dLdA;
+    par.background[0]=bg0; par.background[1]=bg1; par.background[2]=bg2;
+    memcpy(bu.mapped, &par, sizeof(par));
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = kTvdbGpuGaussianBackwardSpv; d.spv_len = kTvdbGpuGaussianBackwardSpv_len; d.descriptor_count = 5;
+    d.buffers[0]=&bg; d.buffers[1]=&be; d.buffers[2]=&bp; d.buffers[3]=&bgr; d.buffers[4]=&bu;
+    for (int i = 0; i < 4; ++i) d.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    d.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    d.group_x = (uint32_t)((npix + 63u) / 64u);
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st == TVDB_OK) memcpy(gradf, bgr.mapped, (size_t)num_gaussians*gstride*sizeof(float));
+    tvdb_vk_destroy_buffer(ctx, &bu);
+gbd_gr: tvdb_vk_destroy_buffer(ctx, &bgr);
+gbd_p: tvdb_vk_destroy_buffer(ctx, &bp);
+gbd_e: tvdb_vk_destroy_buffer(ctx, &be);
+gbd_g: tvdb_vk_destroy_buffer(ctx, &bg);
+  }
+gb_accum:
+  if (st == TVDB_OK) {
+    for (uint32_t i = 0; i < num_gaussians; ++i) {
+      const float* d = &gradf[(size_t)i * gstride];
+      grad_out->grad_x[i] += d[0]; grad_out->grad_y[i] += d[1];
+      grad_out->grad_conic_a[i] += d[2]; grad_out->grad_conic_b[i] += d[3]; grad_out->grad_conic_c[i] += d[4];
+      grad_out->grad_opacity[i] += d[5];
+      for (uint32_t f = 0; f < F; ++f) grad_out->grad_feature[(size_t)i * F + f] += d[6 + f];
+    }
+  }
+gb_done:
+  free(e4); free(gpack); free(pix); free(gradf);
+  return st;
 }

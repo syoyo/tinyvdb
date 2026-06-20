@@ -1479,6 +1479,77 @@ static void test_buffer_interop(tvdb_gpu_context_t* ctx) {
   tvdb_gpu_buffer_destroy(buf);
 }
 
+static void test_gaussian_forward(tvdb_gpu_context_t* ctx) {
+  tvdb_projected_gaussian_t gs[4] = {
+    { 4.0f, 4.0f, 0.20f, 0.02f, 0.18f, 0.85f, 1.0f, 6.0f, {1.0f, 0.2f, 0.1f} },
+    { 8.0f, 6.0f, 0.30f,-0.05f, 0.25f, 0.75f, 1.5f, 5.0f, {0.1f, 0.9f, 0.2f} },
+    {10.0f,10.0f, 0.15f, 0.00f, 0.15f, 0.65f, 2.0f, 7.0f, {0.2f, 0.3f, 0.95f} },
+    { 6.0f,11.0f, 0.40f, 0.10f, 0.30f, 0.55f, 2.5f, 4.0f, {0.5f, 0.5f, 0.5f} },
+  };
+  const uint32_t W = 16, H = 16, F = 3;
+  float bg[3] = {0.0f, 0.0f, 0.0f};
+  tvdb_raster_output_t cpu, gpu;
+  tvdb_error_t cerr, err;
+  memset(&cerr, 0, sizeof(cerr)); memset(&err, 0, sizeof(err));
+  EXPECT(tvdb_gaussian_rasterize_forward(gs, 4, W, H, F, bg, 0.005f, &cpu, &cerr) == TVDB_OK);
+  if (tvdb_gpu_gaussian_rasterize_forward(ctx, gs, 4, W, H, F, bg, 0.005f, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu gaussian forward failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu.width == cpu.width && gpu.height == cpu.height && gpu.num_features == cpu.num_features);
+    size_t npix = (size_t)W * H, nonzero = 0;
+    for (size_t i = 0; i < npix * F; ++i) EXPECT_NEAR(gpu.image[i], cpu.image[i], 2e-5f);
+    for (size_t p = 0; p < npix; ++p) {
+      EXPECT_NEAR(gpu.alpha[p], cpu.alpha[p], 2e-5f);
+      if (cpu.alpha[p] > 0.0f) { EXPECT(gpu.last_ids[p] == cpu.last_ids[p]); ++nonzero; }
+    }
+    EXPECT(nonzero > 0);  // gaussians actually rendered
+  }
+  tvdb_raster_output_destroy(&cpu); tvdb_raster_output_destroy(&gpu);
+}
+
+static void test_gaussian_backward_gpu(tvdb_gpu_context_t* ctx) {
+  tvdb_projected_gaussian_t gs[4] = {
+    { 4.0f, 4.0f, 0.20f, 0.02f, 0.18f, 0.85f, 1.0f, 6.0f, {1.0f, 0.2f, 0.1f} },
+    { 8.0f, 6.0f, 0.30f,-0.05f, 0.25f, 0.75f, 1.5f, 5.0f, {0.1f, 0.9f, 0.2f} },
+    {10.0f,10.0f, 0.15f, 0.00f, 0.15f, 0.65f, 2.0f, 7.0f, {0.2f, 0.3f, 0.95f} },
+    { 6.0f,11.0f, 0.40f, 0.10f, 0.30f, 0.55f, 2.5f, 4.0f, {0.5f, 0.5f, 0.5f} },
+  };
+  const uint32_t W = 16, H = 16, F = 3, N = 4;
+  float bg[3] = {0.0f, 0.0f, 0.0f};
+  tvdb_raster_output_t fwd;
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  EXPECT(tvdb_gaussian_rasterize_forward(gs, N, W, H, F, bg, 0.005f, &fwd, &err) == TVDB_OK);
+  // Loss L = Σ||C||² + ΣA²  ->  dL/dC = 2C, dL/dA = 2A.
+  size_t npix = (size_t)W * H;
+  float* dC = (float*)malloc(npix * F * sizeof(float));
+  float* dA = (float*)malloc(npix * sizeof(float));
+  for (size_t i = 0; i < npix * F; ++i) dC[i] = 2.0f * fwd.image[i];
+  for (size_t p = 0; p < npix; ++p) dA[p] = 2.0f * fwd.alpha[p];
+
+  tvdb_gaussian_grad_t gc, gg;
+  EXPECT(tvdb_gaussian_grad_init(&gc, N, F) == TVDB_OK);
+  EXPECT(tvdb_gaussian_grad_init(&gg, N, F) == TVDB_OK);
+  EXPECT(tvdb_gaussian_rasterize_backward(gs, N, &fwd, dC, dA, bg, 0.005f, &gc, &err) == TVDB_OK);
+  if (tvdb_gpu_gaussian_rasterize_backward(ctx, gs, N, &fwd, dC, dA, bg, 0.005f, &gg, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu gaussian backward failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    #define GCMP(a, b) EXPECT_NEAR((a), (b), fabsf(b) * 2e-3f + 2e-4f)
+    for (uint32_t i = 0; i < N; ++i) {
+      GCMP(gg.grad_x[i], gc.grad_x[i]); GCMP(gg.grad_y[i], gc.grad_y[i]);
+      GCMP(gg.grad_conic_a[i], gc.grad_conic_a[i]); GCMP(gg.grad_conic_b[i], gc.grad_conic_b[i]); GCMP(gg.grad_conic_c[i], gc.grad_conic_c[i]);
+      GCMP(gg.grad_opacity[i], gc.grad_opacity[i]);
+      for (uint32_t f = 0; f < F; ++f) GCMP(gg.grad_feature[i*F+f], gc.grad_feature[i*F+f]);
+    }
+    #undef GCMP
+  }
+  tvdb_gaussian_grad_destroy(&gc); tvdb_gaussian_grad_destroy(&gg);
+  tvdb_raster_output_destroy(&fwd);
+  free(dC); free(dA);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1523,6 +1594,8 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_sparse_conv_strided(ctx);
   test_conv_transpose(ctx);
   test_buffer_interop(ctx);
+  test_gaussian_forward(ctx);
+  test_gaussian_backward_gpu(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }
