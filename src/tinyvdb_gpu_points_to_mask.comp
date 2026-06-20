@@ -1,0 +1,24 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) buffer MaskBuffer { float mask[]; };
+layout(std430, set = 0, binding = 1) readonly buffer PointBuffer { vec4 points[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;   // nx, ny, nz, unused
+  vec4 grid;   // ox, oy, oz, voxel_size
+  uint count;
+} u;
+
+// Rasterize a point cloud into a dense occupancy mask: mark the voxel
+// containing each point (ijk = floor((p-origin)/voxel_size)). One thread per
+// point; writes are idempotent (always 1.0), so concurrent writes are benign.
+void main() {
+  uint p = gl_GlobalInvocationID.x;
+  if (p >= u.count) return;
+  vec3 pos = points[p].xyz;
+  float vs = u.grid.w;
+  int ix = int(floor((pos.x - u.grid.x) / vs));
+  int iy = int(floor((pos.y - u.grid.y) / vs));
+  int iz = int(floor((pos.z - u.grid.z) / vs));
+  if (ix < 0 || ix >= u.dim.x || iy < 0 || iy >= u.dim.y || iz < 0 || iz >= u.dim.z) return;
+  mask[(iz * u.dim.y + iy) * u.dim.x + ix] = 1.0;
+}

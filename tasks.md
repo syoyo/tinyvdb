@@ -220,9 +220,12 @@ each theme. Notes point at the nearest existing primitive to reuse.
       configurations (indices 160-255 implicitly zero-filled), so a faithful
       GPU port can't match the CPU for general SDFs. Completing that CPU table
       is a prerequisite.
-- [ ] **P1: GPU grid construction.** Build sparse grids on GPU from points,
-      voxel/ijk lists, dense masks, and triangle meshes, taking inspiration from
-      NanoVDB `pointsToGrid`/`voxelsToGrid` and fvdb GridBatch factories.
+- [~] **P1: GPU grid construction.** `tvdb_gpu_points_to_mask` rasterizes a
+      point cloud into a dense occupancy grid on Vulkan and CUDA/NVRTC (one
+      thread per point, idempotent writes); covered by `test_gpu_backend`
+      (`test_points_to_mask`). *Still open:* sparse-grid construction (unique
+      voxel/ijk coords, mesh voxelization) — needs a GPU stream-compaction /
+      dedup primitive.
 - [ ] **P1: sparse convolution upgrades.** Add transposed convolution,
       arbitrary stride, output-grid builders, and a faster near-dense backend
       beyond the current same-topology sparse conv3d.

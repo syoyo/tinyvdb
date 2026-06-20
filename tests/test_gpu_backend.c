@@ -1031,6 +1031,45 @@ static void test_splat(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&cpu); tvdb_dense_grid_free(&gpu);
 }
 
+static void test_points_to_mask(tvdb_gpu_context_t* ctx) {
+  const int N = 16;
+  tvdb_dense_grid mask;
+  tvdb_dense_grid_init(&mask, N, N, N);
+  mask.voxel_size = 0.1f; mask.ox = mask.oy = mask.oz = -0.8f;
+  size_t nvox = (size_t)N * N * N;
+
+  const size_t NP = 300;
+  float* flat = (float*)malloc(NP * 3 * sizeof(float));
+  unsigned int s = 777u;
+  for (size_t i = 0; i < NP; ++i) {
+    s = s * 1664525u + 1013904223u; float a = (float)(s >> 8) / 16777216.0f;
+    s = s * 1664525u + 1013904223u; float b = (float)(s >> 8) / 16777216.0f;
+    s = s * 1664525u + 1013904223u; float c = (float)(s >> 8) / 16777216.0f;
+    flat[3*i+0] = -0.7f + a * 1.4f; flat[3*i+1] = -0.7f + b * 1.4f; flat[3*i+2] = -0.7f + c * 1.4f;
+  }
+  // CPU reference occupancy.
+  float* ref = (float*)calloc(nvox, sizeof(float));
+  for (size_t i = 0; i < NP; ++i) {
+    int ix = (int)floorf((flat[3*i+0] - mask.ox) / mask.voxel_size);
+    int iy = (int)floorf((flat[3*i+1] - mask.oy) / mask.voxel_size);
+    int iz = (int)floorf((flat[3*i+2] - mask.oz) / mask.voxel_size);
+    if (ix>=0&&ix<N&&iy>=0&&iy<N&&iz>=0&&iz<N) ref[(size_t)(iz*N+iy)*N+ix] = 1.0f;
+  }
+
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_points_to_mask(ctx, &mask, flat, NP, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu points_to_mask failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    size_t occ = 0;
+    for (size_t i = 0; i < nvox; ++i) { EXPECT(mask.data[i] == ref[i]); if (ref[i] > 0.5f) ++occ; }
+    EXPECT(occ > 0);
+  }
+  free(flat); free(ref);
+  tvdb_dense_grid_free(&mask);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1063,6 +1102,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_stats(ctx);
   test_flood(ctx);
   test_splat(ctx);
+  test_points_to_mask(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

@@ -323,6 +323,13 @@ tvdb_status_t tvdb_gpu_splat_trilinear_dense(tvdb_gpu_context_t* ctx, tvdb_dense
                                              const float* points, const float* vals, size_t n,
                                              float* weights, tvdb_error_t* err);
 
+// Rasterize a point cloud into a dense occupancy mask (grid construction):
+// marks `mask->data[ijk] = 1` for the voxel containing each point, using
+// `mask`'s dims/origin/voxel_size. `mask` must be allocated (and zeroed by the
+// caller for a clean mask). `points` is `n` xyz triples.
+tvdb_status_t tvdb_gpu_points_to_mask(tvdb_gpu_context_t* ctx, tvdb_dense_grid* mask,
+                                      const float* points, size_t n, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif
