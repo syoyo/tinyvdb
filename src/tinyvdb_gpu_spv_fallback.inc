@@ -54,3 +54,7 @@ static const uint8_t kTvdbGpuSparseMarkSpv[] = {0};
 static const uint32_t kTvdbGpuSparseMarkSpv_len = 0;
 static const uint8_t kTvdbGpuSparseErodeSpv[] = {0};
 static const uint32_t kTvdbGpuSparseErodeSpv_len = 0;
+static const uint8_t kTvdbGpuSparseDilateScatterSpv[] = {0};
+static const uint32_t kTvdbGpuSparseDilateScatterSpv_len = 0;
+static const uint8_t kTvdbGpuSparseFinalizeSpv[] = {0};
+static const uint32_t kTvdbGpuSparseFinalizeSpv_len = 0;

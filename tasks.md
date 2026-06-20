@@ -192,10 +192,13 @@ each theme. Notes point at the nearest existing primitive to reuse.
       can stay on device.
 - [~] **P0: GPU sparse topology ops.** Dense `tvdb_gpu_dilate`/`tvdb_gpu_erode`
       (6-neighbor min/max morphology), `tvdb_gpu_prune`, `tvdb_gpu_coarsen`
-      (block average), and `tvdb_gpu_refine` (trilinear upsample) on Vulkan and
-      CUDA/NVRTC, mirroring `tinyvdb_ops.c`/`tinyvdb_topology.c`. Covered by
-      `test_gpu_backend` (`test_topology`). *Still open:* sparse topology-growth
-      dilate/erode and merge (output-size-unknown → needs compaction).
+      (block average), and `tvdb_gpu_refine` (trilinear upsample), plus sparse
+      `tvdb_gpu_dilate_sparse` (topology growth, min-pool, CAS atomic-min) and
+      `tvdb_gpu_erode_sparse` (topology shrink, max-pool) built on a dense
+      bbox-local occupancy + atomic-counter compaction primitive — all on Vulkan
+      and CUDA/NVRTC, mirroring `tinyvdb_ops.c`/`tinyvdb_topology.c`/
+      `tinyvdb_sparse.c`. Covered by `test_gpu_backend` (`test_topology`,
+      `test_sparse_erode`, `test_sparse_dilate`). *Still open:* sparse merge.
 - [~] **P0: GPU spatial queries.** `tvdb_gpu_coords_in_grid`,
       `tvdb_gpu_points_in_grid`, `tvdb_gpu_ijk_to_index`, and
       `tvdb_gpu_neighbor_counts` (6/26) over a flat active-coord set, on Vulkan

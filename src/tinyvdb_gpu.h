@@ -347,6 +347,16 @@ tvdb_status_t tvdb_gpu_voxelize_points(tvdb_gpu_context_t* ctx, const float* poi
 tvdb_status_t tvdb_gpu_erode_sparse(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
                                     int iterations, tvdb_sparse_grid* out, tvdb_error_t* err);
 
+// Sparse dilate (parallels tvdb_dilate_sparse): grow the active set by the 6
+// face neighbors, min-pooling each active voxel's value into itself and its
+// neighbors (inactive neighbors fall back to `background`); `iterations` steps.
+// `out` is filled (set semantics). Uses a dense bbox-local occupancy + value
+// grid (CAS atomic-min) + atomic-counter compaction; the dilated set's ijk
+// bbox volume must fit in VRAM.
+tvdb_status_t tvdb_gpu_dilate_sparse(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
+                                     float background, int iterations,
+                                     tvdb_sparse_grid* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

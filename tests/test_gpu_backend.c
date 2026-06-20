@@ -1166,6 +1166,40 @@ static void test_sparse_erode(tvdb_gpu_context_t* ctx) {
   tvdb_sparse_grid_free(&in); tvdb_sparse_grid_free(&cpu); tvdb_sparse_grid_free(&gpu);
 }
 
+static void test_sparse_dilate(tvdb_gpu_context_t* ctx) {
+  // A 3x3x3 block with varied values; dilate 1 iter grows by the 6-neighborhood
+  // with min-pooled values (inactive neighbors fall back to background).
+  tvdb_sparse_grid in, cpu, gpu;
+  tvdb_sparse_grid_init(&in); tvdb_sparse_grid_init(&cpu); tvdb_sparse_grid_init(&gpu);
+  EXPECT(tvdb_sparse_grid_reserve(&in, 27));
+  size_t k = 0;
+  for (int z = 0; z < 3; ++z) for (int y = 0; y < 3; ++y) for (int x = 0; x < 3; ++x) {
+    in.coords[k].x = x; in.coords[k].y = y; in.coords[k].z = z;
+    in.values[k] = -0.1f * (float)(x + y + z) - 0.2f; ++k;
+  }
+  in.count = 27;
+  const float background = 1.0f;
+
+  EXPECT(tvdb_dilate_sparse(&in, background, 1, &cpu));
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_dilate_sparse(ctx, &in, background, 1, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu dilate_sparse failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu.count == cpu.count);
+    EXPECT(cpu.count > 27);  // grew
+    if (gpu.count == cpu.count && cpu.count > 0) {
+      kv_t* kc = (kv_t*)malloc(cpu.count * sizeof(kv_t));
+      kv_t* kg = (kv_t*)malloc(gpu.count * sizeof(kv_t));
+      build_kv(&cpu, kc); build_kv(&gpu, kg);
+      for (size_t i = 0; i < cpu.count; ++i) { EXPECT(kc[i].key == kg[i].key); EXPECT_NEAR(kc[i].val, kg[i].val, 1e-6f); }
+      free(kc); free(kg);
+    }
+  }
+  tvdb_sparse_grid_free(&in); tvdb_sparse_grid_free(&cpu); tvdb_sparse_grid_free(&gpu);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1201,6 +1235,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_points_to_mask(ctx);
   test_voxelize(ctx);
   test_sparse_erode(ctx);
+  test_sparse_dilate(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

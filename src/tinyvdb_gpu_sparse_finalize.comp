@@ -1,0 +1,32 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer ValBuffer { float val[]; };
+layout(std430, set = 0, binding = 1) readonly buffer OccBuffer { uint outocc[]; };
+layout(std430, set = 0, binding = 2) buffer CounterBuffer { uint counter[]; };
+layout(std430, set = 0, binding = 3) buffer OutBuffer { int outd[]; };  // 4 ints/voxel
+layout(std140, set = 0, binding = 4) uniform Params {
+  ivec4 dims;
+  ivec4 bbmin;
+  uint cap;
+} u;
+
+// Compact output-occupied voxels (with their folded value) into a coord+value
+// list via an atomic counter.
+void main() {
+  uint v = gl_GlobalInvocationID.x;
+  int nx = u.dims.x, ny = u.dims.y, nz = u.dims.z;
+  uint total = uint(nx * ny * nz);
+  if (v >= total) return;
+  if (outocc[v] == 0u) return;
+  int lz = int(v) / (nx * ny);
+  int rem = int(v) - lz * nx * ny;
+  int ly = rem / nx;
+  int lx = rem - ly * nx;
+  uint slot = atomicAdd(counter[0], 1u);
+  if (slot < u.cap) {
+    outd[4u*slot + 0u] = lx + u.bbmin.x;
+    outd[4u*slot + 1u] = ly + u.bbmin.y;
+    outd[4u*slot + 2u] = lz + u.bbmin.z;
+    outd[4u*slot + 3u] = floatBitsToInt(val[v]);
+  }
+}
