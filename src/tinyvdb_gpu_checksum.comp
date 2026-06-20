@@ -1,0 +1,24 @@
+#version 450
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer { uint data[]; };   // value bits
+layout(std430, set = 0, binding = 1) buffer PartialBuffer { uint partials[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  uint count;
+  uint nthreads;
+} u;
+
+// Order-independent additive checksum: sum of a per-element mix of (value bits,
+// index). Commutative add makes it safe to fold a grid-stride slice per thread
+// and sum the partials on the host (wrapping uint32).
+void main() {
+  uint t = gl_GlobalInvocationID.x;
+  if (t >= u.nthreads) return;
+  uint s = 0u;
+  for (uint i = t; i < u.count; i += u.nthreads) {
+    uint h = data[i] ^ (i * 2654435761u);
+    h *= 2654435761u;
+    h ^= h >> 15;
+    s += h;
+  }
+  partials[t] = s;
+}

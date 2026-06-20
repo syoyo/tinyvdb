@@ -1,0 +1,86 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Per-Gaussian inputs are interleaved into one buffer (stride 14 floats) to stay
+// within the 5-binding dispatch limit: [0..2] mean, [3..6] quat(xyzw),
+// [7..9] log_scale, [10] logit_opacity, [11..13] sh DC color.
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer { float gin[]; };
+// Output is the flat tvdb_projected_gaussian_t (11 floats): x, y, conic_a,
+// conic_b, conic_c, opacity, depth, radius, feature[3].
+layout(std430, set = 0, binding = 1) buffer OutBuffer { float gout[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  mat4 extr;        // column-major, matches tvdb__mat4_mul_vec4 indexing
+  vec4 fxfycxcy;    // fx, fy, cx, cy
+  vec4 nfe;         // near, far, eps2d, unused
+  uint count;
+} u;
+
+// Bit-trick approximate sqrt, identical to the CPU tvdb__fast_sqrt so radius
+// matches exactly.
+float fast_sqrt(float x) {
+  uint i = floatBitsToUint(x);
+  i = (i >> 1) + 0x1fbc0000u;
+  return uintBitsToFloat(i);
+}
+
+void main() {
+  uint g = gl_GlobalInvocationID.x;
+  if (g >= u.count) return;
+  uint ib = g * 14u;
+  uint ob = g * 11u;
+  vec3 mean = vec3(gin[ib+0u], gin[ib+1u], gin[ib+2u]);
+  float qx = gin[ib+3u], qy = gin[ib+4u], qz = gin[ib+5u], qw = gin[ib+6u];
+  vec3 ls = vec3(gin[ib+7u], gin[ib+8u], gin[ib+9u]);
+  float opac = gin[ib+10u];
+  vec3 shdc = vec3(gin[ib+11u], gin[ib+12u], gin[ib+13u]);
+
+  float near = u.nfe.x, far = u.nfe.y, eps2d = u.nfe.z;
+  vec4 proj = u.extr * vec4(mean, 1.0);
+  float depth = proj.z;
+  if (depth <= near || depth >= far) {
+    for (uint k = 0u; k < 11u; ++k) gout[ob + k] = 0.0;
+    return;
+  }
+  float cam_x = proj.x / proj.w;
+  float cam_y = proj.y / proj.w;
+  float inv_depth = 1.0 / depth;
+  float fx = u.fxfycxcy.x, fy = u.fxfycxcy.y, cx = u.fxfycxcy.z, cy = u.fxfycxcy.w;
+  float x = fx * cam_x * inv_depth + cx;
+  float y = fy * cam_y * inv_depth + cy;
+
+  float sx = exp2(ls.x), sy = exp2(ls.y), sz = exp2(ls.z);
+  float sqx = sx*sx, sqy = sy*sy, sqz = sz*sz;
+  float R0 = 1.0 - 2.0*(qy*qy + qz*qz), R1 = 2.0*(qx*qy - qw*qz), R2 = 2.0*(qx*qz + qw*qy);
+  float R3 = 2.0*(qx*qy + qw*qz), R4 = 1.0 - 2.0*(qx*qx + qz*qz), R5 = 2.0*(qy*qz - qw*qx);
+  float R6 = 2.0*(qx*qz - qw*qy), R7 = 2.0*(qy*qz + qw*qx), R8 = 1.0 - 2.0*(qx*qx + qy*qy);
+  float rot00 = R0*R0*sqx + R1*R1*sqy + R2*R2*sqz;   // covar_rot[0]
+  float rot01 = R0*R3*sqx + R1*R4*sqy + R2*R5*sqz;   // covar_rot[1] == [3]
+  float rot02 = R0*R6*sqx + R1*R7*sqy + R2*R8*sqz;   // covar_rot[2]
+  float rot12 = R3*R6*sqx + R4*R7*sqy + R5*R8*sqz;   // covar_rot[5]
+
+  float inv_fx = 1.0 / fx, inv_fy = 1.0 / fy;
+  float d_x = x - cx, d_y = y - cy;
+  float c2d0 = inv_fx*inv_fx*rot00 + d_x*d_x*inv_fx*inv_fx*inv_depth*inv_depth*rot02;
+  float c2d1 = d_x*d_y*inv_fx*inv_fy*inv_depth*inv_depth*rot02;
+  float c2d2 = inv_fy*inv_fy*rot01 + d_y*d_y*inv_fy*inv_fy*inv_depth*inv_depth*rot12;
+  c2d0 += eps2d; c2d2 += eps2d;
+
+  float conic_a, conic_b, conic_c;
+  float det = c2d0*c2d2 - c2d1*c2d1;
+  if (det > 1e-10) {
+    float inv_det = 1.0 / det;
+    conic_a = c2d2 * inv_det;
+    conic_b = -c2d1 * inv_det;
+    conic_c = c2d0 * inv_det;
+  } else {
+    conic_a = 1.0; conic_b = 0.0; conic_c = 1.0;
+  }
+  float eig_max = 0.5 * (conic_a + conic_c +
+      fast_sqrt((conic_a - conic_c)*(conic_a - conic_c) + 4.0*conic_b*conic_b));
+  float radius = (eig_max > 1e-10) ? 3.0 * fast_sqrt(1.0 / eig_max) : 0.0;
+  float opacity = 1.0 / (1.0 + exp2(-opac));
+
+  gout[ob+0u] = x;       gout[ob+1u] = y;
+  gout[ob+2u] = conic_a; gout[ob+3u] = conic_b; gout[ob+4u] = conic_c;
+  gout[ob+5u] = opacity; gout[ob+6u] = depth;   gout[ob+7u] = radius;
+  gout[ob+8u] = shdc.x;  gout[ob+9u] = shdc.y;  gout[ob+10u] = shdc.z;
+}

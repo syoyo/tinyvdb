@@ -1,0 +1,41 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer GridBuffer { float grid[]; };
+layout(std430, set = 0, binding = 1) readonly buffer PointsBuffer { vec4 pts[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer { float out_values[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;
+  vec4 origin_voxel;
+  uint count;
+} u;
+
+float fetch(int x, int y, int z) {
+  x = clamp(x, 0, u.dim.x - 1);
+  y = clamp(y, 0, u.dim.y - 1);
+  z = clamp(z, 0, u.dim.z - 1);
+  return grid[x + u.dim.x * (y + u.dim.y * z)];
+}
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x;
+  if (idx >= u.count) return;
+  vec3 p = pts[idx].xyz;
+  vec3 f = (p - u.origin_voxel.xyz) / u.origin_voxel.w - vec3(0.5);
+  ivec3 i0 = ivec3(floor(f));
+  vec3 t = f - vec3(i0);
+  float c000 = fetch(i0.x,     i0.y,     i0.z);
+  float c100 = fetch(i0.x + 1, i0.y,     i0.z);
+  float c010 = fetch(i0.x,     i0.y + 1, i0.z);
+  float c110 = fetch(i0.x + 1, i0.y + 1, i0.z);
+  float c001 = fetch(i0.x,     i0.y,     i0.z + 1);
+  float c101 = fetch(i0.x + 1, i0.y,     i0.z + 1);
+  float c011 = fetch(i0.x,     i0.y + 1, i0.z + 1);
+  float c111 = fetch(i0.x + 1, i0.y + 1, i0.z + 1);
+  float c00 = mix(c000, c100, t.x);
+  float c10 = mix(c010, c110, t.x);
+  float c01 = mix(c001, c101, t.x);
+  float c11 = mix(c011, c111, t.x);
+  float c0 = mix(c00, c10, t.y);
+  float c1 = mix(c01, c11, t.y);
+  out_values[idx] = mix(c0, c1, t.z);
+}

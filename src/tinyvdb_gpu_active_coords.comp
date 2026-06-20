@@ -1,0 +1,34 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer DataBuffer { float data[]; };
+layout(std430, set = 0, binding = 1) buffer CounterBuffer { uint counter[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer { int outd[]; };  // 4 ints/voxel
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;       // nx, ny, nz, unused
+  float background;
+  float tolerance;
+  uint cap;
+} u;
+
+// Extract voxels differing from background into a sparse coord+value list
+// (matches tvdb_active_grid_coords / tvdb_dense_to_sparse). Compaction via an
+// atomic counter; output order is arbitrary (set semantics).
+void main() {
+  uint v = gl_GlobalInvocationID.x;
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  uint total = uint(nx * ny * nz);
+  if (v >= total) return;
+  float val = data[v];
+  if (abs(val - u.background) <= u.tolerance) return;
+  int iz = int(v) / (nx * ny);
+  int rem = int(v) - iz * nx * ny;
+  int iy = rem / nx;
+  int ix = rem - iy * nx;
+  uint slot = atomicAdd(counter[0], 1u);
+  if (slot < u.cap) {
+    outd[4u*slot + 0u] = ix;
+    outd[4u*slot + 1u] = iy;
+    outd[4u*slot + 2u] = iz;
+    outd[4u*slot + 3u] = floatBitsToInt(val);
+  }
+}

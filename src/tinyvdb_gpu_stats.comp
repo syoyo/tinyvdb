@@ -1,0 +1,26 @@
+#version 450
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer { float data[]; };
+// One vec4 partial per thread: (min, max, sum, sumsq).
+layout(std430, set = 0, binding = 1) buffer PartialBuffer { vec4 partials[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  uint count;
+  uint nthreads;
+} u;
+
+// Grid-stride partial reduction: each thread folds a strided slice into a
+// (min,max,sum,sumsq) partial; the host combines the `nthreads` partials.
+void main() {
+  uint t = gl_GlobalInvocationID.x;
+  if (t >= u.nthreads) return;
+  float mn = 0.0, mx = 0.0, sum = 0.0, sumsq = 0.0;
+  bool any = false;
+  for (uint i = t; i < u.count; i += u.nthreads) {
+    float v = data[i];
+    if (!any) { mn = v; mx = v; any = true; }
+    else { mn = min(mn, v); mx = max(mx, v); }
+    sum += v;
+    sumsq += v * v;
+  }
+  partials[t] = vec4(mn, mx, sum, sumsq);
+}

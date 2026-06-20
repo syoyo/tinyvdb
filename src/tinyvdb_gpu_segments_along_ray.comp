@@ -1,0 +1,73 @@
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer GridBuffer { float grid_data[]; };
+// Two vec4 per ray: (ox,oy,oz,tmin), (dx,dy,dz,tmax).
+layout(std430, set = 0, binding = 1) readonly buffer RayBuffer { vec4 rays[]; };
+layout(std430, set = 0, binding = 2) buffer PairBuffer { float out_pairs[]; };
+layout(std430, set = 0, binding = 3) buffer CountBuffer { int out_counts[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  ivec4 dim;        // nx, ny, nz, unused
+  vec4 grid;        // ox, oy, oz, voxel_size
+  uint n_rays;
+  uint cap;
+  uint step_count;
+  float isovalue;
+} u;
+
+float fetch(int x, int y, int z) {
+  x = clamp(x, 0, u.dim.x - 1);
+  y = clamp(y, 0, u.dim.y - 1);
+  z = clamp(z, 0, u.dim.z - 1);
+  return grid_data[(z * u.dim.y + y) * u.dim.x + x];
+}
+float sample_dense(vec3 w) {
+  float vs = u.grid.w;
+  float fx = (w.x - u.grid.x) / vs - 0.5;
+  float fy = (w.y - u.grid.y) / vs - 0.5;
+  float fz = (w.z - u.grid.z) / vs - 0.5;
+  int ix = int(floor(fx)), iy = int(floor(fy)), iz = int(floor(fz));
+  float tx = fx - float(ix), ty = fy - float(iy), tz = fz - float(iz);
+  float c00 = mix(fetch(ix,iy,iz),     fetch(ix+1,iy,iz),     tx);
+  float c10 = mix(fetch(ix,iy+1,iz),   fetch(ix+1,iy+1,iz),   tx);
+  float c01 = mix(fetch(ix,iy,iz+1),   fetch(ix+1,iy,iz+1),   tx);
+  float c11 = mix(fetch(ix,iy+1,iz+1), fetch(ix+1,iy+1,iz+1), tx);
+  return mix(mix(c00, c10, ty), mix(c01, c11, ty), tz);
+}
+
+// SDF-zero crossings -> (entry,exit) t-pairs per inside run
+// (matches tvdb_segments_along_ray). One thread per ray.
+void main() {
+  uint ri = gl_GlobalInvocationID.x;
+  if (ri >= u.n_rays) return;
+  vec4 r0 = rays[2 * ri], r1 = rays[2 * ri + 1];
+  vec3 o = r0.xyz, dir = r1.xyz;
+  float tmin = r0.w, tmax = r1.w;
+
+  uint pairs = 0;
+  bool inside = false;
+  float t_enter = 0.0;
+  float t_prev = tmin;
+  float v_prev = sample_dense(o + tmin * dir) - u.isovalue;
+  if (v_prev < 0.0) { inside = true; t_enter = tmin; }
+
+  for (uint i = 1u; i < u.step_count; ++i) {
+    float a = float(i) / float(u.step_count - 1u);
+    float t = tmin + (tmax - tmin) * a;
+    float v = sample_dense(o + t * dir) - u.isovalue;
+    if (v_prev * v < 0.0) {
+      float frac = v_prev / (v_prev - v);
+      float t_cross = t_prev + frac * (t - t_prev);
+      if (!inside) { t_enter = t_cross; inside = true; }
+      else {
+        if (pairs < u.cap) { out_pairs[2u*(ri*u.cap+pairs)+0u] = t_enter; out_pairs[2u*(ri*u.cap+pairs)+1u] = t_cross; }
+        ++pairs; inside = false;
+      }
+    }
+    v_prev = v; t_prev = t;
+  }
+  if (inside) {
+    if (pairs < u.cap) { out_pairs[2u*(ri*u.cap+pairs)+0u] = t_enter; out_pairs[2u*(ri*u.cap+pairs)+1u] = tmax; }
+    ++pairs;
+  }
+  out_counts[ri] = int(pairs);
+}

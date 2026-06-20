@@ -58,6 +58,82 @@ bool tvdb_coarsen_grid(const tvdb_dense_grid* in,
   return true;
 }
 
+// Border-clamped voxel read (for nearest / quadratic stencils).
+static inline float tvdb_topo_get(const tvdb_dense_grid* g, int ix, int iy, int iz) {
+  if (ix < 0) ix = 0; else if (ix >= g->nx) ix = g->nx - 1;
+  if (iy < 0) iy = 0; else if (iy >= g->ny) iy = g->ny - 1;
+  if (iz < 0) iz = 0; else if (iz >= g->nz) iz = g->nz - 1;
+  return g->data[((size_t)iz * g->ny + iy) * g->nx + ix];
+}
+
+// 3-point parabola through (val[0], val[1], val[2]) at offsets (-1,0,1),
+// evaluated at `w` in [0,1) relative to val[1] (OpenVDB QuadraticSampler).
+static inline float tvdb_quad1(const float* val, float w) {
+  float a = 0.5f * (val[0] + val[2]) - val[1];
+  float b = 0.5f * (val[2] - val[0]);
+  float c = val[1];
+  return w * (w * a + b) + c;
+}
+
+static float tvdb_sample_nearest_world(const tvdb_dense_grid* g, float wx, float wy, float wz) {
+  int ix = (int)lroundf((wx - g->ox) / g->voxel_size - 0.5f);
+  int iy = (int)lroundf((wy - g->oy) / g->voxel_size - 0.5f);
+  int iz = (int)lroundf((wz - g->oz) / g->voxel_size - 0.5f);
+  return tvdb_topo_get(g, ix, iy, iz);
+}
+
+static float tvdb_sample_triquadratic_world(const tvdb_dense_grid* g, float wx, float wy, float wz) {
+  float cx = (wx - g->ox) / g->voxel_size - 0.5f;   // voxel-index coordinate
+  float cy = (wy - g->oy) / g->voxel_size - 0.5f;
+  float cz = (wz - g->oz) / g->voxel_size - 0.5f;
+  int ix = (int)floorf(cx), iy = (int)floorf(cy), iz = (int)floorf(cz);
+  float u = cx - ix, v = cy - iy, w = cz - iz;
+  float vx[3];
+  for (int dx = 0; dx < 3; ++dx) {
+    float vy[3];
+    for (int dy = 0; dy < 3; ++dy) {
+      float vz[3];
+      for (int dz = 0; dz < 3; ++dz)
+        vz[dz] = tvdb_topo_get(g, ix - 1 + dx, iy - 1 + dy, iz - 1 + dz);
+      vy[dy] = tvdb_quad1(vz, w);
+    }
+    vx[dx] = tvdb_quad1(vy, v);
+  }
+  return tvdb_quad1(vx, u);
+}
+
+bool tvdb_resample_grid(const tvdb_dense_grid* in,
+                        float voxel_size,
+                        int order,
+                        tvdb_dense_grid* out,
+                        tvdb_arena_allocator_t* arena) {
+  if (!in || !in->data || !out || voxel_size <= 0.0f) return false;
+  if (order < 0 || order > 2) return false;
+  // Preserve the world AABB: out spans [origin, origin + dim_in*vs_in].
+  int nx = (int)(in->nx * in->voxel_size / voxel_size + 0.5f);
+  int ny = (int)(in->ny * in->voxel_size / voxel_size + 0.5f);
+  int nz = (int)(in->nz * in->voxel_size / voxel_size + 0.5f);
+  if (nx < 1) nx = 1; if (ny < 1) ny = 1; if (nz < 1) nz = 1;
+  tvdb_init_grid_buffer(out, nx, ny, nz, voxel_size, in->ox, in->oy, in->oz, arena);
+  if (!out->data) return false;
+
+  for (int iz = 0; iz < nz; ++iz) {
+    float wz = out->oz + ((float)iz + 0.5f) * voxel_size;
+    for (int iy = 0; iy < ny; ++iy) {
+      float wy = out->oy + ((float)iy + 0.5f) * voxel_size;
+      for (int ix = 0; ix < nx; ++ix) {
+        float wx = out->ox + ((float)ix + 0.5f) * voxel_size;
+        float val;
+        if (order == 0)      val = tvdb_sample_nearest_world(in, wx, wy, wz);
+        else if (order == 1) val = tvdb_sample_trilinear_dense(in, wx, wy, wz);
+        else                 val = tvdb_sample_triquadratic_world(in, wx, wy, wz);
+        out->data[tvdb_idx(out, ix, iy, iz)] = val;
+      }
+    }
+  }
+  return true;
+}
+
 bool tvdb_refine_grid(const tvdb_dense_grid* in,
                       int factor,
                       tvdb_dense_grid* out,

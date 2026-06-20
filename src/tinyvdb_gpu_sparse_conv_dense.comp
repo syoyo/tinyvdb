@@ -1,0 +1,44 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Near-dense sparse conv3d: same-topology convolution where each tap is looked
+// up in O(1) via a dense bbox-local index grid (built by sparse_index_scatter),
+// instead of the brute-force O(active) scan. Neighbors outside the bbox cannot
+// be active, so they take the pad value -- identical result to the scan path.
+layout(std430, set = 0, binding = 0) readonly buffer Coords { ivec4 coords[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Values { float values[]; };
+layout(std430, set = 0, binding = 2) readonly buffer Kernel { float kern[]; };
+layout(std430, set = 0, binding = 3) buffer Out { float out_values[]; };
+layout(std430, set = 0, binding = 4) readonly buffer Idx { int idx_grid[]; };
+layout(std140, set = 0, binding = 5) uniform Params {
+  ivec4 bbmin;   // bbox min ijk
+  ivec4 dims;    // bbox dims (dx, dy, dz)
+  ivec4 kdim;    // kx, ky, kz
+  vec4 misc;     // pad_value
+  uint count;
+} u;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.count) return;
+  ivec3 c = coords[i].xyz;
+  int ax = u.kdim.x / 2, ay = u.kdim.y / 2, az = u.kdim.z / 2;
+  float pad = u.misc.x;
+  float acc = 0.0;
+  for (int dk = 0; dk < u.kdim.z; ++dk) {
+    for (int dj = 0; dj < u.kdim.y; ++dj) {
+      for (int di = 0; di < u.kdim.x; ++di) {
+        ivec3 li = c + ivec3(di - ax, dj - ay, dk - az) - u.bbmin.xyz;
+        float val;
+        if (li.x < 0 || li.x >= u.dims.x || li.y < 0 || li.y >= u.dims.y || li.z < 0 || li.z >= u.dims.z) {
+          val = pad;
+        } else {
+          int idx = idx_grid[(li.z * u.dims.y + li.y) * u.dims.x + li.x];
+          val = idx >= 0 ? values[idx] : pad;
+        }
+        int ki = (dk * u.kdim.y + dj) * u.kdim.x + di;
+        acc += kern[ki] * val;
+      }
+    }
+  }
+  out_values[i] = acc;
+}

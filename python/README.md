@@ -110,6 +110,184 @@ mesh = tinyvdb.sdf_to_mesh(sdf, isovalue=0.0)
 print(mesh.num_vertices, mesh.num_faces)
 ```
 
+### Level-set primitives & SDF utilities
+
+Generate analytic narrow-band SDFs (parallels OpenVDB's `LevelSetSphere` /
+`LevelSetPlatonic` / `LevelSetTubes`) as `DenseGrid`s, then operate on them with
+the dense ops (CSG, filters, marching cubes) or write them to `.vdb`. Every voxel
+holds the true signed distance clamped to `±half_width * voxel_size`; negative is
+inside. The grid is sized to enclose the primitive plus the band margin.
+
+```python
+import numpy as np
+import tinyvdb
+
+sphere  = tinyvdb.level_set_sphere(radius=1.0, center=(0, 0, 0), voxel_size=0.05)
+box     = tinyvdb.level_set_box(half_extents=(0.5, 0.4, 0.6))
+torus   = tinyvdb.level_set_torus(major_radius=1.0, minor_radius=0.3)   # XZ plane, axis Y
+capsule = tinyvdb.level_set_capsule(p0=(-0.5, 0, 0), p1=(0.5, 0, 0), radius=0.25)
+
+# Platonic solids (radius = circumradius). Either the generic form or a named
+# wrapper; the field is the convex half-space SDF (exact isosurface).
+ico   = tinyvdb.level_set_icosahedron(radius=1.0)
+solid = tinyvdb.level_set_platonic(face_count=12, radius=1.0)   # 4/6/8/12/20
+
+print(sphere.shape, sphere.voxel_size, sphere.origin)
+arr = np.array(sphere, copy=False)        # zero-copy float32 view
+
+# Combine and re-mesh
+both = tinyvdb.csg_union(sphere, box)
+mesh = tinyvdb.sdf_to_mesh(both, isovalue=0.0)
+
+# SDF utilities
+fog  = tinyvdb.sdf_to_fog_volume(sphere)             # density = clamp(-sdf/(hw*voxel), 0, 1)
+mask = tinyvdb.sdf_interior_mask(sphere, isovalue=0.0)  # 1.0 inside, 0.0 outside
+
+# Split disjoint objects; extract sealed cavities
+segments = tinyvdb.sdf_segmentation(grid, isovalue=0.0, connectivity=6)  # list[DenseGrid]
+voids    = tinyvdb.sdf_extract_enclosed_regions(grid)  # 1.0 mask of interior cavities
+
+# Topology measures of the isosurface
+chi   = tinyvdb.level_set_euler_characteristic(torus)   # 0.0  (2 for a sphere)
+genus = tinyvdb.level_set_genus(torus)                  # 1    (0 for a sphere)
+
+# Rebuild a clean SDF from the isosurface (renormalize and/or resample)
+clean = tinyvdb.level_set_rebuild(damaged, isovalue=0.0, voxel_size=0.05)
+```
+
+> **Note:** `level_set_rebuild` (and `mesh_to_sdf`) use a brute-force
+> mesh-to-SDF (O(voxels × triangles)); keep the voxel size coarse for large
+> surfaces.
+
+All generators take `voxel_size=` and `half_width=` (band width in voxels,
+default 3, matching OpenVDB's `LEVEL_SET_HALF_WIDTH`).
+
+### Statistics & diagnostics
+
+```python
+s = tinyvdb.grid_statistics(grid)        # {min, max, mean, stddev, sum, count}
+h = tinyvdb.grid_histogram(grid, -1.0, 1.0, nbins=32)   # list of bin counts
+
+# A valid narrow-band SDF has |grad| == 1 in the band:
+chk = tinyvdb.check_level_set(grid, band_width=0.1, tol=0.1)   # {mean_grad_mag, ...}
+# A valid fog volume has all values in [0, 1]:
+ok = tinyvdb.check_fog_volume(grid)["valid"]
+```
+
+### Resampling & advection
+
+```python
+# Resample to any voxel size over the same world AABB (order 0/1/2).
+coarse = tinyvdb.resample_grid(grid, 0.1, order=1)
+
+# Restore interior signs of a level set after an unsigned operation.
+clean = tinyvdb.signed_flood_fill(grid, band_width=0.15)
+
+# Higher-order advection through a steady velocity field (DenseVecGrid):
+out = tinyvdb.advect(field, velocity, dt, scheme=tinyvdb.ADVECT_MACCORMACK, clamp=1)
+#   scheme: ADVECT_RK1..ADVECT_RK4, ADVECT_MACCORMACK, ADVECT_BFECC
+```
+
+### Points & coordinate queries
+
+```python
+# Point cloud -> unique occupied voxel coords / occupancy mask.
+coords = tinyvdb.voxelize_points(points, voxel_size=0.05)
+mask   = tinyvdb.points_to_mask(points, 0.05)            # DenseGrid
+
+# Membership / index queries against an active coord set.
+inside = tinyvdb.points_in_grid(points, coords, 0.05)
+idx    = tinyvdb.ijk_to_index(coords, query_coords)      # -1 if absent
+codes  = tinyvdb.morton_encode(coords)                   # Z-order
+
+# Higher-order sampling and point scatter.
+vals = tinyvdb.sample_quadratic(grid, pts.tobytes())     # smoother than trilinear
+pts  = tinyvdb.scatter_points_in_sdf(sdf, n=1000)         # uniform interior points
+
+# Emission-absorption volume render (pinhole camera) -> (H, W) float image.
+img = tinyvdb.volume_render(density, eye=(0, 0, 4), center=(0, 0, 0),
+                            width=256, height=256, sigma=20.0)
+```
+
+### Operators & filters
+
+```python
+# Vector-grid operators (GridOperators)
+mag  = tinyvdb.magnitude(vec)            # DenseVecGrid -> DenseGrid (|v|)
+unit = tinyvdb.normalize(vec)            # DenseVecGrid -> DenseVecGrid (v/|v|)
+near = tinyvdb.cpt(sdf)                  # closest-point transform of an SDF
+
+# Per-voxel composite of two same-shape grids
+u = tinyvdb.comp_max(a, b)   # also comp_min / comp_sum / comp_mult
+
+# In-place-style filters (return a new DenseGrid)
+m = tinyvdb.median_filter(grid, radius=1, iterations=1)
+s = tinyvdb.mean_curvature_flow(grid, dt=0.0003, iterations=8)   # keep dt small
+```
+
+### Write a dense grid to `.vdb`
+
+Write an existing dense field (e.g. an SDF you already computed) to a fresh `.vdb`
+file. `world = voxel_size * index + origin` (per-axis `ScaleTranslateMap`).
+
+The grid value type is selected from the numpy array's dtype:
+
+| array | grid type written |
+| --- | --- |
+| `(nx, ny, nz)` `float32` | `Tree_float_5_4_3` |
+| `(nx, ny, nz)` `float64` | `Tree_double_5_4_3` |
+| `(nx, ny, nz)` `int32` | `Tree_int32_5_4_3` |
+| `(nx, ny, nz)` `int64` | `Tree_int64_5_4_3` |
+| `(nx, ny, nz)` `bool` | `Tree_bool_5_4_3` (see note) |
+| `(nx, ny, nz, 3)` `float32` | `Tree_vec3s_5_4_3` (vec3f) |
+
+```python
+import numpy as np
+import tinyvdb
+
+sdf = np.random.randn(32, 32, 24).astype(np.float32)   # your dense (nx, ny, nz) field
+
+# numpy convenience (round-trips bit-exactly, dtype preserved):
+tinyvdb.write_dense_grid("sdf.vdb", sdf, voxel_size=(0.05, 0.06, 0.07),
+                         origin=(1.0, 2.0, 3.0), name="sdf")
+arr, voxel_size, origin = tinyvdb.read_dense_grid("sdf.vdb")
+assert np.array_equal(arr, sdf)
+
+# other scalar types and vec3f, same call:
+labels = np.random.randint(0, 10, (16, 16, 16)).astype(np.int32)
+tinyvdb.write_dense_grid("labels.vdb", labels)              # Tree_int32_5_4_3
+velocity = np.random.randn(16, 16, 16, 3).astype(np.float32)
+tinyvdb.write_dense_grid("vel.vdb", velocity)              # Tree_vec3s_5_4_3
+
+# numpy-free raw API for float (values is an nx*ny*nz float32 buffer in C order):
+import struct
+buf = struct.pack("24f", *range(24))
+tinyvdb.write_float_grid("grid.vdb", buf, 2, 3, 4,
+                         voxel_size=(0.1, 0.1, 0.1), origin=(0.0, 0.0, 0.0))
+```
+
+> **Note on `bool`:** tinyvdb stores BOOL grids as 1 byte/voxel rather than
+> OpenVDB's bit-packed 1-bit format. Such files round-trip self-consistently
+> through `read_dense_grid` but are **not** byte-compatible with OpenVDB and will
+> not load in DCCs (Houdini/Blender/etc).
+
+### Write a sparse grid to `.vdb`
+
+When you only have a set of active voxels (not a full dense block), write them
+directly with `write_sparse_grid` — same dtype rules as `write_dense_grid`
+(scalar `(N,)` arrays, or `(N, 3)` `float32` for vec3f). Coords are world-voxel
+indices and need not be contiguous.
+
+```python
+import numpy as np, tinyvdb
+
+coords = np.array([[0, 0, 0], [10, 2, 3], [100, 100, 100]], dtype=np.int32)
+values = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+tinyvdb.write_sparse_grid("sparse.vdb", coords, values, voxel_size=0.1, name="pts")
+
+coords_out, values_out, voxel_size, origin = tinyvdb.read_sparse_grid("sparse.vdb")
+```
+
 ### CSG operations
 
 ```python

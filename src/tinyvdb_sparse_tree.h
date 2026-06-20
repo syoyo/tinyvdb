@@ -37,6 +37,14 @@ typedef int (*tvdb_leaf_visit_fn)(const tvdb_leaf_view_t *leaf, void *user);
 size_t tvdb_grid_visit_leaves_float(const tvdb_grid_t *grid,
                                     tvdb_leaf_visit_fn cb, void *user);
 
+// Visit every leaf regardless of value type. `origin`, `log2dim` and
+// `value_mask` in the leaf view are valid for all types; `data` points at the
+// leaf's raw byte buffer (typed as const float* in the view for ABI reasons —
+// reinterpret it using the grid's leaf value_type and tvdb_value_type_size).
+// Returns the number of leaves visited.
+size_t tvdb_grid_visit_leaves(const tvdb_grid_t *grid,
+                              tvdb_leaf_visit_fn cb, void *user);
+
 // Count active voxels across all leaves.
 size_t tvdb_grid_active_voxel_count(const tvdb_grid_t *grid);
 

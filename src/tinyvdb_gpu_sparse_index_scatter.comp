@@ -1,0 +1,18 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Scatter each active voxel's index into a dense bbox-local index grid (init to
+// -1 by the caller), so the conv kernel can look up taps in O(1).
+layout(std430, set = 0, binding = 0) readonly buffer Coords { ivec4 coords[]; };
+layout(std430, set = 0, binding = 1) buffer Idx { int idx_grid[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 bbmin;   // bbox min ijk
+  ivec4 dims;    // bbox dims (dx, dy, dz)
+  uint count;
+} u;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.count) return;
+  ivec3 c = coords[i].xyz - u.bbmin.xyz;
+  idx_grid[(c.z * u.dims.y + c.y) * u.dims.x + c.x] = int(i);
+}

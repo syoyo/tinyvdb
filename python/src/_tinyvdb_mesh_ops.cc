@@ -13,6 +13,10 @@
 #include "tinyvdb_topology.h"
 #include "tinyvdb_sparse_tree.h"
 #include "tinyvdb_autograd.h"
+#include "tinyvdb_levelset.h"
+#include "tinyvdb_stats.h"
+#include "tinyvdb_grid_index.h"
+#include "tinyvdb_render.h"
 
 #include <cmath>
 #include <cstring>
@@ -362,6 +366,24 @@ int tvdb_py_advect(const float *field_data, const float *vel_data,
     size_t n = (size_t)nx * ny * nz;
     *out_data = (float *)malloc(n * sizeof(float));
     if (*out_data) memcpy(*out_data, out.data, n * sizeof(float));
+    tvdb_dense_grid_free(&f); tvdb_dense_vec_grid_free(&v); tvdb_dense_grid_free(&out);
+    return *out_data ? 0 : -1;
+}
+
+int tvdb_py_advect_scheme(const float *field_data, const float *vel_data,
+                          int nx, int ny, int nz, float voxel_size,
+                          float ox, float oy, float oz, float dt, int scheme, int clamp,
+                          float **out_data) {
+    tvdb_dense_grid f = make_grid(field_data, nx, ny, nz, voxel_size, ox, oy, oz);
+    tvdb_dense_vec_grid v = make_vec_grid(vel_data, nx, ny, nz, voxel_size, ox, oy, oz);
+    tvdb_dense_grid out;
+    tvdb_dense_grid_init(&out, nx, ny, nz);
+    out.voxel_size = voxel_size; out.ox = ox; out.oy = oy; out.oz = oz;
+    tvdb_advect(&f, &v, dt, scheme, clamp, &out);
+    size_t n = (size_t)nx * ny * nz;
+    *out_data = (float *)malloc(n * sizeof(float));
+    if (*out_data) memcpy(*out_data, out.data, n * sizeof(float));
+    else snprintf(s_error_msg, sizeof(s_error_msg), "advect: alloc failed");
     tvdb_dense_grid_free(&f); tvdb_dense_vec_grid_free(&v); tvdb_dense_grid_free(&out);
     return *out_data ? 0 : -1;
 }
@@ -733,6 +755,22 @@ int tvdb_py_sample_trilinear(const float *data, int nx, int ny, int nz,
     return 0;
 }
 
+int tvdb_py_sample_quadratic(const float *data, int nx, int ny, int nz,
+                             float voxel_size, float ox, float oy, float oz,
+                             const float *points, size_t npts,
+                             float **out_vals) {
+    tvdb_dense_grid g = make_grid(data, nx, ny, nz, voxel_size, ox, oy, oz);
+    *out_vals = (float *)malloc(npts * sizeof(float));
+    if (!*out_vals) {
+        tvdb_dense_grid_free(&g);
+        snprintf(s_error_msg, sizeof(s_error_msg), "sample_quadratic: malloc failed");
+        return -1;
+    }
+    tvdb_sample_quadratic_dense_batch(&g, (const tvdb_vec3f *)points, npts, *out_vals);
+    tvdb_dense_grid_free(&g);
+    return 0;
+}
+
 // Update an existing pair of (tsdf, weights) DenseGrid buffers with a new
 // depth frame. Caller-provided buffers must already be initialized
 // (typically tsdf = trunc_distance, weights = 0 on the first call).
@@ -864,6 +902,28 @@ int tvdb_py_refine_grid(const float *data, int nx, int ny, int nz,
                         float **out_data, int *out_nx, int *out_ny, int *out_nz,
                         float *out_vs, float *out_ox_, float *out_oy_, float *out_oz_) {
     RUN_RESIZE(tvdb_refine_grid);
+}
+
+int tvdb_py_resample_grid(const float *data, int nx, int ny, int nz,
+                          float voxel_size, float ox, float oy, float oz,
+                          float new_voxel_size, int order,
+                          float **out_data, int *out_nx, int *out_ny, int *out_nz,
+                          float *out_vs, float *out_ox_, float *out_oy_, float *out_oz_) {
+    tvdb_dense_grid in = make_grid(data, nx, ny, nz, voxel_size, ox, oy, oz);
+    tvdb_dense_grid out; tvdb_dense_grid_init(&out, 0, 0, 0);
+    if (!tvdb_resample_grid(&in, new_voxel_size, order, &out, NULL)) {
+        tvdb_dense_grid_free(&in); tvdb_dense_grid_free(&out);
+        snprintf(s_error_msg, sizeof(s_error_msg), "resample_grid failed");
+        return -1;
+    }
+    *out_nx = out.nx; *out_ny = out.ny; *out_nz = out.nz;
+    *out_vs = out.voxel_size; *out_ox_ = out.ox; *out_oy_ = out.oy; *out_oz_ = out.oz;
+    size_t N = (size_t)out.nx * out.ny * out.nz;
+    *out_data = (float *)malloc(N * sizeof(float));
+    if (*out_data) memcpy(*out_data, out.data, N * sizeof(float));
+    else snprintf(s_error_msg, sizeof(s_error_msg), "resample_grid: alloc failed");
+    tvdb_dense_grid_free(&in); tvdb_dense_grid_free(&out);
+    return *out_data ? 0 : -1;
 }
 #undef RUN_RESIZE
 
@@ -1304,6 +1364,205 @@ int tvdb_py_replace_grid_from_sparse(tvdb_file_t *file, size_t grid_idx,
     return 0;
 }
 
+/* System (malloc-backed) allocator. The io implementation's own default
+   allocator is file-local to tinyvdb_io.c, so we provide one here for building
+   a tvdb_file_t from scratch (no template file to inherit an allocator from). */
+static void *tvdb_py__sys_malloc(size_t size, void *ctx) { (void)ctx; return malloc(size); }
+static void *tvdb_py__sys_realloc(void *ptr, size_t oldsz, size_t newsz, void *ctx) {
+    (void)ctx; (void)oldsz; return realloc(ptr, newsz);
+}
+static void tvdb_py__sys_free(void *ptr, size_t size, void *ctx) { (void)ctx; (void)size; free(ptr); }
+static tvdb_allocator_t tvdb_py__sys_allocator(void) {
+    tvdb_allocator_t a;
+    a.malloc_fn = tvdb_py__sys_malloc;
+    a.realloc_fn = tvdb_py__sys_realloc;
+    a.free_fn = tvdb_py__sys_free;
+    a.user_ctx = NULL;
+    return a;
+}
+
+/* OpenVDB grid-type string for a scalar/vector value type (Tree_*_5_4_3). The
+   generic builder also derives this internally, but setting it on the template
+   keeps the synthesized template self-consistent. */
+static const char *tvdb_py__grid_type_str(tvdb_value_type_t vt) {
+    switch (vt) {
+        case TVDB_VALUE_FLOAT:  return "Tree_float_5_4_3";
+        case TVDB_VALUE_DOUBLE: return "Tree_double_5_4_3";
+        case TVDB_VALUE_INT32:  return "Tree_int32_5_4_3";
+        case TVDB_VALUE_INT64:  return "Tree_int64_5_4_3";
+        case TVDB_VALUE_BOOL:   return "Tree_bool_5_4_3";
+        case TVDB_VALUE_VEC3F:  return "Tree_vec3s_5_4_3";
+        case TVDB_VALUE_VEC3D:  return "Tree_vec3d_5_4_3";
+        case TVDB_VALUE_VEC3I:  return "Tree_vec3i_5_4_3";
+        default:                return "Tree_float_5_4_3";
+    }
+}
+
+/* Shared core: synthesize a Tree_<type>_5_4_3 template (layout + per-axis
+   ScaleTranslateMap transform), build the grid tree from (coords, values), and
+   save it as a one-grid .vdb file. `coords` are world-voxel indices; the
+   transform maps world = voxel_size * index + origin. `bg_bytes` is one element
+   worth of background fill. Returns 0 on success, -1 on error. */
+static int tvdb_py__build_save_typed(const char *path,
+                                     const tvdb_vec3i *coords, const void *values,
+                                     size_t count, tvdb_value_type_t vt,
+                                     double vsx, double vsy, double vsz,
+                                     double ox, double oy, double oz,
+                                     const char *grid_name, const void *bg_bytes,
+                                     uint32_t compression, int level) {
+    /* 1) Synthetic template (Tree_<type>_5_4_3) carrying only the layout, grid
+          type and transform — its (empty) tree is unused by the builder. */
+    tvdb_grid_t tmpl;
+    memset(&tmpl, 0, sizeof(tmpl));
+    char grid_type[32];
+    snprintf(grid_type, sizeof(grid_type), "%s", tvdb_py__grid_type_str(vt));
+    tmpl.descriptor.grid_type = grid_type;  /* builder duplicates this string */
+    tmpl.tree.layout.num_levels = 4;
+    tmpl.tree.layout.levels[0].node_type = TVDB_NODE_ROOT;
+    tmpl.tree.layout.levels[1].node_type = TVDB_NODE_INTERNAL;
+    tmpl.tree.layout.levels[2].node_type = TVDB_NODE_INTERNAL;
+    tmpl.tree.layout.levels[3].node_type = TVDB_NODE_LEAF;
+    tmpl.tree.layout.levels[0].log2dim = 0;
+    tmpl.tree.layout.levels[1].log2dim = 5;
+    tmpl.tree.layout.levels[2].log2dim = 4;
+    tmpl.tree.layout.levels[3].log2dim = 3;
+    for (int lv = 0; lv < 4; ++lv) tmpl.tree.layout.levels[lv].value_type = vt;
+    tmpl.transform.type = TVDB_TRANSFORM_SCALE_TRANSLATE;
+    tmpl.transform.scale_values[0] = vsx; tmpl.transform.scale_values[1] = vsy; tmpl.transform.scale_values[2] = vsz;
+    tmpl.transform.voxel_size[0] = vsx;   tmpl.transform.voxel_size[1] = vsy;   tmpl.transform.voxel_size[2] = vsz;
+    tmpl.transform.translation[0] = ox;   tmpl.transform.translation[1] = oy;   tmpl.transform.translation[2] = oz;
+
+    /* 2) Build the grid tree from the (coord, value) pairs. */
+    tvdb_grid_t built;
+    bool ok = tvdb_grid_from_sparse_typed_using_template(&tmpl, coords, values, count,
+                                                         vt, bg_bytes,
+                                                         grid_name ? grid_name : "grid", &built);
+    if (!ok) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid: grid build failed");
+        return -1;
+    }
+
+    /* 3) Assemble a one-grid file (zeroed header -> writer defaults to v224) and save. */
+    tvdb_file_t out;
+    memset(&out, 0, sizeof(out));
+    out.alloc = tvdb_py__sys_allocator();
+    out.num_grids = 1;
+    out.grids = &built;
+    tvdb_error_t err;
+    memset(&err, 0, sizeof(err));
+    tvdb_status_t st = tvdb_file_save(&out, path, compression, level, /*use_mmap=*/0, &err);
+    tvdb_grid_destroy_owned(&built);
+    if (st != TVDB_OK) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid: save failed: %.480s",
+                 err.message[0] ? err.message : "unknown");
+        return -1;
+    }
+    return 0;
+}
+
+/* Write a dense grid of arbitrary value type (e.g. an SDF / level set, an int
+   label field, or a vec3 velocity field) to a .vdb file from scratch. `values`
+   holds `count` elements (= nx*ny*nz voxels), each tvdb_value_type_size(vt)
+   bytes wide, in C order: index = (i*ny + j)*nz + k for voxel (i,j,k). The grid
+   uses a per-axis ScaleTranslateMap so that world = voxel_size * index + origin.
+   `bg_bytes` is one element worth of background fill (inactive voxels / tiles).
+   Returns 0 on success, -1 on error. */
+int tvdb_py_write_grid_dense_typed(const char *path,
+                                   const void *values, size_t count,
+                                   int value_type,
+                                   int nx, int ny, int nz,
+                                   double vsx, double vsy, double vsz,
+                                   double ox, double oy, double oz,
+                                   const char *grid_name, const void *bg_bytes,
+                                   uint32_t compression, int level) {
+    if (!path || !values || !bg_bytes) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid_dense: NULL argument");
+        return -1;
+    }
+    tvdb_value_type_t vt = (tvdb_value_type_t)value_type;
+    if (nx <= 0 || ny <= 0 || nz <= 0 ||
+        (size_t)nx * (size_t)ny * (size_t)nz != count) {
+        snprintf(s_error_msg, sizeof(s_error_msg),
+                 "write_grid_dense: nx*ny*nz (%lld) != value count (%zu)",
+                 (long long)nx * ny * nz, count);
+        return -1;
+    }
+
+    /* Dense -> sparse: one active voxel per cell at integer coords (0..n-1). */
+    tvdb_vec3i *coords = (tvdb_vec3i *)malloc(count * sizeof(tvdb_vec3i));
+    if (!coords) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid_dense: alloc failed");
+        return -1;
+    }
+    size_t idx = 0;
+    for (int i = 0; i < nx; ++i)
+        for (int j = 0; j < ny; ++j)
+            for (int k = 0; k < nz; ++k) {
+                coords[idx].x = i; coords[idx].y = j; coords[idx].z = k; ++idx;
+            }
+
+    int rc = tvdb_py__build_save_typed(path, coords, values, count, vt,
+                                       vsx, vsy, vsz, ox, oy, oz,
+                                       grid_name ? grid_name : "sdf", bg_bytes,
+                                       compression, level);
+    free(coords);
+    return rc;
+}
+
+/* Write a sparse grid of arbitrary value type from scratch. `coords` is
+   `count` world-voxel index triples (int32 x,y,z); `values` is `count` elements
+   each tvdb_value_type_size(vt) bytes wide, paired with `coords` by position.
+   Same transform / background semantics as the dense writer. Coordinates that
+   collide are resolved by the builder (last writer wins per the builder's leaf
+   grouping). Returns 0 on success, -1 on error. */
+int tvdb_py_write_grid_sparse_typed(const char *path,
+                                    const int32_t *coords, const void *values,
+                                    size_t count, int value_type,
+                                    double vsx, double vsy, double vsz,
+                                    double ox, double oy, double oz,
+                                    const char *grid_name, const void *bg_bytes,
+                                    uint32_t compression, int level) {
+    if (!path || !bg_bytes || (count > 0 && (!coords || !values))) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "write_grid_sparse: NULL argument");
+        return -1;
+    }
+    tvdb_value_type_t vt = (tvdb_value_type_t)value_type;
+
+    /* Repack int32 triples into tvdb_vec3i (same layout, but be explicit). */
+    tvdb_vec3i *cv = NULL;
+    if (count > 0) {
+        cv = (tvdb_vec3i *)malloc(count * sizeof(tvdb_vec3i));
+        if (!cv) {
+            snprintf(s_error_msg, sizeof(s_error_msg), "write_grid_sparse: alloc failed");
+            return -1;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            cv[i].x = coords[3 * i + 0];
+            cv[i].y = coords[3 * i + 1];
+            cv[i].z = coords[3 * i + 2];
+        }
+    }
+    int rc = tvdb_py__build_save_typed(path, cv, values, count, vt,
+                                       vsx, vsy, vsz, ox, oy, oz,
+                                       grid_name ? grid_name : "grid", bg_bytes,
+                                       compression, level);
+    free(cv);
+    return rc;
+}
+
+/* Back-compat float entry point: packs the float background and delegates. */
+int tvdb_py_write_float_grid_dense(const char *path,
+                                   const float *values, size_t count,
+                                   int nx, int ny, int nz,
+                                   double vsx, double vsy, double vsz,
+                                   double ox, double oy, double oz,
+                                   const char *grid_name, float background,
+                                   uint32_t compression, int level) {
+    return tvdb_py_write_grid_dense_typed(path, values, count, TVDB_VALUE_FLOAT,
+                                          nx, ny, nz, vsx, vsy, vsz, ox, oy, oz,
+                                          grid_name, &background, compression, level);
+}
+
 // Sparse conv3d VJPs.
 int tvdb_py_sparse_conv3d_vjp_values(const int32_t *in_coords, size_t in_count,
                                      const float *grad_out_values,
@@ -1508,6 +1767,85 @@ int tvdb_py_grid_to_sparse(const tvdb_grid_t *grid,
     return 0;
 }
 
+/* Typed active-voxel extraction. The float sparse-grid path is float-only, so
+   we walk leaves via the (type-agnostic) hierarchy traversal — which yields the
+   correct per-leaf world origin — and emit, for every active voxel, its
+   world-voxel coord and a verbatim copy of the leaf's element bytes. Output:
+   out_coords = int32[count*3], out_values = count * tvdb_value_type_size(vt)
+   bytes, out_value_type = the leaf-level value type. Both buffers are malloc'd
+   (caller frees); NULL when count == 0. Returns 0 on success, -1 on error. */
+typedef struct {
+    std::vector<int32_t> coords;
+    std::vector<uint8_t> values;
+    size_t vsize;
+} typed_sparse_acc_t;
+
+static int typed_sparse_visit(const tvdb_leaf_view_t *leaf, void *user) {
+    typed_sparse_acc_t *a = (typed_sparse_acc_t *)user;
+    int log2dim = leaf->log2dim;
+    int dim = 1 << log2dim;
+    int mask = dim - 1;
+    int nslots = 1 << (3 * log2dim);
+    /* leaf->data is the raw byte buffer typed as float* in the view. */
+    const uint8_t *bytes = (const uint8_t *)leaf->data;
+    /* OpenVDB leaf layout: slot = (x<<2L) | (y<<L) | z within the dim^3 block. */
+    for (int s = 0; s < nslots; ++s) {
+        if (!tvdb_nodemask_is_on(leaf->value_mask, s)) continue;
+        int lx = (s >> (2 * log2dim)) & mask;
+        int ly = (s >> log2dim) & mask;
+        int lz = s & mask;
+        a->coords.push_back(leaf->origin[0] + lx);
+        a->coords.push_back(leaf->origin[1] + ly);
+        a->coords.push_back(leaf->origin[2] + lz);
+        a->values.insert(a->values.end(), bytes + (size_t)s * a->vsize,
+                         bytes + (size_t)(s + 1) * a->vsize);
+    }
+    return 0;
+}
+
+int tvdb_py_grid_to_sparse_typed(const tvdb_grid_t *grid,
+                                 int32_t **out_coords, void **out_values,
+                                 size_t *out_count, int *out_value_type) {
+    *out_coords = NULL; *out_values = NULL; *out_count = 0;
+    if (!grid) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "to_sparse_typed: NULL grid");
+        return -1;
+    }
+    int num_levels = grid->tree.layout.num_levels;
+    if (num_levels <= 0) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "to_sparse_typed: empty layout");
+        return -1;
+    }
+    tvdb_value_type_t vt = grid->tree.layout.levels[num_levels - 1].value_type;
+    size_t vsize = tvdb_value_type_size(vt);
+    *out_value_type = (int)vt;
+    if (vsize == 0) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "to_sparse_typed: unsupported value type");
+        return -1;
+    }
+
+    typed_sparse_acc_t acc;
+    acc.vsize = vsize;
+    tvdb_grid_visit_leaves(grid, typed_sparse_visit, &acc);
+
+    size_t total = acc.coords.size() / 3;
+    *out_count = total;
+    if (total == 0) return 0;
+
+    int32_t *coords = (int32_t *)malloc(total * 3 * sizeof(int32_t));
+    uint8_t *vals = (uint8_t *)malloc(total * vsize);
+    if (!coords || !vals) {
+        free(coords); free(vals);
+        snprintf(s_error_msg, sizeof(s_error_msg), "to_sparse_typed: alloc failed");
+        return -1;
+    }
+    memcpy(coords, acc.coords.data(), total * 3 * sizeof(int32_t));
+    memcpy(vals, acc.values.data(), total * vsize);
+    *out_coords = coords;
+    *out_values = vals;
+    return 0;
+}
+
 int tvdb_py_merge_grids(const float *a_data, int a_nx, int a_ny, int a_nz,
                         float a_vs, float a_ox, float a_oy, float a_oz,
                         const float *b_data, int b_nx, int b_ny, int b_nz,
@@ -1533,6 +1871,463 @@ int tvdb_py_merge_grids(const float *a_data, int a_nx, int a_ny, int a_nz,
     if (*out_data) memcpy(*out_data, out.data, N * sizeof(float));
     tvdb_dense_grid_free(&A); tvdb_dense_grid_free(&B); tvdb_dense_grid_free(&out);
     return *out_data ? 0 : -1;
+}
+
+/* ---- Level-set primitives + SDF utilities (tinyvdb_levelset.h) ----
+   Each bridge transfers ownership of the generated grid's malloc'd data to the
+   caller (the Python DenseGrid wrapper frees it) and reports the grid's dims +
+   transform. Returns 0 on success, -1 on error. */
+static int lvl_transfer(tvdb_dense_grid *g, int ok,
+                        float **out_data, int *nx, int *ny, int *nz,
+                        float *ovs, float *ox, float *oy, float *oz) {
+    if (!ok || !g->data) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "level_set: build failed");
+        if (g->data) tvdb_dense_grid_free(g);
+        return -1;
+    }
+    *out_data = g->data;  /* transfer ownership; do NOT free g */
+    *nx = g->nx; *ny = g->ny; *nz = g->nz;
+    *ovs = g->voxel_size; *ox = g->ox; *oy = g->oy; *oz = g->oz;
+    return 0;
+}
+
+int tvdb_py_level_set_sphere(float radius, float cx, float cy, float cz,
+                             float voxel_size, float half_width,
+                             float **out_data, int *nx, int *ny, int *nz,
+                             float *ovs, float *ox, float *oy, float *oz) {
+    tvdb_dense_grid g = {}; float c[3] = { cx, cy, cz };
+    int ok = tvdb_level_set_sphere(radius, c, voxel_size, half_width, &g);
+    return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+int tvdb_py_level_set_box(float hex, float hey, float hez,
+                          float cx, float cy, float cz,
+                          float voxel_size, float half_width,
+                          float **out_data, int *nx, int *ny, int *nz,
+                          float *ovs, float *ox, float *oy, float *oz) {
+    tvdb_dense_grid g = {}; float he[3] = { hex, hey, hez }; float c[3] = { cx, cy, cz };
+    int ok = tvdb_level_set_box(he, c, voxel_size, half_width, &g);
+    return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+int tvdb_py_level_set_torus(float major_radius, float minor_radius,
+                            float cx, float cy, float cz,
+                            float voxel_size, float half_width,
+                            float **out_data, int *nx, int *ny, int *nz,
+                            float *ovs, float *ox, float *oy, float *oz) {
+    tvdb_dense_grid g = {}; float c[3] = { cx, cy, cz };
+    int ok = tvdb_level_set_torus(major_radius, minor_radius, c, voxel_size,
+                                  half_width, &g);
+    return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+int tvdb_py_level_set_capsule(float p0x, float p0y, float p0z,
+                              float p1x, float p1y, float p1z, float radius,
+                              float voxel_size, float half_width,
+                              float **out_data, int *nx, int *ny, int *nz,
+                              float *ovs, float *ox, float *oy, float *oz) {
+    tvdb_dense_grid g = {};
+    float p0[3] = { p0x, p0y, p0z }, p1[3] = { p1x, p1y, p1z };
+    int ok = tvdb_level_set_capsule(p0, p1, radius, voxel_size, half_width, &g);
+    return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+int tvdb_py_level_set_platonic(int face_count, float radius,
+                               float cx, float cy, float cz,
+                               float voxel_size, float half_width,
+                               float **out_data, int *nx, int *ny, int *nz,
+                               float *ovs, float *ox, float *oy, float *oz) {
+    tvdb_dense_grid g = {}; float c[3] = { cx, cy, cz };
+    int ok = tvdb_level_set_platonic(face_count, radius, c, voxel_size, half_width, &g);
+    return lvl_transfer(&g, ok, out_data, nx, ny, nz, ovs, ox, oy, oz);
+}
+
+/* SDF utilities: input is an existing dense grid (data + dims + transform);
+   output has the same dims/transform, data malloc'd into *out_data. */
+int tvdb_py_sdf_to_fog_volume(const float *data, int nx, int ny, int nz,
+                              float vs, float ox, float oy, float oz,
+                              float half_width, float **out_data) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = vs;
+    in.ox = ox; in.oy = oy; in.oz = oz; in.data = (float *)data;
+    tvdb_dense_grid out;
+    if (!tvdb_sdf_to_fog_volume(&in, half_width, &out)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "sdf_to_fog_volume failed");
+        return -1;
+    }
+    *out_data = out.data;  /* transfer ownership */
+    return 0;
+}
+
+int tvdb_py_sdf_interior_mask(const float *data, int nx, int ny, int nz,
+                              float vs, float ox, float oy, float oz,
+                              float isovalue, float **out_data) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = vs;
+    in.ox = ox; in.oy = oy; in.oz = oz; in.data = (float *)data;
+    tvdb_dense_grid out;
+    if (!tvdb_sdf_interior_mask(&in, isovalue, &out)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "sdf_interior_mask failed");
+        return -1;
+    }
+    *out_data = out.data;  /* transfer ownership */
+    return 0;
+}
+
+/* Segment the interior into connected components. The output grids all share
+   the input's dims/transform, so we hand back just their data buffers in
+   *out_list (a malloc'd array of *out_count float*, each owned by the caller).
+   Returns 0 on success, -1 on error. */
+int tvdb_py_sdf_segmentation(const float *data, int nx, int ny, int nz,
+                             float isovalue, int connectivity,
+                             float ***out_list, int *out_count) {
+    *out_list = NULL; *out_count = 0;
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = 1.0f;
+    in.ox = in.oy = in.oz = 0.0f; in.data = (float *)data;
+    tvdb_dense_grid *segs = NULL; int count = 0;
+    if (!tvdb_sdf_segmentation(&in, isovalue, connectivity, &segs, &count)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "sdf_segmentation failed");
+        return -1;
+    }
+    *out_count = count;
+    if (count == 0) return 0;
+    float **list = (float **)malloc((size_t)count * sizeof(float *));
+    if (!list) {
+        for (int c = 0; c < count; ++c) tvdb_dense_grid_free(&segs[c]);
+        free(segs);
+        snprintf(s_error_msg, sizeof(s_error_msg), "sdf_segmentation: alloc failed");
+        return -1;
+    }
+    for (int c = 0; c < count; ++c) list[c] = segs[c].data;  /* transfer */
+    free(segs);  /* struct array only; data buffers transferred */
+    *out_list = list;
+    return 0;
+}
+
+int tvdb_py_sdf_extract_enclosed(const float *data, int nx, int ny, int nz,
+                                 float isovalue, int connectivity, float **out) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = 1.0f;
+    in.ox = in.oy = in.oz = 0.0f; in.data = (float *)data;
+    tvdb_dense_grid mask;
+    if (!tvdb_sdf_extract_enclosed_regions(&in, isovalue, connectivity, &mask)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "sdf_extract_enclosed_regions failed");
+        return -1;
+    }
+    *out = mask.data;  /* transfer ownership */
+    return 0;
+}
+
+double tvdb_py_level_set_euler(const float *data, int nx, int ny, int nz,
+                               float isovalue) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = 1.0f;
+    in.ox = in.oy = in.oz = 0.0f; in.data = (float *)data;
+    return tvdb_level_set_euler_characteristic(&in, isovalue);
+}
+
+int tvdb_py_level_set_genus(const float *data, int nx, int ny, int nz,
+                            float isovalue) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = 1.0f;
+    in.ox = in.oy = in.oz = 0.0f; in.data = (float *)data;
+    return tvdb_level_set_genus(&in, isovalue);
+}
+
+/* ---- Statistics / diagnostics (tinyvdb_stats.h) ---- */
+
+int tvdb_py_grid_statistics(const float *data, int nx, int ny, int nz,
+                            double *mn, double *mx, double *mean,
+                            double *stddev, double *sum, size_t *count) {
+    tvdb_dense_grid g;
+    g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
+    g.ox = g.oy = g.oz = 0.0f; g.data = (float *)data;
+    tvdb_grid_stats_t s;
+    if (!tvdb_grid_statistics(&g, &s)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "grid_statistics failed");
+        return -1;
+    }
+    *mn = s.min; *mx = s.max; *mean = s.mean;
+    *stddev = s.stddev; *sum = s.sum; *count = s.count;
+    return 0;
+}
+
+/* Histogram: returns *out_counts as a malloc'd array of `nbins` int64. */
+int tvdb_py_grid_histogram(const float *data, int nx, int ny, int nz,
+                           double rmin, double rmax, int nbins,
+                           int64_t **out_counts) {
+    *out_counts = NULL;
+    tvdb_dense_grid g;
+    g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
+    g.ox = g.oy = g.oz = 0.0f; g.data = (float *)data;
+    size_t *tmp = (size_t *)malloc((size_t)nbins * sizeof(size_t));
+    if (!tmp) { snprintf(s_error_msg, sizeof(s_error_msg), "histogram alloc"); return -1; }
+    if (!tvdb_grid_histogram(&g, rmin, rmax, nbins, tmp)) {
+        free(tmp);
+        snprintf(s_error_msg, sizeof(s_error_msg), "grid_histogram failed");
+        return -1;
+    }
+    int64_t *out = (int64_t *)malloc((size_t)nbins * sizeof(int64_t));
+    if (!out) { free(tmp); snprintf(s_error_msg, sizeof(s_error_msg), "histogram alloc"); return -1; }
+    for (int b = 0; b < nbins; ++b) out[b] = (int64_t)tmp[b];
+    free(tmp);
+    *out_counts = out;
+    return 0;
+}
+
+int tvdb_py_check_level_set(const float *data, int nx, int ny, int nz, float vs,
+                            double band_world, double tol,
+                            double *mean_grad, double *max_err,
+                            double *bad_frac, int64_t *band_count) {
+    tvdb_dense_grid g;
+    g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = vs;
+    g.ox = g.oy = g.oz = 0.0f; g.data = (float *)data;
+    tvdb_level_set_check_t c;
+    if (!tvdb_check_level_set(&g, band_world, tol, &c)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "check_level_set failed");
+        return -1;
+    }
+    *mean_grad = c.mean_grad_mag; *max_err = c.max_grad_error;
+    *bad_frac = c.bad_fraction; *band_count = (int64_t)c.band_count;
+    return 0;
+}
+
+int tvdb_py_check_fog_volume(const float *data, int nx, int ny, int nz,
+                             double eps, int *valid, double *mn, double *mx) {
+    tvdb_dense_grid g;
+    g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
+    g.ox = g.oy = g.oz = 0.0f; g.data = (float *)data;
+    if (!tvdb_check_fog_volume(&g, eps, valid, mn, mx)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "check_fog_volume failed");
+        return -1;
+    }
+    return 0;
+}
+
+/* ---- Vector operators / composite / filters (tinyvdb_ops.h) ---- */
+
+int tvdb_py_magnitude(const float *vdata, int nx, int ny, int nz, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "magnitude alloc"); return -1; }
+    tvdb_dense_vec_grid v; v.nx = nx; v.ny = ny; v.nz = nz; v.voxel_size = 1.0f;
+    v.ox = v.oy = v.oz = 0.0f; v.data = (float *)vdata;
+    tvdb_dense_grid o; o.nx = nx; o.ny = ny; o.nz = nz; o.voxel_size = 1.0f;
+    o.ox = o.oy = o.oz = 0.0f; o.data = *out;
+    tvdb_magnitude(&v, &o);
+    return 0;
+}
+
+int tvdb_py_normalize_vec(const float *vdata, int nx, int ny, int nz, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * 3 * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "normalize alloc"); return -1; }
+    tvdb_dense_vec_grid v; v.nx = nx; v.ny = ny; v.nz = nz; v.voxel_size = 1.0f;
+    v.ox = v.oy = v.oz = 0.0f; v.data = (float *)vdata;
+    tvdb_dense_vec_grid o; o.nx = nx; o.ny = ny; o.nz = nz; o.voxel_size = 1.0f;
+    o.ox = o.oy = o.oz = 0.0f; o.data = *out;
+    tvdb_normalize_vec(&v, &o);
+    return 0;
+}
+
+int tvdb_py_cpt(const float *data, int nx, int ny, int nz, float vs,
+                float ox, float oy, float oz, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * 3 * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "cpt alloc"); return -1; }
+    tvdb_dense_grid s; s.nx = nx; s.ny = ny; s.nz = nz; s.voxel_size = vs;
+    s.ox = ox; s.oy = oy; s.oz = oz; s.data = (float *)data;
+    tvdb_dense_vec_grid o; o.nx = nx; o.ny = ny; o.nz = nz; o.voxel_size = vs;
+    o.ox = ox; o.oy = oy; o.oz = oz; o.data = *out;
+    tvdb_cpt(&s, &o);
+    return 0;
+}
+
+/* op: 0 max, 1 min, 2 sum, 3 mult */
+int tvdb_py_composite(const float *a, const float *b, int nx, int ny, int nz,
+                      int op, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "composite alloc"); return -1; }
+    tvdb_dense_grid ga, gb, gr;
+    ga.nx = gb.nx = gr.nx = nx; ga.ny = gb.ny = gr.ny = ny; ga.nz = gb.nz = gr.nz = nz;
+    ga.voxel_size = gb.voxel_size = gr.voxel_size = 1.0f;
+    ga.ox = ga.oy = ga.oz = gb.ox = gb.oy = gb.oz = gr.ox = gr.oy = gr.oz = 0.0f;
+    ga.data = (float *)a; gb.data = (float *)b; gr.data = *out;
+    switch (op) {
+        case 0: tvdb_comp_max(&ga, &gb, &gr); break;
+        case 1: tvdb_comp_min(&ga, &gb, &gr); break;
+        case 2: tvdb_comp_sum(&ga, &gb, &gr); break;
+        case 3: tvdb_comp_mult(&ga, &gb, &gr); break;
+        default: snprintf(s_error_msg, sizeof(s_error_msg), "composite: bad op"); free(*out); *out = NULL; return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_median_filter(const float *data, int nx, int ny, int nz,
+                          int radius, int iterations, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "median alloc"); return -1; }
+    memcpy(*out, data, nvox * sizeof(float));
+    tvdb_dense_grid g; g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
+    g.ox = g.oy = g.oz = 0.0f; g.data = *out;
+    tvdb_median_filter(&g, radius, iterations);  // in place on the copy
+    return 0;
+}
+
+int tvdb_py_mean_curvature_flow(const float *data, int nx, int ny, int nz,
+                                float vs, float dt, int iterations, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "mcf alloc"); return -1; }
+    memcpy(*out, data, nvox * sizeof(float));
+    tvdb_dense_grid g; g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = vs;
+    g.ox = g.oy = g.oz = 0.0f; g.data = *out;
+    tvdb_mean_curvature_flow(&g, dt, iterations);
+    return 0;
+}
+
+int tvdb_py_signed_flood_fill(const float *data, int nx, int ny, int nz,
+                              float band_world, float **out) {
+    size_t nvox = (size_t)nx * ny * nz;
+    *out = (float *)malloc(nvox * sizeof(float));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "flood alloc"); return -1; }
+    memcpy(*out, data, nvox * sizeof(float));
+    tvdb_dense_grid g; g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = 1.0f;
+    g.ox = g.oy = g.oz = 0.0f; g.data = *out;
+    tvdb_signed_flood_fill(&g, band_world);
+    return 0;
+}
+
+/* ---- Coordinate utilities & spatial queries (tinyvdb_grid_index.h) ---- */
+
+int tvdb_py_morton_encode(const int32_t *ijk, size_t n, uint64_t **out) {
+    *out = (uint64_t *)malloc(n * sizeof(uint64_t));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "morton alloc"); return -1; }
+    for (size_t i = 0; i < n; ++i)
+        (*out)[i] = tvdb_morton_encode(ijk[3*i], ijk[3*i+1], ijk[3*i+2]);
+    return 0;
+}
+
+int tvdb_py_morton_decode(const uint64_t *codes, size_t n, int32_t **out) {
+    *out = (int32_t *)malloc(n * 3 * sizeof(int32_t));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "morton alloc"); return -1; }
+    for (size_t i = 0; i < n; ++i)
+        tvdb_morton_decode(codes[i], &(*out)[3*i], &(*out)[3*i+1], &(*out)[3*i+2]);
+    return 0;
+}
+
+int tvdb_py_voxelize_points(const float *pts, size_t n,
+                            float vsx, float vsy, float vsz,
+                            float ox, float oy, float oz,
+                            int32_t **out, size_t *out_count) {
+    float vs[3] = { vsx, vsy, vsz }, org[3] = { ox, oy, oz };
+    if (!tvdb_voxelize_points(pts, n, vs, org, out, out_count)) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "voxelize_points failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_coords_in_set(const int32_t *active, size_t na,
+                          const int32_t *query, size_t nq, uint8_t **out) {
+    *out = (uint8_t *)malloc(nq ? nq : 1);
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "coords_in_set alloc"); return -1; }
+    if (!tvdb_coords_in_set(active, na, query, nq, *out)) {
+        free(*out); *out = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "coords_in_set failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_points_in_set(const float *pts, size_t np,
+                          float vsx, float vsy, float vsz,
+                          float ox, float oy, float oz,
+                          const int32_t *active, size_t na, uint8_t **out) {
+    float vs[3] = { vsx, vsy, vsz }, org[3] = { ox, oy, oz };
+    *out = (uint8_t *)malloc(np ? np : 1);
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "points_in_set alloc"); return -1; }
+    if (!tvdb_points_in_set(pts, np, vs, org, active, na, *out)) {
+        free(*out); *out = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "points_in_set failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_ijk_to_index(const int32_t *active, size_t na,
+                         const int32_t *query, size_t nq, int64_t **out) {
+    *out = (int64_t *)malloc((nq ? nq : 1) * sizeof(int64_t));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "ijk_to_index alloc"); return -1; }
+    if (!tvdb_ijk_to_index(active, na, query, nq, *out)) {
+        free(*out); *out = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "ijk_to_index failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_volume_render(const float *data, int nx, int ny, int nz, float vs,
+                          float ox, float oy, float oz,
+                          float ex, float ey, float ez,
+                          float cx, float cy, float cz,
+                          float ux, float uy, float uz,
+                          float fov_y, int width, int height,
+                          float sigma, float step, float background,
+                          float **out_img) {
+    tvdb_dense_grid g;
+    g.nx = nx; g.ny = ny; g.nz = nz; g.voxel_size = vs;
+    g.ox = ox; g.oy = oy; g.oz = oz; g.data = (float *)data;
+    *out_img = (float *)malloc((size_t)width * height * sizeof(float));
+    if (!*out_img) { snprintf(s_error_msg, sizeof(s_error_msg), "volume_render alloc"); return -1; }
+    float eye[3] = { ex, ey, ez }, center[3] = { cx, cy, cz }, up[3] = { ux, uy, uz };
+    if (!tvdb_volume_render(&g, eye, center, up, fov_y, width, height,
+                            sigma, step, background, *out_img)) {
+        free(*out_img); *out_img = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "volume_render failed");
+        return -1;
+    }
+    return 0;
+}
+
+int tvdb_py_neighbor_counts(const int32_t *active, size_t na,
+                            int connectivity, int32_t **out) {
+    *out = (int32_t *)malloc((na ? na : 1) * sizeof(int32_t));
+    if (!*out) { snprintf(s_error_msg, sizeof(s_error_msg), "neighbor_counts alloc"); return -1; }
+    if (!tvdb_neighbor_counts(active, na, connectivity, *out)) {
+        free(*out); *out = NULL;
+        snprintf(s_error_msg, sizeof(s_error_msg), "neighbor_counts failed");
+        return -1;
+    }
+    return 0;
+}
+
+/* Rebuild a clean SDF from the isosurface. The output has its own dims and
+   transform (sized by mesh-to-SDF), so report all of them; out_data is the
+   transferred malloc'd buffer. Returns 0 on success, -1 on error. */
+int tvdb_py_level_set_rebuild(const float *data, int nx, int ny, int nz,
+                              float vs, float ox, float oy, float oz,
+                              float isovalue, float voxel_size, float half_width,
+                              int sign_method,
+                              float **out_data, int *onx, int *ony, int *onz,
+                              float *ovs, float *oox, float *ooy, float *ooz) {
+    tvdb_dense_grid in;
+    in.nx = nx; in.ny = ny; in.nz = nz; in.voxel_size = vs;
+    in.ox = ox; in.oy = oy; in.oz = oz; in.data = (float *)data;
+    tvdb_dense_grid out = {};
+    if (!tvdb_level_set_rebuild(&in, isovalue, voxel_size, half_width, sign_method, &out)) {
+        if (out.data) tvdb_dense_grid_free(&out);
+        snprintf(s_error_msg, sizeof(s_error_msg),
+                 "level_set_rebuild failed (empty isosurface?)");
+        return -1;
+    }
+    *out_data = out.data;  /* transfer */
+    *onx = out.nx; *ony = out.ny; *onz = out.nz;
+    *ovs = out.voxel_size; *oox = out.ox; *ooy = out.oy; *ooz = out.oz;
+    return 0;
 }
 
 } /* extern "C" */

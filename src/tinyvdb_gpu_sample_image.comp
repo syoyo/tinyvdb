@@ -1,0 +1,19 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform sampler3D grid_image;
+layout(std430, set = 0, binding = 1) readonly buffer PointsBuffer { vec4 pts[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer { float out_values[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;
+  vec4 origin_voxel;
+  uint count;
+} u;
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x;
+  if (idx >= u.count) return;
+  vec3 p = pts[idx].xyz;
+  vec3 f = (p - u.origin_voxel.xyz) / u.origin_voxel.w - vec3(0.5);
+  vec3 uvw = (f + vec3(0.5)) / vec3(u.dim.xyz);
+  out_values[idx] = texture(grid_image, uvw).r;
+}

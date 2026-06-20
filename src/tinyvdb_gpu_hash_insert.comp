@@ -1,0 +1,40 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Open-addressing hash set keyed by voxel ijk, sized O(point count) so the
+// construction is independent of the ijk bounding-box volume. state: 0=empty,
+// 1=occupied. keys: cap*3 int32 (ix,iy,iz). One thread per point claims a slot
+// via CAS and linear-probes on collision; an exact-key match is a duplicate.
+layout(std430, set = 0, binding = 0) buffer StateBuf { uint state[]; };
+layout(std430, set = 0, binding = 1) buffer KeyBuf { int keys[]; };
+layout(std430, set = 0, binding = 2) readonly buffer PtBuf { vec4 pts[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  vec4 vs;        // voxel size xyz
+  vec4 origin;    // origin xyz
+  uint count;
+  uint cap;
+  uint mask;      // cap - 1 (cap is a power of two)
+  uint pad;
+} u;
+
+void main() {
+  uint p = gl_GlobalInvocationID.x;
+  if (p >= u.count) return;
+  vec3 q = pts[p].xyz;
+  int ix = int(floor((q.x - u.origin.x) / u.vs.x));
+  int iy = int(floor((q.y - u.origin.y) / u.vs.y));
+  int iz = int(floor((q.z - u.origin.z) / u.vs.z));
+  uint h = (uint(ix) * 73856093u) ^ (uint(iy) * 19349663u) ^ (uint(iz) * 83492791u);
+  uint slot = h & u.mask;
+  for (uint probe = 0u; probe < u.cap; ++probe) {
+    uint prev = atomicCompSwap(state[slot], 0u, 1u);
+    if (prev == 0u) {
+      keys[slot*3u + 0u] = ix; keys[slot*3u + 1u] = iy; keys[slot*3u + 2u] = iz;
+      return;
+    }
+    // Occupied: an exact match is a duplicate. The owner may still be mid-write
+    // (keys not yet visible), in which case we fall through and probe on; any
+    // resulting duplicate slot is removed by the host-side finalize pass.
+    if (keys[slot*3u + 0u] == ix && keys[slot*3u + 1u] == iy && keys[slot*3u + 2u] == iz) return;
+    slot = (slot + 1u) & u.mask;
+  }
+}

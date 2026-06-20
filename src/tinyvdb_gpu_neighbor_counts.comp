@@ -1,0 +1,38 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer ActiveBuffer { ivec4 act[]; };
+layout(std430, set = 0, binding = 1) buffer OutBuffer { int out_counts[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  uint na;
+  int connectivity;  // 6 (face) or 26 (face+edge+vertex)
+} u;
+
+bool present(ivec3 q) {
+  for (uint i = 0; i < u.na; ++i) {
+    if (act[i].xyz == q) return true;
+  }
+  return false;
+}
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.na) return;
+  ivec3 c = act[i].xyz;
+  int cnt = 0;
+  if (u.connectivity == 26) {
+    for (int dz = -1; dz <= 1; ++dz)
+      for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx) {
+          if (dx == 0 && dy == 0 && dz == 0) continue;
+          if (present(c + ivec3(dx, dy, dz))) ++cnt;
+        }
+  } else {
+    if (present(c + ivec3( 1, 0, 0))) ++cnt;
+    if (present(c + ivec3(-1, 0, 0))) ++cnt;
+    if (present(c + ivec3( 0, 1, 0))) ++cnt;
+    if (present(c + ivec3( 0,-1, 0))) ++cnt;
+    if (present(c + ivec3( 0, 0, 1))) ++cnt;
+    if (present(c + ivec3( 0, 0,-1))) ++cnt;
+  }
+  out_counts[i] = cnt;
+}

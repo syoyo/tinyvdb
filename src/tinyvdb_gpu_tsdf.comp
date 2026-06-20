@@ -1,0 +1,51 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) buffer TsdfBuffer { float tsdf[]; };
+layout(std430, set = 0, binding = 1) buffer WeightBuffer { float weights[]; };
+layout(std430, set = 0, binding = 2) readonly buffer DepthBuffer { float depth[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;        // nx, ny, nz, unused
+  vec4 grid;        // ox, oy, oz, voxel_size
+  vec4 pose0;       // pose_cw rows (camera-from-world)
+  vec4 pose1;
+  vec4 pose2;
+  vec4 intr;        // fx, fy, cx, cy
+  ivec4 fdim;       // width, height
+  vec4 rng;         // depth_min, depth_max, trunc, unused
+} u;
+
+// Single-frame TSDF fusion: project each voxel into the camera, look up depth,
+// running weighted average (matches tvdb_integrate_tsdf). One thread per voxel;
+// voxels are disjoint so no atomics are needed.
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint total = uint(u.dim.x * u.dim.y * u.dim.z);
+  if (gid >= total) return;
+  int iz = int(gid) / (u.dim.x * u.dim.y);
+  int rem = int(gid) - iz * u.dim.x * u.dim.y;
+  int iy = rem / u.dim.x;
+  int ix = rem - iy * u.dim.x;
+
+  float vs = u.grid.w;
+  vec3 w = u.grid.xyz + (vec3(ix, iy, iz) + 0.5) * vs;
+  float cx = u.pose0.x*w.x + u.pose0.y*w.y + u.pose0.z*w.z + u.pose0.w;
+  float cy = u.pose1.x*w.x + u.pose1.y*w.y + u.pose1.z*w.z + u.pose1.w;
+  float cz = u.pose2.x*w.x + u.pose2.y*w.y + u.pose2.z*w.z + u.pose2.w;
+  if (cz <= 0.0) return;
+  float uu = u.intr.x * (cx / cz) + u.intr.z;
+  float vv = u.intr.y * (cy / cz) + u.intr.w;
+  int iu = int(floor(uu + 0.5));
+  int iv = int(floor(vv + 0.5));
+  if (iu < 0 || iu >= u.fdim.x || iv < 0 || iv >= u.fdim.y) return;
+  float d = depth[iv * u.fdim.x + iu];
+  if (!(d >= u.rng.x && d <= u.rng.y)) return;
+  float sdf = d - cz;
+  if (sdf < -u.rng.z) return;
+  if (sdf > u.rng.z) sdf = u.rng.z;
+
+  float w_old = weights[gid];
+  float t_old = tsdf[gid];
+  float w_new = w_old + 1.0;
+  tsdf[gid] = (t_old * w_old + sdf) / w_new;
+  weights[gid] = w_new;
+}

@@ -1,0 +1,24 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) buffer OccBuffer { uint occ[]; };
+layout(std430, set = 0, binding = 1) readonly buffer PointBuffer { vec4 points[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dims;    // local occupancy dims (bbox extent)
+  ivec4 bbmin;   // ijk bbox minimum
+  vec4 vs;       // voxel size xyz
+  vec4 origin;   // origin xyz
+  uint count;
+} u;
+
+// Mark occupied voxels of a point cloud into a dense (bbox-local) occupancy
+// grid. One thread per point; idempotent writes.
+void main() {
+  uint p = gl_GlobalInvocationID.x;
+  if (p >= u.count) return;
+  vec3 q = points[p].xyz;
+  int ix = int(floor((q.x - u.origin.x) / u.vs.x)) - u.bbmin.x;
+  int iy = int(floor((q.y - u.origin.y) / u.vs.y)) - u.bbmin.y;
+  int iz = int(floor((q.z - u.origin.z) / u.vs.z)) - u.bbmin.z;
+  if (ix < 0 || ix >= u.dims.x || iy < 0 || iy >= u.dims.y || iz < 0 || iz >= u.dims.z) return;
+  occ[(iz * u.dims.y + iy) * u.dims.x + ix] = 1u;
+}

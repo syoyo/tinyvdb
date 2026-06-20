@@ -1,0 +1,153 @@
+// Theme C: resampling, signed flood fill, and higher-order advection.
+
+#include "tinyvdb_topology.h"
+#include "tinyvdb_ops.h"
+#include "tinyvdb_levelset.h"
+#include "tinyvdb_mesh.h"
+#include "tinyvdb_sample.h"
+
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+static int fails = 0;
+#define EXPECT(cond, msg) do { \
+    if (!(cond)) { fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, msg); ++fails; } \
+} while (0)
+
+static inline float at3(const tvdb_dense_grid* g, int i, int j, int k) {
+  return g->data[(size_t)(k * g->ny + j) * g->nx + i];
+}
+
+int main(void) {
+  // ---- Resample: linear field is reproduced exactly by box/quadratic ----
+  {
+    tvdb_dense_grid g; tvdb_dense_grid_init(&g, 20, 16, 12);
+    g.voxel_size = 0.1f; g.ox = -1.0f; g.oy = 0.5f; g.oz = 2.0f;
+    for (int k = 0; k < g.nz; ++k)
+      for (int j = 0; j < g.ny; ++j)
+        for (int i = 0; i < g.nx; ++i)
+          // f(p) = world-x of the voxel center (a linear field).
+          g.data[(size_t)(k*g.ny+j)*g.nx+i] = g.ox + ((float)i + 0.5f) * g.voxel_size;
+
+    for (int order = 1; order <= 2; ++order) {       // box, quadratic reproduce linear
+      tvdb_dense_grid r;
+      EXPECT(tvdb_resample_grid(&g, 0.07f, order, &r, NULL), "resample ok");
+      EXPECT(fabsf(r.voxel_size - 0.07f) < 1e-6f, "resample voxel size");
+      EXPECT(fabsf(r.ox - g.ox) < 1e-6f, "resample preserves origin");
+      // World AABB preserved: dim*vs ~ source dim*vs.
+      EXPECT(fabsf(r.nx * 0.07f - g.nx * 0.1f) < 0.07f, "resample preserves world extent");
+      // Check only where the sampler stencil stays inside the source (the
+      // quadratic 3-wide stencil clamps at the source's outermost cell).
+      float xlo = g.ox + 1.5f * g.voxel_size, xhi = g.ox + (g.nx - 1.5f) * g.voxel_size;
+      float maxerr = 0.0f; int checked = 0;
+      for (int k = 0; k < r.nz; ++k)
+        for (int j = 0; j < r.ny; ++j)
+          for (int i = 0; i < r.nx; ++i) {
+            float wx = r.ox + ((float)i + 0.5f) * r.voxel_size;
+            if (wx < xlo || wx > xhi) continue;
+            float e = fabsf(at3(&r, i, j, k) - wx);
+            if (e > maxerr) maxerr = e;
+            ++checked;
+          }
+      EXPECT(checked > 0 && maxerr < 1e-4f, "resample reproduces a linear field");
+      tvdb_dense_grid_free(&r);
+    }
+    // Nearest is approximate but bounded by half a source voxel.
+    tvdb_dense_grid rn;
+    tvdb_resample_grid(&g, 0.07f, 0, &rn, NULL);
+    int bad = 0;
+    for (int k = 0; k < rn.nz; ++k)
+      for (int j = 0; j < rn.ny; ++j)
+        for (int i = 0; i < rn.nx; ++i) {
+          float wx = rn.ox + ((float)i + 0.5f) * rn.voxel_size;
+          if (fabsf(at3(&rn, i, j, k) - wx) > 0.5f * g.voxel_size + 1e-4f) ++bad;
+        }
+    EXPECT(bad == 0, "nearest resample within half a source voxel");
+    tvdb_dense_grid_free(&rn);
+    tvdb_dense_grid_free(&g);
+  }
+
+  // ---- Resample a sphere SDF preserves the zero crossing ----
+  {
+    float c[3] = { 0, 0, 0 };
+    tvdb_dense_grid s; tvdb_level_set_sphere(1.0f, c, 0.05f, 3.0f, &s);
+    tvdb_dense_grid r;
+    tvdb_resample_grid(&s, 0.1f, 1, &r, NULL);
+    // Sample along +x: zero crossing near radius 1.
+    float pv = tvdb_sample_trilinear_dense(&r, 0, 0, 0), dcross = -1.0f;
+    for (int t = 1; t <= 40 && dcross < 0.0f; ++t) {
+      float d = (float)t * 0.05f;
+      float v = tvdb_sample_trilinear_dense(&r, d, 0, 0);
+      if (pv < 0.0f && v >= 0.0f) dcross = (float)(t-1)*0.05f + 0.05f*(-pv)/(v-pv);
+      pv = v;
+    }
+    EXPECT(dcross > 0.0f && fabsf(dcross - 1.0f) < 0.1f, "resampled sphere keeps R~1");
+    tvdb_dense_grid_free(&s); tvdb_dense_grid_free(&r);
+  }
+
+  // ---- Signed flood fill restores interior sign ----
+  {
+    float c[3] = { 0, 0, 0 };
+    tvdb_dense_grid s; tvdb_level_set_sphere(1.0f, c, 0.05f, 3.0f, &s);
+    float band = 3.0f * 0.05f;                        // 0.15
+    size_t n = (size_t)s.nx * s.ny * s.nz;
+    // Corrupt: wipe the interior sign (all far voxels -> +band).
+    for (size_t i = 0; i < n; ++i)
+      if (fabsf(s.data[i]) >= band - 1e-5f) s.data[i] = band;
+    int ci = (int)lroundf((0 - s.ox)/0.05f - 0.5f);
+    int cj = (int)lroundf((0 - s.oy)/0.05f - 0.5f);
+    int ck = (int)lroundf((0 - s.oz)/0.05f - 0.5f);
+    EXPECT(at3(&s, ci, cj, ck) > 0.0f, "corrupted interior is +band");
+
+    tvdb_signed_flood_fill(&s, band);
+    EXPECT(fabsf(at3(&s, ci, cj, ck) + band) < 1e-5f, "flood restores interior -band");
+    EXPECT(fabsf(s.data[0] - band) < 1e-5f, "exterior corner stays +band");
+    // The narrow band (|value| < band) is untouched: still both signs present.
+    int neg = 0, pos = 0;
+    for (size_t i = 0; i < n; ++i) { if (s.data[i] < 0) ++neg; else ++pos; }
+    EXPECT(neg > 0 && pos > 0, "flood keeps interior + exterior");
+    tvdb_dense_grid_free(&s);
+  }
+
+  // ---- Higher-order advection of a linear field by a constant velocity ----
+  // Advecting f(x)=world-x by uniform v=+1 for dt shifts it: result(x)=x - v*dt.
+  // Linear field + constant velocity + trilinear backtrace is exact for every
+  // scheme (the MacCormack/BFECC round-trip error vanishes).
+  {
+    int nx = 24, ny = 8, nz = 8; float vs = 0.1f, dt = 0.1f;
+    tvdb_dense_grid f; tvdb_dense_grid_init(&f, nx, ny, nz);
+    f.voxel_size = vs; f.ox = -1.0f; f.oy = f.oz = 0.0f;
+    for (int k = 0; k < nz; ++k)
+      for (int j = 0; j < ny; ++j)
+        for (int i = 0; i < nx; ++i)
+          f.data[(size_t)(k*ny+j)*nx+i] = f.ox + ((float)i + 0.5f) * vs;
+    tvdb_dense_vec_grid vel; tvdb_dense_vec_grid_init(&vel, nx, ny, nz);
+    vel.voxel_size = vs;
+    for (size_t i = 0; i < (size_t)nx*ny*nz; ++i) {
+      vel.data[i*3+0] = 1.0f; vel.data[i*3+1] = 0.0f; vel.data[i*3+2] = 0.0f;
+    }
+    int schemes[] = { 0, 1, 2, 3, 4, 5 };
+    for (int s = 0; s < 6; ++s) {
+      tvdb_dense_grid r; tvdb_dense_grid_init(&r, nx, ny, nz);
+      r.voxel_size = vs; r.ox = f.ox; r.oy = r.oz = 0.0f;
+      tvdb_advect(&f, &vel, dt, schemes[s], 1, &r);
+      float maxerr = 0.0f; int checked = 0;
+      for (int k = 0; k < nz; ++k)
+        for (int j = 0; j < ny; ++j)
+          for (int i = 2; i < nx - 2; ++i) {
+            float wx = f.ox + ((float)i + 0.5f) * vs;
+            float e = fabsf(at3(&r, i, j, k) - (wx - dt * 1.0f));
+            if (e > maxerr) maxerr = e;
+            ++checked;
+          }
+      EXPECT(checked > 0 && maxerr < 1e-3f, "advect shifts a linear field");
+      tvdb_dense_grid_free(&r);
+    }
+    tvdb_dense_grid_free(&f); tvdb_dense_vec_grid_free(&vel);
+  }
+
+  if (fails) { fprintf(stderr, "%d FAILURES\n", fails); return 1; }
+  printf("All resample/advect tests passed.\n");
+  return 0;
+}

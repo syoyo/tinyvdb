@@ -1,0 +1,15 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Demonstration kernel for the generic dispatch engine: out = alpha*x + y.
+// Bindings follow the generic convention (storage inputs, storage output,
+// then a uniform params block).
+layout(std430, set = 0, binding = 0) readonly buffer X { float x[]; };
+layout(std430, set = 0, binding = 1) readonly buffer Y { float y[]; };
+layout(std430, set = 0, binding = 2) buffer O { float o[]; };
+layout(std140, set = 0, binding = 3) uniform Params { uint n; float alpha; } u;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.n) return;
+  o[i] = u.alpha * x[i] + y[i];
+}

@@ -1,0 +1,45 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer OccBuffer { uint occ[]; };
+layout(std430, set = 0, binding = 1) readonly buffer ValBuffer { float val[]; };
+layout(std430, set = 0, binding = 2) buffer CounterBuffer { uint counter[]; };
+layout(std430, set = 0, binding = 3) buffer OutBuffer { int outd[]; };  // 4 ints/voxel
+layout(std140, set = 0, binding = 4) uniform Params {
+  ivec4 dims;
+  ivec4 bbmin;
+  uint count;   // unused
+  uint cap;
+} u;
+
+// One sparse-erode step (matches tvdb_erode_sparse_step): keep an active voxel
+// only if all 6 face neighbors are active, with max-pooled value. Iterates over
+// the dense occupancy grid; emits kept voxels via an atomic counter.
+void main() {
+  uint v = gl_GlobalInvocationID.x;
+  int nx = u.dims.x, ny = u.dims.y, nz = u.dims.z;
+  uint total = uint(nx * ny * nz);
+  if (v >= total) return;
+  if (occ[v] == 0u) return;
+  int lz = int(v) / (nx * ny);
+  int rem = int(v) - lz * nx * ny;
+  int ly = rem / nx;
+  int lx = rem - ly * nx;
+  const ivec3 N[6] = ivec3[6](ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
+  float r = val[v];
+  bool keep = true;
+  for (int n = 0; n < 6; ++n) {
+    int mx = lx + N[n].x, my = ly + N[n].y, mz = lz + N[n].z;
+    if (mx < 0 || mx >= nx || my < 0 || my >= ny || mz < 0 || mz >= nz) { keep = false; break; }
+    uint m = uint((mz * ny + my) * nx + mx);
+    if (occ[m] == 0u) { keep = false; break; }
+    if (val[m] > r) r = val[m];
+  }
+  if (!keep) return;
+  uint slot = atomicAdd(counter[0], 1u);
+  if (slot < u.cap) {
+    outd[4u*slot + 0u] = lx + u.bbmin.x;
+    outd[4u*slot + 1u] = ly + u.bbmin.y;
+    outd[4u*slot + 2u] = lz + u.bbmin.z;
+    outd[4u*slot + 3u] = floatBitsToInt(r);
+  }
+}

@@ -1,0 +1,60 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Grid + weight storage are aliased as uint[] for a portable CAS-based atomic
+// float add (no atomic-float extension required).
+layout(std430, set = 0, binding = 0) buffer DataBuffer { uint data[]; };
+layout(std430, set = 0, binding = 1) readonly buffer PointBuffer { vec4 points[]; };
+layout(std430, set = 0, binding = 2) readonly buffer ValueBuffer { float vals[]; };
+layout(std430, set = 0, binding = 3) buffer WeightBuffer { uint wdata[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  ivec4 dim;        // nx, ny, nz, unused
+  vec4 grid;        // ox, oy, oz, voxel_size
+  uint count;
+  uint has_weights;
+} u;
+
+void atomic_add_f(uint i, float v) {
+  uint old = data[i], assumed;
+  do { assumed = old;
+       old = atomicCompSwap(data[i], assumed, floatBitsToUint(uintBitsToFloat(assumed) + v));
+  } while (old != assumed);
+}
+void atomic_add_w(uint i, float v) {
+  uint old = wdata[i], assumed;
+  do { assumed = old;
+       old = atomicCompSwap(wdata[i], assumed, floatBitsToUint(uintBitsToFloat(assumed) + v));
+  } while (old != assumed);
+}
+
+// Trilinear splat: scatter point values onto the grid (matches
+// tvdb_splat_trilinear_dense). One thread per point; corner accumulation uses
+// portable CAS atomic-add. Grid (and weights) must be pre-uploaded.
+void main() {
+  uint p = gl_GlobalInvocationID.x;
+  if (p >= u.count) return;
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  float vs = u.grid.w;
+  vec3 pos = points[p].xyz;
+  float vx = (pos.x - u.grid.x) / vs - 0.5;
+  float vy = (pos.y - u.grid.y) / vs - 0.5;
+  float vz = (pos.z - u.grid.z) / vs - 0.5;
+  int ix = int(floor(vx)), iy = int(floor(vy)), iz = int(floor(vz));
+  float fx = vx - float(ix), fy = vy - float(iy), fz = vz - float(iz);
+  float v = vals[p];
+  for (int dz = 0; dz < 2; ++dz) {
+    int z = iz + dz; if (z < 0 || z >= nz) continue;
+    float wz = (dz == 0) ? (1.0 - fz) : fz;
+    for (int dy = 0; dy < 2; ++dy) {
+      int y = iy + dy; if (y < 0 || y >= ny) continue;
+      float wy = (dy == 0) ? (1.0 - fy) : fy;
+      for (int dx = 0; dx < 2; ++dx) {
+        int x = ix + dx; if (x < 0 || x >= nx) continue;
+        float wx = (dx == 0) ? (1.0 - fx) : fx;
+        float w = wx * wy * wz;
+        uint idx = uint((z * ny + y) * nx + x);
+        atomic_add_f(idx, w * v);
+        if (u.has_weights != 0u) atomic_add_w(idx, w);
+      }
+    }
+  }
+}

@@ -1,0 +1,77 @@
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer GaussBuffer { float gauss[]; };   // 12/gaussian
+layout(std430, set = 0, binding = 1) readonly buffer EntryBuffer { ivec4 entries[]; }; // sorted (gid,tx,ty)
+// per pixel: [dL_dC[0..F-1], fwd_alpha, dL_dA], stride F+2.
+layout(std430, set = 0, binding = 2) readonly buffer PixelBuffer { float pixel[]; };
+layout(std430, set = 0, binding = 3) buffer GradBuffer { uint grad[]; };               // (6+F)/gaussian, float bits
+layout(std140, set = 0, binding = 4) uniform Params {
+  uvec4 dim;          // width, height, F, tile_size
+  uint num_entries;
+  float alpha_threshold;
+  uint has_dLdA;
+  uint pad;
+  vec4 background;
+} u;
+
+void gadd(uint i, float v) {
+  uint old = grad[i], as;
+  do { as = old; old = atomicCompSwap(grad[i], as, floatBitsToUint(uintBitsToFloat(as) + v)); } while (as != old);
+}
+
+// Backward of the depth-sorted alpha blend (matches tvdb_gaussian_rasterize_
+// backward): one thread per pixel walks the entries in REVERSE with local
+// T/S state; per-gaussian gradients are scatter-added via CAS atomic-add.
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint W = u.dim.x, H = u.dim.y, F = u.dim.z, TS = u.dim.w;
+  if (gid >= W * H) return;
+  int px = int(gid % W), py = int(gid / W);
+  int my_tx = px / int(TS), my_ty = py / int(TS);
+  uint stride = F + 2u, base = gid * stride;
+
+  float Tfin = 1.0 - pixel[base + F];
+  if (Tfin < 0.0) Tfin = 0.0;
+  float Tc = Tfin;
+  float Sc[3]; for (uint f = 0; f < F; ++f) Sc[f] = Tfin * u.background[f];
+  float dLdA = (u.has_dLdA != 0u) ? pixel[base + F + 1u] : 0.0;
+
+  for (uint e = u.num_entries; e > 0u; --e) {
+    ivec4 ent = entries[e - 1u];
+    if (ent.y != my_tx || ent.z != my_ty) continue;
+    uint g = uint(ent.x) * 12u;
+    float a_c = gauss[g+2u], b_c = gauss[g+3u], c_c = gauss[g+4u], opac = gauss[g+5u];
+    float dx = float(px) - gauss[g+0u], dy = float(py) - gauss[g+1u];
+    float sigma = 0.5 * (a_c*dx*dx + 2.0*b_c*dx*dy + c_c*dy*dy);
+    if (sigma > 10.0) continue;
+    float G = exp(-sigma);
+    float alpha = opac * G;
+    if (alpha < u.alpha_threshold) continue;
+    float one_m = 1.0 - alpha; if (one_m < 1e-7) one_m = 1e-7;
+    float T_pre = Tc / one_m;
+    if (T_pre < 0.001) continue;
+
+    uint gb = uint(ent.x) * (6u + F);
+    float w = T_pre * alpha;
+    float dotCf = 0.0, dotCS = 0.0;
+    for (uint f = 0; f < F; ++f) {
+      float dLdCf = pixel[base + f];
+      float feat = gauss[g + 8u + f];
+      dotCf += dLdCf * feat;
+      dotCS += dLdCf * Sc[f];
+      gadd(gb + 6u + f, dLdCf * w);
+    }
+    float dL_dalpha = T_pre * dotCf - dotCS / one_m;
+    if (u.has_dLdA != 0u) dL_dalpha += dLdA * Tfin / one_m;
+    gadd(gb + 5u, dL_dalpha * G);
+    float dL_dsigma = -alpha * dL_dalpha;
+    gadd(gb + 0u, dL_dsigma * -(a_c*dx + b_c*dy));
+    gadd(gb + 1u, dL_dsigma * -(b_c*dx + c_c*dy));
+    gadd(gb + 2u, dL_dsigma * 0.5 * dx * dx);
+    gadd(gb + 3u, dL_dsigma * dx * dy);
+    gadd(gb + 4u, dL_dsigma * 0.5 * dy * dy);
+
+    for (uint f = 0; f < F; ++f) Sc[f] += w * gauss[g + 8u + f];
+    Tc = T_pre;
+  }
+}

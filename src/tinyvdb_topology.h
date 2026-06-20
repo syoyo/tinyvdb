@@ -26,6 +26,17 @@ bool tvdb_refine_grid(const tvdb_dense_grid* in,
                       tvdb_dense_grid* out,
                       tvdb_arena_allocator_t* arena);
 
+// Resample `in` to an arbitrary (non-integer) `voxel_size`, covering the same
+// world AABB and origin. `order` selects the sampler: 0 = nearest (point),
+// 1 = trilinear (box), 2 = triquadratic. Generalizes coarsen/refine to any
+// scale factor (parallels OpenVDB GridTransformer::resampleToMatch).
+// `out` may be uninitialized; if `arena` is NULL, malloc is used.
+bool tvdb_resample_grid(const tvdb_dense_grid* in,
+                        float voxel_size,
+                        int order,
+                        tvdb_dense_grid* out,
+                        tvdb_arena_allocator_t* arena);
+
 // Snap voxels within `tolerance` of `background` to exactly `background`.
 // (For dense grids this is mostly a quantization/cleanup step; the sparse
 // analogue would also drop those voxels.)

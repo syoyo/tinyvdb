@@ -1,0 +1,41 @@
+#version 450
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer { float data[]; };
+// Per-thread partial: (sum_grad_mag, max_grad_error, bad_count, band_count).
+layout(std430, set = 0, binding = 1) buffer PartialBuffer { vec4 partials[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;        // nx, ny, nz, unused
+  vec4 cfg;         // inv2vs, band_world, tol, unused
+  uint count;       // interior voxel count = (nx-2)(ny-2)(nz-2)
+  uint nthreads;
+} u;
+
+// Narrow-band |grad| ~ 1 health check (matches tvdb_check_level_set). Each
+// thread grid-strides over interior voxels and folds a partial reduction.
+void main() {
+  uint t = gl_GlobalInvocationID.x;
+  if (t >= u.nthreads) return;
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  int inx = nx - 2, iny = ny - 2;
+  uint sl = uint(nx * ny);
+  float inv2vs = u.cfg.x, band_world = u.cfg.y, tol = u.cfg.z;
+  float sum_mag = 0.0, max_err = 0.0, bad = 0.0, band = 0.0;
+  for (uint m = t; m < u.count; m += u.nthreads) {
+    int ix = int(m % uint(inx)) + 1;
+    uint tmp = m / uint(inx);
+    int iy = int(tmp % uint(iny)) + 1;
+    int iz = int(tmp / uint(iny)) + 1;
+    uint c = uint((iz * ny + iy) * nx + ix);
+    if (band_world > 0.0 && abs(data[c]) > band_world) continue;
+    float gx = (data[c + 1u] - data[c - 1u]) * inv2vs;
+    float gy = (data[c + uint(nx)] - data[c - uint(nx)]) * inv2vs;
+    float gz = (data[c + sl] - data[c - sl]) * inv2vs;
+    float mag = sqrt(gx*gx + gy*gy + gz*gz);
+    float err = abs(mag - 1.0);
+    sum_mag += mag;
+    if (err > max_err) max_err = err;
+    if (err > tol) bad += 1.0;
+    band += 1.0;
+  }
+  partials[t] = vec4(sum_mag, max_err, bad, band);
+}

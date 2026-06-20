@@ -1,0 +1,48 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer  { float in_data[]; };
+layout(std430, set = 0, binding = 1) buffer OutBuffer { float out_data[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 in_dim;     // nx, ny, nz
+  ivec4 out_dim;
+  vec4 in_origin;   // xyz
+  vec4 out_origin;  // xyz
+  float in_vs;
+  float out_vs;
+} u;
+
+// World-space trilinear read with edge clamp (matches tvdb_sample_trilinear_dense).
+float fetch(int x, int y, int z) {
+  x = clamp(x, 0, u.in_dim.x - 1);
+  y = clamp(y, 0, u.in_dim.y - 1);
+  z = clamp(z, 0, u.in_dim.z - 1);
+  return in_data[(z * u.in_dim.y + y) * u.in_dim.x + x];
+}
+
+// Upsample by integer factor via trilinear resample at output voxel centers
+// (matches tvdb_refine_grid).
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint total = uint(u.out_dim.x * u.out_dim.y * u.out_dim.z);
+  if (gid >= total) return;
+  int oz = int(gid) / (u.out_dim.x * u.out_dim.y);
+  int rem = int(gid) - oz * u.out_dim.x * u.out_dim.y;
+  int oy = rem / u.out_dim.x;
+  int ox = rem - oy * u.out_dim.x;
+  float wx = u.out_origin.x + (float(ox) + 0.5) * u.out_vs;
+  float wy = u.out_origin.y + (float(oy) + 0.5) * u.out_vs;
+  float wz = u.out_origin.z + (float(oz) + 0.5) * u.out_vs;
+  float fx = (wx - u.in_origin.x) / u.in_vs - 0.5;
+  float fy = (wy - u.in_origin.y) / u.in_vs - 0.5;
+  float fz = (wz - u.in_origin.z) / u.in_vs - 0.5;
+  int ix = int(floor(fx)), iy = int(floor(fy)), iz = int(floor(fz));
+  float tx = fx - float(ix), ty = fy - float(iy), tz = fz - float(iz);
+  float c000 = fetch(ix, iy, iz),     c100 = fetch(ix+1, iy, iz);
+  float c010 = fetch(ix, iy+1, iz),   c110 = fetch(ix+1, iy+1, iz);
+  float c001 = fetch(ix, iy, iz+1),   c101 = fetch(ix+1, iy, iz+1);
+  float c011 = fetch(ix, iy+1, iz+1), c111 = fetch(ix+1, iy+1, iz+1);
+  float c00 = mix(c000, c100, tx), c10 = mix(c010, c110, tx);
+  float c01 = mix(c001, c101, tx), c11 = mix(c011, c111, tx);
+  float c0 = mix(c00, c10, ty), c1 = mix(c01, c11, ty);
+  out_data[gid] = mix(c0, c1, tz);
+}

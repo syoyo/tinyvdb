@@ -1,0 +1,28 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Two vec4 per ray: (ox,oy,oz,tmin), (dx,dy,dz,tmax).
+layout(std430, set = 0, binding = 0) readonly buffer RayBuffer { vec4 rays[]; };
+layout(std430, set = 0, binding = 1) buffer PointBuffer { float out_points[]; };
+layout(std430, set = 0, binding = 2) buffer TBuffer { float out_t[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  uint n_rays;
+  uint n_samples;
+} u;
+
+// Uniform samples along each ray in [tmin,tmax] (matches tvdb_uniform_ray_samples).
+// One thread per (ray, sample); output index = ray * n_samples + sample.
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint total = u.n_rays * u.n_samples;
+  if (gid >= total) return;
+  uint ri = gid / u.n_samples;
+  uint si = gid - ri * u.n_samples;
+  vec4 r0 = rays[2 * ri], r1 = rays[2 * ri + 1];
+  float a = (u.n_samples == 1u) ? 0.0 : float(si) / float(u.n_samples - 1u);
+  float t = r0.w + (r1.w - r0.w) * a;
+  out_t[gid] = t;
+  vec3 p = r0.xyz + t * r1.xyz;
+  out_points[3 * gid + 0] = p.x;
+  out_points[3 * gid + 1] = p.y;
+  out_points[3 * gid + 2] = p.z;
+}

@@ -50,6 +50,44 @@ void tvdb_sample_trilinear_dense_batch(const tvdb_dense_grid* g,
   }
 }
 
+// 3-point parabola through (val[0],val[1],val[2]) at offsets (-1,0,1) at `w`.
+static inline float tvdb_quad1_s(const float* val, float w) {
+  float a = 0.5f * (val[0] + val[2]) - val[1];
+  float b = 0.5f * (val[2] - val[0]);
+  return w * (w * a + b) + val[1];
+}
+
+float tvdb_sample_quadratic_dense(const tvdb_dense_grid* g,
+                                  float wx, float wy, float wz) {
+  float cx = (wx - g->ox) / g->voxel_size - 0.5f;   // cell-center voxel coord
+  float cy = (wy - g->oy) / g->voxel_size - 0.5f;
+  float cz = (wz - g->oz) / g->voxel_size - 0.5f;
+  int ix = (int)floorf(cx), iy = (int)floorf(cy), iz = (int)floorf(cz);
+  float u = cx - ix, v = cy - iy, w = cz - iz;
+  float vx[3];
+  for (int dx = 0; dx < 3; ++dx) {
+    float vy[3];
+    for (int dy = 0; dy < 3; ++dy) {
+      float vz[3];
+      for (int dz = 0; dz < 3; ++dz)
+        vz[dz] = tvdb_at(g, ix - 1 + dx, iy - 1 + dy, iz - 1 + dz);  // clamped
+      vy[dy] = tvdb_quad1_s(vz, w);
+    }
+    vx[dx] = tvdb_quad1_s(vy, v);
+  }
+  return tvdb_quad1_s(vx, u);
+}
+
+void tvdb_sample_quadratic_dense_batch(const tvdb_dense_grid* g,
+                                       const tvdb_vec3f* pts,
+                                       size_t n,
+                                       float* out) {
+  #pragma omp parallel for schedule(static)
+  for (long long i = 0; i < (long long)n; ++i) {
+    out[i] = tvdb_sample_quadratic_dense(g, pts[i].x, pts[i].y, pts[i].z);
+  }
+}
+
 void tvdb_sample_trilinear_vec_dense(const tvdb_dense_vec_grid* g,
                                      float wx, float wy, float wz,
                                      tvdb_vec3f* out) {
@@ -134,6 +172,59 @@ void tvdb_splat_trilinear_dense(tvdb_dense_grid* g,
           if (weights) {
             #pragma omp atomic update
             weights[idx] += w;
+          }
+        }
+      }
+    }
+  }
+}
+
+// Quadratic basis weights for the 3-point stencil at offsets (-1,0,1), the
+// adjoint (scatter) form of tvdb_quad1_s: quad1(v,w) = sum_k w_k(w) * v[k].
+static inline void tvdb_quad_w3(float t, float w[3]) {
+  w[0] = 0.5f * t * (t - 1.0f);
+  w[1] = 1.0f - t * t;
+  w[2] = 0.5f * t * (t + 1.0f);
+}
+
+void tvdb_splat_quadratic_dense(tvdb_dense_grid* g,
+                                const tvdb_vec3f* pts,
+                                const float* vals,
+                                size_t n,
+                                float* weights) {
+  if (!g->data) return;
+  // Adjoint of tvdb_sample_quadratic_dense: a 3x3x3 stencil with per-axis
+  // quadratic weights, scattered with the same cell-center convention. Like
+  // tvdb_splat_trilinear_dense, taps outside the grid are skipped (zero-pad
+  // adjoint), so this is the VJP of a zero-padded — not edge-clamped — sample.
+  #pragma omp parallel for schedule(static)
+  for (long long pp = 0; pp < (long long)n; ++pp) {
+    size_t p = (size_t)pp;
+    float cx = (pts[p].x - g->ox) / g->voxel_size - 0.5f;
+    float cy = (pts[p].y - g->oy) / g->voxel_size - 0.5f;
+    float cz = (pts[p].z - g->oz) / g->voxel_size - 0.5f;
+    int ix = (int)floorf(cx), iy = (int)floorf(cy), iz = (int)floorf(cz);
+    float u = cx - (float)ix, v = cy - (float)iy, w = cz - (float)iz;
+    float wu[3], wv[3], ww[3];
+    tvdb_quad_w3(u, wu); tvdb_quad_w3(v, wv); tvdb_quad_w3(w, ww);
+    const float val = vals[p];
+    for (int dz = 0; dz < 3; ++dz) {
+      int z = iz - 1 + dz;
+      if (z < 0 || z >= g->nz) continue;
+      for (int dy = 0; dy < 3; ++dy) {
+        int y = iy - 1 + dy;
+        if (y < 0 || y >= g->ny) continue;
+        for (int dx = 0; dx < 3; ++dx) {
+          int x = ix - 1 + dx;
+          if (x < 0 || x >= g->nx) continue;
+          float ww3 = wu[dx] * wv[dy] * ww[dz];
+          size_t idx = tvdb_idx(g, x, y, z);
+          float wval = ww3 * val;
+          #pragma omp atomic update
+          g->data[idx] += wval;
+          if (weights) {
+            #pragma omp atomic update
+            weights[idx] += ww3;
           }
         }
       }

@@ -1,0 +1,38 @@
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer ImgA { float a[]; };
+layout(std430, set = 0, binding = 1) readonly buffer ImgB { float b[]; };
+layout(std430, set = 0, binding = 2) readonly buffer WinBuf { float win[]; };  // (2r+1)^2 weights
+layout(std430, set = 0, binding = 3) buffer OutMap { float ssim[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  uvec4 dim;       // width, height, channels, radius
+  float c1;
+  float c2;
+} u;
+
+// Windowed SSIM (Gaussian weights, clamp-to-edge) per pixel, averaged over
+// channels. A Gaussian-splat training loss helper.
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  int W = int(u.dim.x), H = int(u.dim.y), C = int(u.dim.z), R = int(u.dim.w);
+  if (gid >= uint(W * H)) return;
+  int px = int(gid) % W, py = int(gid) / W;
+  int win_n = 2*R + 1;
+
+  float ssim_sum = 0.0;
+  for (int c = 0; c < C; ++c) {
+    float ma = 0.0, mb = 0.0, maa = 0.0, mbb = 0.0, mab = 0.0;
+    for (int dy = -R; dy <= R; ++dy)
+      for (int dx = -R; dx <= R; ++dx) {
+        int qx = clamp(px+dx, 0, W-1), qy = clamp(py+dy, 0, H-1);
+        float wgt = win[(dy+R)*win_n + (dx+R)];
+        float va = a[(qy*W + qx)*C + c], vb = b[(qy*W + qx)*C + c];
+        ma += wgt*va; mb += wgt*vb; maa += wgt*va*va; mbb += wgt*vb*vb; mab += wgt*va*vb;
+      }
+    float va2 = maa - ma*ma, vb2 = mbb - mb*mb, vab = mab - ma*mb;
+    float num = (2.0*ma*mb + u.c1) * (2.0*vab + u.c2);
+    float den = (ma*ma + mb*mb + u.c1) * (va2 + vb2 + u.c2);
+    ssim_sum += num / den;
+  }
+  ssim[gid] = ssim_sum / float(C);
+}

@@ -1,0 +1,53 @@
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+// 12 floats/gaussian: x,y,conic_a,conic_b,conic_c,opacity,depth,radius,f0,f1,f2,_
+layout(std430, set = 0, binding = 0) readonly buffer GaussBuffer { float gauss[]; };
+// host-sorted (tile_x, tile_y, depth) entries: xyz = (gaussian_id, tile_x, tile_y).
+layout(std430, set = 0, binding = 1) readonly buffer EntryBuffer { ivec4 entries[]; };
+layout(std430, set = 0, binding = 2) buffer ImageBuffer { float out_image[]; };
+// per pixel: [2*p+0] = alpha, [2*p+1] = intBitsToFloat(last_id).
+layout(std430, set = 0, binding = 3) buffer AuxBuffer { float out_aux[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  uvec4 dim;           // width, height, num_features, tile_size
+  uint num_entries;
+  float alpha_threshold;
+  vec2 pad;
+  vec4 background;
+} u;
+
+// Tile-based depth-sorted front-to-back alpha blend (matches
+// tvdb_gaussian_rasterize_forward). One thread per pixel; iterates the
+// globally-sorted entry list, so the gaussians touching this pixel's tile are
+// composited in depth order exactly as on the CPU.
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint W = u.dim.x, H = u.dim.y, NF = u.dim.z, TS = u.dim.w;
+  if (gid >= W * H) return;
+  int px = int(gid % W), py = int(gid / W);
+  int my_tx = px / int(TS), my_ty = py / int(TS);
+
+  float img[3];
+  for (uint f = 0; f < NF; ++f) img[f] = u.background[f];
+  float a_acc = 0.0;
+  int last = -1;
+
+  for (uint e = 0; e < u.num_entries; ++e) {
+    ivec4 ent = entries[e];
+    if (ent.y != my_tx || ent.z != my_ty) continue;
+    uint g = uint(ent.x) * 12u;
+    float dx = float(px) - gauss[g+0u], dy = float(py) - gauss[g+1u];
+    float sigma = 0.5 * (gauss[g+2u]*dx*dx + 2.0*gauss[g+3u]*dx*dy + gauss[g+4u]*dy*dy);
+    if (sigma > 10.0) continue;
+    float ga = gauss[g+5u] * exp(-sigma);
+    if (ga < u.alpha_threshold) continue;
+    float T = 1.0 - a_acc;
+    if (T < 0.001) continue;
+    a_acc += ga * T;
+    for (uint f = 0; f < NF; ++f) img[f] += gauss[g+8u+f] * ga * T;
+    last = ent.x;
+  }
+
+  for (uint f = 0; f < NF; ++f) out_image[gid*NF + f] = img[f];
+  out_aux[gid*2u + 0u] = a_acc;
+  out_aux[gid*2u + 1u] = intBitsToFloat(last);
+}

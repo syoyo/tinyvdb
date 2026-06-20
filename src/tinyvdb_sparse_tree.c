@@ -49,11 +49,25 @@ static int32_t nth_set_bit_pos(const tvdb_nodemask_t *m, size_t c) {
     return -1;
 }
 
+// Ensure the DFS work-stack can hold one more entry; grows by doubling.
+// Returns false on OOM. The stack is a *work* stack (holds all pending nodes
+// across the tree's breadth), so it must grow with the fan-out of internal
+// nodes — a fixed depth-sized buffer silently drops children of wide nodes.
+static bool visit_stack_reserve(stack_entry_t **stack, size_t *cap, size_t need) {
+    if (need <= *cap) return true;
+    size_t nc = *cap ? *cap : 256;
+    while (nc < need) nc *= 2;
+    stack_entry_t *ns = (stack_entry_t *)realloc(*stack, nc * sizeof(stack_entry_t));
+    if (!ns) return false;
+    *stack = ns; *cap = nc;
+    return true;
+}
+
 static void visit_subtree(const tvdb_tree_t *tree, size_t root_idx,
                           tvdb_leaf_visit_fn cb, void *user, size_t *count, int *stop) {
-    enum { MAX_DEPTH = 64 };
-    stack_entry_t stack[MAX_DEPTH];
-    int sp = 0;
+    stack_entry_t *stack = NULL;
+    size_t cap = 0, sp = 0;
+    if (!visit_stack_reserve(&stack, &cap, 1)) return;
     stack[sp].node_idx = root_idx;
     stack[sp].origin[0] = stack[sp].origin[1] = stack[sp].origin[2] = 0;
     sp++;
@@ -67,14 +81,13 @@ static void visit_subtree(const tvdb_tree_t *tree, size_t root_idx,
         if (node->type == TVDB_NODE_ROOT) {
             const tvdb_root_node_t *r = &node->u.root;
             for (uint32_t c = 0; c < r->num_children && !*stop; ++c) {
-                if (sp < MAX_DEPTH) {
-                    stack[sp].node_idx = r->child_indices[c];
-                    // Root provides explicit child origins.
-                    stack[sp].origin[0] = r->child_origins[3 * c + 0];
-                    stack[sp].origin[1] = r->child_origins[3 * c + 1];
-                    stack[sp].origin[2] = r->child_origins[3 * c + 2];
-                    ++sp;
-                }
+                if (!visit_stack_reserve(&stack, &cap, sp + 1)) { *stop = 1; break; }
+                stack[sp].node_idx = r->child_indices[c];
+                // Root provides explicit child origins.
+                stack[sp].origin[0] = r->child_origins[3 * c + 0];
+                stack[sp].origin[1] = r->child_origins[3 * c + 1];
+                stack[sp].origin[2] = r->child_origins[3 * c + 2];
+                ++sp;
             }
         } else if (node->type == TVDB_NODE_INTERNAL) {
             const tvdb_internal_node_t *in = &node->u.internal;
@@ -110,13 +123,12 @@ static void visit_subtree(const tvdb_tree_t *tree, size_t root_idx,
                 int32_t ix = (s >> (2 * parent_log2dim)) & parent_dim_mask;
                 int32_t iy = (s >> parent_log2dim)       & parent_dim_mask;
                 int32_t iz = s & parent_dim_mask;
-                if (sp < MAX_DEPTH) {
-                    stack[sp].node_idx = in->child_indices[c_idx];
-                    stack[sp].origin[0] = parent_origin[0] + ix * child_dim;
-                    stack[sp].origin[1] = parent_origin[1] + iy * child_dim;
-                    stack[sp].origin[2] = parent_origin[2] + iz * child_dim;
-                    ++sp;
-                }
+                if (!visit_stack_reserve(&stack, &cap, sp + 1)) { *stop = 1; break; }
+                stack[sp].node_idx = in->child_indices[c_idx];
+                stack[sp].origin[0] = parent_origin[0] + ix * child_dim;
+                stack[sp].origin[1] = parent_origin[1] + iy * child_dim;
+                stack[sp].origin[2] = parent_origin[2] + iz * child_dim;
+                ++sp;
                 ++c_idx;
             }
         } else if (node->type == TVDB_NODE_LEAF) {
@@ -131,12 +143,23 @@ static void visit_subtree(const tvdb_tree_t *tree, size_t root_idx,
             if (cb(&v, user)) *stop = 1;
         }
     }
+    free(stack);
     (void)leaf_log2dim_for_index;
 }
 
 size_t tvdb_grid_visit_leaves_float(const tvdb_grid_t *grid,
                                     tvdb_leaf_visit_fn cb, void *user) {
     if (!grid || !cb || !grid_is_float(grid)) return 0;
+    if (grid->tree.num_nodes == 0) return 0;
+    size_t count = 0;
+    int stop = 0;
+    visit_subtree(&grid->tree, /*root_idx=*/0, cb, user, &count, &stop);
+    return count;
+}
+
+size_t tvdb_grid_visit_leaves(const tvdb_grid_t *grid,
+                              tvdb_leaf_visit_fn cb, void *user) {
+    if (!grid || !cb) return 0;
     if (grid->tree.num_nodes == 0) return 0;
     size_t count = 0;
     int stop = 0;

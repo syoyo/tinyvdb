@@ -1,0 +1,69 @@
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer GridBuffer { float grid[]; };
+// tables: [0..255] = edge table, [256 + cube*16 + i] = triangle table.
+layout(std430, set = 0, binding = 1) readonly buffer TableBuffer { int tables[]; };
+layout(std430, set = 0, binding = 2) buffer VertBuffer { float out_verts[]; };  // 9 floats/triangle, 5 tris/cell
+layout(std430, set = 0, binding = 3) buffer CountBuffer { int tri_counts[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  ivec4 dim;       // nx, ny, nz, unused
+  vec4 grid_o;     // ox, oy, oz, voxel_size
+  float isovalue;
+  uint cell_count;
+} u;
+
+const ivec3 CORNER[8] = ivec3[8](ivec3(0,0,0), ivec3(1,0,0), ivec3(1,1,0), ivec3(0,1,0),
+                                 ivec3(0,0,1), ivec3(1,0,1), ivec3(1,1,1), ivec3(0,1,1));
+const int EDGE_A[12] = int[12](0,1,2,3, 4,5,6,7, 0,1,2,3);
+const int EDGE_B[12] = int[12](1,2,3,0, 5,6,7,4, 4,5,6,7);
+
+vec3 corner_pos(ivec3 g) { return u.grid_o.xyz + (vec3(g) + 0.5) * u.grid_o.w; }
+vec3 vert_interp(float iso, vec3 p1, vec3 p2, float v1, float v2) {
+  if (abs(v1 - v2) < 1e-10) return p1;
+  float mu = (iso - v1) / (v2 - v1);
+  return p1 + mu * (p2 - p1);
+}
+
+// Marching cubes, one thread per cell, emitting each cell's triangles in
+// scan/table order so the result matches tvdb_sdf_to_mesh triangle-for-triangle.
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  if (gid >= u.cell_count) return;
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  int cnx = nx - 1, cny = ny - 1;
+  int cz = int(gid) / (cnx * cny);
+  int rem = int(gid) - cz * cnx * cny;
+  int cy = rem / cnx;
+  int cx = rem - cy * cnx;
+
+  float val[8];
+  ivec3 cc[8];
+  int cube = 0;
+  for (int i = 0; i < 8; ++i) {
+    cc[i] = ivec3(cx, cy, cz) + CORNER[i];
+    val[i] = grid[(cc[i].z * ny + cc[i].y) * nx + cc[i].x];
+    if (val[i] < u.isovalue) cube |= (1 << i);
+  }
+  int edges = tables[cube];
+  if (edges == 0) { tri_counts[gid] = 0; return; }
+
+  vec3 ev[12];
+  for (int e = 0; e < 12; ++e) {
+    if ((edges & (1 << e)) == 0) continue;
+    int a = EDGE_A[e], b = EDGE_B[e];
+    ev[e] = vert_interp(u.isovalue, corner_pos(cc[a]), corner_pos(cc[b]), val[a], val[b]);
+  }
+
+  int tc = 0;
+  for (int i = 0; i < 16 && tables[256 + cube*16 + i] != -1; i += 3) {
+    int e0 = tables[256 + cube*16 + i];
+    int e1 = tables[256 + cube*16 + i + 1];
+    int e2 = tables[256 + cube*16 + i + 2];
+    uint base = (gid * 5u + uint(tc)) * 9u;
+    out_verts[base+0u]=ev[e0].x; out_verts[base+1u]=ev[e0].y; out_verts[base+2u]=ev[e0].z;
+    out_verts[base+3u]=ev[e1].x; out_verts[base+4u]=ev[e1].y; out_verts[base+5u]=ev[e1].z;
+    out_verts[base+6u]=ev[e2].x; out_verts[base+7u]=ev[e2].y; out_verts[base+8u]=ev[e2].z;
+    ++tc;
+  }
+  tri_counts[gid] = tc;
+}

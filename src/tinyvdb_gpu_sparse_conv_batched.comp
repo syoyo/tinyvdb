@@ -1,0 +1,39 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+// Jagged concatenation of all grids: xyz = coord, w = value bits.
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer { ivec4 in_data[]; };
+// per voxel: [2*i] = grid range start, [2*i+1] = grid range end (exclusive).
+layout(std430, set = 0, binding = 1) readonly buffer RangeBuffer { int range[]; };
+layout(std430, set = 0, binding = 2) readonly buffer KernelBuffer { float kernel[]; };
+layout(std430, set = 0, binding = 3) buffer OutValBuffer { float out_values[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  ivec4 kdim;     // kx, ky, kz
+  uint total;     // total voxels across the batch
+  float pad_value;
+} u;
+
+// Bounded brute-force lookup within one grid's [lo,hi) range.
+float lookup(int lo, int hi, ivec3 q) {
+  for (int j = lo; j < hi; ++j)
+    if (in_data[j].xyz == q) return intBitsToFloat(in_data[j].w);
+  return u.pad_value;
+}
+
+// Batched same-topology sparse conv: one dispatch over the whole batch (a
+// GridBatch/JaggedTensor-style layout); each voxel's lookups are confined to
+// its own grid via the per-voxel range.
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.total) return;
+  int lo = range[2u*i + 0u], hi = range[2u*i + 1u];
+  ivec3 c = in_data[i].xyz;
+  int ax = u.kdim.x/2, ay = u.kdim.y/2, az = u.kdim.z/2;
+  float acc = 0.0;
+  for (int dk = 0; dk < u.kdim.z; ++dk)
+    for (int dj = 0; dj < u.kdim.y; ++dj)
+      for (int di = 0; di < u.kdim.x; ++di) {
+        uint ki = uint((dk*u.kdim.y + dj)*u.kdim.x + di);
+        acc += kernel[ki] * lookup(lo, hi, c + ivec3(di-ax, dj-ay, dk-az));
+      }
+  out_values[i] = acc;
+}

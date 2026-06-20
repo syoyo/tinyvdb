@@ -32,8 +32,8 @@ void tvdb_dense_vec_grid_free(tvdb_dense_vec_grid* grid) {
 // helpers
 // -------------------------------------------------------------------------
 
-static int tvdb_grid_voxels(const tvdb_dense_grid* g) {
-  return g->nx * g->ny * g->nz;
+static size_t tvdb_grid_voxels(const tvdb_dense_grid* g) {
+  return (size_t)g->nx * g->ny * g->nz;
 }
 
 static int tvdb_grid_same_shape(const tvdb_dense_grid* a, const tvdb_dense_grid* b) {
@@ -415,6 +415,197 @@ void tvdb_curl(const tvdb_dense_vec_grid* vec, tvdb_dense_vec_grid* curl) {
 }
 
 // -------------------------------------------------------------------------
+// Vector-grid operators (GridOperators): magnitude, normalize, cpt
+// -------------------------------------------------------------------------
+
+void tvdb_magnitude(const tvdb_dense_vec_grid* vec, tvdb_dense_grid* out) {
+  if (!vec->data || !out->data) return;
+  if (vec->nx != out->nx || vec->ny != out->ny || vec->nz != out->nz) return;
+  const size_t nv = (size_t)vec->nx * vec->ny * vec->nz;
+  for (size_t i = 0; i < nv; ++i) {
+    float x = vec->data[i*3+0], y = vec->data[i*3+1], z = vec->data[i*3+2];
+    out->data[i] = sqrtf(x*x + y*y + z*z);
+  }
+}
+
+void tvdb_normalize_vec(const tvdb_dense_vec_grid* vec, tvdb_dense_vec_grid* out) {
+  if (!vec->data || !out->data) return;
+  if (vec->nx != out->nx || vec->ny != out->ny || vec->nz != out->nz) return;
+  const size_t nv = (size_t)vec->nx * vec->ny * vec->nz;
+  for (size_t i = 0; i < nv; ++i) {
+    float x = vec->data[i*3+0], y = vec->data[i*3+1], z = vec->data[i*3+2];
+    float m = sqrtf(x*x + y*y + z*z);
+    if (m > 0.0f) {
+      out->data[i*3+0] = x/m; out->data[i*3+1] = y/m; out->data[i*3+2] = z/m;
+    } else {
+      out->data[i*3+0] = out->data[i*3+1] = out->data[i*3+2] = 0.0f;
+    }
+  }
+}
+
+void tvdb_cpt(const tvdb_dense_grid* sdf, tvdb_dense_vec_grid* out) {
+  if (!sdf->data || !out->data) return;
+  if (sdf->nx != out->nx || sdf->ny != out->ny || sdf->nz != out->nz) return;
+  const int nx = sdf->nx, ny = sdf->ny, nz = sdf->nz;
+  const float vs = sdf->voxel_size;
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix) {
+        size_t i = (size_t)(iz * ny + iy) * nx + ix;
+        float px = sdf->ox + ((float)ix + 0.5f) * vs;
+        float py = sdf->oy + ((float)iy + 0.5f) * vs;
+        float pz = sdf->oz + ((float)iz + 0.5f) * vs;
+        float gx = tvdb_central_diff_x(sdf, ix, iy, iz);
+        float gy = tvdb_central_diff_y(sdf, ix, iy, iz);
+        float gz = tvdb_central_diff_z(sdf, ix, iy, iz);
+        float d = sdf->data[i];
+        out->data[i*3+0] = px - d*gx;
+        out->data[i*3+1] = py - d*gy;
+        out->data[i*3+2] = pz - d*gz;
+      }
+}
+
+// -------------------------------------------------------------------------
+// Composite (per-voxel binary ops)
+// -------------------------------------------------------------------------
+
+void tvdb_comp_max(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result) {
+  if (!tvdb_grid_same_shape(a, b) || !tvdb_grid_same_shape(a, result)) return;
+  const size_t nv = (size_t)tvdb_grid_voxels(a);
+  for (size_t i = 0; i < nv; ++i) { float va = a->data[i], vb = b->data[i]; result->data[i] = va > vb ? va : vb; }
+}
+void tvdb_comp_min(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result) {
+  if (!tvdb_grid_same_shape(a, b) || !tvdb_grid_same_shape(a, result)) return;
+  const size_t nv = (size_t)tvdb_grid_voxels(a);
+  for (size_t i = 0; i < nv; ++i) { float va = a->data[i], vb = b->data[i]; result->data[i] = va < vb ? va : vb; }
+}
+void tvdb_comp_sum(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result) {
+  if (!tvdb_grid_same_shape(a, b) || !tvdb_grid_same_shape(a, result)) return;
+  const size_t nv = (size_t)tvdb_grid_voxels(a);
+  for (size_t i = 0; i < nv; ++i) result->data[i] = a->data[i] + b->data[i];
+}
+void tvdb_comp_mult(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result) {
+  if (!tvdb_grid_same_shape(a, b) || !tvdb_grid_same_shape(a, result)) return;
+  const size_t nv = (size_t)tvdb_grid_voxels(a);
+  for (size_t i = 0; i < nv; ++i) result->data[i] = a->data[i] * b->data[i];
+}
+
+// -------------------------------------------------------------------------
+// In-place filters: median, mean-curvature flow
+// -------------------------------------------------------------------------
+
+static int tvdb_cmp_float(const void* pa, const void* pb) {
+  float a = *(const float*)pa, b = *(const float*)pb;
+  return a < b ? -1 : (a > b ? 1 : 0);
+}
+
+void tvdb_median_filter(tvdb_dense_grid* grid, int radius, int iterations) {
+  if (!grid->data || radius < 1 || iterations < 1) return;
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  const size_t nv = (size_t)nx * ny * nz;
+  float* tmp = (float*)malloc(nv * sizeof(float));
+  int w = 2 * radius + 1;
+  float* win = (float*)malloc((size_t)w * w * w * sizeof(float));
+  if (!tmp || !win) { free(tmp); free(win); return; }
+  for (int it = 0; it < iterations; ++it) {
+    memcpy(tmp, grid->data, nv * sizeof(float));
+    for (int iz = 0; iz < nz; ++iz)
+      for (int iy = 0; iy < ny; ++iy)
+        for (int ix = 0; ix < nx; ++ix) {
+          int n = 0;
+          for (int dz = -radius; dz <= radius; ++dz)
+            for (int dy = -radius; dy <= radius; ++dy)
+              for (int dx = -radius; dx <= radius; ++dx) {
+                int x = ix + dx, y = iy + dy, z = iz + dz;       // clamp to border
+                if (x < 0) x = 0; else if (x >= nx) x = nx - 1;
+                if (y < 0) y = 0; else if (y >= ny) y = ny - 1;
+                if (z < 0) z = 0; else if (z >= nz) z = nz - 1;
+                win[n++] = tmp[(size_t)(z * ny + y) * nx + x];
+              }
+          qsort(win, (size_t)n, sizeof(float), tvdb_cmp_float);
+          grid->data[(size_t)(iz * ny + iy) * nx + ix] = win[n / 2];
+        }
+  }
+  free(tmp); free(win);
+}
+
+void tvdb_mean_curvature_flow(tvdb_dense_grid* grid, float dt, int iterations) {
+  if (!grid->data || iterations < 1) return;
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  if (nx < 3 || ny < 3 || nz < 3) return;
+  const size_t nv = (size_t)nx * ny * nz;
+  const size_t sl = (size_t)nx * ny;
+  const float h = grid->voxel_size, h2 = grid->voxel_size * grid->voxel_size;
+  float* tmp = (float*)malloc(nv * sizeof(float));
+  if (!tmp) return;
+  for (int it = 0; it < iterations; ++it) {
+    memcpy(tmp, grid->data, nv * sizeof(float));
+    for (int iz = 1; iz < nz - 1; ++iz)
+      for (int iy = 1; iy < ny - 1; ++iy)
+        for (int ix = 1; ix < nx - 1; ++ix) {
+          size_t i = (size_t)(iz * ny + iy) * nx + ix;
+          float px = (tmp[i+1] - tmp[i-1]) / (2.0f*h);
+          float py = (tmp[i+nx] - tmp[i-nx]) / (2.0f*h);
+          float pz = (tmp[i+sl] - tmp[i-sl]) / (2.0f*h);
+          float g2 = px*px + py*py + pz*pz;
+          if (g2 < 1e-12f) continue;
+          float pxx = (tmp[i+1] - 2.0f*tmp[i] + tmp[i-1]) / h2;
+          float pyy = (tmp[i+nx] - 2.0f*tmp[i] + tmp[i-nx]) / h2;
+          float pzz = (tmp[i+sl] - 2.0f*tmp[i] + tmp[i-sl]) / h2;
+          float pxy = (tmp[i+1+nx] - tmp[i-1+nx] - tmp[i+1-nx] + tmp[i-1-nx]) / (4.0f*h2);
+          float pyz = (tmp[i+nx+sl] - tmp[i-nx+sl] - tmp[i+nx-sl] + tmp[i-nx-sl]) / (4.0f*h2);
+          float pxz = (tmp[i+1+sl] - tmp[i-1+sl] - tmp[i+1-sl] + tmp[i-1-sl]) / (4.0f*h2);
+          float num = pxx*(py*py + pz*pz) + pyy*(px*px + pz*pz) + pzz*(px*px + py*py)
+                    - 2.0f*(pxy*px*py + pyz*py*pz + pxz*px*pz);
+          grid->data[i] = tmp[i] + dt * (num / g2);   // dt * |grad| * kappa
+        }
+  }
+  free(tmp);
+}
+
+// -------------------------------------------------------------------------
+// Signed flood fill
+// -------------------------------------------------------------------------
+
+void tvdb_signed_flood_fill(tvdb_dense_grid* grid, float band_world) {
+  if (!grid->data || band_world <= 0.0f) return;
+  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
+  const size_t n = (size_t)nx * ny * nz, sl = (size_t)nx * ny;
+  const float thresh = band_world - 1e-5f;          // |value| >= thresh => "far"
+  uint8_t* vis = (uint8_t*)calloc(n, 1);
+  size_t* stack = (size_t*)malloc(n * sizeof(size_t));
+  if (!vis || !stack) { free(vis); free(stack); return; }
+
+  // Seed: far voxels on the grid boundary (connected to "infinity" = exterior).
+  size_t sp = 0;
+  for (int k = 0; k < nz; ++k)
+    for (int j = 0; j < ny; ++j)
+      for (int i = 0; i < nx; ++i) {
+        if (i != 0 && i != nx-1 && j != 0 && j != ny-1 && k != 0 && k != nz-1) continue;
+        size_t idx = ((size_t)k * ny + j) * nx + i;
+        if (fabsf(grid->data[idx]) >= thresh && !vis[idx]) { vis[idx] = 1; stack[sp++] = idx; }
+      }
+  // Flood the exterior through far voxels only (the band blocks it).
+  while (sp > 0) {
+    size_t v = stack[--sp];
+    int vi = (int)(v % nx), vj = (int)((v / nx) % ny), vk = (int)(v / sl);
+    const int off[6][3] = { {1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1} };
+    for (int t = 0; t < 6; ++t) {
+      int ni = vi+off[t][0], nj = vj+off[t][1], nk = vk+off[t][2];
+      if (ni<0||ni>=nx||nj<0||nj>=ny||nk<0||nk>=nz) continue;
+      size_t nidx = ((size_t)nk * ny + nj) * nx + ni;
+      if (fabsf(grid->data[nidx]) >= thresh && !vis[nidx]) { vis[nidx] = 1; stack[sp++] = nidx; }
+    }
+  }
+  // Assign signs: reached far = exterior (+band), unreached far = interior (-band).
+  for (size_t i = 0; i < n; ++i)
+    if (fabsf(grid->data[i]) >= thresh)
+      grid->data[i] = vis[i] ? band_world : -band_world;
+
+  free(vis); free(stack);
+}
+
+// -------------------------------------------------------------------------
 // Phase 2: trilinear sampler in voxel space (used by advection)
 // -------------------------------------------------------------------------
 
@@ -471,6 +662,150 @@ void tvdb_advect_semi_lagrangian(const tvdb_dense_grid* field,
       }
     }
   }
+}
+
+// -------------------------------------------------------------------------
+// Higher-order advection (RK1-4, MacCormack, BFECC)
+// -------------------------------------------------------------------------
+
+// Trilinear sample of a vector grid at voxel coordinates (clamped at borders).
+static void tvdb_sample_vec_voxel(const tvdb_dense_vec_grid* g, float vx, float vy, float vz,
+                                  float out[3]) {
+  int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);
+  float fx = vx - ix, fy = vy - iy, fz = vz - iz;
+  for (int c = 0; c < 3; ++c) {
+    float c00 = tvdb_vec_at(g, ix, iy, iz, c) * (1-fx) + tvdb_vec_at(g, ix+1, iy, iz, c) * fx;
+    float c10 = tvdb_vec_at(g, ix, iy+1, iz, c) * (1-fx) + tvdb_vec_at(g, ix+1, iy+1, iz, c) * fx;
+    float c01 = tvdb_vec_at(g, ix, iy, iz+1, c) * (1-fx) + tvdb_vec_at(g, ix+1, iy, iz+1, c) * fx;
+    float c11 = tvdb_vec_at(g, ix, iy+1, iz+1, c) * (1-fx) + tvdb_vec_at(g, ix+1, iy+1, iz+1, c) * fx;
+    float c0 = c00 * (1-fy) + c10 * fy, c1 = c01 * (1-fy) + c11 * fy;
+    out[c] = c0 * (1-fz) + c1 * fz;
+  }
+}
+
+// Backtrace a voxel position by `dt` (negative dt = forward trace) under the
+// steady velocity field, integrating dx/ds = -v(x)/h with an RK scheme of the
+// given order (1..4).
+static void tvdb_rk_backtrace(const tvdb_dense_vec_grid* vel, float inv_h, float dt, int order,
+                              float x, float y, float z, float* bx, float* by, float* bz) {
+  float v[3];
+  tvdb_sample_vec_voxel(vel, x, y, z, v);
+  float g1x = -v[0]*inv_h, g1y = -v[1]*inv_h, g1z = -v[2]*inv_h;
+  if (order <= 1) { *bx = x + dt*g1x; *by = y + dt*g1y; *bz = z + dt*g1z; return; }
+  if (order == 2) {  // midpoint
+    tvdb_sample_vec_voxel(vel, x + 0.5f*dt*g1x, y + 0.5f*dt*g1y, z + 0.5f*dt*g1z, v);
+    *bx = x - dt*v[0]*inv_h; *by = y - dt*v[1]*inv_h; *bz = z - dt*v[2]*inv_h; return;
+  }
+  if (order == 3) {  // Kutta's third order
+    tvdb_sample_vec_voxel(vel, x + 0.5f*dt*g1x, y + 0.5f*dt*g1y, z + 0.5f*dt*g1z, v);
+    float g2x = -v[0]*inv_h, g2y = -v[1]*inv_h, g2z = -v[2]*inv_h;
+    tvdb_sample_vec_voxel(vel, x - dt*g1x + 2*dt*g2x, y - dt*g1y + 2*dt*g2y, z - dt*g1z + 2*dt*g2z, v);
+    float g3x = -v[0]*inv_h, g3y = -v[1]*inv_h, g3z = -v[2]*inv_h;
+    *bx = x + dt*(g1x + 4*g2x + g3x)/6.0f;
+    *by = y + dt*(g1y + 4*g2y + g3y)/6.0f;
+    *bz = z + dt*(g1z + 4*g2z + g3z)/6.0f;
+    return;
+  }
+  // RK4
+  tvdb_sample_vec_voxel(vel, x + 0.5f*dt*g1x, y + 0.5f*dt*g1y, z + 0.5f*dt*g1z, v);
+  float g2x = -v[0]*inv_h, g2y = -v[1]*inv_h, g2z = -v[2]*inv_h;
+  tvdb_sample_vec_voxel(vel, x + 0.5f*dt*g2x, y + 0.5f*dt*g2y, z + 0.5f*dt*g2z, v);
+  float g3x = -v[0]*inv_h, g3y = -v[1]*inv_h, g3z = -v[2]*inv_h;
+  tvdb_sample_vec_voxel(vel, x + dt*g3x, y + dt*g3y, z + dt*g3z, v);
+  float g4x = -v[0]*inv_h, g4y = -v[1]*inv_h, g4z = -v[2]*inv_h;
+  *bx = x + dt*(g1x + 2*g2x + 2*g3x + g4x)/6.0f;
+  *by = y + dt*(g1y + 2*g2y + 2*g3y + g4y)/6.0f;
+  *bz = z + dt*(g1z + 2*g2z + 2*g3z + g4z)/6.0f;
+}
+
+// Single semi-Lagrangian pass: result[x] = field(backtrace(x)).
+static void tvdb_advect_sl(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* vel,
+                           float dt, int order, tvdb_dense_grid* result) {
+  const int nx = field->nx, ny = field->ny, nz = field->nz;
+  const float inv_h = 1.0f / field->voxel_size;
+  for (int iz = 0; iz < nz; ++iz)
+    for (int iy = 0; iy < ny; ++iy)
+      for (int ix = 0; ix < nx; ++ix) {
+        float bx, by, bz;
+        tvdb_rk_backtrace(vel, inv_h, dt, order, (float)ix, (float)iy, (float)iz, &bx, &by, &bz);
+        result->data[tvdb_idx(result, ix, iy, iz)] = tvdb_sample_dense_voxel(field, bx, by, bz);
+      }
+}
+
+// Min/max of the trilinear stencil of `field` at voxel coords (for clamping).
+static void tvdb_stencil_minmax(const tvdb_dense_grid* g, float vx, float vy, float vz,
+                                float* mn, float* mx) {
+  int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);
+  *mn = 3.4e38f; *mx = -3.4e38f;
+  for (int dz = 0; dz < 2; ++dz)
+    for (int dy = 0; dy < 2; ++dy)
+      for (int dx = 0; dx < 2; ++dx) {
+        float s = tvdb_at(g, ix+dx, iy+dy, iz+dz);
+        if (s < *mn) *mn = s;
+        if (s > *mx) *mx = s;
+      }
+}
+
+void tvdb_advect(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* velocity,
+                 float dt, int scheme, int clamp, tvdb_dense_grid* result) {
+  if (!field->data || !velocity->data || !result->data) return;
+  if (field->nx != velocity->nx || field->ny != velocity->ny || field->nz != velocity->nz) return;
+  if (!tvdb_grid_same_shape(field, result)) return;
+
+  if (scheme <= TVDB_ADVECT_RK4) {           // pure semi-Lagrangian, RK order = scheme+1
+    tvdb_advect_sl(field, velocity, dt, scheme + 1, result);
+    return;
+  }
+
+  const int nx = field->nx, ny = field->ny, nz = field->nz;
+  const size_t n = (size_t)nx * ny * nz;
+  const float inv_h = 1.0f / field->voxel_size;
+  tvdb_dense_grid phat, pstar;
+  tvdb_dense_grid_init(&phat, nx, ny, nz); phat.voxel_size = field->voxel_size;
+  tvdb_dense_grid_init(&pstar, nx, ny, nz); pstar.voxel_size = field->voxel_size;
+  if (!phat.data || !pstar.data) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return; }
+
+  // Forward then backward advect (RK2 internally), giving a 2nd-order estimate
+  // of the round-trip error (field - pstar).
+  tvdb_advect_sl(field, velocity, dt, 2, &phat);    // phat = A(field)
+  tvdb_advect_sl(&phat, velocity, -dt, 2, &pstar);  // pstar = A^-1(phat)
+
+  if (scheme == TVDB_ADVECT_MACCORMACK) {
+    for (int iz = 0; iz < nz; ++iz)
+      for (int iy = 0; iy < ny; ++iy)
+        for (int ix = 0; ix < nx; ++ix) {
+          size_t i = tvdb_idx(field, ix, iy, iz);
+          float val = phat.data[i] + 0.5f * (field->data[i] - pstar.data[i]);
+          if (clamp) {
+            float bx, by, bz, mn, mx;
+            tvdb_rk_backtrace(velocity, inv_h, dt, 2, (float)ix, (float)iy, (float)iz, &bx, &by, &bz);
+            tvdb_stencil_minmax(field, bx, by, bz, &mn, &mx);
+            if (val < mn) val = mn; else if (val > mx) val = mx;
+          }
+          result->data[i] = val;
+        }
+  } else {  // BFECC: advect the error-corrected field forward.
+    tvdb_dense_grid corr;
+    tvdb_dense_grid_init(&corr, nx, ny, nz); corr.voxel_size = field->voxel_size;
+    if (!corr.data) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return; }
+    for (size_t i = 0; i < n; ++i)
+      corr.data[i] = field->data[i] + 0.5f * (field->data[i] - pstar.data[i]);
+    tvdb_advect_sl(&corr, velocity, dt, 2, result);
+    if (clamp) {
+      for (int iz = 0; iz < nz; ++iz)
+        for (int iy = 0; iy < ny; ++iy)
+          for (int ix = 0; ix < nx; ++ix) {
+            size_t i = tvdb_idx(field, ix, iy, iz);
+            float bx, by, bz, mn, mx;
+            tvdb_rk_backtrace(velocity, inv_h, dt, 2, (float)ix, (float)iy, (float)iz, &bx, &by, &bz);
+            tvdb_stencil_minmax(field, bx, by, bz, &mn, &mx);
+            if (result->data[i] < mn) result->data[i] = mn;
+            else if (result->data[i] > mx) result->data[i] = mx;
+          }
+    }
+    tvdb_dense_grid_free(&corr);
+  }
+  tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar);
 }
 
 // -------------------------------------------------------------------------

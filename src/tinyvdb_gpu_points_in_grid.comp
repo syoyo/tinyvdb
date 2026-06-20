@@ -1,0 +1,27 @@
+#version 450
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer ActiveBuffer { ivec4 act[]; };
+layout(std430, set = 0, binding = 1) readonly buffer PointBuffer  { vec4 points[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer { int out_index[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  uint na;
+  uint np;
+  vec4 voxel_size;  // xyz used
+  vec4 origin;      // xyz used
+} u;
+
+int lookup(ivec3 q) {
+  for (uint i = 0; i < u.na; ++i) {
+    if (act[i].xyz == q) return int(i);
+  }
+  return -1;
+}
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.np) return;
+  vec3 p = points[i].xyz;
+  // ijk = floor((p - origin) / voxel_size); voxel_size is guarded > 0 by the host.
+  ivec3 q = ivec3(floor((p - u.origin.xyz) / u.voxel_size.xyz));
+  out_index[i] = lookup(q);
+}

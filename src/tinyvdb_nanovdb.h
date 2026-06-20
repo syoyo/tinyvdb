@@ -602,6 +602,44 @@ tvdb_status_t tvdb_gaussian_rasterize_backward(
 
 void tvdb_projected_gaussian_destroy(tvdb_projected_gaussian_t *gaussians);
 
+/* Evaluate view-dependent RGB color from spherical-harmonics coefficients
+ * (3D Gaussian Splatting convention). `degree` in [0,3]; `sh_coeffs` holds
+ * num_gaussians * K * 3 floats with K=(degree+1)^2 basis functions per
+ * Gaussian, laid out [(g*K + k)*3 + c] (basis-major, RGB inner). `dirs` holds
+ * num_gaussians * 3 view directions (normalized internally; a ~zero direction
+ * leaves only the DC term). `out_colors` receives num_gaussians * 3 =
+ * max(sh_result + 0.5, 0). */
+tvdb_status_t tvdb_gaussian_sh_eval(uint32_t num_gaussians, uint32_t degree,
+                                    const float *sh_coeffs, const float *dirs,
+                                    float *out_colors, tvdb_error_t *err);
+
+/* MCMC densification (Kheradmand et al. "3D Gaussian Splatting as MCMC").
+ *
+ * Relocation parameter update: when a Gaussian is split/cloned into `ratios[g]`
+ * copies that share its location, recompute each copy's opacity and scale so the
+ * combined rendered contribution is preserved. `opacities` are actual opacities
+ * in [0,1] (apply sigmoid first); `scales` are actual per-axis scales
+ * (num_gaussians*3, apply exp first). `ratios[g]` is clamped to [1, 51].
+ * new_opacity = 1 - (1 - op)^(1/ratio); new_scale = op/denom * scale where denom
+ * is the MCMC binomial series in new_opacity. */
+tvdb_status_t tvdb_gaussian_mcmc_relocation(uint32_t num_gaussians,
+                                            const float *opacities, const float *scales,
+                                            const int32_t *ratios,
+                                            float *new_opacities, float *new_scales,
+                                            tvdb_error_t *err);
+
+/* MCMC exploration noise: add covariance-aware, opacity-gated noise to the
+ * means. `means`/`out_means` are num_gaussians*3; `quats` num_gaussians*4
+ * (xyzw, normalized internally); `log_scales` num_gaussians*3 (exp'd);
+ * `opacities_logit` num_gaussians (sigmoid'd); `rand` num_gaussians*3 is
+ * caller-supplied standard-normal noise (deterministic given it). For each
+ * Gaussian: noise = Cov * (rand * gate * lr), gate = 1/(1+exp(-100*(0.005-op))),
+ * Cov = R diag(s^2) R^T. `out_means` may alias `means`. */
+tvdb_status_t tvdb_gaussian_mcmc_add_noise(uint32_t num_gaussians, const float *means,
+                                           const float *quats, const float *log_scales,
+                                           const float *opacities_logit, const float *rand,
+                                           float lr, float *out_means, tvdb_error_t *err);
+
 #ifdef __cplusplus
 }
 #endif
@@ -2670,6 +2708,131 @@ tvdb_projected_gaussian_t *tvdb_gaussian_project(const tvdb_gaussian_splat_t *sp
 
 void tvdb_projected_gaussian_destroy(tvdb_projected_gaussian_t *gaussians) {
     free(gaussians);
+}
+
+/* Spherical-harmonics basis constants (real SH, 3DGS convention). */
+tvdb_status_t tvdb_gaussian_sh_eval(uint32_t num_gaussians, uint32_t degree,
+                                    const float *sh_coeffs, const float *dirs,
+                                    float *out_colors, tvdb_error_t *err) {
+    if (degree > 3 || (num_gaussians && (!sh_coeffs || !dirs || !out_colors))) {
+        if (err) { err->status = TVDB_ERROR_INVALID_ARGUMENT;
+                   snprintf(err->message, sizeof(err->message), "invalid sh_eval arguments"); }
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+    const float C0 = 0.28209479177387814f;
+    const float C1 = 0.4886025119029199f;
+    const float C2[5] = {1.0925484305920792f, -1.0925484305920792f,
+                         0.31539156525252005f, -1.0925484305920792f, 0.5462742152960396f};
+    const float C3[7] = {-0.5900435899266435f, 2.890611442640554f, -0.4570457994644658f,
+                         0.3731763325901154f, -0.4570457994644658f, 1.445305721320277f,
+                         -0.5900435899266435f};
+    uint32_t K = (degree + 1u) * (degree + 1u);
+    for (uint32_t g = 0; g < num_gaussians; ++g) {
+        float dx = dirs[3*g+0], dy = dirs[3*g+1], dz = dirs[3*g+2];
+        float len = sqrtf(dx*dx + dy*dy + dz*dz);  /* exact, to match GPU length() */
+        if (len > 1e-8f) { dx /= len; dy /= len; dz /= len; } else { dx = dy = dz = 0.0f; }
+        for (int c = 0; c < 3; ++c) {
+            const float *sh = sh_coeffs + ((size_t)g * K) * 3 + (size_t)c;  /* sh[k] = sh[k*3] */
+            float r = C0 * sh[0];
+            if (degree >= 1) {
+                r += C1 * (-dy * sh[3*1] + dz * sh[3*2] - dx * sh[3*3]);
+                if (degree >= 2) {
+                    float xx=dx*dx, yy=dy*dy, zz=dz*dz, xy=dx*dy, yz=dy*dz, xz=dx*dz;
+                    r += C2[0]*xy*sh[3*4] + C2[1]*yz*sh[3*5] + C2[2]*(2.0f*zz-xx-yy)*sh[3*6]
+                       + C2[3]*xz*sh[3*7] + C2[4]*(xx-yy)*sh[3*8];
+                    if (degree >= 3) {
+                        r += C3[0]*dy*(3.0f*xx-yy)*sh[3*9] + C3[1]*xy*dz*sh[3*10]
+                           + C3[2]*dy*(4.0f*zz-xx-yy)*sh[3*11] + C3[3]*dz*(2.0f*zz-3.0f*xx-3.0f*yy)*sh[3*12]
+                           + C3[4]*dx*(4.0f*zz-xx-yy)*sh[3*13] + C3[5]*dz*(xx-yy)*sh[3*14]
+                           + C3[6]*dx*(xx-3.0f*yy)*sh[3*15];
+                    }
+                }
+            }
+            r += 0.5f;
+            out_colors[3*g+c] = r > 0.0f ? r : 0.0f;
+        }
+    }
+    if (err) err->status = TVDB_OK;
+    return TVDB_OK;
+}
+
+#define TVDB_MCMC_NMAX 51
+
+/* Pascal's triangle C(i,k) for i,k in [0, TVDB_MCMC_NMAX). */
+static void tvdb__mcmc_binoms(float B[TVDB_MCMC_NMAX][TVDB_MCMC_NMAX]) {
+    for (int i = 0; i < TVDB_MCMC_NMAX; ++i) {
+        for (int k = 0; k < TVDB_MCMC_NMAX; ++k) B[i][k] = 0.0f;
+        B[i][0] = 1.0f;
+        for (int k = 1; k <= i; ++k) B[i][k] = B[i-1][k-1] + B[i-1][k];
+    }
+}
+
+tvdb_status_t tvdb_gaussian_mcmc_relocation(uint32_t num_gaussians,
+                                            const float *opacities, const float *scales,
+                                            const int32_t *ratios,
+                                            float *new_opacities, float *new_scales,
+                                            tvdb_error_t *err) {
+    if (num_gaussians && (!opacities || !scales || !ratios || !new_opacities || !new_scales)) {
+        if (err) { err->status = TVDB_ERROR_INVALID_ARGUMENT;
+                   snprintf(err->message, sizeof(err->message), "invalid mcmc_relocation arguments"); }
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+    float B[TVDB_MCMC_NMAX][TVDB_MCMC_NMAX];
+    tvdb__mcmc_binoms(B);
+    for (uint32_t g = 0; g < num_gaussians; ++g) {
+        int ratio = ratios[g];
+        if (ratio < 1) ratio = 1;
+        if (ratio > TVDB_MCMC_NMAX) ratio = TVDB_MCMC_NMAX;
+        float op = opacities[g];
+        float new_op = 1.0f - powf(1.0f - op, 1.0f / (float)ratio);
+        new_opacities[g] = new_op;
+        float denom = 0.0f;
+        for (int i = 1; i <= ratio; ++i)
+            for (int k = 0; k <= i - 1; ++k) {
+                float sign = (k & 1) ? -1.0f : 1.0f;
+                denom += B[i-1][k] * (sign / sqrtf((float)(k+1))) * powf(new_op, (float)(k+1));
+            }
+        float coeff = (denom != 0.0f) ? (op / denom) : 1.0f;
+        for (int d = 0; d < 3; ++d) new_scales[3*g+d] = coeff * scales[3*g+d];
+    }
+    if (err) err->status = TVDB_OK;
+    return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gaussian_mcmc_add_noise(uint32_t num_gaussians, const float *means,
+                                           const float *quats, const float *log_scales,
+                                           const float *opacities_logit, const float *rand,
+                                           float lr, float *out_means, tvdb_error_t *err) {
+    if (num_gaussians && (!means || !quats || !log_scales || !opacities_logit || !rand || !out_means)) {
+        if (err) { err->status = TVDB_ERROR_INVALID_ARGUMENT;
+                   snprintf(err->message, sizeof(err->message), "invalid mcmc_add_noise arguments"); }
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    }
+    for (uint32_t g = 0; g < num_gaussians; ++g) {
+        float op = 1.0f / (1.0f + expf(-opacities_logit[g]));
+        float gate = 1.0f / (1.0f + expf(-100.0f * (0.005f - op)));
+        float sx = expf(log_scales[3*g+0]), sy = expf(log_scales[3*g+1]), sz = expf(log_scales[3*g+2]);
+        float sqx = sx*sx, sqy = sy*sy, sqz = sz*sz;
+        float qx = quats[4*g+0], qy = quats[4*g+1], qz = quats[4*g+2], qw = quats[4*g+3];
+        float ql = sqrtf(qx*qx + qy*qy + qz*qz + qw*qw);
+        if (ql > 1e-8f) { qx /= ql; qy /= ql; qz /= ql; qw /= ql; }
+        float R0 = 1.0f-2.0f*(qy*qy+qz*qz), R1 = 2.0f*(qx*qy-qw*qz), R2 = 2.0f*(qx*qz+qw*qy);
+        float R3 = 2.0f*(qx*qy+qw*qz), R4 = 1.0f-2.0f*(qx*qx+qz*qz), R5 = 2.0f*(qy*qz-qw*qx);
+        float R6 = 2.0f*(qx*qz-qw*qy), R7 = 2.0f*(qy*qz+qw*qx), R8 = 1.0f-2.0f*(qx*qx+qy*qy);
+        /* Cov = R diag(s^2) R^T (symmetric). */
+        float c00 = R0*R0*sqx + R1*R1*sqy + R2*R2*sqz;
+        float c01 = R0*R3*sqx + R1*R4*sqy + R2*R5*sqz;
+        float c02 = R0*R6*sqx + R1*R7*sqy + R2*R8*sqz;
+        float c11 = R3*R3*sqx + R4*R4*sqy + R5*R5*sqz;
+        float c12 = R3*R6*sqx + R4*R7*sqy + R5*R8*sqz;
+        float c22 = R6*R6*sqx + R7*R7*sqy + R8*R8*sqz;
+        float gx = rand[3*g+0]*gate*lr, gy = rand[3*g+1]*gate*lr, gz = rand[3*g+2]*gate*lr;
+        out_means[3*g+0] = means[3*g+0] + (c00*gx + c01*gy + c02*gz);
+        out_means[3*g+1] = means[3*g+1] + (c01*gx + c11*gy + c12*gz);
+        out_means[3*g+2] = means[3*g+2] + (c02*gx + c12*gy + c22*gz);
+    }
+    if (err) err->status = TVDB_OK;
+    return TVDB_OK;
 }
 
 /* Forward rasterization */
