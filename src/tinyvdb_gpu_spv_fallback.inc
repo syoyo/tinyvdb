@@ -64,3 +64,5 @@ static const uint8_t kTvdbGpuActiveCoordsSpv[] = {0};
 static const uint32_t kTvdbGpuActiveCoordsSpv_len = 0;
 static const uint8_t kTvdbGpuChecksumSpv[] = {0};
 static const uint32_t kTvdbGpuChecksumSpv_len = 0;
+static const uint8_t kTvdbGpuMeshToSdfSpv[] = {0};
+static const uint32_t kTvdbGpuMeshToSdfSpv_len = 0;

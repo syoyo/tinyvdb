@@ -241,9 +241,13 @@ each theme. Notes point at the nearest existing primitive to reuse.
       builds the unique occupied-voxel coord set (sparse) via a dense bbox-local
       occupancy grid + atomic-counter stream compaction (no sort) — both on
       Vulkan and CUDA/NVRTC. Covered by `test_gpu_backend`
-      (`test_points_to_mask`, `test_voxelize`, set-compared vs CPU). *Still
-      open:* mesh voxelization, and an unbounded (hash-based) construction path
-      for point clouds whose ijk bbox volume exceeds VRAM.
+      (`test_points_to_mask`, `test_voxelize`, set-compared vs CPU), and
+      `tvdb_gpu_mesh_to_sdf` (brute-force triangle mesh -> narrow-band SDF, one
+      thread/voxel closest-triangle distance + per-voxel normal sign, mirroring
+      `tvdb_mesh_to_sdf`; `test_mesh_to_sdf` validates exact distance parity vs
+      CPU — the sign is FP-fragile at far-field/equidistant ties, as on CPU).
+      *Still open:* an unbounded (hash-based) sparse construction path for point
+      clouds whose ijk bbox volume exceeds VRAM.
 - [ ] **P1: sparse convolution upgrades.** Add transposed convolution,
       arbitrary stride, output-grid builders, and a faster near-dense backend
       beyond the current same-topology sparse conv3d. *Note:* the

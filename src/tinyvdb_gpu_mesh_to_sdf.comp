@@ -1,0 +1,67 @@
+#version 450
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer VertBuffer { float verts[]; };    // 9 floats/face (a,b,c)
+layout(std430, set = 0, binding = 1) readonly buffer NormalBuffer { float normals[]; };// 3 floats/face
+layout(std430, set = 0, binding = 2) buffer OutBuffer { float out_sdf[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;       // nx, ny, nz, unused
+  vec4 grid_o;     // ox, oy, oz, voxel_size
+  float band;
+  uint face_count;
+} u;
+
+// Closest point on triangle abc to p (Ericson voronoi-region form, matching
+// tri_closest_point_c).
+vec3 tri_closest(vec3 p, vec3 a, vec3 b, vec3 c) {
+  vec3 ab = b - a, ac = c - a, ap = p - a;
+  float d1 = dot(ab, ap), d2 = dot(ac, ap);
+  if (d1 <= 0.0 && d2 <= 0.0) return a;
+  vec3 bp = p - b;
+  float d3 = dot(ab, bp), d4 = dot(ac, bp);
+  if (d3 >= 0.0 && d4 <= d3) return b;
+  float vc = d1*d4 - d3*d2;
+  if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) { float v = d1 / (d1 - d3); return a + ab * v; }
+  vec3 cp = p - c;
+  float d5 = dot(ab, cp), d6 = dot(ac, cp);
+  if (d6 >= 0.0 && d5 <= d6) return c;
+  float vb = d5*d2 - d1*d6;
+  if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) { float w = d2 / (d2 - d6); return a + ac * w; }
+  float va = d3*d6 - d5*d4;
+  if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) { float w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return b + (c - b) * w; }
+  float denom = 1.0 / (va + vb + vc);
+  return a + ab * (vb * denom) + ac * (vc * denom);
+}
+
+// Brute-force mesh -> SDF (matches tvdb_mesh_to_sdf): one thread per voxel,
+// closest-triangle distance with per-voxel normal sign, clamped to +/-band.
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  uint total = uint(nx * ny * nz);
+  if (gid >= total) return;
+  int iz = int(gid) / (nx * ny);
+  int rem = int(gid) - iz * nx * ny;
+  int iy = rem / nx;
+  int ix = rem - iy * nx;
+  vec3 p = u.grid_o.xyz + (vec3(ix, iy, iz) + 0.5) * u.grid_o.w;
+
+  float best = 1e30;
+  vec3 best_cp = vec3(0.0), best_n = vec3(0.0);
+  for (uint f = 0; f < u.face_count; ++f) {
+    vec3 a = vec3(verts[9u*f+0u], verts[9u*f+1u], verts[9u*f+2u]);
+    vec3 b = vec3(verts[9u*f+3u], verts[9u*f+4u], verts[9u*f+5u]);
+    vec3 c = vec3(verts[9u*f+6u], verts[9u*f+7u], verts[9u*f+8u]);
+    vec3 q = tri_closest(p, a, b, c);
+    vec3 d = p - q;
+    float dsq = dot(d, d);
+    if (dsq < best) {
+      best = dsq; best_cp = q;
+      best_n = vec3(normals[3u*f+0u], normals[3u*f+1u], normals[3u*f+2u]);
+    }
+  }
+  float dist = sqrt(best);
+  float s = dot(p - best_cp, best_n) >= 0.0 ? 1.0 : -1.0;
+  float v = s * dist;
+  v = clamp(v, -u.band, u.band);
+  out_sdf[gid] = v;
+}

@@ -378,6 +378,15 @@ tvdb_status_t tvdb_gpu_active_grid_coords(tvdb_gpu_context_t* ctx, const tvdb_de
 tvdb_status_t tvdb_gpu_grid_checksum(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
                                      uint32_t* out_checksum, tvdb_error_t* err);
 
+// Brute-force triangle mesh -> narrow-band SDF (grid construction from meshes;
+// parallels tvdb_mesh_to_sdf). One GPU thread per voxel computes the closest-
+// triangle distance with a per-voxel normal sign, clamped to +/-band_width.
+// `out` is allocated/filled with the CPU's bbox/dims/origin conventions.
+// O(voxels * triangles) — keep voxel sizes coarse, like the CPU path.
+tvdb_status_t tvdb_gpu_mesh_to_sdf(tvdb_gpu_context_t* ctx, const tvdb_triangle_mesh* mesh,
+                                   float voxel_size, float band_width,
+                                   tvdb_dense_grid* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif

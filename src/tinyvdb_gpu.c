@@ -47,6 +47,7 @@
 #include "tinyvdb_gpu_merge_scatter_spv.inc"
 #include "tinyvdb_gpu_active_coords_spv.inc"
 #include "tinyvdb_gpu_checksum_spv.inc"
+#include "tinyvdb_gpu_mesh_to_sdf_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2221,6 +2222,43 @@ static const char* kTvdbCudaSource =
 "    unsigned int h = data[i] ^ (i * 2654435761u); h *= 2654435761u; h ^= h >> 15; s += h;\n"
 "  }\n"
 "  partials[t] = s;\n"
+"}\n"
+"__device__ void tvdb_tri_closest(const float* p, const float* a, const float* b, const float* c, float* o) {\n"
+"  float ab[3]={b[0]-a[0],b[1]-a[1],b[2]-a[2]}, ac[3]={c[0]-a[0],c[1]-a[1],c[2]-a[2]}, ap[3]={p[0]-a[0],p[1]-a[1],p[2]-a[2]};\n"
+"  float d1=ab[0]*ap[0]+ab[1]*ap[1]+ab[2]*ap[2], d2=ac[0]*ap[0]+ac[1]*ap[1]+ac[2]*ap[2];\n"
+"  if (d1<=0.0f && d2<=0.0f) { o[0]=a[0];o[1]=a[1];o[2]=a[2]; return; }\n"
+"  float bp[3]={p[0]-b[0],p[1]-b[1],p[2]-b[2]};\n"
+"  float d3=ab[0]*bp[0]+ab[1]*bp[1]+ab[2]*bp[2], d4=ac[0]*bp[0]+ac[1]*bp[1]+ac[2]*bp[2];\n"
+"  if (d3>=0.0f && d4<=d3) { o[0]=b[0];o[1]=b[1];o[2]=b[2]; return; }\n"
+"  float vc=d1*d4-d3*d2;\n"
+"  if (vc<=0.0f && d1>=0.0f && d3<=0.0f) { float v=d1/(d1-d3); o[0]=a[0]+ab[0]*v;o[1]=a[1]+ab[1]*v;o[2]=a[2]+ab[2]*v; return; }\n"
+"  float cp[3]={p[0]-c[0],p[1]-c[1],p[2]-c[2]};\n"
+"  float d5=ab[0]*cp[0]+ab[1]*cp[1]+ab[2]*cp[2], d6=ac[0]*cp[0]+ac[1]*cp[1]+ac[2]*cp[2];\n"
+"  if (d6>=0.0f && d5<=d6) { o[0]=c[0];o[1]=c[1];o[2]=c[2]; return; }\n"
+"  float vb=d5*d2-d1*d6;\n"
+"  if (vb<=0.0f && d2>=0.0f && d6<=0.0f) { float w=d2/(d2-d6); o[0]=a[0]+ac[0]*w;o[1]=a[1]+ac[1]*w;o[2]=a[2]+ac[2]*w; return; }\n"
+"  float va=d3*d6-d5*d4;\n"
+"  if (va<=0.0f && (d4-d3)>=0.0f && (d5-d6)>=0.0f) { float w=(d4-d3)/((d4-d3)+(d5-d6)); o[0]=b[0]+(c[0]-b[0])*w;o[1]=b[1]+(c[1]-b[1])*w;o[2]=b[2]+(c[2]-b[2])*w; return; }\n"
+"  float denom=1.0f/(va+vb+vc); float vbn=vb*denom, vcn=vc*denom;\n"
+"  o[0]=a[0]+ab[0]*vbn+ac[0]*vcn; o[1]=a[1]+ab[1]*vbn+ac[1]*vcn; o[2]=a[2]+ab[2]*vbn+ac[2]*vcn;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_mesh_to_sdf(const float* verts, const float* normals, float* out_sdf,\n"
+"    int nx, int ny, int nz, float ox, float oy, float oz, float vs, float band, unsigned int face_count) {\n"
+"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = (unsigned int)(nx * ny * nz);\n"
+"  if (gid >= total) return;\n"
+"  int iz=(int)(gid/(unsigned int)(nx*ny)); int rem=(int)(gid-(unsigned int)(iz*nx*ny)); int iy=rem/nx; int ix=rem-iy*nx;\n"
+"  float p[3]={ox+((float)ix+0.5f)*vs, oy+((float)iy+0.5f)*vs, oz+((float)iz+0.5f)*vs};\n"
+"  float best=1e30f, bcp[3]={0,0,0}, bn[3]={0,0,0};\n"
+"  for (unsigned int f=0; f<face_count; ++f) {\n"
+"    const float* a=&verts[9u*f]; const float* b=&verts[9u*f+3u]; const float* c=&verts[9u*f+6u];\n"
+"    float q[3]; tvdb_tri_closest(p,a,b,c,q);\n"
+"    float dx=p[0]-q[0],dy=p[1]-q[1],dz=p[2]-q[2]; float dsq=dx*dx+dy*dy+dz*dz;\n"
+"    if (dsq<best) { best=dsq; bcp[0]=q[0];bcp[1]=q[1];bcp[2]=q[2]; bn[0]=normals[3u*f];bn[1]=normals[3u*f+1u];bn[2]=normals[3u*f+2u]; }\n"
+"  }\n"
+"  float dist=sqrtf(best);\n"
+"  float s=((p[0]-bcp[0])*bn[0]+(p[1]-bcp[1])*bn[1]+(p[2]-bcp[2])*bn[2])>=0.0f?1.0f:-1.0f;\n"
+"  float v=s*dist; if (v>band) v=band; if (v<-band) v=-band; out_sdf[gid]=v;\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -6049,5 +6087,107 @@ tvdb_status_t tvdb_gpu_erode_sparse(tvdb_gpu_context_t* ctx, const tvdb_sparse_g
     }
   }
   free(cc); free(cv);
+  return st;
+}
+
+// ---- mesh -> SDF (brute force) ----------------------------------------------
+
+tvdb_status_t tvdb_gpu_mesh_to_sdf(tvdb_gpu_context_t* ctx, const tvdb_triangle_mesh* mesh,
+                                   float voxel_size, float band_width,
+                                   tvdb_dense_grid* out, tvdb_error_t* err) {
+  if (!ctx || !mesh || !out || mesh->vertex_count == 0 || mesh->face_count == 0 ||
+      voxel_size <= 0.0f || band_width <= 0.0f) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid mesh_to_sdf arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_vec3f bmn = mesh->vertices[0], bmx = mesh->vertices[0];
+  for (size_t i = 1; i < mesh->vertex_count; ++i) {
+    tvdb_vec3f v = mesh->vertices[i];
+    if (v.x < bmn.x) bmn.x = v.x; if (v.x > bmx.x) bmx.x = v.x;
+    if (v.y < bmn.y) bmn.y = v.y; if (v.y > bmx.y) bmx.y = v.y;
+    if (v.z < bmn.z) bmn.z = v.z; if (v.z > bmx.z) bmx.z = v.z;
+  }
+  bmn.x -= band_width; bmn.y -= band_width; bmn.z -= band_width;
+  bmx.x += band_width; bmx.y += band_width; bmx.z += band_width;
+  int nx = (int)ceilf((bmx.x - bmn.x) / voxel_size);
+  int ny = (int)ceilf((bmx.y - bmn.y) / voxel_size);
+  int nz = (int)ceilf((bmx.z - bmn.z) / voxel_size);
+  if (nx < 1) nx = 1; if (ny < 1) ny = 1; if (nz < 1) nz = 1;
+  tvdb_status_t st = tvdb_gpu_init_out_grid(out, nx, ny, nz, voxel_size, bmn.x, bmn.y, bmn.z, err);
+  if (st != TVDB_OK) return st;
+  size_t nvox = (size_t)nx*(size_t)ny*(size_t)nz;
+  size_t nf = mesh->face_count;
+
+  float* verts = (float*)malloc(nf * 9u * sizeof(float));
+  float* normals = (float*)malloc(nf * 3u * sizeof(float));
+  if (!verts || !normals) { free(verts); free(normals); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  for (size_t f = 0; f < nf; ++f) {
+    tvdb_vec3f a = mesh->vertices[mesh->faces[f].v0];
+    tvdb_vec3f b = mesh->vertices[mesh->faces[f].v1];
+    tvdb_vec3f c = mesh->vertices[mesh->faces[f].v2];
+    verts[9*f+0]=a.x; verts[9*f+1]=a.y; verts[9*f+2]=a.z;
+    verts[9*f+3]=b.x; verts[9*f+4]=b.y; verts[9*f+5]=b.z;
+    verts[9*f+6]=c.x; verts[9*f+7]=c.y; verts[9*f+8]=c.z;
+    float ux=b.x-a.x, uy=b.y-a.y, uz=b.z-a.z, vx=c.x-a.x, vy=c.y-a.y, vz=c.z-a.z;
+    float nxn=uy*vz-uz*vy, nyn=uz*vx-ux*vz, nzn=ux*vy-uy*vx;
+    float l = sqrtf(nxn*nxn+nyn*nyn+nzn*nzn);
+    if (l > 0.0f) { nxn/=l; nyn/=l; nzn/=l; }
+    normals[3*f+0]=nxn; normals[3*f+1]=nyn; normals[3*f+2]=nzn;
+  }
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dv=0, dn=0, dout=0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto ms_host;
+    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_mesh_to_sdf"))) { st=err?err->status:TVDB_ERROR_IO; goto ms_host; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dv, verts, nf*9u*sizeof(float), err)) != TVDB_OK) goto ms_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dn, normals, nf*3u*sizeof(float), err)) != TVDB_OK) goto ms_dev;
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, nvox*sizeof(float), err)) != TVDB_OK) goto ms_dev;
+    float ox=out->ox, oy=out->oy, oz=out->oz;
+    unsigned int unf=(unsigned int)nf, uvox=(unsigned int)nvox, block=64;
+    void* args[] = {&dv,&dn,&dout,&nx,&ny,&nz,&ox,&oy,&oz,&voxel_size,&band_width,&unf};
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,(uvox+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto ms_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto ms_dev; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(out->data, dout, nvox*sizeof(float)))) { st=err?err->status:TVDB_ERROR_IO; goto ms_dev; }
+    st = TVDB_OK;
+ms_dev:
+    if (dout) ctx->cuda.cuMemFree(dout);
+    if (dn) ctx->cuda.cuMemFree(dn);
+    if (dv) ctx->cuda.cuMemFree(dv);
+ms_host:
+    free(verts); free(normals);
+    return st;
+  }
+
+  tvdb_vk_buffer bv, bn, bo, bu;
+  if ((st = tvdb_vk_create_buffer(ctx, nf*9u*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bv, err)) != TVDB_OK) { free(verts); free(normals); return st; }
+  if ((st = tvdb_vk_create_buffer(ctx, nf*3u*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bn, err)) != TVDB_OK) goto mvd_v;
+  if ((st = tvdb_vk_create_buffer(ctx, nvox*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto mvd_n;
+  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto mvd_o;
+  memcpy(bv.mapped, verts, nf*9u*sizeof(float));
+  memcpy(bn.mapped, normals, nf*3u*sizeof(float));
+  {
+    struct { int32_t dim[4]; float grid_o[4]; float band; uint32_t face_count; uint32_t pad[2]; } par;
+    memset(&par, 0, sizeof(par));
+    par.dim[0]=nx; par.dim[1]=ny; par.dim[2]=nz;
+    par.grid_o[0]=out->ox; par.grid_o[1]=out->oy; par.grid_o[2]=out->oz; par.grid_o[3]=voxel_size;
+    par.band=band_width; par.face_count=(uint32_t)nf;
+    memcpy(bu.mapped, &par, sizeof(par));
+  }
+  {
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = kTvdbGpuMeshToSdfSpv; d.spv_len = kTvdbGpuMeshToSdfSpv_len; d.descriptor_count = 4;
+    d.buffers[0]=&bv; d.buffers[1]=&bn; d.buffers[2]=&bo; d.buffers[3]=&bu;
+    d.descriptor_types[0]=d.descriptor_types[1]=d.descriptor_types[2]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    d.descriptor_types[3]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    d.group_x = (uint32_t)((nvox + 63u) / 64u);
+    st = tvdb_vk_dispatch(ctx, &d, err);
+  }
+  if (st == TVDB_OK) memcpy(out->data, bo.mapped, nvox*sizeof(float));
+  tvdb_vk_destroy_buffer(ctx, &bu);
+mvd_o: tvdb_vk_destroy_buffer(ctx, &bo);
+mvd_n: tvdb_vk_destroy_buffer(ctx, &bn);
+mvd_v: tvdb_vk_destroy_buffer(ctx, &bv);
+  free(verts); free(normals);
   return st;
 }

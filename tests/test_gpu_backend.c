@@ -1279,6 +1279,47 @@ static void test_checksum(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&g);
 }
 
+static void test_mesh_to_sdf(tvdb_gpu_context_t* ctx) {
+  // A unit tetrahedron.
+  // Irregular tetrahedron (asymmetric, to avoid the many exact equidistant
+  // ties a symmetric mesh produces, which make the nearest-normal sign FP-fragile).
+  tvdb_vec3f verts[4] = {{0.03f,0.02f,-0.01f},{1.13f,0.07f,0.04f},{0.11f,0.91f,0.13f},{-0.06f,0.15f,1.07f}};
+  tvdb_triangle faces[4] = {{0,1,2},{0,2,3},{0,3,1},{1,3,2}};
+  tvdb_triangle_mesh mesh;
+  memset(&mesh, 0, sizeof(mesh));
+  mesh.vertices = verts; mesh.vertex_count = 4;
+  mesh.faces = faces; mesh.face_count = 4;
+
+  tvdb_dense_grid cpu, gpu;
+  memset(&cpu, 0, sizeof(cpu)); memset(&gpu, 0, sizeof(gpu));
+  EXPECT(tvdb_mesh_to_sdf(&mesh, 0.2f, 0.3f, &cpu, NULL));
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_mesh_to_sdf(ctx, &mesh, 0.2f, 0.3f, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu mesh_to_sdf failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu.nx == cpu.nx && gpu.ny == cpu.ny && gpu.nz == cpu.nz);
+    EXPECT_NEAR(gpu.ox, cpu.ox, 1e-6f); EXPECT_NEAR(gpu.oy, cpu.oy, 1e-6f); EXPECT_NEAR(gpu.oz, cpu.oz, 1e-6f);
+    if (gpu.nx == cpu.nx && gpu.ny == cpu.ny && gpu.nz == cpu.nz) {
+      // The (unsigned) distance field is the substantive computation and is
+      // deterministic, so |value| matches exactly. The closest-triangle-normal
+      // sign is only well-defined near the surface and is FP-fragile at voxels
+      // (near-)equidistant to multiple triangles, so allow a small fraction of
+      // sign flips while requiring the magnitudes to match.
+      size_t n = (size_t)cpu.nx * cpu.ny * cpu.nz, neg = 0, sign_flips = 0;
+      for (size_t i = 0; i < n; ++i) {
+        EXPECT_NEAR(fabsf(gpu.data[i]), fabsf(cpu.data[i]), 2e-5f);
+        if ((gpu.data[i] < 0) != (cpu.data[i] < 0)) ++sign_flips;
+        if (cpu.data[i] < 0) ++neg;
+      }
+      EXPECT(neg > 0);                 // some interior voxels
+      EXPECT(sign_flips * 10 <= n);    // < 10% sign disagreement (far-field ties)
+    }
+  }
+  tvdb_dense_grid_free(&cpu); tvdb_dense_grid_free(&gpu);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1318,6 +1359,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_merge(ctx);
   test_active_coords(ctx);
   test_checksum(ctx);
+  test_mesh_to_sdf(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }
