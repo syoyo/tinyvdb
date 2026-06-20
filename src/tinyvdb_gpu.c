@@ -38,6 +38,7 @@
 #include "tinyvdb_gpu_levelset_check_spv.inc"
 #include "tinyvdb_gpu_flood_spv.inc"
 #include "tinyvdb_gpu_splat_spv.inc"
+#include "tinyvdb_gpu_splat_quadratic_spv.inc"
 #include "tinyvdb_gpu_points_to_mask_spv.inc"
 #include "tinyvdb_gpu_voxelize_mark_spv.inc"
 #include "tinyvdb_gpu_voxelize_compact_spv.inc"
@@ -2178,6 +2179,26 @@ static const char* kTvdbCudaSource =
 "    for (int dy = 0; dy < 2; ++dy) { int y = iy + dy; if (y < 0 || y >= ny) continue; float wy = (dy==0)?(1.0f-fy):fy;\n"
 "      for (int dx = 0; dx < 2; ++dx) { int x = ix + dx; if (x < 0 || x >= nx) continue; float wx = (dx==0)?(1.0f-fx):fx;\n"
 "        float w = wx * wy * wz; unsigned int idx = (unsigned int)((z * ny + y) * nx + x);\n"
+"        atomicAdd(&data[idx], w * v); if (has_weights) atomicAdd(&wdata[idx], w);\n"
+"      } } }\n"
+"}\n"
+"__device__ void tvdb_quad_w3(float t, float* w) {\n"
+"  w[0] = 0.5f * t * (t - 1.0f); w[1] = 1.0f - t * t; w[2] = 0.5f * t * (t + 1.0f);\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_splat_quadratic(float* data, const tvdb_float4* pts, const float* vals,\n"
+"    float* wdata, int nx, int ny, int nz, float ox, float oy, float oz, float vs,\n"
+"    unsigned int count, int has_weights) {\n"
+"  unsigned int p = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (p >= count) return;\n"
+"  tvdb_float4 q = pts[p];\n"
+"  float cx = (q.x - ox) / vs - 0.5f, cy = (q.y - oy) / vs - 0.5f, cz = (q.z - oz) / vs - 0.5f;\n"
+"  int ix = (int)floorf(cx), iy = (int)floorf(cy), iz = (int)floorf(cz);\n"
+"  float tu = cx - ix, tv = cy - iy, tw = cz - iz; float v = vals[p];\n"
+"  float wu[3], wv[3], ww[3]; tvdb_quad_w3(tu, wu); tvdb_quad_w3(tv, wv); tvdb_quad_w3(tw, ww);\n"
+"  for (int dz = 0; dz < 3; ++dz) { int z = iz - 1 + dz; if (z < 0 || z >= nz) continue;\n"
+"    for (int dy = 0; dy < 3; ++dy) { int y = iy - 1 + dy; if (y < 0 || y >= ny) continue;\n"
+"      for (int dx = 0; dx < 3; ++dx) { int x = ix - 1 + dx; if (x < 0 || x >= nx) continue;\n"
+"        float w = wu[dx] * wv[dy] * ww[dz]; unsigned int idx = (unsigned int)((z * ny + y) * nx + x);\n"
 "        atomicAdd(&data[idx], w * v); if (has_weights) atomicAdd(&wdata[idx], w);\n"
 "      } } }\n"
 "}\n"
@@ -5569,9 +5590,10 @@ fvk_g: tvdb_vk_destroy_buffer(ctx, &bg);
 
 // ---- trilinear splat --------------------------------------------------------
 
-tvdb_status_t tvdb_gpu_splat_trilinear_dense(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+static tvdb_status_t tvdb_gpu_splat_dense_impl(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
                                              const float* points, const float* vals, size_t n,
-                                             float* weights, tvdb_error_t* err) {
+                                             float* weights, const char* cuda_kernel,
+                                             const uint8_t* spv, uint32_t spv_len, tvdb_error_t* err) {
   if (!ctx || !grid || !grid->data || (!points && n) || (!vals && n)) {
     tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid splat arguments");
     return TVDB_ERROR_INVALID_ARGUMENT;
@@ -5587,7 +5609,7 @@ tvdb_status_t tvdb_gpu_splat_trilinear_dense(tvdb_gpu_context_t* ctx, tvdb_dense
     if (!p4) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
     for (size_t i = 0; i < n; ++i) { p4[4*i+0]=points[3*i+0]; p4[4*i+1]=points[3*i+1]; p4[4*i+2]=points[3*i+2]; p4[4*i+3]=0.0f; }
     if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) { free(p4); return st; }
-    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_splat"))) { free(p4); return err ? err->status : TVDB_ERROR_IO; }
+    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, cuda_kernel))) { free(p4); return err ? err->status : TVDB_ERROR_IO; }
     if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, grid->data, nvox * sizeof(float), err)) != TVDB_OK) goto scu_free;
     if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, p4, n * 4u * sizeof(float), err)) != TVDB_OK) goto scu_free;
     if ((st = tvdb_cuda_alloc_copy_in(ctx, &dv, vals, n * sizeof(float), err)) != TVDB_OK) goto scu_free;
@@ -5631,7 +5653,7 @@ scu_free:
   memcpy(bu.mapped, &par, sizeof(par));
   tvdb_vk_dispatch_desc d;
   memset(&d, 0, sizeof(d));
-  d.spv = kTvdbGpuSplatSpv; d.spv_len = kTvdbGpuSplatSpv_len; d.descriptor_count = 5;
+  d.spv = spv; d.spv_len = spv_len; d.descriptor_count = 5;
   d.buffers[0] = &bd; d.buffers[1] = &bp; d.buffers[2] = &bv; d.buffers[3] = &bw; d.buffers[4] = &bu;
   for (int i = 0; i < 4; ++i) d.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   d.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -5647,6 +5669,20 @@ sd_v: tvdb_vk_destroy_buffer(ctx, &bv);
 sd_p: tvdb_vk_destroy_buffer(ctx, &bp);
 sd_d: tvdb_vk_destroy_buffer(ctx, &bd);
   return st;
+}
+
+tvdb_status_t tvdb_gpu_splat_trilinear_dense(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                             const float* points, const float* vals, size_t n,
+                                             float* weights, tvdb_error_t* err) {
+  return tvdb_gpu_splat_dense_impl(ctx, grid, points, vals, n, weights, "tvdb_cuda_splat",
+                                   kTvdbGpuSplatSpv, kTvdbGpuSplatSpv_len, err);
+}
+
+tvdb_status_t tvdb_gpu_splat_quadratic_dense(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                             const float* points, const float* vals, size_t n,
+                                             float* weights, tvdb_error_t* err) {
+  return tvdb_gpu_splat_dense_impl(ctx, grid, points, vals, n, weights, "tvdb_cuda_splat_quadratic",
+                                   kTvdbGpuSplatQuadraticSpv, kTvdbGpuSplatQuadraticSpv_len, err);
 }
 
 // ---- points -> dense occupancy mask -----------------------------------------

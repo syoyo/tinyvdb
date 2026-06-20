@@ -335,6 +335,14 @@ tvdb_status_t tvdb_gpu_splat_trilinear_dense(tvdb_gpu_context_t* ctx, tvdb_dense
                                              const float* points, const float* vals, size_t n,
                                              float* weights, tvdb_error_t* err);
 
+// Triquadratic splat: the 3x3x3-stencil scatter adjoint of the quadratic
+// sampler, mirroring tvdb_splat_quadratic_dense. Same in-place accumulation,
+// CAS atomic-add, and nullable `weights` semantics as the trilinear splat; this
+// realizes the triquadratic-sample VJP w.r.t. the grid.
+tvdb_status_t tvdb_gpu_splat_quadratic_dense(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                             const float* points, const float* vals, size_t n,
+                                             float* weights, tvdb_error_t* err);
+
 // Rasterize a point cloud into a dense occupancy mask (grid construction):
 // marks `mask->data[ijk] = 1` for the voxel containing each point, using
 // `mask`'s dims/origin/voxel_size. `mask` must be allocated (and zeroed by the

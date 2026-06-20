@@ -179,6 +179,59 @@ void tvdb_splat_trilinear_dense(tvdb_dense_grid* g,
   }
 }
 
+// Quadratic basis weights for the 3-point stencil at offsets (-1,0,1), the
+// adjoint (scatter) form of tvdb_quad1_s: quad1(v,w) = sum_k w_k(w) * v[k].
+static inline void tvdb_quad_w3(float t, float w[3]) {
+  w[0] = 0.5f * t * (t - 1.0f);
+  w[1] = 1.0f - t * t;
+  w[2] = 0.5f * t * (t + 1.0f);
+}
+
+void tvdb_splat_quadratic_dense(tvdb_dense_grid* g,
+                                const tvdb_vec3f* pts,
+                                const float* vals,
+                                size_t n,
+                                float* weights) {
+  if (!g->data) return;
+  // Adjoint of tvdb_sample_quadratic_dense: a 3x3x3 stencil with per-axis
+  // quadratic weights, scattered with the same cell-center convention. Like
+  // tvdb_splat_trilinear_dense, taps outside the grid are skipped (zero-pad
+  // adjoint), so this is the VJP of a zero-padded — not edge-clamped — sample.
+  #pragma omp parallel for schedule(static)
+  for (long long pp = 0; pp < (long long)n; ++pp) {
+    size_t p = (size_t)pp;
+    float cx = (pts[p].x - g->ox) / g->voxel_size - 0.5f;
+    float cy = (pts[p].y - g->oy) / g->voxel_size - 0.5f;
+    float cz = (pts[p].z - g->oz) / g->voxel_size - 0.5f;
+    int ix = (int)floorf(cx), iy = (int)floorf(cy), iz = (int)floorf(cz);
+    float u = cx - (float)ix, v = cy - (float)iy, w = cz - (float)iz;
+    float wu[3], wv[3], ww[3];
+    tvdb_quad_w3(u, wu); tvdb_quad_w3(v, wv); tvdb_quad_w3(w, ww);
+    const float val = vals[p];
+    for (int dz = 0; dz < 3; ++dz) {
+      int z = iz - 1 + dz;
+      if (z < 0 || z >= g->nz) continue;
+      for (int dy = 0; dy < 3; ++dy) {
+        int y = iy - 1 + dy;
+        if (y < 0 || y >= g->ny) continue;
+        for (int dx = 0; dx < 3; ++dx) {
+          int x = ix - 1 + dx;
+          if (x < 0 || x >= g->nx) continue;
+          float ww3 = wu[dx] * wv[dy] * ww[dz];
+          size_t idx = tvdb_idx(g, x, y, z);
+          float wval = ww3 * val;
+          #pragma omp atomic update
+          g->data[idx] += wval;
+          if (weights) {
+            #pragma omp atomic update
+            weights[idx] += ww3;
+          }
+        }
+      }
+    }
+  }
+}
+
 void tvdb_apply_xform(const float xform[12],
                       const tvdb_vec3f* in,
                       tvdb_vec3f* out,

@@ -1056,6 +1056,48 @@ static void test_splat(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&cpu); tvdb_dense_grid_free(&gpu);
 }
 
+static void test_splat_quadratic(tvdb_gpu_context_t* ctx) {
+  const int N = 16;
+  tvdb_dense_grid cpu, gpu;
+  tvdb_dense_grid_init(&cpu, N, N, N);
+  tvdb_dense_grid_init(&gpu, N, N, N);
+  cpu.voxel_size = gpu.voxel_size = 0.1f;
+  cpu.ox = gpu.ox = -0.8f; cpu.oy = gpu.oy = -0.8f; cpu.oz = gpu.oz = -0.8f;
+
+  const size_t NP = 300;
+  tvdb_vec3f* pts = (tvdb_vec3f*)malloc(NP * sizeof(tvdb_vec3f));
+  float* flat = (float*)malloc(NP * 3 * sizeof(float));
+  float* vals = (float*)malloc(NP * sizeof(float));
+  unsigned int s = 777u;
+  for (size_t i = 0; i < NP; ++i) {
+    s = s * 1664525u + 1013904223u; float a = (float)(s >> 8) / 16777216.0f;
+    s = s * 1664525u + 1013904223u; float b = (float)(s >> 8) / 16777216.0f;
+    s = s * 1664525u + 1013904223u; float c = (float)(s >> 8) / 16777216.0f;
+    s = s * 1664525u + 1013904223u; float d = (float)(s >> 8) / 16777216.0f;
+    pts[i].x = -0.7f + a * 1.4f; pts[i].y = -0.7f + b * 1.4f; pts[i].z = -0.7f + c * 1.4f;
+    flat[3*i+0] = pts[i].x; flat[3*i+1] = pts[i].y; flat[3*i+2] = pts[i].z;
+    vals[i] = d * 2.0f - 1.0f;
+  }
+  size_t nvox = (size_t)N * N * N;
+  float* wc = (float*)calloc(nvox, sizeof(float));
+  float* wg = (float*)calloc(nvox, sizeof(float));
+
+  tvdb_splat_quadratic_dense(&cpu, pts, vals, NP, wc);
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_splat_quadratic_dense(ctx, &gpu, flat, vals, NP, wg, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu quadratic splat failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    for (size_t i = 0; i < nvox; ++i) {
+      EXPECT_NEAR(gpu.data[i], cpu.data[i], 1e-4f);  // atomic-add order differs
+      EXPECT_NEAR(wg[i], wc[i], 1e-4f);
+    }
+  }
+  free(pts); free(flat); free(vals); free(wc); free(wg);
+  tvdb_dense_grid_free(&cpu); tvdb_dense_grid_free(&gpu);
+}
+
 static void test_points_to_mask(tvdb_gpu_context_t* ctx) {
   const int N = 16;
   tvdb_dense_grid mask;
@@ -1780,6 +1822,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_stats(ctx);
   test_flood(ctx);
   test_splat(ctx);
+  test_splat_quadratic(ctx);
   test_points_to_mask(ctx);
   test_voxelize(ctx);
   test_sparse_erode(ctx);

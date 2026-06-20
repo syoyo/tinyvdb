@@ -47,6 +47,16 @@ void tvdb_splat_trilinear_dense(tvdb_dense_grid* g,
                                 size_t n,
                                 float* weights /* nullable */);
 
+// Triquadratic splat: the scatter adjoint of tvdb_sample_quadratic_dense
+// (3x3x3 stencil, per-axis 3-point parabola weights). As with the trilinear
+// splat, out-of-range taps are skipped and the grid/weights are accumulated in
+// place (zero them first).
+void tvdb_splat_quadratic_dense(tvdb_dense_grid* g,
+                                const tvdb_vec3f* pts,
+                                const float* vals,
+                                size_t n,
+                                float* weights /* nullable */);
+
 // Coordinate transforms. xform is a 4x3 row-major matrix (3x3 linear + 3
 // translation): [m00 m01 m02 tx, m10 m11 m12 ty, m20 m21 m22 tz].
 // world_to_voxel applies the transform to convert world points into
