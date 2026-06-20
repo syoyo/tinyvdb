@@ -1227,6 +1227,33 @@ static void test_merge(tvdb_gpu_context_t* ctx) {
   tvdb_dense_grid_free(&cpu); tvdb_dense_grid_free(&gpu);
 }
 
+static void test_active_coords(tvdb_gpu_context_t* ctx) {
+  // Sphere SDF: exterior clamps to +0.3. Extract voxels != 0.3 -> band/interior.
+  tvdb_dense_grid g;
+  make_sphere(&g);
+  tvdb_sparse_grid cpu, gpu;
+  tvdb_sparse_grid_init(&cpu); tvdb_sparse_grid_init(&gpu);
+  EXPECT(tvdb_active_grid_coords(&g, 0.3f, &cpu));
+  tvdb_error_t err;
+  memset(&err, 0, sizeof(err));
+  if (tvdb_gpu_active_grid_coords(ctx, &g, 0.3f, 0.0f, &gpu, &err) != TVDB_OK) {
+    fprintf(stderr, "gpu active_grid_coords failed: %s\n", err.message);
+    EXPECT(0);
+  } else {
+    EXPECT(gpu.count == cpu.count);
+    EXPECT(cpu.count > 0 && cpu.count < (size_t)g.nx * g.ny * g.nz);
+    if (gpu.count == cpu.count && cpu.count > 0) {
+      kv_t* kc = (kv_t*)malloc(cpu.count * sizeof(kv_t));
+      kv_t* kg = (kv_t*)malloc(gpu.count * sizeof(kv_t));
+      build_kv(&cpu, kc); build_kv(&gpu, kg);
+      for (size_t i = 0; i < cpu.count; ++i) { EXPECT(kc[i].key == kg[i].key); EXPECT_NEAR(kc[i].val, kg[i].val, 1e-6f); }
+      free(kc); free(kg);
+    }
+  }
+  tvdb_dense_grid_free(&g);
+  tvdb_sparse_grid_free(&cpu); tvdb_sparse_grid_free(&gpu);
+}
+
 static int run_backend(tvdb_gpu_backend_t backend, const char* label, int required) {
   tvdb_error_t err;
   memset(&err, 0, sizeof(err));
@@ -1264,6 +1291,7 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   test_sparse_erode(ctx);
   test_sparse_dilate(ctx);
   test_merge(ctx);
+  test_active_coords(ctx);
   tvdb_gpu_context_destroy(ctx);
   return 1;
 }

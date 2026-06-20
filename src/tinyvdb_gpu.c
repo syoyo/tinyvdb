@@ -45,6 +45,7 @@
 #include "tinyvdb_gpu_sparse_dilate_scatter_spv.inc"
 #include "tinyvdb_gpu_sparse_finalize_spv.inc"
 #include "tinyvdb_gpu_merge_scatter_spv.inc"
+#include "tinyvdb_gpu_active_coords_spv.inc"
 #else
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
@@ -2196,6 +2197,19 @@ static const char* kTvdbCudaSource =
 "  int ox = ix + offx, oy = iy + offy, oz = iz + offz;\n"
 "  if (ox < 0 || oy < 0 || oz < 0 || ox >= onx || oy >= ony || oz >= onz) return;\n"
 "  tvdb_atomic_min_f(&outv[(oz * ony + oy) * onx + ox], src[i]);\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_active_coords(const float* data, unsigned int* counter, int* outd,\n"
+"    int nx, int ny, int nz, float background, float tolerance, unsigned int cap) {\n"
+"  unsigned int v = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = (unsigned int)(nx * ny * nz);\n"
+"  if (v >= total) return;\n"
+"  float val = data[v];\n"
+"  if (fabsf(val - background) <= tolerance) return;\n"
+"  int iz = (int)(v / (unsigned int)(nx * ny));\n"
+"  int rem = (int)(v - (unsigned int)(iz * nx * ny));\n"
+"  int iy = rem / nx; int ix = rem - iy * nx;\n"
+"  unsigned int slot = atomicAdd(counter, 1u);\n"
+"  if (slot < cap) { outd[4u*slot+0u]=ix; outd[4u*slot+1u]=iy; outd[4u*slot+2u]=iz; outd[4u*slot+3u]=__float_as_int(val); }\n"
 "}\n";
 
 static void tvdb_cuda_set_error(tvdb_gpu_context_t* ctx, tvdb_error_t* err,
@@ -5768,6 +5782,84 @@ tvdb_status_t tvdb_gpu_dilate_sparse(tvdb_gpu_context_t* ctx, const tvdb_sparse_
     }
   }
   free(cc); free(cv);
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_active_grid_coords(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* dense,
+                                          float background, float tolerance,
+                                          tvdb_sparse_grid* out, tvdb_error_t* err) {
+  if (!ctx || !dense || !dense->data || !out) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid active_grid_coords arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  out->count = 0; out->voxel_size = dense->voxel_size; out->ox = dense->ox; out->oy = dense->oy; out->oz = dense->oz;
+  size_t n = (size_t)dense->nx * (size_t)dense->ny * (size_t)dense->nz;
+  if (n == 0) return TVDB_OK;
+  int32_t* outd = (int32_t*)malloc(n * 4u * sizeof(int32_t));
+  if (!outd) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  uint32_t m = 0;
+  tvdb_status_t st;
+  int nx = dense->nx, ny = dense->ny, nz = dense->nz;
+
+  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
+    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dd = 0, dcnt = 0, dout = 0;
+    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) { free(outd); return st; }
+    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_active_coords"))) { free(outd); return err?err->status:TVDB_ERROR_IO; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, dense->data, n*sizeof(float), err)) != TVDB_OK) goto acu;
+    { uint32_t zero = 0; if ((st = tvdb_cuda_alloc_copy_in(ctx, &dcnt, &zero, sizeof(uint32_t), err)) != TVDB_OK) goto acu; }
+    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, n*4u*sizeof(int32_t), err)) != TVDB_OK) goto acu;
+    unsigned int uc=(unsigned int)n, ucap=(unsigned int)n, block=128;
+    void* args[] = {&dd,&dcnt,&dout,&nx,&ny,&nz,&background,&tolerance,&ucap};
+    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,(uc+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto acu; }
+    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto acu; }
+    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(&m, dcnt, sizeof(uint32_t)))) { st=err?err->status:TVDB_ERROR_IO; goto acu; }
+    if (m > n) m = (uint32_t)n;
+    if (m && !tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(outd, dout, (size_t)m*4u*sizeof(int32_t)))) { st=err?err->status:TVDB_ERROR_IO; goto acu; }
+    st = TVDB_OK;
+acu:
+    if (dout) ctx->cuda.cuMemFree(dout);
+    if (dcnt) ctx->cuda.cuMemFree(dcnt);
+    if (dd) ctx->cuda.cuMemFree(dd);
+    goto afinish;
+  }
+  {
+    tvdb_vk_buffer bd, bcnt, bout, bu;
+    if ((st = tvdb_vk_create_buffer(ctx, n*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bd, err)) != TVDB_OK) { free(outd); return st; }
+    if ((st = tvdb_vk_create_buffer(ctx, sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bcnt, err)) != TVDB_OK) goto avk_d;
+    if ((st = tvdb_vk_create_buffer(ctx, n*4u*sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bout, err)) != TVDB_OK) goto avk_cnt;
+    if ((st = tvdb_vk_create_buffer(ctx, 32, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto avk_out;
+    memcpy(bd.mapped, dense->data, n*sizeof(float));
+    *(uint32_t*)bcnt.mapped = 0u;
+    struct { int32_t dim[4]; float background; float tolerance; uint32_t cap; uint32_t pad; } par;
+    memset(&par, 0, sizeof(par));
+    par.dim[0]=nx; par.dim[1]=ny; par.dim[2]=nz; par.background=background; par.tolerance=tolerance; par.cap=(uint32_t)n;
+    memcpy(bu.mapped, &par, sizeof(par));
+    tvdb_vk_dispatch_desc d;
+    memset(&d, 0, sizeof(d));
+    d.spv = kTvdbGpuActiveCoordsSpv; d.spv_len = kTvdbGpuActiveCoordsSpv_len; d.descriptor_count = 4;
+    d.buffers[0]=&bd; d.buffers[1]=&bcnt; d.buffers[2]=&bout; d.buffers[3]=&bu;
+    d.descriptor_types[0]=d.descriptor_types[1]=d.descriptor_types[2]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    d.descriptor_types[3]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    d.group_x = (uint32_t)((n + 127u) / 128u);
+    st = tvdb_vk_dispatch(ctx, &d, err);
+    if (st == TVDB_OK) { m = *(uint32_t*)bcnt.mapped; if (m > n) m = (uint32_t)n; memcpy(outd, bout.mapped, (size_t)m*4u*sizeof(int32_t)); }
+    tvdb_vk_destroy_buffer(ctx, &bu);
+avk_out: tvdb_vk_destroy_buffer(ctx, &bout);
+avk_cnt: tvdb_vk_destroy_buffer(ctx, &bcnt);
+avk_d: tvdb_vk_destroy_buffer(ctx, &bd);
+  }
+afinish:
+  if (st == TVDB_OK) {
+    if (!tvdb_sparse_grid_reserve(out, m ? m : 1)) { st = TVDB_ERROR_OUT_OF_MEMORY; tvdb_gpu_set_error(err, st, "OOM"); }
+    else {
+      for (uint32_t i = 0; i < m; ++i) {
+        out->coords[i].x = outd[4*i+0]; out->coords[i].y = outd[4*i+1]; out->coords[i].z = outd[4*i+2];
+        int32_t bits = outd[4*i+3]; memcpy(&out->values[i], &bits, sizeof(float));
+      }
+      out->count = m;
+    }
+  }
+  free(outd);
   return st;
 }
 

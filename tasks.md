@@ -205,9 +205,10 @@ each theme. Notes point at the nearest existing primitive to reuse.
       `tvdb_gpu_neighbor_counts` (6/26) over a flat active-coord set, on Vulkan
       and CUDA/NVRTC, mirroring the CPU `tinyvdb_grid_index.{h,c}` helpers via
       brute-force linear-scan kernels (one thread per query/active voxel).
-      Covered by `test_gpu_backend` (GPU-vs-CPU parity). *Still open:* GPU
-      active-coordinate extraction from a dense grid (needs stream compaction /
-      prefix-sum).
+      Covered by `test_gpu_backend` (GPU-vs-CPU parity). `tvdb_gpu_active_grid_coords`
+      (dense -> sparse extraction of voxels != background, single-pass
+      atomic-counter compaction) completes the set; covered by
+      `test_active_coords`. COMPLETE.
 - [x] **P0: GPU ray and volume queries.** `tvdb_gpu_volume_render`
       (emission-absorption, one thread/pixel), `tvdb_gpu_uniform_ray_samples`,
       `tvdb_gpu_voxels_along_ray` (Amanatides-Woo DDA), and

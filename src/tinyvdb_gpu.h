@@ -364,6 +364,14 @@ tvdb_status_t tvdb_gpu_merge_grids(tvdb_gpu_context_t* ctx, const tvdb_dense_gri
                                    const tvdb_dense_grid* b, float background,
                                    tvdb_dense_grid* out, tvdb_error_t* err);
 
+// Active-coordinate extraction: dense grid -> sparse grid of voxels whose value
+// differs from `background` by more than `tolerance` (parallels
+// tvdb_active_grid_coords / tvdb_dense_to_sparse). `out` is filled; coord order
+// is arbitrary (set semantics). Single-pass atomic-counter compaction.
+tvdb_status_t tvdb_gpu_active_grid_coords(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* dense,
+                                          float background, float tolerance,
+                                          tvdb_sparse_grid* out, tvdb_error_t* err);
+
 #ifdef __cplusplus
 }
 #endif
