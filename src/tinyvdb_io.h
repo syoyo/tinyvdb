@@ -1773,7 +1773,6 @@ static int tvdb__decompress_blosc(uint8_t *dst, size_t dst_cap,
     int do_shuffle = (flags & 0x01) && (typesize > 1);
     int memcpyed   = (flags & 0x02);
     int do_bitshuffle = (flags & 0x04);
-    int dont_split = (flags >> 4) & 1;
     int compformat = (flags >> 5) & 7;
 
     /* Determine header length */
@@ -1823,13 +1822,32 @@ static int tvdb__decompress_blosc(uint8_t *dst, size_t dst_cap,
         int32_t block_offset = tvdb__blosc_le32(bstarts + j * 4);
         if (block_offset < 0 || (size_t)block_offset >= src_size) goto fail;
 
-        /* Determine splits */
-        int nsplits;
-        if (!dont_split && typesize > 1 && typesize <= 16 &&
+        /* Determine splits. The header's dont-split bit is unreliable: the
+           compressor's split heuristic (block-size / element-count thresholds)
+           varies across c-blosc versions, so derive the choice from the data
+           instead. A block is stored as EITHER one stream covering the whole
+           block, OR `typesize` independently-compressed shuffle-partition
+           streams. If the first stream's framed length (4 + csize0) fills the
+           block's whole compressed extent it is unsplit, otherwise it is split
+           typesize-ways. */
+        int nsplits = 1;
+        if (do_shuffle && typesize > 1 && typesize <= 16 &&
             (bsize / typesize) >= 1) {
-            nsplits = typesize;
-        } else {
-            nsplits = 1;
+            /* Compressed extent of this block: [block_offset, next_offset). */
+            size_t block_end = src_size;
+            if (j + 1 < nblocks) {
+                int32_t bnext = tvdb__blosc_le32(bstarts + (j + 1) * 4);
+                if (bnext >= 0 && (size_t)bnext <= src_size &&
+                    (size_t)bnext >= (size_t)block_offset)
+                    block_end = (size_t)bnext;
+            }
+            size_t block_compr = block_end - (size_t)block_offset;
+            if (block_compr >= 4) {
+                int32_t csize0 = tvdb__blosc_le32(src + block_offset);
+                if (csize0 >= 0 &&
+                    ((size_t)4 + (size_t)csize0) != block_compr)
+                    nsplits = typesize;
+            }
         }
         int neblock = bsize / nsplits;
 
@@ -2003,6 +2021,14 @@ static tvdb_status_t tvdb__read_and_decompress(
             else
                 tvdb__sr_seek_cur(sr, (int64_t)total_size);
         } else {
+            /* Guard a corrupt/oversized compressed length against the bytes
+               actually remaining in the stream, before allocating -- avoids a
+               multi-exabyte allocation attempt on a malformed frame. */
+            if ((uint64_t)num_compressed > sr->length - sr->pos) {
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "BLOSC compressed size exceeds remaining data");
+                return TVDB_ERROR_INVALID_DATA;
+            }
             uint8_t *tmp = (uint8_t *)tvdb__alloc(alloc,
                                                    (size_t)num_compressed);
             if (!tmp) {
@@ -3216,6 +3242,15 @@ tvdb_status_t tvdb_read_all_grids(tvdb_file_t *file, tvdb_error_t *err) {
     tvdb__sr_init(&sr, file->file_data.data, file->file_data.data_len,
                   swap_endian);
 
+    /* A single undecodable grid (e.g. an unsupported value type, or a corrupt
+       payload) should not discard the other grids in a multi-grid file -- so
+       skip the failed grid and keep loading the rest, remembering the first
+       failure to report to the caller at the end. */
+    tvdb_status_t first_err = TVDB_OK;
+    char          first_err_msg[TVDB_MAX_ERROR_MSG];
+    int32_t       first_err_grid = -1;
+    first_err_msg[0] = '\0';
+
     for (size_t i = 0; i < file->num_grids; i++) {
         if (err) err->grid_index = (int32_t)i;
 
@@ -3223,7 +3258,28 @@ tvdb_status_t tvdb_read_all_grids(tvdb_file_t *file, tvdb_error_t *err) {
 
         tvdb_status_t st = tvdb__read_grid(&sr, &file->grids[i],
                                            &file->header, &file->alloc, err);
-        if (st != TVDB_OK) return st;
+        if (st != TVDB_OK) {
+            if (first_err == TVDB_OK) {
+                first_err = st;
+                first_err_grid = (int32_t)i;
+                if (err) {
+                    memcpy(first_err_msg, err->message, sizeof(first_err_msg));
+                    first_err_msg[sizeof(first_err_msg) - 1] = '\0';
+                }
+            }
+            /* Reset the partially-read grid to a safe empty state; it stays in
+               the grid array (so indices/count are stable) but carries no data
+               and is safe to destroy at file close. */
+            tvdb__grid_destroy(&file->grids[i], &file->alloc);
+        }
+    }
+
+    if (first_err != TVDB_OK) {
+        /* Restore the first failure (later grids' reads may have overwritten
+           err) so the caller still observes that something went wrong. */
+        tvdb__set_error(err, first_err, first_err_msg);
+        if (err) err->grid_index = first_err_grid;
+        return first_err;
     }
 
     if (err) err->grid_index = -1;
