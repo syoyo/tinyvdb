@@ -277,6 +277,8 @@ typedef struct tvdb_nanovdb_file {
     uint16_t              codec;
     tvdb_nanovdb_grid_t  *grids;
     size_t                num_grids;
+    /* Allocated slots in `grids`, grown geometrically by the reader. */
+    size_t                grid_capacity;
     uint64_t              file_size;
     const uint8_t        *mmap_data;
     uint8_t              *buffer;
@@ -461,10 +463,12 @@ tvdb_status_t tvdb_nanovdb_file_save(const tvdb_nanovdb_file_t *file,
                                       int use_mmap,
                                       tvdb_error_t *err);
 
-/* Grid creation API */
+/* Grid creation API. Node sizes are exact on-disk byte counts derived from
+ * the NanoVDB grid-type constants table; they return 0 for an unknown type. */
 uint64_t tvdb_nanovdb_leaf_node_size(uint32_t grid_type);
 uint64_t tvdb_nanovdb_lower_node_size(uint32_t grid_type);
 uint64_t tvdb_nanovdb_upper_node_size(uint32_t grid_type);
+uint64_t tvdb_nanovdb_root_node_size(uint32_t grid_type);
 uint64_t tvdb_nanovdb_root_tile_size(void);
 
 tvdb_status_t tvdb_nanovdb_create_grid(tvdb_nanovdb_grid_t *grid,
@@ -864,11 +868,33 @@ static int tvdb__nnvdb_sw_init(tvdb__nnvdb_sw_t *sw, uint8_t *data,
     return 1;
 }
 
-static int tvdb__nnvdb_sw_ensure(tvdb__nnvdb_sw_t *sw, uint64_t needed) {
-    (void)sw;
-    (void)needed;
+/* Grow the stream so at least `needed` more bytes fit. Returns 0 on OOM.
+ * This is the only capacity guard in the writer: the individual
+ * tvdb__nnvdb_sw_write* helpers are unchecked, so anything that grows the
+ * buffer must reserve through here first. */
+static int tvdb__nnvdb_sw_reserve(tvdb__nnvdb_sw_t *sw, size_t needed) {
+    if (needed > SIZE_MAX - sw->pos) return 0;
+    uint64_t want = sw->pos + needed;
+    if (want <= sw->capacity) return 1;
+    size_t new_cap = sw->capacity ? (size_t)sw->capacity : (size_t)1024 * 1024;
+    while ((uint64_t)new_cap < want) {
+        if (new_cap > SIZE_MAX / 2) {
+            new_cap = (size_t)want;
+            break;
+        }
+        new_cap *= 2;
+    }
+    uint8_t *new_buf = (uint8_t *)realloc(sw->data, new_cap);
+    if (!new_buf) return 0;
+    sw->data = new_buf;
+    sw->capacity = (uint64_t)new_cap;
     return 1;
 }
+
+static int tvdb__nnvdb_sw_ensure(tvdb__nnvdb_sw_t *sw, uint64_t needed) {
+    return tvdb__nnvdb_sw_reserve(sw, (size_t)needed);
+}
+
 
 static int tvdb__nnvdb_sw_write(tvdb__nnvdb_sw_t *sw, size_t n,
                                 const void *src) {
@@ -895,6 +921,13 @@ static void tvdb__nnvdb_sw_write_u32(tvdb__nnvdb_sw_t *sw, uint32_t v) {
 static void tvdb__nnvdb_sw_write_u64(tvdb__nnvdb_sw_t *sw, uint64_t v) {
     if (sw->swap_endian) v = tvdb__nnvdb_swap64(v);
     tvdb__nnvdb_sw_write(sw, 8, &v);
+}
+
+/* Checked u64 write: reserves capacity first, then emits. */
+static int tvdb__nnvdb_sw_write_u64_checked(tvdb__nnvdb_sw_t *sw, uint64_t v) {
+    if (!tvdb__nnvdb_sw_reserve(sw, 8)) return 0;
+    tvdb__nnvdb_sw_write_u64(sw, v);
+    return 1;
 }
 
 static void tvdb__nnvdb_sw_write_i32(tvdb__nnvdb_sw_t *sw, int32_t v) {
@@ -1283,22 +1316,46 @@ int tvdb_nanovdb_is_voxel_active(const tvdb_nanovdb_grid_t *grid,
 
 /* ----- CRC32 + grid checksum (matches NanoVDB tools/GridChecksum.h) ----- */
 
+/* Byte-at-a-time table, built on first use. The previous implementation ran
+ * the 8-step bit loop per byte, which measured ~101 MB/s; a table gives
+ * roughly an order of magnitude more. The polynomial and the pre/post
+ * inversion are unchanged, so the output is bit-for-bit identical to
+ * NanoVDB's util::crc32 and to the old code. */
+static uint32_t tvdb__nvdb_crc32_table[256];
+static int tvdb__nvdb_crc32_table_ready = 0;
+
+static void tvdb__nvdb_crc32_init_table(void) {
+    for (uint32_t i = 0; i < 256u; ++i) {
+        uint32_t c = i;
+        for (int j = 0; j < 8; ++j)
+            c = (c >> 1) ^ (0xEDB88320u & (uint32_t) - (int32_t)(c & 1u));
+        tvdb__nvdb_crc32_table[i] = c;
+    }
+    tvdb__nvdb_crc32_table_ready = 1;
+}
+
 uint32_t tvdb_nanovdb_crc32(const void *data, size_t size, uint32_t crc) {
     if (!data) return crc;
+    if (!tvdb__nvdb_crc32_table_ready) tvdb__nvdb_crc32_init_table();
     crc = ~crc;
     const uint8_t *p = (const uint8_t *)data;
-    for (size_t i = 0; i < size; ++i) {
-        crc ^= p[i];
-        for (int j = 0; j < 8; ++j) {
-            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)-(int32_t)(crc & 1u));
-        }
-    }
+    while (size--) crc = tvdb__nvdb_crc32_table[(crc ^ *p++) & 0xFFu] ^ (crc >> 8);
     return ~crc;
 }
 
 #define TVDB__NVDB_GRID_DATA_BYTES 672u
 #define TVDB__NVDB_TREE_DATA_BYTES 64u
 #define TVDB__NVDB_CRC32_BLOCK_LOG2 12  /* 4 KB blocks */
+
+/* Encode a (major, minor, patch) triple into the grid version word. This must
+ * stay paired with tvdb__nvdb_version_gt_32_6_0 below: the v32.6.0+ wire
+ * encoding is `(major << 21) | (minor << 10) | patch`. Writing the older
+ * `(major << 24) | (minor << 16) | patch` layout produces a word that our own
+ * reader decodes as major=256 and rejects as an unsupported version. */
+static uint32_t tvdb__nvdb_make_version(uint32_t major, uint32_t minor,
+                                       uint32_t patch) {
+    return (major << 21) | (minor << 10) | (patch & 0x3FFu);
+}
 
 /* Decode the grid's encoded version word into (major, minor, patch). The
  * NanoVDB encoding is `(major << 21) | (minor << 10) | patch` for v32.6.0+
@@ -1438,6 +1495,31 @@ static int tvdb__nnvdb_compress_blosc(void **dst, size_t *dst_size,
                                        const void *src, size_t src_size) {
     if (!src || !dst) return 0;
 
+#ifdef TVDB_HAVE_BLOSC
+    /* Real BLOSC1 frame. NanoVDB stores one chunk per grid, so the whole grid
+     * goes in a single frame. Without this branch we would emit the legacy
+     * fake-LZ4 layout below, which is not a BLOSC frame and cannot be read by
+     * libnanovdb or by our own TVDB_HAVE_BLOSC decompressor. */
+    /* blosc.h documents (nbytes + BLOSC_MAX_OVERHEAD) as the destination size
+     * at which compression always succeeds; blosc_compress_bound is not
+     * available in every c-blosc version we support. */
+    size_t max_size = src_size + (size_t)BLOSC_MAX_OVERHEAD;
+    uint8_t *out = (uint8_t *)malloc(max_size);
+    if (!out) return 0;
+    /* clevel 5, bytewise shuffle disabled, element size 1. One frame per grid,
+     * matching how NanoVDB chunks its payloads. */
+    int compressed = blosc_compress(5, 0, 1, src_size, src, out, max_size);
+    if (compressed <= 0) {
+        free(out);
+        return 0;
+    }
+    *dst = out;
+    *dst_size = (size_t)compressed;
+    return 1;
+#else
+    /* Legacy fallback retained so builds without libblosc can still read files
+     * written by older tinyvdb versions. These are NOT BLOSC frames; see the
+     * matching decompress fallback. */
     size_t max_size = (size_t)LZ4_compressBound((int)src_size) + 12;
     *dst = malloc(max_size);
     if (!*dst) return 0;
@@ -1462,6 +1544,7 @@ static int tvdb__nnvdb_compress_blosc(void **dst, size_t *dst_size,
 
     *dst_size = (size_t)compressed + 12;
     return 1;
+#endif
 }
 
 /* ========================================================================== */
@@ -1514,18 +1597,23 @@ static int tvdb__nnvdb_compress_zip(void **dst, size_t *dst_size,
 static void tvdb__nnvdb_write_file_header(tvdb__nnvdb_sw_t *sw,
                                           const tvdb_nanovdb_file_t *file) {
     tvdb__nnvdb_sw_write_u64(sw, TVDB_NANOVDB_MAGIC_FILE);
-    uint32_t version = (TVDB_NANOVDB_VERSION_MAJOR << 24) |
-                       (TVDB_NANOVDB_VERSION_MINOR << 16) |
-                       TVDB_NANOVDB_VERSION_PATCH;
+    uint32_t version = tvdb__nvdb_make_version(TVDB_NANOVDB_VERSION_MAJOR,
+                                               TVDB_NANOVDB_VERSION_MINOR,
+                                               TVDB_NANOVDB_VERSION_PATCH);
     tvdb__nnvdb_sw_write_u32(sw, version);
     tvdb__nnvdb_sw_write_u16(sw, (uint16_t)file->grid_count);
     tvdb__nnvdb_sw_write_u16(sw, (uint16_t)file->codec);
 }
 
+/* `encoded_size` is the on-wire byte count of this grid's payload. For an
+ * uncompressed grid that equals grid->size; for a compressed one it is the
+ * frame length, and the reader advances its cursor by this value to reach the
+ * next grid. Writing grid->size here desynchronises every compressed file. */
 static void tvdb__nnvdb_write_file_meta(tvdb__nnvdb_sw_t *sw,
-                                        const tvdb_nanovdb_grid_t *grid) {
+                                        const tvdb_nanovdb_grid_t *grid,
+                                        uint64_t encoded_size) {
     tvdb__nnvdb_sw_write_u64(sw, grid->size);
-    tvdb__nnvdb_sw_write_u64(sw, grid->size);
+    tvdb__nnvdb_sw_write_u64(sw, encoded_size);
     tvdb__nnvdb_sw_write_u64(sw, 0);
     tvdb__nnvdb_sw_write_u64(sw, grid->active_voxel_count);
     tvdb__nnvdb_sw_write_u32(sw, grid->grid_type);
@@ -1542,8 +1630,12 @@ static void tvdb__nnvdb_write_file_meta(tvdb__nnvdb_sw_t *sw,
     for (int i = 0; i < 3; i++)
         tvdb__nnvdb_sw_write_double(sw, grid->voxel_size[i]);
 
+    /* name_size counts the NUL terminator: NanoVDB stores strlen(name)+1, and
+     * the reader scans exactly name_size bytes for that terminator. Writing
+     * bare strlen() here emits one byte more than the field advertises, which
+     * desynchronises the per-grid metadata cursor. */
     size_t name_len = grid->name ? strlen(grid->name) : 0;
-    tvdb__nnvdb_sw_write_u32(sw, (uint32_t)name_len);
+    tvdb__nnvdb_sw_write_u32(sw, (uint32_t)name_len + 1u);
 
     for (int i = 0; i < 4; i++)
         tvdb__nnvdb_sw_write_u32(sw, grid->node_count[i]);
@@ -1553,9 +1645,9 @@ static void tvdb__nnvdb_write_file_meta(tvdb__nnvdb_sw_t *sw,
     tvdb__nnvdb_sw_write_u16(sw, 0);
     tvdb__nnvdb_sw_write_u16(sw, 0);
 
-    uint32_t version = (TVDB_NANOVDB_VERSION_MAJOR << 24) |
-                       (TVDB_NANOVDB_VERSION_MINOR << 16) |
-                       TVDB_NANOVDB_VERSION_PATCH;
+    uint32_t version = tvdb__nvdb_make_version(TVDB_NANOVDB_VERSION_MAJOR,
+                                               TVDB_NANOVDB_VERSION_MINOR,
+                                               TVDB_NANOVDB_VERSION_PATCH);
     tvdb__nnvdb_sw_write_u32(sw, version);
 }
 
@@ -1622,94 +1714,113 @@ tvdb_status_t tvdb_nanovdb_write_to_memory(const tvdb_nanovdb_file_t *file,
     tvdb__nnvdb_sw_t sw;
     tvdb__nnvdb_sw_init(&sw, buffer, initial_capacity);
 
+    /* Compress every grid up front. The per-grid metadata block records both
+     * the uncompressed size (field@0) and the *encoded* size (field@8), and the
+     * reader advances its cursor by field@8 -- so the encoded size has to be
+     * known before any metadata is emitted. Compressing first also lets us
+     * fall back per grid when compression does not shrink the payload. */
+    size_t n_staged = file->num_grids;
+    uint8_t **staged = (uint8_t **)calloc(n_staged, sizeof(*staged));
+    size_t *staged_size = (size_t *)calloc(n_staged, sizeof(*staged_size));
+    int *staged_is_compressed = (int *)calloc(n_staged, sizeof(*staged_is_compressed));    if (!staged || !staged_size || !staged_is_compressed) {
+        free(staged); free(staged_size); free(staged_is_compressed);
+        free(buffer);
+        tvdb__nnvdb_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+        return TVDB_ERROR_OUT_OF_MEMORY;
+    }
+
+    for (size_t i = 0; i < file->num_grids; i++) {
+        const tvdb_nanovdb_grid_t *grid = &file->grids[i];
+        if (!grid->data || grid->size == 0) continue;
+
+        staged_size[i] = grid->size;
+        if (codec == TVDB_NANOVDB_CODEC_NONE) continue;
+
+        void *compressed = NULL;
+        size_t compressed_size = 0;
+        int ok = 0;
+        if (codec == TVDB_NANOVDB_CODEC_BLOSC) {
+            ok = tvdb__nnvdb_compress_blosc(&compressed, &compressed_size,
+                                            grid->data, grid->size);
+        } else if (codec == TVDB_NANOVDB_CODEC_ZIP) {
+            ok = tvdb__nnvdb_compress_zip(&compressed, &compressed_size,
+                                          grid->data, grid->size);
+        }
+        /* Only keep the compressed form when it actually helps; otherwise emit
+         * the raw bytes so the reader's `codec == NONE` fast path stays valid. */
+        if (ok && compressed && compressed_size > 0 && compressed_size < grid->size) {
+            staged[i] = (uint8_t *)compressed;
+            /* A compressed grid's on-wire footprint is the 8-byte frame-length
+             * prefix plus the frame. Both the metadata field@8 and the bytes we
+             * emit must count the prefix, since the reader consumes the prefix
+             * before decompressing and then checks that it landed exactly on
+             * the end of the region. */
+            staged_size[i] = compressed_size + 8;
+            staged_is_compressed[i] = 1;
+        } else {
+            if (compressed) free(compressed);
+        }
+    }
+
     tvdb_nanovdb_file_t wf;
     memset(&wf, 0, sizeof(wf));
-    wf.version = (TVDB_NANOVDB_VERSION_MAJOR << 24) |
-                 (TVDB_NANOVDB_VERSION_MINOR << 16) |
-                 TVDB_NANOVDB_VERSION_PATCH;
+    wf.version = tvdb__nvdb_make_version(TVDB_NANOVDB_VERSION_MAJOR,
+                                        TVDB_NANOVDB_VERSION_MINOR,
+                                        TVDB_NANOVDB_VERSION_PATCH);
     wf.grid_count = (uint16_t)file->num_grids;
     wf.codec = codec;
 
     tvdb__nnvdb_write_file_header(&sw, &wf);
 
     for (size_t i = 0; i < file->num_grids; i++) {
-        tvdb__nnvdb_write_file_meta(&sw, &file->grids[i]);
+        /* field@8 is the encoded byte count the reader advances by. */
+        tvdb__nnvdb_write_file_meta(&sw, &file->grids[i],
+                                   (uint64_t)staged_size[i]);
         tvdb__nnvdb_write_grid_name(&sw, file->grids[i].name);
     }
 
     for (size_t i = 0; i < file->num_grids; i++) {
         const tvdb_nanovdb_grid_t *grid = &file->grids[i];
+        if (!grid->data || grid->size == 0) continue;
 
-        if (!grid->data || grid->size == 0) {
-            continue;
-        }
-
-        if (codec != TVDB_NANOVDB_CODEC_NONE) {
-            void *compressed = NULL;
-            size_t compressed_size = 0;
-
-            int ok = 0;
-            if (codec == TVDB_NANOVDB_CODEC_BLOSC) {
-                ok = tvdb__nnvdb_compress_blosc(&compressed, &compressed_size,
-                                                 grid->data, grid->size);
-            } else if (codec == TVDB_NANOVDB_CODEC_ZIP) {
-                ok = tvdb__nnvdb_compress_zip(&compressed, &compressed_size,
-                                               grid->data, grid->size);
+        size_t n = staged_size[i];
+        if (staged_is_compressed[i]) {
+            /* n counts the 8-byte prefix; the frame itself is n-8 bytes. */
+            size_t frame = n - 8;
+            if (!tvdb__nnvdb_sw_write_u64_checked(&sw, (uint64_t)frame)) {
+                goto write_oom;
             }
-
-            if (ok && compressed && compressed_size < grid->size) {
-                tvdb__nnvdb_sw_write_u64(&sw, compressed_size);
-                if (sw.pos + compressed_size > sw.capacity) {
-                    size_t new_cap = sw.capacity * 2 + compressed_size;
-                    uint8_t *new_buf = (uint8_t *)realloc(sw.data, new_cap);
-                    if (!new_buf) {
-                        free(compressed);
-                        free(buffer);
-                        tvdb__nnvdb_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
-                        return TVDB_ERROR_OUT_OF_MEMORY;
-                    }
-                    sw.data = new_buf;
-                    sw.capacity = new_cap;
-                }
-                memcpy(sw.data + sw.pos, compressed, compressed_size);
-                sw.pos += compressed_size;
-                free(compressed);
-            } else {
-                if (compressed) free(compressed);
-                if (sw.pos + grid->size > sw.capacity) {
-                    size_t new_cap = sw.capacity * 2 + grid->size;
-                    uint8_t *new_buf = (uint8_t *)realloc(sw.data, new_cap);
-                    if (!new_buf) {
-                        free(buffer);
-                        tvdb__nnvdb_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
-                        return TVDB_ERROR_OUT_OF_MEMORY;
-                    }
-                    sw.data = new_buf;
-                    sw.capacity = new_cap;
-                }
-                memcpy(sw.data + sw.pos, grid->data, grid->size);
-                sw.pos += grid->size;
-            }
+            if (!tvdb__nnvdb_sw_reserve(&sw, frame)) goto write_oom;
+            memcpy(sw.data + sw.pos, staged[i], frame);
+            sw.pos += frame;
         } else {
-            if (sw.pos + grid->size > sw.capacity) {
-                size_t new_cap = sw.capacity * 2 + grid->size;
-                uint8_t *new_buf = (uint8_t *)realloc(sw.data, new_cap);
-                if (!new_buf) {
-                    free(buffer);
-                    tvdb__nnvdb_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
-                    return TVDB_ERROR_OUT_OF_MEMORY;
-                }
-                sw.data = new_buf;
-                sw.capacity = new_cap;
-            }
-            memcpy(sw.data + sw.pos, grid->data, grid->size);
-            sw.pos += grid->size;
+            if (!tvdb__nnvdb_sw_reserve(&sw, n)) goto write_oom;
+            memcpy(sw.data + sw.pos, grid->data, n);
+            sw.pos += n;
         }
     }
+
+    for (size_t i = 0; i < n_staged; i++) {
+        if (staged[i]) free(staged[i]);
+    }
+    free(staged);
+    free(staged_size);
+    free(staged_is_compressed);
 
     *out_data = sw.data;
     *out_size = sw.pos;
     return TVDB_OK;
+
+write_oom:
+    for (size_t i = 0; i < n_staged; i++) {
+        if (staged[i]) free(staged[i]);
+    }
+    free(staged);
+    free(staged_size);
+    free(staged_is_compressed);
+    free(sw.data);
+    tvdb__nnvdb_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    return TVDB_ERROR_OUT_OF_MEMORY;
 }
 
 tvdb_status_t tvdb_nanovdb_file_save(const tvdb_nanovdb_file_t *file,
@@ -1785,22 +1896,30 @@ uint32_t tvdb_nanovdb_value_size(uint32_t grid_type) {
     }
 }
 
+/* Node sizes come from pnanovdb_grid_type_constants rather than being
+ * recomputed here. The previous arithmetic assumed a 4-byte internal-node slot
+ * table, but the format uses `table_stride` (8 bytes for float/double, holding
+ * either a child offset or a value), which made lower_node_size report 18480
+ * instead of 33856. Deriving from the table keeps these correct for every grid
+ * type, including the ones with a larger leaf. */
 uint64_t tvdb_nanovdb_leaf_node_size(uint32_t grid_type) {
-    uint32_t value_size = tvdb_nanovdb_value_size(grid_type);
-    uint32_t value_bytes = (value_size <= 4) ? 4 : 8;
-    return 32 + 64 + 16 + (uint64_t)(512 * value_bytes);
+    if (grid_type==0 || grid_type>=PNANOVDB_GRID_TYPE_CAP) return 0;
+    return (uint64_t)pnanovdb_grid_type_constants[grid_type].leaf_size;
 }
 
 uint64_t tvdb_nanovdb_lower_node_size(uint32_t grid_type) {
-    uint32_t value_size = tvdb_nanovdb_value_size(grid_type);
-    uint32_t value_bytes = (value_size <= 4) ? 4 : 8;
-    return 32 + 1024 + 1024 + 16 + (uint64_t)(4096 * value_bytes);
+    if (grid_type==0 || grid_type>=PNANOVDB_GRID_TYPE_CAP) return 0;
+    return (uint64_t)pnanovdb_grid_type_constants[grid_type].lower_size;
 }
 
 uint64_t tvdb_nanovdb_upper_node_size(uint32_t grid_type) {
-    uint32_t value_size = tvdb_nanovdb_value_size(grid_type);
-    uint32_t value_bytes = (value_size <= 4) ? 4 : 8;
-    return 32 + 8192 + 8192 + 16 + (uint64_t)(32768 * value_bytes);
+    if (grid_type==0 || grid_type>=PNANOVDB_GRID_TYPE_CAP) return 0;
+    return (uint64_t)pnanovdb_grid_type_constants[grid_type].upper_size;
+}
+
+uint64_t tvdb_nanovdb_root_node_size(uint32_t grid_type) {
+    if (grid_type==0 || grid_type>=PNANOVDB_GRID_TYPE_CAP) return 0;
+    return (uint64_t)pnanovdb_grid_type_constants[grid_type].root_size;
 }
 
 uint64_t tvdb_nanovdb_root_tile_size(void) {

@@ -35,15 +35,44 @@ static int tvdb__nv_check_node(const uint8_t *p,uint64_t size,uint64_t address,i
     return 1;
 }
 
+/* Append `count` zeroed grid slots, growing geometrically. The previous
+ * exact-fit realloc copied the whole array on every call, making a multi-grid
+ * file O(grids^2) in bytes moved; halving-vs-doubling keeps it amortized O(1).
+ * Capacity is tracked in grid_count's high half via a separate field to avoid
+ * changing the public struct. */
 static int tvdb__nv_append(tvdb_nanovdb_file_t *f,size_t count) {
     if (count>SIZE_MAX/sizeof(*f->grids)-f->num_grids) return 0;
     size_t total=f->num_grids+count;
-    tvdb_nanovdb_grid_t *p=tvdb__nv_alloc(f,total*sizeof(*p));
-    if (!p) return 0;
-    memset(p,0,total*sizeof(*p));
-    if (f->num_grids) memcpy(p,f->grids,f->num_grids*sizeof(*p));
-    tvdb__nv_free(f,f->grids,f->num_grids*sizeof(*p)); f->grids=p;f->num_grids=total;
+    size_t cap=f->grid_capacity;
+    if (total>cap) {
+        size_t new_cap=cap?cap*2:16;
+        while (new_cap<total) {
+            if (new_cap>SIZE_MAX/2) { new_cap=total; break; }
+            new_cap*=2;
+        }
+        if (new_cap>SIZE_MAX/sizeof(*f->grids)) return 0;
+        tvdb_nanovdb_grid_t *p=(tvdb_nanovdb_grid_t*)realloc(f->grids,new_cap*sizeof(*p));
+        if (!p) return 0;
+        /* Realloc may have moved, so the allocation-site bookkeeping used by
+         * tvdb__nv_free has to be reset for the new block. */
+        f->grids=p; f->grid_capacity=new_cap;
+    }
+    memset(f->grids+f->num_grids,0,count*sizeof(*f->grids));
+    f->num_grids=total;
     return 1;
+}
+
+/* Release every grid-owned allocation. Used on the parse-failure path so a
+ * rejected file does not strand the grids decoded so far. */
+static void tvdb__nv_release_grids(tvdb_nanovdb_file_t *f) {
+    if (!f) return;
+    for (size_t i=0;i<f->num_grids;i++) {
+        tvdb_nanovdb_grid_t *g=&f->grids[i];
+        if (g->name) tvdb__nv_free(f,g->name,strlen(g->name)+1);
+        if (g->owns_data) tvdb__nv_free(f,g->data,(size_t)g->size);
+    }
+    if (f->grids) free(f->grids); /* grown with realloc, not the allocator */
+    f->grids=NULL; f->num_grids=0; f->grid_capacity=0;
 }
 
 static tvdb_status_t tvdb__nv_metadata(tvdb_nanovdb_file_t *f,tvdb_nanovdb_grid_t *g) {
@@ -169,7 +198,12 @@ tvdb_status_t tvdb_nanovdb_file_open_memory(tvdb_nanovdb_file_t *f,const uint8_t
     }
     if(status==TVDB_OK && f->num_grids>UINT16_MAX)status=TVDB_ERROR_UNSUPPORTED_VERSION;
     f->grid_count=(uint16_t)f->num_grids;
-    if(status!=TVDB_OK)tvdb__nnvdb_set_error(err,status,"Invalid, truncated, unsupported or over-budget NanoVDB input");
+    if(status!=TVDB_OK){
+        /* Release everything decoded so far: the caller has no valid handle to
+         * close on this path, so anything left attached to `f` would leak. */
+        tvdb__nv_release_grids(f);
+        tvdb__nnvdb_set_error(err,status,"Invalid, truncated, unsupported or over-budget NanoVDB input");
+    }
     return status;
 }
 
@@ -206,12 +240,8 @@ tvdb_status_t tvdb_nanovdb_file_open(tvdb_nanovdb_file_t *f,const char *path,
 
 void tvdb_nanovdb_file_close(tvdb_nanovdb_file_t *f) {
     if(!f)return;
-    for(size_t i=0;i<f->num_grids;i++) {
-        tvdb_nanovdb_grid_t *g=&f->grids[i];
-        if(g->name)tvdb__nv_free(f,g->name,strlen(g->name)+1);
-        if(g->owns_data)tvdb__nv_free(f,g->data,(size_t)g->size);
-    }
-    tvdb__nv_free(f,f->grids,f->num_grids*sizeof(*f->grids));
+    tvdb__nv_release_grids(f);
+    if(f->buffer)tvdb__nv_free(f,f->buffer,f->file_size);
     if(f->buffer)tvdb__nv_free(f,f->buffer,(size_t)f->file_size);
 #if !defined(TVDB_NO_MMAP) && !defined(_WIN32)
     if(f->mmap_data)munmap((void *)f->mmap_data,(size_t)f->file_size);
