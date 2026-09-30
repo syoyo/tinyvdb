@@ -379,6 +379,348 @@ static tvdb_vec3f normalize_c(tvdb_vec3f v) {
     return mul_c(v, 1.0f / L);
 }
 
+// -------------------------------------------------------------------------
+// BVH over mesh triangles
+// -------------------------------------------------------------------------
+//
+// tvdb_mesh_to_sdf evaluates every voxel against every triangle, which is
+// O(voxels * faces): a 64^3 grid over a marching-cubes sphere took 63
+// seconds. A bounding volume hierarchy over the triangle set makes the query
+// near-O(log n) on average and is the single largest win available here.
+//
+// Two properties are preserved exactly so results stay bit-identical:
+//
+//  * The brute-force loop accepts a triangle only on a *strictly* smaller
+//    squared distance (`dsq < best_dsq`), so when two faces are exactly
+//    equidistant the lower face index wins. The traversal below uses the same
+//    strict test plus an explicit tie-break on the lower face index, so the
+//    chosen triangle -- and hence both the distance and the sign -- matches
+//    the brute-force result exactly.
+//  * Node bounds are only ever used to *prune*. A node is skipped solely when
+//    its lower bound already exceeds the current best, so a loose bound can
+//    cost time but can never change the answer.
+
+/* The node type is public (tinyvdb_mesh.h) because the GPU backend uploads these
+ * verbatim and walks them in a shader. One definition, so the two cannot drift. */
+_Static_assert(sizeof(tvdb_mesh_bvh_node_t) == 40,
+               "BVH node must stay 40 bytes: it is uploaded as a std430 struct");
+typedef tvdb_mesh_bvh_node_t tvdb_bvh_node_t;
+
+typedef struct {
+    int32_t *prim;              /* face indices, partitioned by the build */
+    int32_t prim_count;
+    tvdb_bvh_node_t *nodes;
+    int32_t node_count;
+    int32_t node_capacity;
+    int32_t max_depth;
+    float *tri_bmin;            /* 3 floats per face */
+    float *tri_bmax;
+} tvdb_bvh_t;
+
+struct tvdb_mesh_bvh { tvdb_bvh_t b; };
+
+static void tvdb_bvh_free(tvdb_bvh_t *b) {
+    if (!b) return;
+    free(b->prim);
+    free(b->nodes);
+    free(b->tri_bmin);
+    free(b->tri_bmax);
+    memset(b, 0, sizeof(*b));
+}
+
+static int32_t tvdb_bvh_new_node(tvdb_bvh_t *b) {
+    if (b->node_count >= b->node_capacity) {
+        int32_t new_cap = b->node_capacity ? b->node_capacity * 2 : 256;
+        tvdb_bvh_node_t *n = (tvdb_bvh_node_t *)realloc(
+            b->nodes, (size_t)new_cap * sizeof(*n));
+        if (!n) return -1;
+        b->nodes = n;
+        b->node_capacity = new_cap;
+    }
+    int32_t idx = b->node_count++;
+    tvdb_bvh_node_t *nd = &b->nodes[idx];
+    nd->left = -1; nd->right = -1; nd->start = 0; nd->count = 0;
+    return idx;
+}
+
+static inline float tvdb_aabb_dist_sq(const float *bmin, const float *bmax,
+                                     const tvdb_vec3f *p) {
+    const float v[3] = { p->x, p->y, p->z };
+    float d2 = 0.0f;
+    for (int a = 0; a < 3; ++a) {
+        if (v[a] < bmin[a]) { float t = bmin[a] - v[a]; d2 += t * t; }
+        else if (v[a] > bmax[a]) { float t = v[a] - bmax[a]; d2 += t * t; }
+    }
+    return d2;
+}
+
+/* Split [lo,hi) of b->prim at the median centroid on the widest axis.
+ *
+ * A binned surface-area heuristic and a Morton-ordered midpoint split were
+ * both implemented and measured; neither beat this. SAH scored planes against
+ * triangle AABB centroids, and for a level-set shell every centroid sits on the
+ * same thin surface, so the bins carry no information. Morton ordering groups
+ * space well but its balanced midpoint split produces long, thin boxes across
+ * the shell. The median split wins because the resulting node boxes stay
+ * compact even though the ordering ignores that structure.
+ *
+ * Returns a split point strictly inside the range. */
+static int32_t tvdb_bvh_split(tvdb_bvh_t *b, int32_t lo, int32_t hi) {
+    float cmin[3] = { INFINITY, INFINITY, INFINITY };
+    float cmax[3] = { -INFINITY, -INFINITY, -INFINITY };
+    for (int32_t i = lo; i < hi; ++i) {
+        int32_t f = b->prim[i];
+        for (int a = 0; a < 3; ++a) {
+            float c = 0.5f * (b->tri_bmin[(size_t)f * 3 + a] +
+                              b->tri_bmax[(size_t)f * 3 + a]);
+            if (c < cmin[a]) cmin[a] = c;
+            if (c > cmax[a]) cmax[a] = c;
+        }
+    }
+    int axis = 0;
+    float widest = cmax[0] - cmin[0];
+    for (int a = 1; a < 3; ++a) {
+        float e = cmax[a] - cmin[a];
+        if (e > widest) { widest = e; axis = a; }
+    }
+    if (!(widest > 0.0f)) return lo + 1;   /* all centroids coincide */
+
+    int32_t mid = lo + (hi - lo) / 2;
+    int32_t mf = b->prim[mid];
+    float pivot = 0.5f * (b->tri_bmin[(size_t)mf * 3 + axis] +
+                          b->tri_bmax[(size_t)mf * 3 + axis]);
+    int32_t i = lo, j = hi - 1;
+    for (;;) {
+        while (i < hi) {
+            int32_t f = b->prim[i];
+            float c = 0.5f * (b->tri_bmin[(size_t)f * 3 + axis] +
+                              b->tri_bmax[(size_t)f * 3 + axis]);
+            if (!(c < pivot)) break;
+            i++;
+        }
+        while (j > lo) {
+            int32_t f = b->prim[j];
+            float c = 0.5f * (b->tri_bmin[(size_t)f * 3 + axis] +
+                              b->tri_bmax[(size_t)f * 3 + axis]);
+            if (!(c > pivot)) break;
+            j--;
+        }
+        if (i >= j) break;
+        int32_t t = b->prim[i]; b->prim[i] = b->prim[j]; b->prim[j] = t;
+        i++; j--;
+    }
+    int32_t split = i;
+    if (split <= lo) split = lo + 1;
+    if (split >= hi) split = hi - 1;
+    return split;
+}
+
+/* Recursively build a node covering [lo,hi). Returns its index, or -1 on OOM.
+ * Node indices are stable because the array only grows and existing entries
+ * are never moved. */
+static int32_t tvdb_bvh_build(tvdb_bvh_t *b, int32_t lo, int32_t hi, int depth) {
+    int32_t self = tvdb_bvh_new_node(b);
+    if (self < 0) return -1;
+
+    float nmin[3] = { INFINITY, INFINITY, INFINITY };
+    float nmax[3] = { -INFINITY, -INFINITY, -INFINITY };
+    for (int32_t i = lo; i < hi; ++i) {
+        int32_t f = b->prim[i];
+        for (int a = 0; a < 3; ++a) {
+            float l0 = b->tri_bmin[(size_t)f * 3 + a];
+            float h0 = b->tri_bmax[(size_t)f * 3 + a];
+            if (l0 < nmin[a]) nmin[a] = l0;
+            if (h0 > nmax[a]) nmax[a] = h0;
+        }
+    }
+    for (int a = 0; a < 3; ++a) {
+        b->nodes[self].bmin[a] = nmin[a];
+        b->nodes[self].bmax[a] = nmax[a];
+    }
+
+    int32_t n = hi - lo;
+    /* Small leaves, or exhausted depth, become leaves. The depth cap also
+     * bounds the traversal stack in tvdb_bvh_closest to 64+1 entries. */
+    if (n <= 4 || depth >= 64) {
+        b->nodes[self].start = lo;
+        b->nodes[self].count = n;
+        if (depth > b->max_depth) b->max_depth = depth;
+        return self;
+    }
+
+    int32_t split = tvdb_bvh_split(b, lo, hi);
+    int32_t l = tvdb_bvh_build(b, lo, split, depth + 1);
+    if (l < 0) return -1;
+    int32_t r = tvdb_bvh_build(b, split, hi, depth + 1);
+    if (r < 0) return -1;
+    b->nodes[self].left = l;
+    b->nodes[self].right = r;
+    return self;
+}
+
+/* Build the hierarchy over all `nf` faces of `mesh`. Returns 0 on success. */
+static int tvdb_bvh_init(tvdb_bvh_t *b, const tvdb_triangle_mesh *mesh, size_t nf) {
+    memset(b, 0, sizeof(*b));
+    if (nf == 0) return -1;
+    if (nf > (size_t)INT32_MAX) return -1;
+    b->prim_count = (int32_t)nf;
+
+    b->prim = (int32_t *)malloc(nf * sizeof(int32_t));
+    b->tri_bmin = (float *)malloc(nf * 3 * sizeof(float));
+    b->tri_bmax = (float *)malloc(nf * 3 * sizeof(float));
+    if (!b->prim || !b->tri_bmin || !b->tri_bmax) { tvdb_bvh_free(b); return -1; }
+
+    for (size_t f = 0; f < nf; ++f) {
+        b->prim[f] = (int32_t)f;
+        const tvdb_triangle *face = &mesh->faces[f];
+        float lo[3], hi[3];
+        /* Derive the bounds from the three corners the distance routine will
+         * actually use, so a degenerate face (repeated index, NaN-free) still
+         * produces a well-defined box. */
+        const uint32_t vi[3] = { face->v0, face->v1, face->v2 };
+        for (int a = 0; a < 3; ++a) { lo[a] = INFINITY; hi[a] = -INFINITY; }
+        for (int c = 0; c < 3; ++c) {
+            const tvdb_vec3f *v = &mesh->vertices[vi[c]];
+            float xyz[3] = { v->x, v->y, v->z };
+            for (int a = 0; a < 3; ++a) {
+                if (xyz[a] < lo[a]) lo[a] = xyz[a];
+                if (xyz[a] > hi[a]) hi[a] = xyz[a];
+            }
+        }
+        for (int a = 0; a < 3; ++a) {
+            b->tri_bmin[f * 3 + a] = lo[a];
+            b->tri_bmax[f * 3 + a] = hi[a];
+        }
+    }
+
+    int32_t root = tvdb_bvh_build(b, 0, (int32_t)nf, 0);
+    if (root < 0) { tvdb_bvh_free(b); return -1; }
+    return 0;
+}
+
+/* ---- public BVH accessors -------------------------------------------------
+ *
+ * Heap-wrapped so a caller can hold one for the lifetime of a GPU job and free
+ * it deterministically; the query inside tvdb_mesh_to_sdf still builds on the
+ * stack, as it did before. */
+bool tvdb_mesh_bvh_build(const tvdb_triangle_mesh* mesh, tvdb_mesh_bvh_t** out) {
+    if (!out) return false;
+    *out = NULL;
+    if (!mesh || mesh->face_count == 0) return false;
+    tvdb_mesh_bvh_t* h = (tvdb_mesh_bvh_t*)calloc(1, sizeof(*h));
+    if (!h) return false;
+    if (tvdb_bvh_init(&h->b, mesh, mesh->face_count) != 0) { free(h); return false; }
+    *out = h;
+    return true;
+}
+
+void tvdb_mesh_bvh_destroy(tvdb_mesh_bvh_t* h) {
+    if (!h) return;
+    tvdb_bvh_free(&h->b);
+    free(h);
+}
+
+int32_t     tvdb_mesh_bvh_node_count(const tvdb_mesh_bvh_t* h) { return h ? h->b.node_count : 0; }
+int32_t     tvdb_mesh_bvh_prim_count(const tvdb_mesh_bvh_t* h) { return h ? h->b.prim_count : 0; }
+int32_t     tvdb_mesh_bvh_max_depth(const tvdb_mesh_bvh_t* h) { return h ? h->b.max_depth : 0; }
+const tvdb_mesh_bvh_node_t* tvdb_mesh_bvh_nodes(const tvdb_mesh_bvh_t* h) { return h ? h->b.nodes : NULL; }
+const int32_t* tvdb_mesh_bvh_prims(const tvdb_mesh_bvh_t* h) { return h ? h->b.prim : NULL; }
+
+/* Closest face to `p`, by squared distance. On return `*out_cp` is the
+ * closest point and `*out_n` that face's normal, mirroring the brute-force
+ * loop's initialization exactly: if no face is ever accepted (which happens
+ * when every candidate distance is NaN, e.g. a mesh of zero-area triangles),
+ * both stay {0,0,0} and the caller produces the same signed value it always
+ * did. Recomputing the closest point from `best_face` would instead yield NaN
+ * and flip the sign at those voxels. */
+static float tvdb_bvh_closest(const tvdb_bvh_t *b,
+                              const tvdb_triangle_mesh *mesh,
+                              const tvdb_vec3f *tri_n,
+                              tvdb_vec3f p,
+                              tvdb_vec3f *out_cp, tvdb_vec3f *out_n) {
+    float best_dsq = INFINITY;
+    int32_t best_face = -1;
+    tvdb_vec3f best_cp = { 0, 0, 0 };
+    tvdb_vec3f best_n  = { 0, 0, 0 };
+
+    /* Explicit stack of (node index, lower-bound distance).
+     *
+     * A binary DFS pops one node and pushes at most two, so the stack can
+     * never hold more than tree_depth + 1 entries. The builder caps depth at
+     * 64, so 128 is a comfortable margin and the `sp < 126` guards below are
+     * unreachable in practice -- but they are written to leave the traversal
+     * safe (never out of bounds) rather than to silently corrupt results. */
+    int32_t stack_node[128];
+    float  stack_d[128];
+    int sp = 0;
+
+    stack_node[sp] = 0;
+    stack_d[sp] = 0.0f;
+    sp++;
+
+    while (sp > 0) {
+        sp--;
+        int32_t ni = stack_node[sp];
+        float nd = stack_d[sp];
+        /* Prune only when the subtree provably cannot match the current best.
+         *
+         * The test must be strict `>`, not `>=`. The brute-force original keeps
+         * the *lowest* face index among exact ties, so a triangle sitting at
+         * exactly best_dsq can still improve the result by having a smaller
+         * index. Pruning on equality would silently drop those. (The bound is
+         * inclusive of the node's own surface, so equality is reachable.) */
+        if (nd > best_dsq) continue;
+        const tvdb_bvh_node_t *node = &b->nodes[ni];
+
+        if (node->left < 0) {
+            for (int32_t k = 0; k < node->count; ++k) {
+                int32_t f = b->prim[node->start + k];
+                const tvdb_triangle *face = &mesh->faces[f];
+                tvdb_vec3f a = mesh->vertices[face->v0];
+                tvdb_vec3f bv = mesh->vertices[face->v1];
+                tvdb_vec3f c = mesh->vertices[face->v2];
+                tvdb_vec3f cp = tri_closest_point_c(p, a, bv, c);
+                tvdb_vec3f d = sub_c(p, cp);
+                float dsq = dot_c(d, d);
+                /* Strict `<` mirrors the original loop; the index tie-break
+                 * reproduces "lowest face index wins" for exact ties. */
+                if (dsq < best_dsq || (dsq == best_dsq && f < best_face)) {
+                    best_dsq = dsq;
+                    best_face = f;
+                    best_cp = cp;
+                    best_n = tri_n[f];
+                }
+            }
+        } else {
+            int32_t l = node->left, r = node->right;
+            float dl = tvdb_aabb_dist_sq(b->nodes[l].bmin, b->nodes[l].bmax, &p);
+            float dr = tvdb_aabb_dist_sq(b->nodes[r].bmin, b->nodes[r].bmax, &p);
+            /* Same inclusive test as the pop: an equidistant subtree may hold
+             * a lower-indexed triangle. Push the farther child first so the
+             * nearer one is examined next. */
+            if (dl <= dr) {
+                if (dr <= best_dsq && sp < 126) {
+                    stack_node[sp] = r; stack_d[sp] = dr; sp++;
+                }
+                if (dl <= best_dsq && sp < 126) {
+                    stack_node[sp] = l; stack_d[sp] = dl; sp++;
+                }
+            } else {
+                if (dl <= best_dsq && sp < 126) {
+                    stack_node[sp] = l; stack_d[sp] = dl; sp++;
+                }
+                if (dr <= best_dsq && sp < 126) {
+                    stack_node[sp] = r; stack_d[sp] = dr; sp++;
+                }
+            }
+        }
+    }
+    (void)best_face;
+    *out_cp = best_cp;
+    *out_n = best_n;
+    return best_dsq;
+}
+
 bool tvdb_mesh_to_sdf(const tvdb_triangle_mesh* mesh, float voxel_size,
                       float band_width, tvdb_dense_grid* grid,
                       tvdb_arena_allocator_t* arena) {
@@ -421,6 +763,16 @@ bool tvdb_mesh_to_sdf(const tvdb_triangle_mesh* mesh, float voxel_size,
         tri_n[f] = normalize_c(cross_c(sub_c(b, a), sub_c(c, a)));
     }
 
+    // Accelerate the nearest-face query with a BVH. If the build fails for any
+    // reason (OOM, degenerate input) we fall back to the original exhaustive
+    // scan, which produces identical values.
+    tvdb_bvh_t bvh;
+    int use_bvh = (tvdb_bvh_init(&bvh, mesh, nf) == 0);
+
+    /* Every voxel is independent and the BVH is read-only once built, so the
+     * fill parallelizes directly. `collapse(2)` over (z,y) keeps the x loop
+     * contiguous, which is the access pattern the traversal wants. */
+    #pragma omp parallel for collapse(2) schedule(static)
     for (int z = 0; z < nz; ++z) {
       for (int y = 0; y < ny; ++y) {
         for (int x = 0; x < nx; ++x) {
@@ -428,17 +780,21 @@ bool tvdb_mesh_to_sdf(const tvdb_triangle_mesh* mesh, float voxel_size,
             float best_dsq = INFINITY;
             tvdb_vec3f best_cp = {0, 0, 0};
             tvdb_vec3f best_n  = {0, 0, 0};
-            for (size_t f = 0; f < nf; ++f) {
-                tvdb_vec3f a = mesh->vertices[mesh->faces[f].v0];
-                tvdb_vec3f b = mesh->vertices[mesh->faces[f].v1];
-                tvdb_vec3f c = mesh->vertices[mesh->faces[f].v2];
-                tvdb_vec3f cp = tri_closest_point_c(p, a, b, c);
-                tvdb_vec3f d = sub_c(p, cp);
-                float dsq = dot_c(d, d);
-                if (dsq < best_dsq) {
-                    best_dsq = dsq;
-                    best_cp = cp;
-                    best_n = tri_n[f];
+            if (use_bvh) {
+                best_dsq = tvdb_bvh_closest(&bvh, mesh, tri_n, p, &best_cp, &best_n);
+            } else {
+                for (size_t f = 0; f < nf; ++f) {
+                    tvdb_vec3f a = mesh->vertices[mesh->faces[f].v0];
+                    tvdb_vec3f b = mesh->vertices[mesh->faces[f].v1];
+                    tvdb_vec3f c = mesh->vertices[mesh->faces[f].v2];
+                    tvdb_vec3f cp = tri_closest_point_c(p, a, b, c);
+                    tvdb_vec3f d = sub_c(p, cp);
+                    float dsq = dot_c(d, d);
+                    if (dsq < best_dsq) {
+                        best_dsq = dsq;
+                        best_cp = cp;
+                        best_n = tri_n[f];
+                    }
                 }
             }
             float dist = sqrtf(best_dsq);
@@ -450,6 +806,7 @@ bool tvdb_mesh_to_sdf(const tvdb_triangle_mesh* mesh, float voxel_size,
         }
       }
     }
+    if (use_bvh) tvdb_bvh_free(&bvh);
     return true;
 }
 

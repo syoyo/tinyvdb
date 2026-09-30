@@ -1,0 +1,46 @@
+#version 450
+// Scalar -> scalar stencils: laplacian (op 0) and central differences
+// (op 1 = dx, 2 = dy, 3 = dz).
+//
+// Matches the CPU reference exactly: reads are clamped at the grid edge
+// (tvdb_at), laplacian is the 7-point (sum of 6 neighbours - 6*centre) scaled by
+// 1/h^2, and the central differences are (f(+1) - f(-1)) scaled by 1/(2h). The
+// host precomputes the scale so the shader only multiplies.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer  { float src[]; };
+layout(std430, set = 0, binding = 1) buffer OutBuffer { float dst[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;     // nx, ny, nz, op
+  float scale;   // 1/h^2 for laplacian, 1/(2h) for central differences
+  uint pad0;
+  uint pad1;
+  uint pad2;
+} u;
+
+int cl(int v, int n) { return v < 0 ? 0 : (v > n - 1 ? n - 1 : v); }
+float at(int ix, int iy, int iz) {
+  ix = cl(ix, u.dim.x); iy = cl(iy, u.dim.y); iz = cl(iz, u.dim.z);
+  return src[(uint(iz) * uint(u.dim.y) + uint(iy)) * uint(u.dim.x) + uint(ix)];
+}
+
+void main() {
+  ivec3 c = ivec3(gl_GlobalInvocationID.xy, 0u);
+  int iz = int(gl_WorkGroupID.z);
+  c.z = iz;
+  if (c.x >= u.dim.x || c.y >= u.dim.y || c.z >= u.dim.z) return;
+  uint i = (uint(c.z) * uint(u.dim.y) + uint(c.y)) * uint(u.dim.x) + uint(c.x);
+  float v;
+  if (u.dim.w == 0) {
+    float s = at(c.x - 1, c.y, c.z) + at(c.x + 1, c.y, c.z)
+            + at(c.x, c.y - 1, c.z) + at(c.x, c.y + 1, c.z)
+            + at(c.x, c.y, c.z - 1) + at(c.x, c.y, c.z + 1);
+    v = (s - 6.0 * at(c.x, c.y, c.z)) * u.scale;
+  } else if (u.dim.w == 1) {
+    v = (at(c.x + 1, c.y, c.z) - at(c.x - 1, c.y, c.z)) * u.scale;
+  } else if (u.dim.w == 2) {
+    v = (at(c.x, c.y + 1, c.z) - at(c.x, c.y - 1, c.z)) * u.scale;
+  } else {
+    v = (at(c.x, c.y, c.z + 1) - at(c.x, c.y, c.z - 1)) * u.scale;
+  }
+  dst[i] = v;
+}

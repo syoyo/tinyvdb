@@ -1,0 +1,70 @@
+#version 450
+// Batched fp64 trilinear sample, matching tvdb_sample_trilinear_dense_d.
+//
+// Same cell-centre convention as the fp32 twin: voxel i holds its sample at
+// world position ox + (i + 0.5) * vs, so the world-to-index mapping is
+// (p - o) / vs - 0.5 followed by floor, and reads clamp at the boundary.
+//
+// Everything on the geometry path is double, including the origin and voxel
+// size in the uniform block. Carrying them as vec4 would silently round them to
+// fp32 and reintroduce exactly the error the fp64 sampler exists to avoid --
+// for a grid at world x=1e6 with a 0.1 voxel size, an fp32 origin is worth
+// several ULP of a voxel.
+//
+// The blend is written as the CPU's explicit form rather than mix(). mix() is
+// permitted to contract into an FMA, which changes the last bits; spelling out
+// `a * (1 - t) + b * t` keeps the arithmetic sequence identical to the CPU.
+//
+// Requires shaderFloat64; the host reports UNIMPLEMENTED when it is absent.
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer GridBuffer   { double grid[]; };
+layout(std430, set = 0, binding = 1) readonly buffer PointsBuffer { double pts[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer { double out_values[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  // std140: ivec4 at 0..15, uint at 16..19, then a double is 8-aligned so the
+  // geometry starts at 24. Block size 56.
+  ivec4 dim;   // nx, ny, nz, unused
+  uint count;
+  double ox;
+  double oy;
+  double oz;
+  double vs;
+} u;
+
+double fetch(int x, int y, int z) {
+  x = clamp(x, 0, u.dim.x - 1);
+  y = clamp(y, 0, u.dim.y - 1);
+  z = clamp(z, 0, u.dim.z - 1);
+  return grid[x + u.dim.x * (y + u.dim.y * z)];
+}
+
+void main() {
+  uint idx = gl_GlobalInvocationID.x;
+  if (idx >= u.count) return;
+  double px = pts[3*idx], py = pts[3*idx+1], pz = pts[3*idx+2];
+  double fxv = (px - u.ox) / u.vs - 0.5;
+  double fyv = (py - u.oy) / u.vs - 0.5;
+  double fzv = (pz - u.oz) / u.vs - 0.5;
+  int ix = int(floor(fxv));
+  int iy = int(floor(fyv));
+  int iz = int(floor(fzv));
+  double fx = fxv - double(ix);
+  double fy = fyv - double(iy);
+  double fz = fzv - double(iz);
+
+  double c000 = fetch(ix,     iy,     iz);
+  double c100 = fetch(ix + 1, iy,     iz);
+  double c010 = fetch(ix,     iy + 1, iz);
+  double c110 = fetch(ix + 1, iy + 1, iz);
+  double c001 = fetch(ix,     iy,     iz + 1);
+  double c101 = fetch(ix + 1, iy,     iz + 1);
+  double c011 = fetch(ix,     iy + 1, iz + 1);
+  double c111 = fetch(ix + 1, iy + 1, iz + 1);
+  double c00 = c000 * (1.0 - fx) + c100 * fx;
+  double c10 = c010 * (1.0 - fx) + c110 * fx;
+  double c01 = c001 * (1.0 - fx) + c101 * fx;
+  double c11 = c011 * (1.0 - fx) + c111 * fx;
+  double c0 = c00 * (1.0 - fy) + c10 * fy;
+  double c1 = c01 * (1.0 - fy) + c11 * fy;
+  out_values[idx] = c0 * (1.0 - fz) + c1 * fz;
+}

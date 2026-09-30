@@ -4,10 +4,14 @@ layout(std430, set = 0, binding = 0) readonly buffer VertBuffer { float verts[];
 layout(std430, set = 0, binding = 1) readonly buffer NormalBuffer { float normals[]; };// 3 floats/face
 layout(std430, set = 0, binding = 2) buffer OutBuffer { float out_sdf[]; };
 layout(std140, set = 0, binding = 3) uniform Params {
+  // std140: dim 0..15, grid_o 16..31, band 32..35, face_count 36..39,
+  // zrange 40..47, pad 48..55.
   ivec4 dim;       // nx, ny, nz, unused
   vec4 grid_o;     // ox, oy, oz, voxel_size
   float band;
   uint face_count;
+  ivec2 zrange;    // first z slice, number of z slices
+  ivec2 pad;
 } u;
 
 // Closest point on triangle abc to p (Ericson voronoi-region form, matching
@@ -34,15 +38,24 @@ vec3 tri_closest(vec3 p, vec3 a, vec3 b, vec3 c) {
 
 // Brute-force mesh -> SDF (matches tvdb_mesh_to_sdf): one thread per voxel,
 // closest-triangle distance with per-voxel normal sign, clamped to +/-band.
+//
+// The dispatch covers one slab of consecutive z slices, given by u.zrange, not
+// the whole grid. Each thread writes to its true global voxel index, so slabs can
+// be dispatched in any order and the result is identical to a single dispatch
+// over the full grid. The host bounds a slab's voxel count because one dispatch
+// over a 199^3 grid (8M threads, each scanning every face) is what previously
+// came back as VK_ERROR_DEVICE_LOST.
 void main() {
   uint gid = gl_GlobalInvocationID.x;
-  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
-  uint total = uint(nx * ny * nz);
+  int nx = u.dim.x, ny = u.dim.y;
+  uint slice = uint(nx) * uint(ny);
+  if (slice == 0u) return;
+  uint total = slice * uint(u.zrange.y);
   if (gid >= total) return;
-  int iz = int(gid) / (nx * ny);
-  int rem = int(gid) - iz * nx * ny;
-  int iy = rem / nx;
-  int ix = rem - iy * nx;
+  int iz = u.zrange.x + int(gid) / int(slice);
+  uint rem = gid - uint(iz - u.zrange.x) * slice;
+  int iy = int(rem) / nx;
+  int ix = int(rem) - iy * nx;
   vec3 p = u.grid_o.xyz + (vec3(ix, iy, iz) + 0.5) * u.grid_o.w;
 
   float best = 1e30;
@@ -63,5 +76,5 @@ void main() {
   float s = dot(p - best_cp, best_n) >= 0.0 ? 1.0 : -1.0;
   float v = s * dist;
   v = clamp(v, -u.band, u.band);
-  out_sdf[gid] = v;
+  out_sdf[(uint(iz) * uint(ny) + uint(iy)) * uint(nx) + uint(ix)] = v;
 }

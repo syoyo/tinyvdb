@@ -1,0 +1,243 @@
+#version 450
+// fp64 twin of tinyvdb_gpu_cg.comp (parallels tvdb_solve_poisson_d): the grids
+// and every CG iterate are fp64 in device memory, and the fp32 result is
+// produced by the host's final cast.
+//
+// One shader for the whole iteration, selected by u.dim.w:
+// Every phase except 2 strides over the grid with ngroups workgroups, so the
+// workgroup count is ngroups for 0/1/3/4/5 and 1 for the reduce. (Phases 3 and
+// 4 were originally plain `if (gid < nvox)` bodies, which silently limited them
+// to 256 elements because they were launched with a single workgroup.)
+//
+//   0  Ap = L p                     + partials[wg] = <p, Ap>
+//   1  x += alpha p; r -= alpha Ap; z = Minv r
+//      + partials[wg] = <r,r>, partials[ngroups+wg] = <r,z>
+//   2  reduce the partials -> partials[2*ngroups + {0,1}]  (one workgroup)
+//   3  p = z + beta p
+//   4  r = rhs - L x                (the initial residual)
+//   5  z = Minv r; p = z            + partials = <r,r>, <r,z>  (pre-loop)
+//
+// Fusing the stencil with the dot product that consumes it is what makes this
+// worth putting on a GPU: the unfused form is six dispatches per iteration, each
+// re-reading the whole grid from VRAM.
+//
+// Reductions accumulate in fp64 regardless of the field width, because the CPU
+// accumulates its dot products in double too. A CG iterate is not reproducible
+// against the CPU anyway -- reduction order differs -- but keeping the
+// accumulator at the CPU's width holds the two to float rounding of each other
+// instead of letting them diverge over iterations.
+//
+// lap_mode is the one thing that differs between the twins' *use*, not their
+// code: tvdb_solve_poisson clamps at the boundary for both its initial residual
+// and its iterations, but tvdb_solve_poisson_d builds its initial residual with
+// apply_laplacian_d, which uses zero Dirichlet, and clamps in the iterations.
+// That inconsistency is in the CPU reference, so it is reproduced rather than
+// quietly corrected -- the host sets lap_mode=1 for phase 4 here and 0 for
+// phase 0.
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 0) buffer PBuf     { double p[]; };
+layout(std430, set = 0, binding = 1) buffer ApBuf    { double ap[]; };
+layout(std430, set = 0, binding = 2) buffer RBuf     { double r[]; };
+layout(std430, set = 0, binding = 3) buffer XBuf     { double x[]; };
+layout(std430, set = 0, binding = 4) buffer ZBuf     { double z[]; };
+layout(std430, set = 0, binding = 5) buffer RhsBuf   { double rhs[]; };
+layout(std430, set = 0, binding = 6) buffer Partials { double partials[]; };
+layout(std140, set = 0, binding = 7) uniform Params {
+  ivec4 dim;      // nx, ny, nz, phase
+  uint nvox;
+  uint ngroups;
+  uint lap_mode;  // 0 = clamp-to-edge, 1 = zero Dirichlet
+  uint pad0;      // 28
+  double alpha;   // 32
+  double Minv;    // 40
+  double beta;    // 48
+  double inv_h2;  // 56
+} u;
+
+// Two 256-entry slots so phase 1 can reduce <r,r> and <r,z> in one dispatch.
+shared double sred[512];   // [0,255] and [256,511]; phase 2 uses [0,255] as two 128-halves
+
+// 7-point Laplacian of p. With zero_dirichlet the missing neighbours are 0.0
+// rather than the clamped index, because clamping an out-of-range coordinate to
+// the boundary yields the centre value, which is a different operator.
+double laplacian_of_p(int ix, int iy, int iz, bool zero_dirichlet) {
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  uint i = (uint(iz) * uint(ny) + uint(iy)) * uint(nx) + uint(ix);
+  double c = p[i];
+  double xm, xp, ym, yp, zm, zp;
+  if (zero_dirichlet) {
+    xm = (ix > 0)      ? p[i - 1u]                 : 0.0;
+    xp = (ix + 1 < nx) ? p[i + 1u]                 : 0.0;
+    ym = (iy > 0)      ? p[i - uint(nx)]            : 0.0;
+    yp = (iy + 1 < ny) ? p[i + uint(nx)]            : 0.0;
+    zm = (iz > 0)      ? p[i - uint(nx) * uint(ny)] : 0.0;
+    zp = (iz + 1 < nz) ? p[i + uint(nx) * uint(ny)] : 0.0;
+  } else {
+    int cxm = ix > 0 ? ix - 1 : 0, cxp = ix + 1 < nx ? ix + 1 : nx - 1;
+    int cym = iy > 0 ? iy - 1 : 0, cyp = iy + 1 < ny ? iy + 1 : ny - 1;
+    int czm = iz > 0 ? iz - 1 : 0, czp = iz + 1 < nz ? iz + 1 : nz - 1;
+    xm = p[(uint(iz) * uint(ny) + uint(iy)) * uint(nx) + uint(cxm)];
+    xp = p[(uint(iz) * uint(ny) + uint(iy)) * uint(nx) + uint(cxp)];
+    ym = p[(uint(iz) * uint(ny) + uint(cym)) * uint(nx) + uint(ix)];
+    yp = p[(uint(iz) * uint(ny) + uint(cyp)) * uint(nx) + uint(ix)];
+    zm = p[(uint(czm) * uint(ny) + uint(iy)) * uint(nx) + uint(ix)];
+    zp = p[(uint(czp) * uint(ny) + uint(iy)) * uint(nx) + uint(ix)];
+  }
+  return (xm + xp + ym + yp + zm + zp - 6.0 * c) * u.inv_h2;
+}
+
+double laplacian_of_x(int ix, int iy, int iz, bool zero_dirichlet) {
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  uint i = (uint(iz) * uint(ny) + uint(iy)) * uint(nx) + uint(ix);
+  double c = x[i];
+  double xm, xp, ym, yp, zm, zp;
+  if (zero_dirichlet) {
+    xm = (ix > 0)      ? x[i - 1u]                 : 0.0;
+    xp = (ix + 1 < nx) ? x[i + 1u]                 : 0.0;
+    ym = (iy > 0)      ? x[i - uint(nx)]            : 0.0;
+    yp = (iy + 1 < ny) ? x[i + uint(nx)]            : 0.0;
+    zm = (iz > 0)      ? x[i - uint(nx) * uint(ny)] : 0.0;
+    zp = (iz + 1 < nz) ? x[i + uint(nx) * uint(ny)] : 0.0;
+  } else {
+    int cxm = ix > 0 ? ix - 1 : 0, cxp = ix + 1 < nx ? ix + 1 : nx - 1;
+    int cym = iy > 0 ? iy - 1 : 0, cyp = iy + 1 < ny ? iy + 1 : ny - 1;
+    int czm = iz > 0 ? iz - 1 : 0, czp = iz + 1 < nz ? iz + 1 : nz - 1;
+    xm = x[(uint(iz) * uint(ny) + uint(iy)) * uint(nx) + uint(cxm)];
+    xp = x[(uint(iz) * uint(ny) + uint(iy)) * uint(nx) + uint(cxp)];
+    ym = x[(uint(iz) * uint(ny) + uint(cym)) * uint(nx) + uint(ix)];
+    yp = x[(uint(iz) * uint(ny) + uint(cyp)) * uint(nx) + uint(ix)];
+    zm = x[(uint(czm) * uint(ny) + uint(iy)) * uint(nx) + uint(ix)];
+    zp = x[(uint(czp) * uint(ny) + uint(iy)) * uint(nx) + uint(ix)];
+  }
+  return (xm + xp + ym + yp + zm + zp - 6.0 * c) * u.inv_h2;
+}
+
+// Tree-reduce one 256-entry slot. Every thread must reach the barrier, so the
+// callers never return early -- out-of-range threads contribute 0 instead.
+void reduce_slot(int slot) {
+  int lid = int(gl_LocalInvocationID.x);
+  int base = slot * 256;
+  for (uint s = 128u; s > 0u; s >>= 1u) {
+    if (lid < int(s)) sred[base + lid] += sred[base + lid + int(s)];
+    barrier();
+  }
+}
+
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint lid = gl_LocalInvocationID.x;
+  int phase = u.dim.w;
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  uint unx = uint(nx), uny = uint(ny);
+  uint stride = u.ngroups * 256u;
+
+  if (phase == 3) {
+    for (uint i = gid; i < u.nvox; i += stride) p[i] = z[i] + u.beta * p[i];
+    return;
+  }
+
+  if (phase == 2) {
+    // One workgroup folds both scalars: threads 0..127 sum slot 0's partials,
+    // threads 128..255 sum slot 1's.
+    //
+    // Deliberately a single workgroup. Two workgroups was the obvious layout
+    // and it silently produced a zero for the second scalar -- writing each
+    // result back to partials[0]/[1] races (workgroup 0 is still reading
+    // partials[1] when workgroup 1 writes it, and two workgroups in one
+    // dispatch share no barrier), and moving the outputs to a third region did
+    // not fix it either. One workgroup removes the question entirely, and
+    // ngroups is capped at 1024 so 128 threads per slot is 8 partials each.
+    uint slot = lid / 128u;
+    uint lane = lid % 128u;
+    double acc = 0.0;
+    for (uint i = lane; i < u.ngroups; i += 128u) acc += partials[slot * u.ngroups + i];
+    sred[int(lid)] = acc;
+    barrier();
+    for (uint s2 = 64u; s2 > 0u; s2 >>= 1u) {
+      if (lane < s2) sred[int(lid)] += sred[int(lid + s2)];
+      barrier();
+    }
+    if (lane == 0u) partials[2u * u.ngroups + slot] = sred[int(lid)];
+    return;
+  }
+
+  if (phase == 4) {
+    for (uint i = gid; i < u.nvox; i += stride) {
+      int ix = int(i % unx);
+      uint rem = i / unx;
+      int iy = int(rem % uny);
+      int iz = int(rem / uny);
+      r[i] = rhs[i] - laplacian_of_x(ix, iy, iz, u.lap_mode == 1u);
+    }
+    return;
+  }
+
+
+  if (phase == 5) {
+    // Pre-loop: z = Minv r, p = z, and the two initial scalars (<r,r> for the
+    // tolerance and <r,z> for the first beta). Same shape as phase 1 because it
+    // is the same update-without-x fusion.
+    double a1 = 0.0, a2 = 0.0;
+    for (uint i = gid; i < u.nvox; i += stride) {
+      double rv = r[i];
+      a1 += rv * rv;
+      z[i] = u.Minv * rv;
+      p[i] = z[i];
+      a2 += rv * z[i];
+    }
+    sred[int(lid)] = a1;
+    sred[256 + int(lid)] = a2;
+    barrier();
+    reduce_slot(0);
+    reduce_slot(1);
+    if (lid == 0u) {
+      partials[gl_WorkGroupID.x] = sred[0];
+      partials[u.ngroups + gl_WorkGroupID.x] = sred[256];
+    }
+    return;
+  }
+
+  if (phase == 0) {
+    double acc = 0.0;
+    for (uint i = gid; i < u.nvox; i += stride) {
+      int ix = int(i % unx);
+      uint rem = i / unx;
+      int iy = int(rem % uny);
+      int iz = int(rem / uny);
+      double pv = p[i];
+      double L = laplacian_of_p(ix, iy, iz, u.lap_mode == 1u);
+      ap[i] = L;
+      acc += pv * L;
+    }
+    sred[int(lid)] = acc;
+    barrier();
+    reduce_slot(0);
+    // gl_WorkGroupID.x, not gid: indexing partials by the global invocation id
+    // strides by 256 and leaves every workgroup past the first outside the range
+    // the reduce phase reads.
+    if (lid == 0u) partials[gl_WorkGroupID.x] = sred[0];
+    return;
+  }
+
+  // phase 1: the update, z, and both dot products in one pass. Each thread's own
+  // r[i] and z[i] are complete before it reads them back, so the two dot
+  // products do not need a barrier between them.
+  double a1 = 0.0, a2 = 0.0;
+  for (uint i = gid; i < u.nvox; i += stride) {
+    x[i] = x[i] + u.alpha * p[i];
+    r[i] = r[i] - u.alpha * ap[i];
+    double rv = r[i];
+    a1 += rv * rv;
+    z[i] = u.Minv * rv;
+    a2 += rv * z[i];
+  }
+  sred[int(lid)] = a1;
+  sred[256 + int(lid)] = a2;
+  barrier();
+  reduce_slot(0);
+  reduce_slot(1);
+  if (lid == 0u) {
+    partials[gl_WorkGroupID.x] = sred[0];
+    partials[u.ngroups + gl_WorkGroupID.x] = sred[256];
+  }
+}

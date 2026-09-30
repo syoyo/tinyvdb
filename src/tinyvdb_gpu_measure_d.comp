@@ -1,0 +1,82 @@
+#version 450
+// fp64 twin of tinyvdb_gpu_measure.comp (tvdb_surface_area_d / tvdb_volume_d).
+//
+// The predicate deliberately differs from the fp32 shader: the fp64 CPU ops test
+// `< 0`, the fp32 ones test `<= 0`, and the two disagree on exact zeros. The
+// parity test pins that difference, so do not "fix" this to match the fp32
+// shader.
+//
+// Here the input and the accumulator are the same width, so the "accumulate
+// wider than the input" trap the fp32 shader documents does not apply: this
+// kernel is exact in its own precision.
+//
+// Two passes over the same partials buffer: pass 0 writes one partial per
+// workgroup, pass 1 folds them into partials[0]. The host issues them as two
+// dispatches, which the per-dispatch shader-write -> shader-read barrier in
+// tvdb_vk_dispatch orders.
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer      { double src[]; };
+layout(std430, set = 0, binding = 1) buffer          PartialsBuffer { double partials[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;   // nx, ny, nz, op (0 = surface area, 1 = volume)
+  uint nvox;   // total voxels
+  uint mode;   // 0 = count, 1 = reduce partials
+  uint ngroups;
+  uint pad;
+} u;
+
+shared double sdata[256];
+
+// Every thread of the workgroup must reach the barrier, so the reduction reads
+// unconditionally and contributes 0 outside the range rather than returning.
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint lid = gl_LocalInvocationID.x;
+
+  if (u.mode == 1u) {
+    double acc = 0.0;
+    for (uint i = gid; i < u.ngroups; i += 256u) acc += partials[i];
+    sdata[lid] = acc;
+    barrier();
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+      if (lid < s) sdata[lid] += sdata[lid + s];
+      barrier();
+    }
+    // Safe to overwrite partials[0]: the loop above is separated from this write
+    // by the reduction's first barrier, so every read has retired.
+    if (lid == 0u && gid == 0u) partials[0] = sdata[0];
+    return;
+  }
+
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  uint unx = uint(nx), uny = uint(ny);
+  double acc = 0.0;
+  uint stride = u.ngroups * 256u;
+  for (uint i = gid; i < u.nvox; i += stride) {
+    if (u.dim.w == 1) {
+      if (src[i] < 0.0) acc += 1.0;
+    } else {
+      // surface area: zero crossing on each +x/+y/+z edge. `< 0`, not `<= 0`:
+      // see the file header.
+      double c = src[i];
+      uint ix = i % unx;
+      uint rem = i / unx;
+      uint iy = rem % uny;
+      uint iz = rem / uny;
+      if (ix + 1u < unx) { double v = src[i + 1u];            if ((c < 0.0) != (v < 0.0)) acc += 1.0; }
+      if (iy + 1u < uny) { double v = src[i + unx];           if ((c < 0.0) != (v < 0.0)) acc += 1.0; }
+      if (iz + 1u < uint(nz)) { double v = src[i + unx * uny]; if ((c < 0.0) != (v < 0.0)) acc += 1.0; }
+    }
+  }
+  sdata[lid] = acc;
+  barrier();
+  for (uint s = 128u; s > 0u; s >>= 1u) {
+    if (lid < s) sdata[lid] += sdata[lid + s];
+    barrier();
+  }
+  // gl_WorkGroupID.x, not gid: gid is workgroup*256 + lane, so indexing by it
+  // strides the partials array by 256 and every workgroup past the first writes
+  // outside the [0, ngroups) range the reduce pass reads. The symptom is a
+  // correct-looking result that is silently a fraction of the true count.
+  if (lid == 0u) partials[gl_WorkGroupID.x] = sdata[0];
+}

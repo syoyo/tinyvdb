@@ -1,0 +1,37 @@
+#version 450
+// Scalar -> vec3 gradient, matching tvdb_gradient: the three central
+// differences, each scaled by 1/(2h) (the host supplies the scale), with reads
+// clamped at the grid edge.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer  { float src[]; };
+layout(std430, set = 0, binding = 1) buffer OutBuffer { float dst[]; };  // 3 per voxel
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;     // nx, ny, nz, op
+  float scale;   // 1/(2h)
+  vec4 grid_o;   // ox, oy, oz, voxel_size (used by cpt)
+} u;
+
+int cl(int v, int n) { return v < 0 ? 0 : (v > n - 1 ? n - 1 : v); }
+float at(int ix, int iy, int iz) {
+  ix = cl(ix, u.dim.x); iy = cl(iy, u.dim.y); iz = cl(iz, u.dim.z);
+  return src[(uint(iz) * uint(u.dim.y) + uint(iy)) * uint(u.dim.x) + uint(ix)];
+}
+
+void main() {
+  ivec3 c = ivec3(gl_GlobalInvocationID.xy, int(gl_WorkGroupID.z));
+  if (c.x >= u.dim.x || c.y >= u.dim.y || c.z >= u.dim.z) return;
+  float gx = (at(c.x + 1, c.y, c.z) - at(c.x - 1, c.y, c.z)) * u.scale;
+  float gy = (at(c.x, c.y + 1, c.z) - at(c.x, c.y - 1, c.z)) * u.scale;
+  float gz = (at(c.x, c.y, c.z + 1) - at(c.x, c.y, c.z - 1)) * u.scale;
+  uint i = 3u * ((uint(c.z) * uint(u.dim.y) + uint(c.y)) * uint(u.dim.x) + uint(c.x));
+  if (u.dim.w == 1) {
+    // cpt: the closest-point transform, p - d * grad, matching tvdb_cpt.
+    float d = at(c.x, c.y, c.z);
+    vec3 p = u.grid_o.xyz + (vec3(c.x, c.y, c.z) + 0.5) * u.grid_o.w;
+    dst[i + 0u] = p.x - d * gx;
+    dst[i + 1u] = p.y - d * gy;
+    dst[i + 2u] = p.z - d * gz;
+    return;
+  }
+  dst[i + 0u] = gx; dst[i + 1u] = gy; dst[i + 2u] = gz;
+}

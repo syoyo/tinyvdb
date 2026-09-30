@@ -1,0 +1,36 @@
+#version 450
+// fp64 CSG: elementwise min / max over two double grids, matching
+// tvdb_csg_union_d, tvdb_csg_intersection_d and tvdb_csg_difference_d.
+//
+//   op 0  union        min(a, b)
+//   op 1  intersection max(a, b)
+//   op 2  difference   max(a, -b)
+//
+// The fp32 twin is the same shape with floats; the only reason this is a
+// separate shader is that fp64 needs the optional shaderFloat64 feature. The
+// host checks that and reports UNIMPLEMENTED when absent, so this shader is
+// never dispatched unsupported.
+//
+// The three-way select is written out rather than branching per invocation so
+// the whole thing is one predicated pass, and so the operand order matches the
+// CPU exactly: the CPU compares `va < vb` / `va > vb` and picks the operand,
+// which differs from min()/max() only for NaN and signed zero. Signed zero is
+// the reachable case, so the comparisons are kept verbatim.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer ABuffer { double va[]; };
+layout(std430, set = 0, binding = 1) readonly buffer BBuffer { double vb[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer { double dst[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;   // nx, ny, nz, op
+} u;
+
+void main() {
+  ivec3 c = ivec3(gl_GlobalInvocationID.xy, int(gl_WorkGroupID.z));
+  if (c.x >= u.dim.x || c.y >= u.dim.y || c.z >= u.dim.z) return;
+  uint i = (uint(c.z) * uint(u.dim.y) + uint(c.y)) * uint(u.dim.x) + uint(c.x);
+  double a = va[i], b = vb[i], r;
+  if (u.dim.w == 0)      r = a < b ? a : b;   // union
+  else if (u.dim.w == 1) r = a > b ? a : b;   // intersection
+  else                   r = a > -b ? a : -b; // difference
+  dst[i] = r;
+}

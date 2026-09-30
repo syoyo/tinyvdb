@@ -1,0 +1,140 @@
+#version 450
+// Dense scalar-grid filters, and the single-node semi-Lagrangian advect.
+//
+// Parallels tvdb_mean_filter, tvdb_gaussian_filter, tvdb_laplacian_filter and
+// tvdb_advect_semi_lagrangian. Selected by u.dim.w:
+//
+//   0  SEP  : out = sum_k kernel[k] * in(coord + k*axis)   (clamped at the edge)
+//   1  LAP  : out = c + (1/8) * (sum6 - 6c), clamped neighbours
+//   2  SL1  : out = sample(field, ix - dt*v/h) with v read at the voxel itself
+//   3  MED  : out = median of the (2r+1)^3 clamped window
+//
+// Only op 3 changes the workgroup size (see below); ops 0-2 are launched with 64
+// and each launches 2x the blocks it needs on CUDA, which the bounds check
+// discards.
+//
+// Separable filters are one op 0 per axis, and the host sequences the three axes
+// and the iterations through distinct buffers, exactly as tvdb_apply_separable
+// does with its ping/pong pair. A single fused 3-D pass would be a different
+// algorithm, not a faster one, so it is not done here.
+//
+// The edge convention is clamping, from tvdb_at. For the separable pass it means
+// a kernel tap that overhangs the domain is evaluated at the boundary *voxel*,
+// which is the same as renormalising the kernel over the in-range taps -- but the
+// CPU does not renormalise, it repeats, and the two differ near an edge whenever
+// the field is not locally constant. Repeating is what is implemented.
+// 32 threads, not 64: op 3 holds a (2*2+1)^3 = 125-float window per thread in
+// private memory, which is 16 KB per workgroup at 64 and over the typical 32 KB
+// private budget once anything else is resident. 32 threads halves that. The
+// host launches ops 0-2 with 64 threads anyway and lets the bounds check discard
+// the surplus on CUDA.
+layout(local_size_x = 32) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuf     { float in_v[]; };
+layout(std430, set = 0, binding = 1) buffer OutBuf                 { float out_v[]; };
+layout(std430, set = 0, binding = 2) readonly buffer VelBuf     { float vel[]; };
+layout(std430, set = 0, binding = 3) readonly buffer KernelBuf { float kern[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  ivec4 dim;      // nx, ny, nz, op
+  ivec4 cfg;      // axis, radius, iterations(unused), unused
+  float inv_h;
+  float dt;
+  uint nvox;
+} u;
+
+int cl(int v, int n) { return v < 0 ? 0 : (v > n - 1 ? n - 1 : v); }
+
+float at(int ix, int iy, int iz) {
+  return in_v[(uint(cl(iz, u.dim.z)) * uint(u.dim.y) + uint(cl(iy, u.dim.y))) * uint(u.dim.x)
+            + uint(cl(ix, u.dim.x))];
+}
+
+float sample_dense(float vx, float vy, float vz) {
+  int ix = int(floor(vx)), iy = int(floor(vy)), iz = int(floor(vz));
+  float fx = vx - float(ix), fy = vy - float(iy), fz = vz - float(iz);
+  float c00 = at(ix,     iy,     iz    ) * (1.0 - fx) + at(ix + 1, iy,     iz    ) * fx;
+  float c10 = at(ix,     iy + 1, iz    ) * (1.0 - fx) + at(ix + 1, iy + 1, iz    ) * fx;
+  float c01 = at(ix,     iy,     iz + 1) * (1.0 - fx) + at(ix + 1, iy,     iz + 1) * fx;
+  float c11 = at(ix,     iy + 1, iz + 1) * (1.0 - fx) + at(ix + 1, iy + 1, iz + 1) * fx;
+  float c0 = c00 * (1.0 - fy) + c10 * fy;
+  float c1 = c01 * (1.0 - fy) + c11 * fy;
+  return c0 * (1.0 - fz) + c1 * fz;
+}
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.nvox) return;
+  int nx = u.dim.x, ny = u.dim.y;
+  int ix = int(i % uint(nx));
+  uint rem = i / uint(nx);
+  int iy = int(rem % uint(ny));
+  int iz = int(rem / uint(ny));
+  int op = u.dim.w;
+
+  if (op == 0) {
+    int axis = u.cfg.x, radius = u.cfg.y;
+    float acc = 0.0;
+    for (int k = -radius; k <= radius; ++k) {
+      int sx = ix, sy = iy, sz = iz;
+      if (axis == 0) sx = ix + k; else if (axis == 1) sy = iy + k; else sz = iz + k;
+      acc += kern[k + radius] * at(sx, sy, sz);
+    }
+    out_v[i] = acc;
+    return;
+  }
+  if (op == 1) {
+    // dt = 1/8: the CPU's discrete update u += dt * h^2 * L with h^2 cancelling.
+    float c = at(ix, iy, iz);
+    float s = at(ix - 1, iy, iz) + at(ix + 1, iy, iz)
+            + at(ix, iy - 1, iz) + at(ix, iy + 1, iz)
+            + at(ix, iy, iz - 1) + at(ix, iy, iz + 1);
+    out_v[i] = c + 0.125 * (s - 6.0 * c);
+    return;
+  }
+  if (op == 3) {
+    // Windowed median, Jacobi: every read comes from in_v, which the host does
+    // not write during the pass.
+    //
+    // The selected value is order independent -- it is whatever a full sort would
+    // place at index n/2 -- so this is bit-identical to the CPU's quickselect even
+    // though the two use entirely different algorithms. The CPU's comparator
+    // returns 0 when neither a<b nor a>b, i.e. for NaN against anything, which is
+    // not a total order; NaN input is therefore undefined for both implementations
+    // and is not claimed to match.
+    //
+    // Rank counting rather than a sort: for each candidate j, count how many
+    // window elements are strictly below it and how many are at or below it. The
+    // k-th smallest is any j with below[j] <= k < below_or_equal[j]. That is
+    // O(n^2) comparisons, which is the honest cost of this being a coverage port
+    // rather than an accelerated one; the alternative -- a bitonic sort of the
+    // padded window -- needs 128-512 elements of private memory per thread and
+    // does not fit.
+    const int r = u.cfg.y;
+    const int n = (2 * r + 1) * (2 * r + 1) * (2 * r + 1);
+    const int k = n / 2;                 // n is odd, so this is the exact median
+    float win[125];                      /* r <= 2, enforced by the host */
+    int m = 0;
+    for (int dz = -r; dz <= r; ++dz)
+      for (int dy = -r; dy <= r; ++dy)
+        for (int dx = -r; dx <= r; ++dx)
+          win[m++] = at(ix + dx, iy + dy, iz + dz);
+    for (int j = 0; j < n; ++j) {
+      int below = 0, at_or_below = 0;
+      for (int i = 0; i < n; ++i) {
+        if (win[i] < win[j]) ++below;
+        if (!(win[j] < win[i])) ++at_or_below;      /* win[i] <= win[j], NaN-safe */
+      }
+      if (below <= k && k < at_or_below) { out_v[i] = win[j]; return; }
+    }
+    out_v[i] = win[0];                    /* unreachable for finite input */
+    return;
+  }
+
+  // op 2: the Euler/single-node backtrace. Unlike tvdb_advect's RK family this
+  // reads the velocity at the voxel itself rather than interpolating it, which is
+  // the whole difference between this op and op 0 of the advect shader.
+  uint vbase = i * 3u;
+  float bx = float(ix) - u.dt * vel[vbase + 0u] * u.inv_h;
+  float by = float(iy) - u.dt * vel[vbase + 1u] * u.inv_h;
+  float bz = float(iz) - u.dt * vel[vbase + 2u] * u.inv_h;
+  out_v[i] = sample_dense(bx, by, bz);
+}

@@ -1,0 +1,86 @@
+#version 450
+// surface_area / volume for the fp32 dense grid (parallels tvdb_surface_area
+// and tvdb_volume).
+//
+// Both CPU ops count a per-voxel predicate and scale the count by a cell
+// measure exactly once at the end, so the partials are accumulated in fp64 even
+// though the grid is fp32: the CPU also accumulates into a `double` and casts to
+// float on return, and a fp32 accumulator stops being exact above 2^24
+// crossings -- which ~50M faces of crossing count reaches on a 256^3 grid, so
+// the fp32 reduction would silently disagree with the CPU on large grids. A sum
+// of 1.0s in fp64 is exact below 2^53, so this produces the same integer the CPU
+// did, not an approximation of it.
+//
+// Two passes over the same partials buffer: pass 0 writes one fp64 partial per
+// workgroup, pass 1 folds them into partials[0]. The host issues them as two
+// dispatches, which the per-dispatch shader-write -> shader-read barrier in
+// tvdb_vk_dispatch orders.
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer      { float src[]; };
+layout(std430, set = 0, binding = 1) buffer          PartialsBuffer { double partials[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;   // nx, ny, nz, op (0 = surface area, 1 = volume)
+  uint nvox;   // total voxels
+  uint mode;   // 0 = count, 1 = reduce partials
+  uint ngroups;
+  uint pad;
+} u;
+
+shared double sdata[256];
+
+// Every thread of the workgroup must reach the barrier, so the reduction reads
+// unconditionally and contributes 0 outside the range rather than returning.
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  uint lid = gl_LocalInvocationID.x;
+
+  if (u.mode == 1u) {
+    double acc = 0.0;
+    for (uint i = gid; i < u.ngroups; i += 256u) acc += partials[i];
+    sdata[lid] = acc;
+    barrier();
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+      if (lid < s) sdata[lid] += sdata[lid + s];
+      barrier();
+    }
+    // Safe to overwrite partials[0]: the loop above is separated from this write
+    // by the reduction's first barrier, so every read has retired.
+    if (lid == 0u && gid == 0u) partials[0] = sdata[0];
+    return;
+  }
+
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  uint unx = uint(nx), uny = uint(ny);
+  double acc = 0.0;
+  uint stride = u.ngroups * 256u;
+  for (uint i = gid; i < u.nvox; i += stride) {
+    if (u.dim.w == 1) {
+      // volume: strictly negative. Not <= 0: the predicate differs from the
+      // surface-area one on exact zeros, and the CPU distinguishes them.
+      if (src[i] < 0.0) acc += 1.0;
+    } else {
+      // surface area: zero crossing on each +x/+y/+z edge. <= 0 here, matching
+      // the fp32 CPU op (the fp64 op uses < 0 -- deliberately different, and
+      // tinyvdb_gpu_measure_d.comp preserves that).
+      float c = src[i];
+      uint ix = i % unx;
+      uint rem = i / unx;
+      uint iy = rem % uny;
+      uint iz = rem / uny;
+      if (ix + 1u < unx) { float v = src[i + 1u];            if ((c <= 0.0) != (v <= 0.0)) acc += 1.0; }
+      if (iy + 1u < uny) { float v = src[i + unx];           if ((c <= 0.0) != (v <= 0.0)) acc += 1.0; }
+      if (iz + 1u < uint(nz)) { float v = src[i + unx * uny]; if ((c <= 0.0) != (v <= 0.0)) acc += 1.0; }
+    }
+  }
+  sdata[lid] = acc;
+  barrier();
+  for (uint s = 128u; s > 0u; s >>= 1u) {
+    if (lid < s) sdata[lid] += sdata[lid + s];
+    barrier();
+  }
+  // gl_WorkGroupID.x, not gid: gid is workgroup*256 + lane, so indexing by it
+  // strides the partials array by 256 and every workgroup past the first writes
+  // outside the [0, ngroups) range the reduce pass reads. The symptom is a
+  // correct-looking result that is silently a fraction of the true count.
+  if (lid == 0u) partials[gl_WorkGroupID.x] = sdata[0];
+}

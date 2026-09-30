@@ -1,0 +1,177 @@
+#version 450
+// mesh_to_sdf over the CPU's own bounding-volume hierarchy.
+//
+// The nodes are the public tvdb_mesh_bvh_node_t (40 bytes) uploaded verbatim, so
+// this walks the same tree tvdb_mesh_to_sdf walks. That is the whole point: the
+// selection rule is a tie-break -- a triangle on a strictly smaller squared
+// distance wins, an exact tie goes to the lower face index -- and because that
+// rule is applied explicitly here the *order* candidates are visited in no longer
+// matters. So this traversal is free to differ from the CPU's (it keeps a smaller
+// stack by recomputing each node's bound distance on pop, which is bit-identical
+// since it is the same function on the same inputs) while the result cannot.
+//
+// Pruning is `nd > best_dsq`, strict. It has to be: a subtree whose bound merely
+// ties the best distance can still win on the face index, so pruning on equality
+// would silently drop those and make the search approximate at exactly the voxels
+// that are equidistant to two triangles.
+//
+// A uniform bin grid was tried here first and is much slower than an exhaustive
+// scan; see doc/bench-baseline.md. The reason is structural, and it is why a
+// hierarchy is the right structure for this query.
+// Explicit stack bound. Node indices only (the bound distance is recomputed on
+// pop), so 48 entries is 192 bytes per thread. MUST equal
+// TVDB_MESH_SDF_BVH_GPU_STACK in tinyvdb_gpu.c, which measures the tree's real
+// depth and falls back to the exhaustive scan if it would not fit -- so a
+// disagreement here costs speed, never correctness.
+#define TVDB_BVH_GPU_STACK 48
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer VertBuffer   { float verts[]; };
+layout(std430, set = 0, binding = 1) readonly buffer NormalBuffer { float normals[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer            { float out_sdf[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 vdim;      // nx, ny, nz, unused
+  vec4  grid_o;    // ox, oy, oz, voxel_size
+  float band;
+  uint  face_count;
+  ivec2 zrange;    // first z slice, number of z slices
+  ivec2 pad0;
+  uint  node_count;
+  uint  prim_count;
+} u;
+layout(std430, set = 0, binding = 4) readonly buffer NodeBuffer { float nodes[]; };  // 10 words per node
+layout(std430, set = 0, binding = 5) readonly buffer PrimBuffer { int prims[]; };
+
+// tvdb_mesh_bvh_node_t is 40 bytes: six floats then four int32.
+//
+// The buffer is typed `float nodes[]` so the record can be read at a 4-byte
+// stride, and the four int32 fields are recovered with floatBitsToInt. Writing
+// `int(nodes[b + 6u])` instead converts the *float value*, not the bit pattern,
+// so every child index collapses to 0 and the walk follows node 0 into itself
+// forever -- which the driver reports as VK_ERROR_DEVICE_LOST, not as a wrong
+// answer. Reinterpreting is exact for every int32, including the -1 leaf marker
+// (0xFFFFFFFF is a NaN, and floatBitsToInt of it is -1).
+struct Node { vec3 bmin; vec3 bmax; int left; int right; int start; int count; };
+
+Node node_at(uint i) {
+  uint b = i * 10u;
+  Node n;
+  n.bmin  = vec3(nodes[b + 0u], nodes[b + 1u], nodes[b + 2u]);
+  n.bmax  = vec3(nodes[b + 3u], nodes[b + 4u], nodes[b + 5u]);
+  n.left  = floatBitsToInt(nodes[b + 6u]);
+  n.right = floatBitsToInt(nodes[b + 7u]);
+  n.start = floatBitsToInt(nodes[b + 8u]);
+  n.count = floatBitsToInt(nodes[b + 9u]);
+  return n;
+}
+
+// tvdb_aabb_dist_sq, in the CPU's form.
+float aabb_dist2(vec3 lo, vec3 hi, vec3 p) {
+  float d2 = 0.0;
+  if (p.x < lo.x) { float t = lo.x - p.x; d2 += t * t; }
+  else if (p.x > hi.x) { float t = p.x - hi.x; d2 += t * t; }
+  if (p.y < lo.y) { float t = lo.y - p.y; d2 += t * t; }
+  else if (p.y > hi.y) { float t = p.y - hi.y; d2 += t * t; }
+  if (p.z < lo.z) { float t = lo.z - p.z; d2 += t * t; }
+  else if (p.z > hi.z) { float t = p.z - hi.z; d2 += t * t; }
+  return d2;
+}
+
+// Ericson voronoi-region form, matching tri_closest_point_c. Note `d4 <= d3`:
+// transcribing it as `d4 <= 0.0` is a different formulation and returns vertex b
+// for a band of configurations, giving a closest point off the triangle.
+vec3 tri_closest(vec3 p, vec3 a, vec3 b, vec3 c) {
+  vec3 ab = b - a, ac = c - a, ap = p - a;
+  float d1 = dot(ab, ap), d2 = dot(ac, ap);
+  if (d1 <= 0.0 && d2 <= 0.0) return a;
+  vec3 bp = p - b;
+  float d3 = dot(ab, bp), d4 = dot(ac, bp);
+  if (d3 >= 0.0 && d4 <= d3) return b;
+  float vc = d1 * d4 - d3 * d2;
+  if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) { float v = d1 / (d1 - d3); return a + ab * v; }
+  vec3 cp = p - c;
+  float d5 = dot(ab, cp), d6 = dot(ac, cp);
+  if (d6 >= 0.0 && d5 <= d6) return c;
+  float vb = d5 * d2 - d1 * d6;
+  if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) { float w = d2 / (d2 - d6); return a + ac * w; }
+  float va = d3 * d6 - d5 * d4;
+  if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) { float w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return b + (c - b) * w; }
+  float denom = 1.0 / (va + vb + vc);
+  return a + ab * (vb * denom) + ac * (vc * denom);
+}
+
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  int nx = u.vdim.x, ny = u.vdim.y;
+  uint slice = uint(nx) * uint(ny);
+  if (slice == 0u) return;
+  if (gid >= slice * uint(u.zrange.y)) return;
+  int iz = u.zrange.x + int(gid) / int(slice);
+  uint rem = gid - uint(iz - u.zrange.x) * slice;
+  int iy = int(rem) / nx;
+  int ix = int(rem) - iy * nx;
+  vec3 p = u.grid_o.xyz + (vec3(ix, iy, iz) + 0.5) * u.grid_o.w;
+
+  float best = 1e30;
+  int   best_face = -1;
+  vec3  best_cp = vec3(0.0);
+  vec3  best_n = vec3(0.0);
+
+  /* Node indices only: the bound distance is recomputed on pop rather than
+   * carried, which halves the stack and is bit-identical because it is the same
+   * function on the same node bounds and the same point. The host checks the
+   * tree's measured depth against TVDB_BVH_GPU_STACK and falls back to the
+   * exhaustive scan if it would not fit, so the bound is a guarantee rather than
+   * an assumption -- the same reason the CPU guards its own 128-entry stack. */
+  int stack[TVDB_BVH_GPU_STACK];
+  int sp = 0;
+  if (u.node_count == 0u) { /* degenerate: nothing to walk */ }
+  else {
+    stack[sp++] = 0;
+    while (sp > 0) {
+      int ni = stack[--sp];
+      Node nd = node_at(uint(ni));
+      // Strict `>`: a subtree whose bound merely ties can still hold a
+      // lower-indexed triangle.
+      if (aabb_dist2(nd.bmin, nd.bmax, p) > best) continue;
+      if (nd.left < 0) {
+        for (int k = 0; k < nd.count; ++k) {
+          int f = prims[uint(nd.start + k)];
+          vec3 a  = vec3(verts[9u*uint(f)+0u], verts[9u*uint(f)+1u], verts[9u*uint(f)+2u]);
+          vec3 v1 = vec3(verts[9u*uint(f)+3u], verts[9u*uint(f)+4u], verts[9u*uint(f)+5u]);
+          vec3 c  = vec3(verts[9u*uint(f)+6u], verts[9u*uint(f)+7u], verts[9u*uint(f)+8u]);
+          vec3 q = tri_closest(p, a, v1, c);
+          vec3 d = p - q;
+          float dsq = dot(d, d);
+          if (dsq < best || (dsq == best && f < best_face)) {
+            best = dsq;
+            best_face = f;
+            best_cp = q;
+            best_n = vec3(normals[3u*uint(f)+0u], normals[3u*uint(f)+1u], normals[3u*uint(f)+2u]);
+          }
+        }
+      } else {
+        int l = nd.left, r = nd.right;
+        Node nl = node_at(uint(l));
+        Node nr = node_at(uint(r));
+        float dl = aabb_dist2(nl.bmin, nl.bmax, p);
+        float dr = aabb_dist2(nr.bmin, nr.bmax, p);
+        // Push the farther child first so the nearer is examined next, which is
+        // what makes `best` tight by the time the other is popped. Only affects
+        // pruning, never the result.
+        if (dl <= dr) {
+          if (dr <= best && sp < TVDB_BVH_GPU_STACK) stack[sp++] = r;
+          if (dl <= best && sp < TVDB_BVH_GPU_STACK) stack[sp++] = l;
+        } else {
+          if (dl <= best && sp < TVDB_BVH_GPU_STACK) stack[sp++] = l;
+          if (dr <= best && sp < TVDB_BVH_GPU_STACK) stack[sp++] = r;
+        }
+      }
+    }
+  }
+
+  float dist = sqrt(best);
+  float s = dot(p - best_cp, best_n) >= 0.0 ? 1.0 : -1.0;
+  float v = clamp(s * dist, -u.band, u.band);
+  out_sdf[(uint(iz) * uint(ny) + uint(iy)) * uint(nx) + uint(ix)] = v;
+}

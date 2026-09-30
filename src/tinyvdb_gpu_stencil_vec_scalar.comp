@@ -1,0 +1,35 @@
+#version 450
+// Vec3 -> scalar divergence, matching tvdb_divergence: the sum of the three
+// central differences of the matching component, each scaled by 1/(2h), with
+// reads clamped at the grid edge.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer  { float src[]; };  // 3 per voxel
+layout(std430, set = 0, binding = 1) buffer OutBuffer { float dst[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;     // nx, ny, nz, op
+  float scale;   // 1/(2h)
+  vec4 grid_o;   // ox, oy, oz, voxel_size (used by cpt)
+} u;
+
+int cl(int v, int n) { return v < 0 ? 0 : (v > n - 1 ? n - 1 : v); }
+float at(int ix, int iy, int iz, int c) {
+  ix = cl(ix, u.dim.x); iy = cl(iy, u.dim.y); iz = cl(iz, u.dim.z);
+  uint i = 3u * ((uint(iz) * uint(u.dim.y) + uint(iy)) * uint(u.dim.x) + uint(ix));
+  return src[i + uint(c)];
+}
+
+void main() {
+  ivec3 c = ivec3(gl_GlobalInvocationID.xy, int(gl_WorkGroupID.z));
+  if (c.x >= u.dim.x || c.y >= u.dim.y || c.z >= u.dim.z) return;
+  uint i = (uint(c.z) * uint(u.dim.y) + uint(c.y)) * uint(u.dim.x) + uint(c.x);
+  if (u.dim.w == 1) {
+    // magnitude: sqrt(x^2 + y^2 + z^2), matching tvdb_magnitude.
+    float x = at(c.x, c.y, c.z, 0), y = at(c.x, c.y, c.z, 1), z = at(c.x, c.y, c.z, 2);
+    dst[i] = sqrt(x*x + y*y + z*z);
+    return;
+  }
+  float dvx = (at(c.x + 1, c.y, c.z, 0) - at(c.x - 1, c.y, c.z, 0)) * u.scale;
+  float dvy = (at(c.x, c.y + 1, c.z, 1) - at(c.x, c.y - 1, c.z, 1)) * u.scale;
+  float dvz = (at(c.x, c.y, c.z + 1, 2) - at(c.x, c.y, c.z - 1, 2)) * u.scale;
+  dst[i] = dvx + dvy + dvz;
+}

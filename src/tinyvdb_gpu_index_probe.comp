@@ -1,0 +1,41 @@
+#version 450
+// First-seen index of a query ijk in the active set, via a host-built
+// open-addressing hash map instead of a linear scan over the active set.
+//
+// The map is built once on the host (tvdb_vk_index_map_build in
+// src/tinyvdb_gpu.c): `keys` is 3 x int32 per slot, `values` is int32 per slot
+// holding (first_seen_index + 1), with 0 meaning "empty slot". Building it
+// host-side keeps construction race-free and gives first-seen semantics for
+// free, because the host inserts in increasing index order and the first insert
+// into a slot wins.
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer KeyBuf   { int keys[]; };
+layout(std430, set = 0, binding = 1) readonly buffer ValueBuf { int values[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer { int out_index[]; };
+layout(std430, set = 0, binding = 3) readonly buffer QueryBuf { int query[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  uint nq;
+  uint cap;
+  uint mask;   // cap - 1
+  uint pad;
+} u;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.nq) return;
+  int ix = query[i * 3u + 0u];
+  int iy = query[i * 3u + 1u];
+  int iz = query[i * 3u + 2u];
+  uint h = (uint(ix) * 73856093u) ^ (uint(iy) * 19349663u) ^ (uint(iz) * 83492791u);
+  uint slot = h & u.mask;
+  for (uint probe = 0u; probe < u.cap; ++probe) {
+    int v = values[slot];
+    if (v == 0) { out_index[i] = -1; return; }   // empty slot: key absent
+    if (keys[slot * 3u + 0u] == ix && keys[slot * 3u + 1u] == iy && keys[slot * 3u + 2u] == iz) {
+      out_index[i] = v - 1;                        // undo the +1 sentinel
+      return;
+    }
+    slot = (slot + 1u) & u.mask;
+  }
+  out_index[i] = -1;
+}

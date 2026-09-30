@@ -146,6 +146,15 @@ static bool tvdb_hash_build(const tvdb_sparse_grid* g, tvdb_hash_entry** table_o
       if (tbl[h].key == key) break;
       h = (h + 1) & mask;
     }
+    /* First occurrence wins, which is what the `break` above is reaching for:
+     * the active set is sorted, so a repeated coordinate means the later voxel is
+     * a duplicate and must not displace the one already indexed. Assigning
+     * unconditionally here made it last-wins instead, which disagreed with
+     * every GPU lookup -- both the brute-force scan (first match in index order)
+     * and the host-built ijk map (which only ever fills an empty slot). The
+     * disagreement was invisible until the map paths were compared against this
+     * on input containing duplicates. */
+    if (tbl[h].idx_plus_one) continue;
     tbl[h].key = key;
     tbl[h].idx_plus_one = (uint32_t)(i + 1);
   }

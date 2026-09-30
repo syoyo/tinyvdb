@@ -1,0 +1,39 @@
+#version 450
+// Elementwise binary scalar-grid ops: max, min, sum, product.
+// Parallels tvdb_comp_max / tvdb_comp_min / tvdb_comp_sum / tvdb_comp_mult.
+//
+// One shader with an op selector rather than four: the bodies differ only in the
+// combining function, and the surrounding bounds, indexing and shape contract are
+// identical, so four shaders would be four places for the same bug to hide.
+//
+// The shape contract is the thing worth stating, because it is a no-op rather
+// than a clamp. All four CPU ops start with
+//     if (!same_shape(a,b) || !same_shape(a,result)) return;
+// and leave `result` completely untouched on a mismatch -- they do not clamp, do
+// not broadcast, and do not partially write. So a kernel that sampled b with
+// clamped indices (the convention most of the other kernels here use, because
+// their stencils read neighbours) would silently produce a field where the CPU
+// produces nothing at all. The host therefore rejects a mismatch before dispatch
+// and returns the same untouched `result`.
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer ABuffer { float a[]; };
+layout(std430, set = 0, binding = 1) readonly buffer BBuffer { float b[]; };
+layout(std430, set = 0, binding = 2) buffer OutBuffer   { float out_v[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;   // nx, ny, nz, op (0 max, 1 min, 2 sum, 3 mult)
+} u;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint n = uint(u.dim.x) * uint(u.dim.y) * uint(u.dim.z);
+  if (i >= n) return;
+  float av = a[i], bv = b[i];
+  float r;
+  /* va > vb ? va : vb, not fmax: fmax(NaN, y) is y, while the CPU's ternary
+     returns va when the comparison is false, so the two disagree on NaN. */
+  if (u.dim.w == 0)      r = (av > bv) ? av : bv;
+  else if (u.dim.w == 1) r = (av < bv) ? av : bv;
+  else if (u.dim.w == 2) r = av + bv;
+  else                   r = av * bv;
+  out_v[i] = r;
+}

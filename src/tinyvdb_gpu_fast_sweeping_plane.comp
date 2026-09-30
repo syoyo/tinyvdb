@@ -1,0 +1,112 @@
+#version 450
+// One wavefront plane of a fast-sweeping (Gauss-Seidel) sweep, matching
+// tvdb_fast_sweeping exactly.
+//
+// The CPU is Gauss-Seidel: within a sweep direction it walks voxels in index
+// order and each update reads the *already updated* absphi value of its
+// neighbour along the sweep direction. A plain parallel sweep would not
+// reproduce that, so the host decomposes a sweep into wavefront planes and
+// launches this kernel once per plane, in sweep order.
+//
+// Define the level of a voxel as L = dir.x*ix + dir.y*iy + dir.z*iz with
+// dir in {-1,+1}. For sweep direction +1 a voxel reads its -1 neighbour, which is
+// at level L-1 and has already been updated this sweep; for direction -1 it reads
+// its +1 neighbour, at level L+1, which has not been updated yet and correctly
+// still holds the pre-sweep value. Either way a voxel only ever reads levels
+// strictly below L, so **every voxel on a plane is independent** and the plane is
+// safe to do in parallel.
+//
+// Two consequences, both used here:
+//   * The kernel updates `absphi` in place. No voxel in this plane reads another
+//     voxel in this plane, so there is no intra-dispatch read-after-write hazard
+//     and no ping-pong is needed.
+//   * max_change accumulates on the device with atomicMax over the bit pattern.
+//     For non-negative floats the IEEE-754 bit pattern orders the same way as the
+//     value, so that is a correct max. That keeps the whole iteration to a single
+//     readback instead of one per plane.
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) buffer PhiBuf { float phi[]; };
+layout(std430, set = 0, binding = 1) buffer ChangeBuf { uint change_max[]; };
+layout(std430, set = 0, binding = 2) readonly buffer FrozenBuf { uint frozen[]; };
+layout(std140, set = 0, binding = 3) uniform Params {
+  ivec4 dim;          // nx, ny, nz, unused
+  ivec4 dir;          // sweep direction, each component -1 or +1
+  int level;          // plane to process
+  float h;
+  float huge;         // CPU's HUGE_VAL_F sentinel
+  uint nvox;
+  uint pad0;
+  uint pad1;
+} u;
+
+int cl(int v, int n) { return v < 0 ? 0 : (v > n - 1 ? n - 1 : v); }
+
+float at(int ix, int iy, int iz) {
+  ix = cl(ix, u.dim.x); iy = cl(iy, u.dim.y); iz = cl(iz, u.dim.z);
+  return phi[(uint(iz) * uint(u.dim.y) + uint(iy)) * uint(u.dim.x) + uint(ix)];
+}
+
+// tvdb__godunov_solve: a <= b <= c sorted and finite, h voxel size. 1D, then 2D,
+// then 3D, falling back to the previous candidate on a negative discriminant
+// exactly as the CPU does.
+//
+// The constants carry the `f` suffix on purpose: an unsuffixed GLSL literal is a
+// double, so `2.0 * h * h` would evaluate the discriminant in double precision.
+// This kernel is otherwise bit-exact with the CPU, down to the sweep order; the
+// only residual difference is the sqrt itself, which the GLSL spec allows to be
+// off by up to 2 ULP against libm's sqrtf. That bounds the worst-case relative
+// error at roughly 5e-7, so parity is asserted with a float tolerance rather
+// than by exact comparison.
+float godunov(float a, float b, float c, float h) {
+  float x = a + h;
+  if (x <= b) return x;
+  float ab = a + b;
+  float disc = 2.0f * h * h - (a - b) * (a - b);
+  if (disc < 0.0f) return x;
+  x = 0.5f * (ab + sqrt(disc));
+  if (x <= c) return x;
+  float abc = a + b + c;
+  float sumsq = a * a + b * b + c * c;
+  float disc3 = abc * abc - 3.0f * (sumsq - h * h);
+  if (disc3 < 0.0f) return x;
+  return (abc + sqrt(disc3)) / 3.0f;
+}
+
+float min2(float a, float b) { return a < b ? a : b; }
+
+void main() {
+  uint gid = gl_GlobalInvocationID.x;
+  if (gid >= u.nvox) return;
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  int ix = int(gid) % nx;
+  int iy = int(gid) / nx % ny;
+  int iz = int(gid) / (nx * ny);
+
+  if (u.dir.x * ix + u.dir.y * iy + u.dir.z * iz != u.level) return;
+  if (frozen[gid] != 0u) return;
+
+  float huge = u.huge;
+  float ax = huge;
+  if (ix > 0)      ax = min2(ax, at(ix - 1, iy, iz));
+  if (ix + 1 < nx) ax = min2(ax, at(ix + 1, iy, iz));
+  float ay = huge;
+  if (iy > 0)      ay = min2(ay, at(ix, iy - 1, iz));
+  if (iy + 1 < ny) ay = min2(ay, at(ix, iy + 1, iz));
+  float az = huge;
+  if (iz > 0)      az = min2(az, at(ix, iy, iz - 1));
+  if (iz + 1 < nz) az = min2(az, at(ix, iy, iz + 1));
+
+  float a = ax, b = ay, c = az;
+  if (a > b) { float t = a; a = b; b = t; }
+  if (b > c) { float t = b; b = c; c = t; }
+  if (a > b) { float t = a; a = b; b = t; }
+  if (a >= huge * 0.5f) return;                 // CPU: `continue`
+
+  float centre = at(ix, iy, iz);
+  float new_v = godunov(a, b, c, u.h);
+  if (new_v < centre) {
+    phi[gid] = new_v;
+    // ch = absphi[idx] - new_v, always >= 0, so the bit pattern orders correctly.
+    atomicMax(change_max[0], floatBitsToUint(centre - new_v));
+  }
+}

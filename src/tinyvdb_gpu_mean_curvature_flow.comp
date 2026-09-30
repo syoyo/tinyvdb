@@ -1,0 +1,59 @@
+#version 450
+// One explicit-Euler step of mean curvature flow, matching
+// tvdb_mean_curvature_flow exactly.
+//
+// The CPU reads from a snapshot (`tmp`) and writes the interior, so each step is
+// a Jacobi iteration and fully parallel -- the host just ping-pongs two buffers
+// `iterations` times. Boundary voxels are copied through unchanged, which is what
+// the CPU does by never writing them.
+//
+// The update is  dt * (num / g2)  where num is the numerator built from the
+// Hessian and gradient. The CPU's guard is `if (g2 < 1e-12f) continue`, i.e. it
+// leaves the voxel untouched; that is reproduced here rather than dividing.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer  { float src[]; };
+layout(std430, set = 0, binding = 1) buffer OutBuffer { float dst[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;      // nx, ny, nz, unused
+  float h;        // voxel size
+  float dt;
+  uint pad0;
+  uint pad1;
+} u;
+
+int cl(int v, int n) { return v < 0 ? 0 : (v > n - 1 ? n - 1 : v); }
+float at(int ix, int iy, int iz) {
+  ix = cl(ix, u.dim.x); iy = cl(iy, u.dim.y); iz = cl(iz, u.dim.z);
+  return src[(uint(iz) * uint(u.dim.y) + uint(iy)) * uint(u.dim.x) + uint(ix)];
+}
+
+void main() {
+  ivec3 c = ivec3(gl_GlobalInvocationID.xy, int(gl_WorkGroupID.z));
+  if (c.x >= u.dim.x || c.y >= u.dim.y || c.z >= u.dim.z) return;
+  uint i = (uint(c.z) * uint(u.dim.y) + uint(c.y)) * uint(u.dim.x) + uint(c.x);
+  // The CPU only updates the interior, so boundary voxels are copied through.
+  if (c.x < 1 || c.y < 1 || c.z < 1 || c.x > u.dim.x - 2 || c.y > u.dim.y - 2 || c.z > u.dim.z - 2) {
+    dst[i] = at(c.x, c.y, c.z);
+    return;
+  }
+  float h = u.h, h2 = h * h, i2h = 1.0 / (2.0 * h), i4h2 = 1.0 / (4.0 * h2);
+  int sl = u.dim.x, sx = u.dim.x * u.dim.y;
+  float c0 = at(c.x, c.y, c.z);
+  float px = (at(c.x + 1, c.y, c.z) - at(c.x - 1, c.y, c.z)) * i2h;
+  float py = (at(c.x, c.y + 1, c.z) - at(c.x, c.y - 1, c.z)) * i2h;
+  float pz = (at(c.x, c.y, c.z + 1) - at(c.x, c.y, c.z - 1)) * i2h;
+  float g2 = px*px + py*py + pz*pz;
+  if (g2 < 1e-12) { dst[i] = c0; return; }
+  float pxx = (at(c.x + 1, c.y, c.z) - 2.0 * c0 + at(c.x - 1, c.y, c.z)) / h2;
+  float pyy = (at(c.x, c.y + 1, c.z) - 2.0 * c0 + at(c.x, c.y - 1, c.z)) / h2;
+  float pzz = (at(c.x, c.y, c.z + 1) - 2.0 * c0 + at(c.x, c.y, c.z - 1)) / h2;
+  float pxy = (at(c.x + 1, c.y + 1, c.z) - at(c.x - 1, c.y + 1, c.z)
+             - at(c.x + 1, c.y - 1, c.z) + at(c.x - 1, c.y - 1, c.z)) * i4h2;
+  float pyz = (at(c.x, c.y + 1, c.z + 1) - at(c.x, c.y - 1, c.z + 1)
+             - at(c.x, c.y + 1, c.z - 1) + at(c.x, c.y - 1, c.z - 1)) * i4h2;
+  float pxz = (at(c.x + 1, c.y, c.z + 1) - at(c.x - 1, c.y, c.z + 1)
+             - at(c.x + 1, c.y, c.z - 1) + at(c.x - 1, c.y, c.z - 1)) * i4h2;
+  float num = pxx*(py*py + pz*pz) + pyy*(px*px + pz*pz) + pzz*(px*px + py*py)
+            - 2.0 * (pxy*px*py + pyz*py*pz + pxz*px*pz);
+  dst[i] = c0 + u.dt * (num / g2);
+}

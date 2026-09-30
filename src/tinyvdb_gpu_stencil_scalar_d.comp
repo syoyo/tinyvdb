@@ -1,0 +1,42 @@
+#version 450
+// fp64 scalar -> scalar stencils: laplacian (op 0) and central differences
+// (1 = dx, 2 = dy, 3 = dz), matching tvdb_laplacian_d / tvdb_central_diff_*_d.
+//
+// Requires the optional shaderFloat64 feature. The host checks it and reports
+// UNIMPLEMENTED when absent, so this shader is never dispatched unsupported.
+//
+// Mirrors the fp32 kernel: reads clamp at the grid edge and the host supplies
+// the scale.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer InBuffer  { double src[]; };
+layout(std430, set = 0, binding = 1) buffer OutBuffer { double dst[]; };
+layout(std140, set = 0, binding = 2) uniform Params {
+  ivec4 dim;     // nx, ny, nz, op
+  double scale;  // 1/h^2 for laplacian, 1/(2h) for central differences
+} u;
+
+int cl(int v, int n) { return v < 0 ? 0 : (v > n - 1 ? n - 1 : v); }
+double at(int ix, int iy, int iz) {
+  ix = cl(ix, u.dim.x); iy = cl(iy, u.dim.y); iz = cl(iz, u.dim.z);
+  return src[(uint(iz) * uint(u.dim.y) + uint(iy)) * uint(u.dim.x) + uint(ix)];
+}
+
+void main() {
+  ivec3 c = ivec3(gl_GlobalInvocationID.xy, int(gl_WorkGroupID.z));
+  if (c.x >= u.dim.x || c.y >= u.dim.y || c.z >= u.dim.z) return;
+  uint i = (uint(c.z) * uint(u.dim.y) + uint(c.y)) * uint(u.dim.x) + uint(c.x);
+  double v;
+  if (u.dim.w == 0) {
+    double s = at(c.x - 1, c.y, c.z) + at(c.x + 1, c.y, c.z)
+             + at(c.x, c.y - 1, c.z) + at(c.x, c.y + 1, c.z)
+             + at(c.x, c.y, c.z - 1) + at(c.x, c.y, c.z + 1);
+    v = (s - 6.0 * at(c.x, c.y, c.z)) * u.scale;
+  } else if (u.dim.w == 1) {
+    v = (at(c.x + 1, c.y, c.z) - at(c.x - 1, c.y, c.z)) * u.scale;
+  } else if (u.dim.w == 2) {
+    v = (at(c.x, c.y + 1, c.z) - at(c.x, c.y - 1, c.z)) * u.scale;
+  } else {
+    v = (at(c.x, c.y, c.z + 1) - at(c.x, c.y, c.z - 1)) * u.scale;
+  }
+  dst[i] = v;
+}

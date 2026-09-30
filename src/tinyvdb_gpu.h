@@ -12,6 +12,7 @@
 
 #include "tinyvdb_io.h"     // tvdb_status_t, tvdb_error_t
 #include "tinyvdb_mesh.h"   // tvdb_dense_grid, tvdb_vec3f
+#include "tinyvdb_ops.h"    // tvdb_dense_vec_grid, tvdb_dense_grid_d
 #include "tinyvdb_sparse.h" // tvdb_sparse_grid
 #include "tinyvdb_stats.h"  // tvdb_grid_stats_t
 #include "tinyvdb_tsdf.h"   // tvdb_depth_frame
@@ -32,6 +33,7 @@ typedef struct tvdb_gpu_buffer tvdb_gpu_buffer_t;
 typedef struct tvdb_gpu_dense_grid tvdb_gpu_dense_grid_t;
 typedef struct tvdb_gpu_sparse_grid tvdb_gpu_sparse_grid_t;
 typedef struct tvdb_gpu_vulkan_sparse_image3d tvdb_gpu_vulkan_sparse_image3d_t;
+typedef struct tvdb_gpu_index_map tvdb_gpu_index_map_t;
 typedef struct tvdb_gpu_vulkan_sample_batch tvdb_gpu_vulkan_sample_batch_t;
 
 typedef struct {
@@ -61,6 +63,12 @@ tvdb_status_t tvdb_gpu_context_create(tvdb_gpu_backend_t backend,
                                       tvdb_gpu_context_t** out,
                                       tvdb_error_t* err);
 void tvdb_gpu_context_destroy(tvdb_gpu_context_t* ctx);
+// 1 when this build contains GPU SPIR-V, 0 when the shaders are the all-zero
+// fallback include (built without glslangValidator). In the latter case a context
+// still creates and every op returns TVDB_ERROR_UNIMPLEMENTED, so this is how a
+// caller or a test tells "not built for this" from "genuinely unsupported".
+int tvdb_gpu_spirv_available(void);
+
 tvdb_status_t tvdb_gpu_context_info(const tvdb_gpu_context_t* ctx,
                                     tvdb_gpu_context_info_t* out,
                                     tvdb_error_t* err);
@@ -414,6 +422,108 @@ tvdb_status_t tvdb_gpu_grid_checksum(tvdb_gpu_context_t* ctx, const tvdb_dense_g
 // triangle distance with a per-voxel normal sign, clamped to +/-band_width.
 // `out` is allocated/filled with the CPU's bbox/dims/origin conventions.
 // O(voxels * triangles) — keep voxel sizes coarse, like the CPU path.
+// Surface area / volume for a dense scalar grid (parallels tvdb_surface_area and
+// tvdb_volume). The counted predicate is exact and the count is an integer, so
+// the fp32 results match the CPU bit-for-bit rather than to a tolerance.
+//
+// A NULL grid->data returns 0 like the CPU does. The fp64 device feature is
+// required only by the _d variants.
+// Jacobi-preconditioned CG for the 7-point Poisson solve (parallels
+// tvdb_solve_poisson / tvdb_solve_poisson_d). Returns the iteration count, or 0
+// on a shape mismatch, empty grid, or already-converged input, matching the CPU.
+//
+// CG is sequential, so this does two grid-wide dispatches per host sync; the win
+// is per-iteration cost, not end-to-end latency. The two solvers differ exactly
+// where the CPU pair differs, including solve_poisson_d building its initial
+// residual with zero Dirichlet while clamping inside the loop.
+int tvdb_gpu_solve_poisson(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* rhs,
+                           tvdb_dense_grid* x, int max_iters, float tolerance,
+                           tvdb_error_t* err);
+int tvdb_gpu_solve_poisson_d(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* rhs,
+                             tvdb_dense_grid* x, int max_iters, double tolerance,
+                             tvdb_error_t* err);
+
+// fp64 in and fp64 out (parallels tvdb_solve_poisson_dd), as distinct from
+// tvdb_gpu_solve_poisson_d above, which takes fp32 grids. Same kernel and device
+// buffers; only the input widening and output narrowing are skipped.
+int tvdb_gpu_solve_poisson_dd(tvdb_gpu_context_t* ctx, const tvdb_dense_grid_d* rhs,
+                              tvdb_dense_grid_d* x, int max_iters, double tolerance,
+                              tvdb_error_t* err);
+
+// Elementwise binary scalar-grid ops (parallels tvdb_comp_max/min/sum/mult).
+// A shape mismatch among a, b or result is not an error: the CPU ops return
+// immediately and leave `result` untouched, and that is reproduced here. A NULL
+// data pointer likewise leaves `result` untouched.
+// Semi-Lagrangian advection of a scalar grid by a vec3 velocity grid
+// (parallels tvdb_advect). All six schemes are supported: the four RK ones in a
+// single pass, MacCormack and BFECC in three to four.
+//
+// A NULL data pointer or a shape mismatch among field, velocity and result is not
+// an error: the CPU returns without writing, and `result` is left untouched. An
+// unknown scheme is INVALID_ARGUMENT.
+// Dense scalar-grid filters (parallels tvdb_mean_filter, tvdb_gaussian_filter and
+// tvdb_laplacian_filter). These modify the grid in place, and `grid` is left
+// untouched if any pass fails, so a failure cannot leave it half-filtered.
+//
+// The separable filters run one axis at a time through distinct buffers, as
+// tvdb_apply_separable does, rather than as a fused 3-D pass -- a fused pass is a
+// different algorithm, not a faster one. The Laplacian filter is Jacobi for the
+// same reason.
+tvdb_status_t tvdb_gpu_mean_filter(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                   int width, int iterations, tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_gaussian_filter(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                       int width, int iterations, tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_laplacian_filter(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                        int iterations, tvdb_error_t* err);
+
+// Single-node (Euler) semi-Lagrangian advect (parallels
+// tvdb_advect_semi_lagrangian). Unlike the RK family in tvdb_gpu_advect above,
+// this reads the velocity at the voxel itself rather than interpolating it. A
+// shape mismatch leaves `result` untouched, as the CPU does.
+// Windowed median (parallels tvdb_median_filter), Jacobi like the CPU.
+//
+// This is a coverage port, not an accelerated one: it counts ranks, which is
+// O((2r+1)^6) comparisons per voxel, because a bitonic sort of the padded window
+// needs 128-512 floats of private memory per thread. It is still bit-identical to
+// the CPU's quickselect on finite input, since the selected value is order
+// independent.
+//
+// radius is bounded at 2. Above that this reports UNIMPLEMENTED rather than
+// silently using a smaller window, which would be a different filter. The CPU
+// accepts any radius.
+tvdb_status_t tvdb_gpu_median_filter(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                                     int radius, int iterations, tvdb_error_t* err);
+
+tvdb_status_t tvdb_gpu_advect_semi_lagrangian(tvdb_gpu_context_t* ctx,
+    const tvdb_dense_grid* field, const tvdb_dense_vec_grid* velocity, float dt,
+    tvdb_dense_grid* result, tvdb_error_t* err);
+
+tvdb_status_t tvdb_gpu_advect(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* field,
+                              const tvdb_dense_vec_grid* velocity, float dt, int scheme,
+                              int clamp, tvdb_dense_grid* result, tvdb_error_t* err);
+
+tvdb_status_t tvdb_gpu_comp_max(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* a,
+                                const tvdb_dense_grid* b, tvdb_dense_grid* result,
+                                tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_comp_min(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* a,
+                                const tvdb_dense_grid* b, tvdb_dense_grid* result,
+                                tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_comp_sum(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* a,
+                                const tvdb_dense_grid* b, tvdb_dense_grid* result,
+                                tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_comp_mult(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* a,
+                                 const tvdb_dense_grid* b, tvdb_dense_grid* result,
+                                 tvdb_error_t* err);
+
+tvdb_status_t tvdb_gpu_surface_area(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                                    float* out_area, tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_volume(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
+                              float* out_volume, tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_surface_area_d(tvdb_gpu_context_t* ctx, const tvdb_dense_grid_d* grid,
+                                     double* out_area, tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_volume_d(tvdb_gpu_context_t* ctx, const tvdb_dense_grid_d* grid,
+                               double* out_volume, tvdb_error_t* err);
+
 tvdb_status_t tvdb_gpu_mesh_to_sdf(tvdb_gpu_context_t* ctx, const tvdb_triangle_mesh* mesh,
                                    float voxel_size, float band_width,
                                    tvdb_dense_grid* out, tvdb_error_t* err);
@@ -476,12 +586,28 @@ typedef struct {
   const tvdb_gpu_binding_t* bindings;
   unsigned int num_bindings;  // <= 6
   unsigned int group_count_x; // workgroup count (kernel uses local_size_x = 128)
+  // Queue the dispatch instead of waiting for it. Only valid on Vulkan; the CUDA
+  // path is stream-ordered and already defers, so this is a no-op there. The
+  // caller must drain with tvdb_gpu_dispatch_flush before reading any bound
+  // buffer, and must NOT modify a bound host pointer in between -- deferred
+  // dispatches all read the same memory, so rewriting a uniform or an input
+  // buffer while they are queued feeds every queued dispatch the new contents.
+  // A chained op that alternates between two host buffers (a ping/pong filter) is
+  // the case that actually needs care: with deferred submit each pass would see
+  // the previous pass's output, so leave defer 0 there unless every binding is
+  // device-resident.
+  int defer;
 } tvdb_gpu_dispatch_spec_t;
 
 // Run one compute dispatch described by `spec`. Returns TVDB_ERROR_UNIMPLEMENTED
 // when the backend can't run it (e.g. no SPIR-V on Vulkan).
 tvdb_status_t tvdb_gpu_dispatch(tvdb_gpu_context_t* ctx, const tvdb_gpu_dispatch_spec_t* spec,
                                 tvdb_error_t* err);
+
+// Wait for any dispatches queued with spec->defer and copy their output bindings
+// back. Must be called before reading a buffer written by a deferred dispatch, and
+// before the buffers themselves are released. A no-op when nothing is queued.
+tvdb_status_t tvdb_gpu_dispatch_flush(tvdb_gpu_context_t* ctx, tvdb_error_t* err);
 
 // Demonstration op built on the dispatch engine: out = alpha*x + y over `n`
 // floats, on Vulkan and CUDA. Useful as a BLAS-like primitive and as the worked
@@ -621,3 +747,196 @@ tvdb_status_t tvdb_gpu_multi_sparse_conv3d_batched(tvdb_gpu_context_t* const* ct
 #ifdef __cplusplus
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// PDE stencils.
+//
+// These mirror the CPU reference exactly, including its edge handling: reads
+// are clamped at the grid boundary (tvdb_at / tvdb_vec_at), laplacian is the
+// 7-point stencil (sum of 6 neighbours - 6*centre) scaled by 1/h^2, and the
+// central differences are (f(+1) - f(-1)) scaled by 1/(2h).
+//
+// `out` is (re)allocated to match `in`; on the CUDA backend these fall back to
+// the CPU reference when the device cannot run them.
+
+// laplacian (op 0) or one central difference: 0 = laplacian, 1 = dx, 2 = dy, 3 = dz.
+tvdb_status_t tvdb_gpu_stencil_scalar_scalar(tvdb_gpu_context_t* ctx,
+                                             const tvdb_dense_grid* in,
+                                             int op,
+                                             tvdb_dense_grid* out,
+                                             tvdb_error_t* err);
+
+// gradient of a scalar grid into a vec3 grid.
+tvdb_status_t tvdb_gpu_gradient(tvdb_gpu_context_t* ctx,
+                                const tvdb_dense_grid* in,
+                                tvdb_dense_vec_grid* out,
+                                tvdb_error_t* err);
+
+// divergence of a vec3 grid into a scalar grid.
+tvdb_status_t tvdb_gpu_divergence(tvdb_gpu_context_t* ctx,
+                                  const tvdb_dense_vec_grid* in,
+                                  tvdb_dense_grid* out,
+                                  tvdb_error_t* err);
+
+// curl of a vec3 grid into a vec3 grid.
+tvdb_status_t tvdb_gpu_curl(tvdb_gpu_context_t* ctx,
+                            const tvdb_dense_vec_grid* in,
+                            tvdb_dense_vec_grid* out,
+                            tvdb_error_t* err);
+
+// ---------------------------------------------------------------------------
+// fp64 scalar stencils.
+//
+// fp64 is an optional device feature and runs at a small fraction of fp32 rate
+// on consumer parts, so these check for it and return TVDB_ERROR_UNIMPLEMENTED
+// when the device cannot do it. They never silently compute in fp32: a caller who
+// asked for double precision would otherwise get different answers with no
+// indication.
+
+// True when the device can run the fp64 ops.
+bool tvdb_gpu_supports_fp64(tvdb_gpu_context_t* ctx);
+
+// laplacian (op 0) or one central difference: 0 = laplacian, 1 = dx, 2 = dy, 3 = dz.
+// fp64 CSG: op 0 union (min), 1 intersection (max), 2 difference (max with -b).
+// Matches tvdb_csg_union_d / _intersection_d / _difference_d, including their
+// comparison form so signed zero agrees. Falls back to the CPU reference when the
+// device lacks shaderFloat64.
+// Batched fp64 trilinear sample against tvdb_sample_trilinear_dense_d. Points are
+// (x, y, z) triples in world space; the grid geometry is carried in fp64
+// end-to-end. Falls back to the CPU reference when the device lacks fp64.
+tvdb_status_t tvdb_gpu_sample_trilinear_dense_d_batch(tvdb_gpu_context_t* ctx,
+                                                     const tvdb_dense_grid_d* grid,
+                                                     const double* points,
+                                                     size_t npoints,
+                                                     double* out_values,
+                                                     tvdb_error_t* err);
+
+tvdb_status_t tvdb_gpu_csg_dense_d(tvdb_gpu_context_t* ctx,
+                                   const tvdb_dense_grid_d* a,
+                                   const tvdb_dense_grid_d* b,
+                                   int op,
+                                   tvdb_dense_grid_d* result,
+                                   tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_stencil_scalar_d(tvdb_gpu_context_t* ctx,
+                                        const tvdb_dense_grid_d* in,
+                                        int op,
+                                        tvdb_dense_grid_d* out,
+                                        tvdb_error_t* err);
+
+// ---------------------------------------------------------------------------
+// vec3 grid elementwise ops.
+//
+// These mirror the CPU reference exactly, including its edge case: normalize
+// writes zero (not NaN) where the magnitude is 0. Each is an op selector on the
+// stencil shader for the matching shape, so no new shader or kernel is needed.
+
+// magnitude of a vec3 grid: sqrt(x^2 + y^2 + z^2).
+tvdb_status_t tvdb_gpu_magnitude(tvdb_gpu_context_t* ctx,
+                                 const tvdb_dense_vec_grid* in,
+                                 tvdb_dense_grid* out,
+                                 tvdb_error_t* err);
+
+// unit-length vec3 grid; zero where the magnitude is 0.
+tvdb_status_t tvdb_gpu_normalize_vec(tvdb_gpu_context_t* ctx,
+                                     const tvdb_dense_vec_grid* in,
+                                     tvdb_dense_vec_grid* out,
+                                     tvdb_error_t* err);
+
+// closest-point transform: p - d * grad(sdf), per voxel centre.
+tvdb_status_t tvdb_gpu_cpt(tvdb_gpu_context_t* ctx,
+                           const tvdb_dense_grid* in,
+                           tvdb_dense_vec_grid* out,
+                           tvdb_error_t* err);
+
+// ---------------------------------------------------------------------------
+// Mean curvature flow.
+//
+// The CPU reference is Jacobi (each step reads a snapshot and writes the
+// interior), so this is `iterations` dispatches ping-ponging two device buffers.
+// A no-op when any axis is below 3, matching the CPU.
+
+tvdb_status_t tvdb_gpu_mean_curvature_flow(tvdb_gpu_context_t* ctx,
+                                           const tvdb_dense_grid* in,
+                                           float dt, int iterations,
+                                           tvdb_dense_grid* out,
+                                           tvdb_error_t* err);
+
+// ---------------------------------------------------------------------------
+// Eikonal fast sweeping.
+//
+// The CPU reference is Gauss-Seidel, so this decomposes each sweep into
+// wavefront planes and issues one dispatch per plane, deferred and flushed once
+// per iteration. The returned iteration count matches the CPU's.
+//
+// Returns TVDB_ERROR_UNIMPLEMENTED when the SPIR-V is unavailable (the build
+// without glslangValidator); the CUDA backend uses the CPU reference, since the
+// same plane decomposition would need its own kernel.
+
+// ---- Persistent device-resident index map -----------------------------------
+//
+// The index ops (ijk_to_index, neighbor_counts, points_in_grid, sparse_conv)
+// replace an O(n) linear scan of the active set with a host-built
+// open-addressing map. Above ~2048 active voxels that map is worth it, and at
+// large active sets it is the whole cost: the map depends only on the active
+// set, but the per-call path rebuilds it on the host and re-uploads it every time,
+// which is 12-25 MB of transfer per call for a 700k active set. Measured
+// interleaved A/B at 699k active voxels: Vulkan 161.8 ms vs CUDA 59.4 ms for
+// ijk_to_index, both bound by that build-and-upload rather than by the kernel.
+//
+// This is the reusable form. Build once, query any number of times, and the map
+// lives in DEVICE_LOCAL memory -- write-once/read-many, which is exactly what
+// device-local is for, so there is no host-visible staging buffer to flush and no
+// per-call upload at all. It is opt-in: the existing per-call entry points keep
+// working unchanged, because they cannot know whether the caller's active set is
+// still the same buffer with the same contents.
+//
+// Not valid across an active-set mutation, and not valid across contexts. Build a
+// new one if the active set changes.
+tvdb_status_t tvdb_gpu_index_map_create(tvdb_gpu_context_t* ctx,
+                                        const int32_t* active, size_t na,
+                                        tvdb_gpu_index_map_t** out,
+                                        tvdb_error_t* err);
+void tvdb_gpu_index_map_destroy(tvdb_gpu_context_t* ctx, tvdb_gpu_index_map_t* map);
+
+// Number of active voxels the map was built from.
+size_t tvdb_gpu_index_map_active_count(const tvdb_gpu_index_map_t* map);
+
+// First-seen index of each query ijk, or -1 when absent. Same contract as
+// tvdb_gpu_ijk_to_index, including first-seen ordering for duplicate coordinates.
+tvdb_status_t tvdb_gpu_ijk_to_index_mapped(tvdb_gpu_context_t* ctx,
+                                           const tvdb_gpu_index_map_t* map,
+                                           const int32_t* query, size_t nq,
+                                           int32_t* out, tvdb_error_t* err);
+// Per-active-voxel neighbour count, 6- or 26-connectivity.
+tvdb_status_t tvdb_gpu_neighbor_counts_mapped(tvdb_gpu_context_t* ctx,
+                                              const tvdb_gpu_index_map_t* map,
+                                              int connectivity,
+                                              int32_t* out_counts,
+                                              tvdb_error_t* err);
+// Index of the active voxel containing each world-space point, or -1 when absent.
+tvdb_status_t tvdb_gpu_points_in_grid_mapped(tvdb_gpu_context_t* ctx,
+                                             const tvdb_gpu_index_map_t* map,
+                                             const float* points, size_t np,
+                                             const float voxel_size[3],
+                                             const float origin[3],
+                                             int32_t* out, tvdb_error_t* err);
+
+// fp64 fast sweeping (parallels tvdb_fast_sweeping_d). Returns TVDB_OK and sets
+// *out_iters, or reports UNIMPLEMENTED when the device lacks shaderFloat64 --
+// computing it in fp32 would return different values than were asked for.
+//
+// One behavioural difference from the fp32 twin: the device-side change
+// accumulator can only atomicMax 32 bits (GLSL has no uint64_t and `union` is a
+// reserved word), so it tracks the high half of the pattern and the host
+// reconstructs to 2^-20 relative. That underestimates, so convergence can be
+// detected up to 1e-6 relative late and never early. CUDA uses the CPU reference.
+int tvdb_gpu_fast_sweeping_d(tvdb_gpu_context_t* ctx, tvdb_dense_grid_d* grid,
+                             double frozen_band, int max_iters, double tol,
+                             int* out_iters, tvdb_error_t* err);
+
+tvdb_status_t tvdb_gpu_fast_sweeping(tvdb_gpu_context_t* ctx,
+                                     tvdb_dense_grid* grid,
+                                     float frozen_band,
+                                     int max_iters, float tol,
+                                     int* out_iters,
+                                     tvdb_error_t* err);

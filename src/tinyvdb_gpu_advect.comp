@@ -1,0 +1,181 @@
+#version 450
+// Semi-Lagrangian advection of a scalar grid by a vec3 velocity grid
+// (parallels tvdb_advect).
+//
+// Selected by u.op, and every op is a pure gather -- it reads `field`/`vel` and
+// writes one voxel -- so the whole family is embarrassingly parallel and needs no
+// intermediate barrier beyond the per-dispatch write->read barrier:
+//
+//   0  SL  : out = sample(field, rk_backtrace(vel, ix, iy, iz))
+//   1  MACC: out = clamp_to_stencil(phat + 0.5 * (field - pstar))
+//   2  CORR: out = field + 0.5 * (field - pstar)
+//   3  CLAMP: clamp `out` in place to the 8 corners of field's stencil at the
+//             backtrace point
+//
+// The host sequences those exactly as the CPU does: for a pure RK scheme one op
+// 0 with order = scheme + 1; for MacCormack, op0 twice (dt then -dt, order 2)
+// then op 1; for BFECC, the same two op 0 passes then op 2, op 0 again, and op 3
+// when clamping. Nothing is fused across passes, because MacCormack and BFECC
+// genuinely need the intermediate fields.
+//
+// Both samplers clamp. `tvdb_at` and `tvdb_vec_at` clamp out-of-range coordinates
+// to the grid edge, so a backtrace that leaves the domain -- which it does
+// whenever |dt| * |v| / h exceeds one voxel -- repeats the edge value. That is
+// the CPU's behaviour and it is not a boundary condition one can substitute: a
+// zero-fill would put a hard wall where the CPU has a constant extension, and the
+// difference shows up on exactly the fast-flow voxels a user would look at first.
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer FieldBuf { float field[]; };
+layout(std430, set = 0, binding = 1) readonly buffer VelBuf   { float vel[]; };
+layout(std430, set = 0, binding = 2) readonly buffer PhatBuf  { float phat[]; };
+layout(std430, set = 0, binding = 3) readonly buffer PstarBuf { float pstar[]; };
+layout(std430, set = 0, binding = 4) buffer OutBuf             { float out_v[]; };
+// No explicit tail pad: std140 gives a scalar array 16-byte base alignment, so
+// declaring one would move it and nothing reads it. The host asserts the field
+// offsets instead.
+layout(std140, set = 0, binding = 5) uniform Params {
+  ivec4 dim;      // nx, ny, nz, op
+  ivec4 cfg;      // rk order, clamp flag, unused, unused
+  float inv_h;
+  float dt;
+  uint nvox;
+} u;
+
+int cl(int v, int n) { return v < 0 ? 0 : (v > n - 1 ? n - 1 : v); }
+
+float at(int ix, int iy, int iz) {
+  return field[(uint(cl(iz, u.dim.z)) * uint(u.dim.y) + uint(cl(iy, u.dim.y))) * uint(u.dim.x)
+             + uint(cl(ix, u.dim.x))];
+}
+
+// tvdb_vec_at, component c. The vec3 grid is interleaved: index*3 + c.
+float v_at(int ix, int iy, int iz, int c) {
+  uint i = ((uint(cl(iz, u.dim.z)) * uint(u.dim.y) + uint(cl(iy, u.dim.y))) * uint(u.dim.x)
+           + uint(cl(ix, u.dim.x))) * 3u + uint(c);
+  return vel[i];
+}
+
+// tvdb_sample_dense_voxel: trilinear with clamped indices.
+float sample_dense(float vx, float vy, float vz) {
+  int ix = int(floor(vx)), iy = int(floor(vy)), iz = int(floor(vz));
+  float fx = vx - float(ix), fy = vy - float(iy), fz = vz - float(iz);
+  float c000 = at(ix,     iy,     iz    ), c100 = at(ix + 1, iy,     iz    );
+  float c010 = at(ix,     iy + 1, iz    ), c110 = at(ix + 1, iy + 1, iz    );
+  float c001 = at(ix,     iy,     iz + 1), c101 = at(ix + 1, iy,     iz + 1);
+  float c011 = at(ix,     iy + 1, iz + 1), c111 = at(ix + 1, iy + 1, iz + 1);
+  float c00 = c000 * (1.0 - fx) + c100 * fx;
+  float c10 = c010 * (1.0 - fx) + c110 * fx;
+  float c01 = c001 * (1.0 - fx) + c101 * fx;
+  float c11 = c011 * (1.0 - fx) + c111 * fx;
+  float c0 = c00 * (1.0 - fy) + c10 * fy;
+  float c1 = c01 * (1.0 - fy) + c11 * fy;
+  return c0 * (1.0 - fz) + c1 * fz;
+}
+
+vec3 sample_vec(float vx, float vy, float vz) {
+  int ix = int(floor(vx)), iy = int(floor(vy)), iz = int(floor(vz));
+  float fx = vx - float(ix), fy = vy - float(iy), fz = vz - float(iz);
+  int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
+  vec3 out3;
+  for (int c = 0; c < 3; ++c) {
+    float c00 = v_at(ix,     iy,     iz,     c) * (1.0 - fx) + v_at(ix + 1, iy,     iz,     c) * fx;
+    float c10 = v_at(ix,     iy + 1, iz,     c) * (1.0 - fx) + v_at(ix + 1, iy + 1, iz,     c) * fx;
+    float c01 = v_at(ix,     iy,     iz + 1, c) * (1.0 - fx) + v_at(ix + 1, iy,     iz + 1, c) * fx;
+    float c11 = v_at(ix,     iy + 1, iz + 1, c) * (1.0 - fx) + v_at(ix + 1, iy + 1, iz + 1, c) * fx;
+    float c0 = c00 * (1.0 - fy) + c10 * fy;
+    float c1 = c01 * (1.0 - fy) + c11 * fy;
+    out3[c] = c0 * (1.0 - fz) + c1 * fz;
+  }
+  return out3;
+}
+
+// tvdb_rk_backtrace: RK1..RK4 backtrace of the velocity field. The gradient sign
+// is negative because this is a backtrace, and the 1/h factors make the velocity
+// a per-voxel rate.
+void rk_backtrace(vec3 p, out vec3 b) {
+  vec3 v = sample_vec(p.x, p.y, p.z);
+  vec3 g1 = -v * u.inv_h;
+  int order = u.cfg.x;
+  if (order <= 1) { b = p + u.dt * g1; return; }
+  if (order == 2) {
+    vec3 vm = sample_vec(p.x + 0.5 * u.dt * g1.x, p.y + 0.5 * u.dt * g1.y, p.z + 0.5 * u.dt * g1.z);
+    b = p - u.dt * vm * u.inv_h;
+    return;
+  }
+  vec3 v2 = sample_vec(p.x + 0.5 * u.dt * g1.x, p.y + 0.5 * u.dt * g1.y, p.z + 0.5 * u.dt * g1.z);
+  vec3 g2 = -v2 * u.inv_h;
+  if (order == 3) {   // Kutta third order
+    vec3 v3 = sample_vec(p.x - u.dt * g1.x + 2.0 * u.dt * g2.x,
+                         p.y - u.dt * g1.y + 2.0 * u.dt * g2.y,
+                         p.z - u.dt * g1.z + 2.0 * u.dt * g2.z);
+    vec3 g3 = -v3 * u.inv_h;
+    b = p + u.dt * (g1 + 4.0 * g2 + g3) / 6.0;
+    return;
+  }
+  vec3 v3 = sample_vec(p.x + 0.5 * u.dt * g2.x, p.y + 0.5 * u.dt * g2.y, p.z + 0.5 * u.dt * g2.z);
+  vec3 g3 = -v3 * u.inv_h;
+  vec3 v4 = sample_vec(p.x + u.dt * g3.x, p.y + u.dt * g3.y, p.z + u.dt * g3.z);
+  vec3 g4 = -v4 * u.inv_h;
+  b = p + u.dt * (g1 + 2.0 * g2 + 2.0 * g3 + g4) / 6.0;
+}
+
+// tvdb_stencil_minmax: min and max of the 8 clamped corners at the backtrace
+// point. Starting from +/-3.4e38 rather than the first corner reproduces the CPU's
+// sentinel exactly, which matters for an all-sentinel field.
+void stencil_minmax(vec3 bp, out float mn, out float mx) {
+  int ix = int(floor(bp.x)), iy = int(floor(bp.y)), iz = int(floor(bp.z));
+  mn = 3.4e38; mx = -3.4e38;
+  for (int dz = 0; dz < 2; ++dz)
+    for (int dy = 0; dy < 2; ++dy)
+      for (int dx = 0; dx < 2; ++dx) {
+        float s = at(ix + dx, iy + dy, iz + dz);
+        if (s < mn) mn = s;
+        if (s > mx) mx = s;
+      }
+}
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.nvox) return;
+  int nx = u.dim.x, ny = u.dim.y;
+  int ix = int(i % uint(nx));
+  uint rem = i / uint(nx);
+  int iy = int(rem % uint(ny));
+  int iz = int(rem / uint(ny));
+  int op = u.dim.w;
+
+  if (op == 0) {
+    vec3 p = vec3(float(ix), float(iy), float(iz));
+    vec3 b;
+    rk_backtrace(p, b);
+    out_v[i] = sample_dense(b.x, b.y, b.z);
+    return;
+  }
+  if (op == 1) {
+    // MacCormack: phat + 0.5 * (field - pstar), optionally clamped.
+    float val = phat[i] + 0.5 * (field[i] - pstar[i]);
+    if (u.cfg.y != 0) {
+      vec3 b;
+      rk_backtrace(vec3(float(ix), float(iy), float(iz)), b);
+      float mn, mx;
+      stencil_minmax(b, mn, mx);
+      if (val < mn) val = mn; else if (val > mx) val = mx;
+    }
+    out_v[i] = val;
+    return;
+  }
+  if (op == 2) {
+    out_v[i] = field[i] + 0.5 * (field[i] - pstar[i]);
+    return;
+  }
+  // op 3: clamp in place. The CPU clamps `result` after advecting the corrected
+  // field, reading `out_v` and writing it in the same dispatch; that is safe
+  // because each thread touches only its own voxel.
+  float mn, mx;
+  vec3 b;
+  rk_backtrace(vec3(float(ix), float(iy), float(iz)), b);
+  stencil_minmax(b, mn, mx);
+  float v = out_v[i];
+  if (v < mn) v = mn; else if (v > mx) v = mx;
+  out_v[i] = v;
+}

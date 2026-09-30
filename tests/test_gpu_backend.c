@@ -2079,6 +2079,14 @@ static void test_grid_batch_gpu(tvdb_gpu_context_t* ctx) {
 }
 
 static void test_multi_gpu(tvdb_gpu_context_t* ctx) {
+  // sparse_conv3d_batched is a Vulkan-only path, so it has nothing to run against
+  // in a build without SPIR-V (CUDA still creates a context, since its kernels
+  // are compiled at runtime, which is what makes this reachable rather than a
+  // clean no-context skip).
+  if (!tvdb_gpu_spirv_available()) {
+    printf("  test_multi_gpu: SKIP (sparse_conv3d_batched needs GPU SPIR-V)\n");
+    return;
+  }
   // Partition a 4-grid batch across multiple GPU contexts. If the other backend
   // is available we use two distinct contexts (a real multi-device-style split);
   // otherwise the same context twice. Either way the merged result must equal
@@ -2174,6 +2182,15 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   if (st != TVDB_OK) {
     printf("%s: unavailable: %s\n", label, err.message);
     if (required) ++g_failures;
+    return 0;
+  }
+  /* A build without glslangValidator has an all-zero SPIR-V fallback: the context
+   * is fine and every op returns UNIMPLEMENTED, which is a skip rather than a
+   * failure. CUDA compiles its kernels at runtime and is unaffected. Checked
+   * after the context exists so a genuinely broken context still counts as one. */
+  if (backend == TVDB_GPU_BACKEND_VULKAN && !tvdb_gpu_spirv_available()) {
+    printf("%s: SKIP (built without GPU SPIR-V)\n", label);
+    tvdb_gpu_context_destroy(ctx);
     return 0;
   }
   tvdb_gpu_context_info_t info;

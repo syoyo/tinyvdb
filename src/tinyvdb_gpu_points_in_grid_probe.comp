@@ -1,0 +1,40 @@
+#version 450
+// Index of the voxel containing each point, via a host-built open-addressing
+// ijk map instead of a linear scan of the active set.
+//
+// Same map as ijk_to_index: `keys` is 3 x int32 per slot, `values` is int32
+// holding (first_seen_index + 1) with 0 meaning "empty slot". Built host-side
+// in active-index order, so probing yields the first-seen index exactly as the
+// linear scan did.
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(std430, set = 0, binding = 0) readonly buffer KeyBuf   { int keys[]; };
+layout(std430, set = 0, binding = 1) readonly buffer ValueBuf { int values[]; };
+layout(std430, set = 0, binding = 2) readonly buffer PointBuffer { vec4 points[]; };
+layout(std430, set = 0, binding = 3) buffer OutBuffer { int out_index[]; };
+layout(std140, set = 0, binding = 4) uniform Params {
+  uint np;
+  uint cap;
+  uint mask;      // cap - 1
+  vec4 voxel_size;  // xyz used; host guards > 0
+  vec4 origin;      // xyz used
+} u;
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (i >= u.np) return;
+  // ijk = floor((p - origin) / voxel_size), identical to the linear-scan kernel.
+  vec3 p = points[i].xyz;
+  ivec3 q = ivec3(floor((p - u.origin.xyz) / u.voxel_size.xyz));
+  uint h = (uint(q.x) * 73856093u) ^ (uint(q.y) * 19349663u) ^ (uint(q.z) * 83492791u);
+  uint slot = h & u.mask;
+  for (uint probe = 0u; probe < u.cap; ++probe) {
+    int v = values[slot];
+    if (v == 0) { out_index[i] = -1; return; }        // empty slot: key absent
+    if (keys[slot * 3u + 0u] == q.x && keys[slot * 3u + 1u] == q.y && keys[slot * 3u + 2u] == q.z) {
+      out_index[i] = v - 1;
+      return;
+    }
+    slot = (slot + 1u) & u.mask;
+  }
+  out_index[i] = -1;
+}
