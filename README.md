@@ -25,6 +25,37 @@ C and C++).
 | `tinyvdb_simd.h` | Optional SSE4.2/AVX2/F16C primitives gated on `TINYVDB_SIMD` |
 | `tinyvdb_gpu.h` | Optional runtime-loaded GPU backend: Vulkan and CUDA kernels for analytic sphere/box/torus SDF generation, dense CSG, dense trilinear batch sampling, and same-topology sparse conv3d |
 
+### VDB operations contracts
+
+CPU dense stencils and advection require valid dimensions, allocated matching
+output shapes, and positive finite input spacing. CPU void APIs leave outputs unchanged
+on invalid input; checked GPU APIs report `INVALID_ARGUMENT`. Shape-preserving
+stencils, advection, and sparse operations support same-handle in-place output
+through scratch storage. Pointwise CPU operations keep their allocation-free
+in-place path. Topology constructors require distinct input/output handles.
+
+Sparse outputs must be initialized owning containers, including empty outputs.
+Failures preserve the prior output. Coordinate comparisons use all three int32
+components, with first-occurrence lookup semantics for duplicates. Sparse CSG
+uses union topology for union, intersection, and difference; missing coordinates
+contribute the supplied background. GPU offsets outside int32 are absent/padded,
+and morphology clips generated coordinates at the representable limits.
+
+Poisson `_ex` APIs report status, iterations, convergence, and true residual norms.
+All precisions use the edge-clamped Laplacian and preserve the initial solution
+mean. A nonzero RHS mean beyond `64 * input_epsilon * sum(abs(rhs)) / count` is
+rejected; rounding-sized means are removed. Relative tolerance applies to float
+storage (including double internal arithmetic), and absolute tolerance to double
+storage. Residuals are recomputed every 32 iterations and before accepting
+convergence, then measured again after narrowing to the returned storage precision.
+Budget exhaustion returns a finite iterate with an honest convergence flag;
+invalid input, allocation failure, or numerical breakdown leaves the solution
+unchanged. Legacy APIs return zero on failure; use `_ex` for an unambiguous status.
+
+GPU Poisson uses a device Laplacian with persistent buffers and host projection,
+PCG updates, and double reductions. It transfers vectors and synchronizes each
+iteration; this correctness repair makes no performance claim.
+
 ## Features
 
 ### I/O (`tinyvdb_io.h`)
