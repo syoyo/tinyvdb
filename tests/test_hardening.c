@@ -2,6 +2,9 @@
 #include "tinyvdb_sparse.h"
 #include "tinyvdb_ops.h"
 #include "tvdb_memory.h"
+#include "tinyvdb_sample.h"
+#include "tinyvdb_topology.h"
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stdio.h>
@@ -114,7 +117,51 @@ static void test_alloc_sizes(void) {
     CHECK(!tvdb_arena_alloc(&arena, 1) && arena.current_offset == SIZE_MAX);
     tvdb_arena_destroy(&arena);
 }
+static void test_ops_contract(void) {
+    tvdb_dense_grid g, ref; tvdb_dense_grid_init(&g, 3, 2, 2); tvdb_dense_grid_init(&ref, 3, 2, 2);
+    for(int i=0;i<12;++i) g.data[i]=(float)(i*i%17);
+    tvdb_laplacian(&g,&ref); tvdb_laplacian(&g,&g);
+    CHECK(memcmp(g.data,ref.data,12*sizeof(float))==0);
+    float saved[12]; memcpy(saved,g.data,sizeof(saved));
+    tvdb_dense_grid wrong=g; wrong.nx=2;
+    tvdb_laplacian(&g,&wrong); CHECK(memcmp(saved,g.data,sizeof(saved))==0);
+    tvdb_gaussian_filter(&g,INT_MAX,1); tvdb_mean_filter(&g,INT_MAX,1);
+    CHECK(memcmp(saved,g.data,sizeof(saved))==0);
+    g.data[0]=4; g.data[2]=9;
+    CHECK(tvdb_sample_trilinear_dense(&g,FLT_MAX,0.5f,0.5f)==9);
+    CHECK(tvdb_sample_trilinear_dense(&g,-FLT_MAX,0.5f,0.5f)==4);
+    CHECK(tvdb_sample_quadratic_dense(&g,FLT_MAX,0.5f,0.5f)==9);
+    CHECK(tvdb_sample_trilinear_dense(&g,NAN,0,0)==0);
+    g.ox=NAN; CHECK(tvdb_sample_trilinear_dense(&g,0,0,0)==0); g.ox=0;
+    memset(g.data,0,12*sizeof(float)); tvdb_signed_flood_fill(&g,1e-6f);
+    for(int i=0;i<12;++i) CHECK(g.data[i]==0);
+    tvdb_dense_grid coarse; CHECK(tvdb_coarsen_grid(&g,INT_MAX,&coarse,NULL));
+    CHECK(coarse.nx==1 && coarse.ny==1 && coarse.nz==1); tvdb_dense_grid_free(&coarse);
+    CHECK(!tvdb_refine_grid(&g,INT_MAX,&coarse,NULL));
+    CHECK(!tvdb_coarsen_grid(&g,2,&g,NULL)); CHECK(g.nx==3 && g.data);
+    tvdb_dense_vec_grid velocity; tvdb_dense_vec_grid_init(&velocity,3,2,2);
+    for(int i=0;i<36;++i) velocity.data[i]=0.3f*sinf((float)i);
+    for(int scheme=TVDB_ADVECT_RK1;scheme<=TVDB_ADVECT_BFECC;++scheme) {
+      for(int i=0;i<12;++i) g.data[i]=(float)(i*i%17);
+      tvdb_advect(&g,&velocity,0.2f,scheme,1,&ref);
+      tvdb_advect(&g,&velocity,0.2f,scheme,1,&g);
+      CHECK(memcmp(g.data,ref.data,12*sizeof(float))==0);
+    }
+    tvdb_dense_vec_grid_free(&velocity);
+    tvdb_dense_grid_free(&g); tvdb_dense_grid_free(&ref);
+    tvdb_sparse_grid a,b,o; tvdb_sparse_grid_init(&a); tvdb_sparse_grid_init(&b); tvdb_sparse_grid_init(&o);
+    CHECK(tvdb_sparse_grid_reserve(&a,2)); CHECK(tvdb_sparse_grid_reserve(&b,1));
+    a.count=2; a.coords[0]=a.coords[1]=(tvdb_vec3i){0,0,0}; a.values[0]=-1; a.values[1]=-9;
+    b.count=1; b.coords[0]=(tvdb_vec3i){1,0,0}; b.values[0]=-2;
+    CHECK(tvdb_csg_intersection_sparse(&a,&b,5,&o)); CHECK(o.count==2 && o.values[0]==5 && o.values[1]==5);
+    CHECK(tvdb_csg_difference_sparse(&a,&b,5,&o)); CHECK(o.count==2 && o.values[0]==-1 && o.values[1]==5);
+    float identity=1; CHECK(tvdb_sparse_conv3d(&a,&identity,1,1,1,0,&a));
+    CHECK(a.count==2 && a.values[0]==-1 && a.values[1]==-1);
+    tvdb_sparse_grid borrowed=a; borrowed.capacity=0;
+    CHECK(!tvdb_sparse_conv3d(&a,&identity,1,1,1,0,&borrowed)); CHECK(a.values[0]==-1);
+    tvdb_sparse_grid_free(&a); tvdb_sparse_grid_free(&b); tvdb_sparse_grid_free(&o);
+}
 int main(void) {
-    test_coordinates(); test_sparse(); test_median(); test_alloc_sizes();
+    test_coordinates(); test_sparse(); test_median(); test_alloc_sizes(); test_ops_contract();
     return failures != 0;
 }

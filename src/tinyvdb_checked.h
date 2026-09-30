@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <limits.h>
+#include <math.h>
 
 static inline bool tvdb_size_mul(size_t a, size_t b, size_t *out) {
     if (b && a > SIZE_MAX / b) return false;
@@ -41,4 +42,32 @@ static inline bool tvdb_coord_offset(int x, int y, int z, int dx, int dy, int dz
         c < INT32_MIN || c > INT32_MAX) return false;
     *ox = (int)a; *oy = (int)b; *oz = (int)c;
     return true;
+}
+
+/* Pointer interval comparisons avoid undefined relational pointer operations. */
+static inline bool tvdb_buffers_overlap(const void *a, size_t an, const void *b, size_t bn) {
+    uintptr_t x = (uintptr_t)a, y = (uintptr_t)b;
+    if (!a || !b || !an || !bn) return false;
+    return x <= y ? y - x < an : x - y < bn;
+}
+
+static inline bool tvdb_grid_valid(int nx, int ny, int nz, double h,
+                                    const void *data, size_t width) {
+    size_t bytes;
+    return data && isfinite(h) && h > 0 &&
+           tvdb_grid_bytes(nx, ny, nz, width, &bytes);
+}
+
+/* Preserve near-edge fractional coordinates, including quadratic overshoot,
+   but never convert a distant or nonfinite coordinate to an integer. */
+static inline double tvdb_sample_coord(double x, int dim) {
+    if (isnan(x)) return 0.0;
+    return x < -1.0 ? -1.0 : (x >= dim ? (double)dim - 1.0 : x);
+}
+
+static inline int tvdb_sample_floor(double x, int dim) {
+    if (isnan(x)) return 0;
+    if (x < 0) return -1;
+    if (x >= (double)dim - 1.0) return dim - 1;
+    return (int)floor(x);
 }

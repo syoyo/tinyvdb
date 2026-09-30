@@ -10,17 +10,19 @@
 static inline void tvdb_world_to_voxel_index(const tvdb_dense_grid* g,
                                              float wx, float wy, float wz,
                                              float* vx, float* vy, float* vz) {
-  *vx = (wx - g->ox) / g->voxel_size - 0.5f;
-  *vy = (wy - g->oy) / g->voxel_size - 0.5f;
-  *vz = (wz - g->oz) / g->voxel_size - 0.5f;
+  *vx = (float)tvdb_sample_coord(((double)wx - g->ox) / g->voxel_size - 0.5, g->nx);
+  *vy = (float)tvdb_sample_coord(((double)wy - g->oy) / g->voxel_size - 0.5, g->ny);
+  *vz = (float)tvdb_sample_coord(((double)wz - g->oz) / g->voxel_size - 0.5, g->nz);
 }
 
 float tvdb_sample_trilinear_dense(const tvdb_dense_grid* g,
                                   float wx, float wy, float wz) {
-  if (!g->data) return 0.0f;
+  if (!g || !tvdb_grid_valid(g->nx,g->ny,g->nz,g->voxel_size,g->data,sizeof(float)) ||
+      !isfinite(g->ox) || !isfinite(g->oy) || !isfinite(g->oz) ||
+      !isfinite(wx) || !isfinite(wy) || !isfinite(wz)) return 0.0f;
   float vx, vy, vz;
   tvdb_world_to_voxel_index(g, wx, wy, wz, &vx, &vy, &vz);
-  int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);
+  int ix = tvdb_sample_floor(vx,g->nx), iy = tvdb_sample_floor(vy,g->ny), iz = tvdb_sample_floor(vz,g->nz);
   float fx = vx - (float)ix, fy = vy - (float)iy, fz = vz - (float)iz;
 
   float c000 = tvdb_at(g, ix,     iy,     iz);
@@ -44,6 +46,7 @@ void tvdb_sample_trilinear_dense_batch(const tvdb_dense_grid* g,
                                        const tvdb_vec3f* pts,
                                        size_t n,
                                        float* out) {
+  if (!g || (n && (!pts || !out)) || n > LLONG_MAX) return;
   #pragma omp parallel for schedule(static)
   for (long long i = 0; i < (long long)n; ++i) {
     out[i] = tvdb_sample_trilinear_dense(g, pts[i].x, pts[i].y, pts[i].z);
@@ -59,10 +62,12 @@ static inline float tvdb_quad1_s(const float* val, float w) {
 
 float tvdb_sample_quadratic_dense(const tvdb_dense_grid* g,
                                   float wx, float wy, float wz) {
-  float cx = (wx - g->ox) / g->voxel_size - 0.5f;   // cell-center voxel coord
-  float cy = (wy - g->oy) / g->voxel_size - 0.5f;
-  float cz = (wz - g->oz) / g->voxel_size - 0.5f;
-  int ix = (int)floorf(cx), iy = (int)floorf(cy), iz = (int)floorf(cz);
+  if (!g || !tvdb_grid_valid(g->nx,g->ny,g->nz,g->voxel_size,g->data,sizeof(float)) ||
+      !isfinite(g->ox) || !isfinite(g->oy) || !isfinite(g->oz) ||
+      !isfinite(wx) || !isfinite(wy) || !isfinite(wz)) return 0;
+  float cx, cy, cz;
+  tvdb_world_to_voxel_index(g,wx,wy,wz,&cx,&cy,&cz);
+  int ix = tvdb_sample_floor(cx,g->nx), iy = tvdb_sample_floor(cy,g->ny), iz = tvdb_sample_floor(cz,g->nz);
   float u = cx - ix, v = cy - iy, w = cz - iz;
   float vx[3];
   for (int dx = 0; dx < 3; ++dx) {
@@ -70,7 +75,7 @@ float tvdb_sample_quadratic_dense(const tvdb_dense_grid* g,
     for (int dy = 0; dy < 3; ++dy) {
       float vz[3];
       for (int dz = 0; dz < 3; ++dz)
-        vz[dz] = tvdb_at(g, ix - 1 + dx, iy - 1 + dy, iz - 1 + dz);  // clamped
+        vz[dz] = tvdb_at(g, (int64_t)ix - 1 + dx, (int64_t)iy - 1 + dy, (int64_t)iz - 1 + dz);  // clamped
       vy[dy] = tvdb_quad1_s(vz, w);
     }
     vx[dx] = tvdb_quad1_s(vy, v);
@@ -82,6 +87,7 @@ void tvdb_sample_quadratic_dense_batch(const tvdb_dense_grid* g,
                                        const tvdb_vec3f* pts,
                                        size_t n,
                                        float* out) {
+  if (!g || (n && (!pts || !out)) || n > LLONG_MAX) return;
   #pragma omp parallel for schedule(static)
   for (long long i = 0; i < (long long)n; ++i) {
     out[i] = tvdb_sample_quadratic_dense(g, pts[i].x, pts[i].y, pts[i].z);
@@ -91,15 +97,18 @@ void tvdb_sample_quadratic_dense_batch(const tvdb_dense_grid* g,
 void tvdb_sample_trilinear_vec_dense(const tvdb_dense_vec_grid* g,
                                      float wx, float wy, float wz,
                                      tvdb_vec3f* out) {
-  if (!g->data) {
+  if (!out) return;
+  if (!g || !tvdb_grid_valid(g->nx,g->ny,g->nz,g->voxel_size,g->data,3*sizeof(float)) ||
+      !isfinite(g->ox) || !isfinite(g->oy) || !isfinite(g->oz) ||
+      !isfinite(wx) || !isfinite(wy) || !isfinite(wz)) {
     out->x = out->y = out->z = 0.0f;
     return;
   }
   // Same world->voxel mapping (cell-center) as scalar sampler.
-  float vx = (wx - g->ox) / g->voxel_size - 0.5f;
-  float vy = (wy - g->oy) / g->voxel_size - 0.5f;
-  float vz = (wz - g->oz) / g->voxel_size - 0.5f;
-  int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);
+  float vx = (float)tvdb_sample_coord(((double)wx - g->ox) / g->voxel_size - 0.5,g->nx);
+  float vy = (float)tvdb_sample_coord(((double)wy - g->oy) / g->voxel_size - 0.5,g->ny);
+  float vz = (float)tvdb_sample_coord(((double)wz - g->oz) / g->voxel_size - 0.5,g->nz);
+  int ix = tvdb_sample_floor(vx,g->nx), iy = tvdb_sample_floor(vy,g->ny), iz = tvdb_sample_floor(vz,g->nz);
   float fx = vx - (float)ix, fy = vy - (float)iy, fz = vz - (float)iz;
 
   float r[3] = {0.0f, 0.0f, 0.0f};
@@ -111,7 +120,7 @@ void tvdb_sample_trilinear_vec_dense(const tvdb_dense_vec_grid* g,
     int Y1 = tvdb_clamp_i(iy + 1, 0, g->ny - 1);
     int Z0 = tvdb_clamp_i(iz,     0, g->nz - 1);
     int Z1 = tvdb_clamp_i(iz + 1, 0, g->nz - 1);
-    #define VEC_AT(X, Y, Z) (g->data[(((size_t)((Z) * g->ny + (Y)) * g->nx + (X)) * 3u) + (size_t)c])
+    #define VEC_AT(X, Y, Z) (g->data[((((size_t)(Z) * g->ny + (Y)) * g->nx + (X)) * 3u) + (size_t)c])
     c000 = VEC_AT(X0, Y0, Z0);
     c100 = VEC_AT(X1, Y0, Z0);
     c010 = VEC_AT(X0, Y1, Z0);
@@ -137,7 +146,8 @@ void tvdb_splat_trilinear_dense(tvdb_dense_grid* g,
                                 const float* vals,
                                 size_t n,
                                 float* weights) {
-  if (!g->data) return;
+  if (!g || !tvdb_grid_valid(g->nx,g->ny,g->nz,g->voxel_size,g->data,sizeof(float)) ||
+      (n && (!pts || !vals))) return;
   // Multiple points may scatter to the same voxel (write-write hazard).
   // Under OpenMP we use `omp atomic update` per-tap; with no parallelism
   // the omp pragmas vanish and we get the original scalar path.
@@ -145,8 +155,13 @@ void tvdb_splat_trilinear_dense(tvdb_dense_grid* g,
   for (long long pp = 0; pp < (long long)n; ++pp) {
     size_t p = (size_t)pp;
     float vx, vy, vz;
-    tvdb_world_to_voxel_index(g, pts[p].x, pts[p].y, pts[p].z, &vx, &vy, &vz);
-    int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);
+    double qx = ((double)pts[p].x-g->ox)/g->voxel_size-0.5;
+    double qy = ((double)pts[p].y-g->oy)/g->voxel_size-0.5;
+    double qz = ((double)pts[p].z-g->oz)/g->voxel_size-0.5;
+    if (!isfinite(qx) || !isfinite(qy) || !isfinite(qz) ||
+        qx < -1 || qy < -1 || qz < -1 || qx >= g->nx || qy >= g->ny || qz >= g->nz) continue;
+    vx=(float)qx; vy=(float)qy; vz=(float)qz;
+    int ix = tvdb_sample_floor(vx,g->nx), iy = tvdb_sample_floor(vy,g->ny), iz = tvdb_sample_floor(vz,g->nz);
     float fx = vx - (float)ix, fy = vy - (float)iy, fz = vz - (float)iz;
     if (ix < -1 || iy < -1 || iz < -1) continue;
     if (ix >= g->nx || iy >= g->ny || iz >= g->nz) continue;
@@ -192,7 +207,8 @@ void tvdb_splat_quadratic_dense(tvdb_dense_grid* g,
                                 const float* vals,
                                 size_t n,
                                 float* weights) {
-  if (!g->data) return;
+  if (!g || !tvdb_grid_valid(g->nx,g->ny,g->nz,g->voxel_size,g->data,sizeof(float)) ||
+      (n && (!pts || !vals))) return;
   // Adjoint of tvdb_sample_quadratic_dense: a 3x3x3 stencil with per-axis
   // quadratic weights, scattered with the same cell-center convention. Like
   // tvdb_splat_trilinear_dense, taps outside the grid are skipped (zero-pad
@@ -200,22 +216,25 @@ void tvdb_splat_quadratic_dense(tvdb_dense_grid* g,
   #pragma omp parallel for schedule(static)
   for (long long pp = 0; pp < (long long)n; ++pp) {
     size_t p = (size_t)pp;
-    float cx = (pts[p].x - g->ox) / g->voxel_size - 0.5f;
-    float cy = (pts[p].y - g->oy) / g->voxel_size - 0.5f;
-    float cz = (pts[p].z - g->oz) / g->voxel_size - 0.5f;
-    int ix = (int)floorf(cx), iy = (int)floorf(cy), iz = (int)floorf(cz);
+    double qx=((double)pts[p].x-g->ox)/g->voxel_size-0.5;
+    double qy=((double)pts[p].y-g->oy)/g->voxel_size-0.5;
+    double qz=((double)pts[p].z-g->oz)/g->voxel_size-0.5;
+    if (!isfinite(qx) || !isfinite(qy) || !isfinite(qz) ||
+        qx < -1 || qy < -1 || qz < -1 || qx >= (double)g->nx+1 || qy >= (double)g->ny+1 || qz >= (double)g->nz+1) continue;
+    float cx=(float)qx,cy=(float)qy,cz=(float)qz;
+    int64_t ix=(int64_t)floor(qx),iy=(int64_t)floor(qy),iz=(int64_t)floor(qz);
     float u = cx - (float)ix, v = cy - (float)iy, w = cz - (float)iz;
     float wu[3], wv[3], ww[3];
     tvdb_quad_w3(u, wu); tvdb_quad_w3(v, wv); tvdb_quad_w3(w, ww);
     const float val = vals[p];
     for (int dz = 0; dz < 3; ++dz) {
-      int z = iz - 1 + dz;
+      int64_t z = iz - 1 + dz;
       if (z < 0 || z >= g->nz) continue;
       for (int dy = 0; dy < 3; ++dy) {
-        int y = iy - 1 + dy;
+        int64_t y = iy - 1 + dy;
         if (y < 0 || y >= g->ny) continue;
         for (int dx = 0; dx < 3; ++dx) {
-          int x = ix - 1 + dx;
+          int64_t x = ix - 1 + dx;
           if (x < 0 || x >= g->nx) continue;
           float ww3 = wu[dx] * wv[dy] * ww[dz];
           size_t idx = tvdb_idx(g, x, y, z);
@@ -236,6 +255,7 @@ void tvdb_apply_xform(const float xform[12],
                       const tvdb_vec3f* in,
                       tvdb_vec3f* out,
                       size_t n) {
+  if (!xform || (n && (!in || !out)) || n > LLONG_MAX) return;
   #pragma omp parallel for schedule(static)
   for (long long i = 0; i < (long long)n; ++i) {
     float x = in[i].x, y = in[i].y, z = in[i].z;

@@ -3,6 +3,7 @@
 // Internal helpers shared by tinyvdb_ops.c. Not part of the public API.
 
 #include <stddef.h>
+#include "tinyvdb_checked.h"
 #include "tinyvdb_mesh.h"  // tvdb_dense_grid
 
 #ifdef __cplusplus
@@ -20,10 +21,10 @@ static inline size_t tvdb_idx(const tvdb_dense_grid* g, int ix, int iy, int iz) 
 }
 
 // Read with edge clamp.
-static inline float tvdb_at(const tvdb_dense_grid* g, int ix, int iy, int iz) {
-  ix = tvdb_clamp_i(ix, 0, g->nx - 1);
-  iy = tvdb_clamp_i(iy, 0, g->ny - 1);
-  iz = tvdb_clamp_i(iz, 0, g->nz - 1);
+static inline float tvdb_at(const tvdb_dense_grid* g, int64_t ix, int64_t iy, int64_t iz) {
+  ix = ix < 0 ? 0 : (ix >= g->nx ? g->nx - 1 : ix);
+  iy = iy < 0 ? 0 : (iy >= g->ny ? g->ny - 1 : iy);
+  iz = iz < 0 ? 0 : (iz >= g->nz ? g->nz - 1 : iz);
   return g->data[tvdb_idx(g, ix, iy, iz)];
 }
 
@@ -32,10 +33,10 @@ static inline float tvdb_at(const tvdb_dense_grid* g, int ix, int iy, int iz) {
 static inline size_t tvdb_idx_d(const tvdb_dense_grid_d* g, int ix, int iy, int iz) {
   return ((size_t)iz * g->ny + iy) * g->nx + ix;
 }
-static inline double tvdb_at_d(const tvdb_dense_grid_d* g, int ix, int iy, int iz) {
-  ix = tvdb_clamp_i(ix, 0, g->nx - 1);
-  iy = tvdb_clamp_i(iy, 0, g->ny - 1);
-  iz = tvdb_clamp_i(iz, 0, g->nz - 1);
+static inline double tvdb_at_d(const tvdb_dense_grid_d* g, int64_t ix, int64_t iy, int64_t iz) {
+  ix = ix < 0 ? 0 : (ix >= g->nx ? g->nx - 1 : ix);
+  iy = iy < 0 ? 0 : (iy >= g->ny ? g->ny - 1 : iy);
+  iz = iz < 0 ? 0 : (iz >= g->nz ? g->nz - 1 : iz);
   return g->data[tvdb_idx_d(g, ix, iy, iz)];
 }
 

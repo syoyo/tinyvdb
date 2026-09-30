@@ -12,6 +12,9 @@
 extern "C" {
 #endif
 
+// Constructors require distinct input/output handles; input storage must remain
+// live through the operation. Invalid dimensions or spacing fail before writes.
+
 // Coarsen by an integer factor: out dims = ceil(in dims / factor); each output
 // voxel is the average of its `factor^3` source voxels.
 // `out` may be uninitialized; if `arena` is NULL, malloc is used.

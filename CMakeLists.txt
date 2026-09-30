@@ -58,6 +58,7 @@ add_library(tinyvdb STATIC ${TINYVDB_C_SOURCES})
 add_library(tinyvdb_mesh_ops STATIC
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_mesh.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_ops.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_poisson.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_sample.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_tsdf.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_topology.c
@@ -385,6 +386,10 @@ if(TINYVDB_BUILD_TESTS)
   target_link_libraries(test_ops PRIVATE tinyvdb_mesh_ops)
   enable_testing()
   add_test(NAME test_ops COMMAND test_ops)
+
+  add_executable(test_poisson_contract ${PROJECT_SOURCE_DIR}/tests/test_poisson_contract.c)
+  target_link_libraries(test_poisson_contract PRIVATE tinyvdb_mesh_ops m)
+  add_test(NAME test_poisson_contract COMMAND test_poisson_contract)
 
   add_executable(test_hardening ${PROJECT_SOURCE_DIR}/tests/test_hardening.c)
   target_link_libraries(test_hardening PRIVATE tinyvdb_mesh_ops)

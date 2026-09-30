@@ -5,9 +5,8 @@
 // point voxelization). Pure-C, operates on flat int32 coord triples and float
 // world points.
 //
-// NOTE: the hash-backed queries (coords_in_set / points_in_set / ijk_to_index /
-// voxelize) pack each axis into 21 biased bits, so coordinates must lie in
-// [-2^20, 2^20-1]. The same range applies to morton_encode/decode.
+// Hash-backed queries compare full int32 triples and resolve duplicates to the
+// first occurrence. Morton encoding alone is limited to 21 bits per axis.
 
 #include <stdbool.h>
 #include <stddef.h>

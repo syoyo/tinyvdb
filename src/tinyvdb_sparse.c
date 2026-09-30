@@ -61,11 +61,14 @@ static bool tvdb_sparse_push(tvdb_sparse_grid* sg, int x, int y, int z, float v)
   return true;
 }
 
-bool tvdb_dense_to_sparse(const tvdb_dense_grid* dense,
+static bool tvdb_dense_to_sparse_impl(const tvdb_dense_grid* dense,
                           float background,
                           float tolerance,
                           tvdb_sparse_grid* out) {
-  if (!dense || !dense->data || !out) return false;
+  size_t bytes;
+  if (!dense || !out || !tvdb_grid_valid(dense->nx,dense->ny,dense->nz,dense->voxel_size,dense->data,sizeof(float)) ||
+      !isfinite(tolerance) || tolerance < 0 || !isfinite(background) ||
+      !tvdb_grid_bytes(dense->nx,dense->ny,dense->nz,sizeof(float),&bytes)) return false;
   out->count = 0;
   out->voxel_size = dense->voxel_size;
   out->ox = dense->ox; out->oy = dense->oy; out->oz = dense->oz;
@@ -74,7 +77,7 @@ bool tvdb_dense_to_sparse(const tvdb_dense_grid* dense,
   for (int iz = 0; iz < nz; ++iz) {
     for (int iy = 0; iy < ny; ++iy) {
       for (int ix = 0; ix < nx; ++ix) {
-        float v = dense->data[(size_t)((iz * ny + iy) * nx + ix)];
+        float v = dense->data[(((size_t)iz * ny + iy) * nx + ix)];
         if (fabsf(v - background) > tolerance) {
           if (!tvdb_sparse_push(out, ix, iy, iz, v)) return false;
         }
@@ -93,20 +96,27 @@ bool tvdb_active_grid_coords(const tvdb_dense_grid* dense,
 bool tvdb_sparse_to_dense(const tvdb_sparse_grid* sparse,
                           float background,
                           tvdb_dense_grid* out) {
-  if (!sparse || !out || !out->data) return false;
-  size_t n = (size_t)out->nx * (size_t)out->ny * (size_t)out->nz;
-  for (size_t i = 0; i < n; ++i) out->data[i] = background;
+  size_t bytes;
+  if (!sparse || !out || !tvdb_grid_valid(out->nx,out->ny,out->nz,out->voxel_size,out->data,sizeof(float)) ||
+      sparse->count > INT_MAX || !isfinite(background) ||
+      (sparse->count && (!sparse->coords || !sparse->values)) ||
+      !tvdb_grid_bytes(out->nx,out->ny,out->nz,sizeof(float),&bytes)) return false;
+  float* values=malloc(bytes);
+  if(!values) return false;
+  size_t n = bytes / sizeof(float);
+  for (size_t i = 0; i < n; ++i) values[i] = background;
 
   // Map sparse -> dense; assumes sparse.coords are in the same voxel-index
   // frame as the dense grid (caller is responsible for any origin offsets).
-  for (size_t k = 0; k < sparse->count; ++k) {
+  for (size_t k = sparse->count; k-- > 0;) {
     int x = sparse->coords[k].x;
     int y = sparse->coords[k].y;
     int z = sparse->coords[k].z;
     if (x < 0 || y < 0 || z < 0) continue;
     if (x >= out->nx || y >= out->ny || z >= out->nz) continue;
-    out->data[(size_t)((z * out->ny + y) * out->nx + x)] = sparse->values[k];
+    values[(((size_t)z * out->ny + y) * out->nx + x)] = sparse->values[k];
   }
+  memcpy(out->data,values,bytes); free(values);
   return true;
 }
 
@@ -209,6 +219,7 @@ static bool tvdb_csg_sparse_impl(const tvdb_sparse_grid* a, const tvdb_sparse_gr
   // Walk a, looking up b
   for (size_t i = 0; i < a->count; ++i) {
     int x = a->coords[i].x, y = a->coords[i].y, z = a->coords[i].z;
+    if (tvdb_hash_get(ha,ma,a->coords,x,y,z) != (int)i) continue;
     int j = tvdb_hash_get(hb, mb, b->coords, x, y, z);
     float va = a->values[i];
     float vb = (j >= 0) ? b->values[j] : background;
@@ -218,13 +229,16 @@ static bool tvdb_csg_sparse_impl(const tvdb_sparse_grid* a, const tvdb_sparse_gr
     else              v = va > -vb ? va : -vb;
     if (!tvdb_sparse_push(out, x, y, z, v)) { free(ha); free(hb); return false; }
   }
-  // Walk b, adding entries not in a (only meaningful for union)
-  if (op == 0) {
+  // All CSG operations span the coordinate union.
+  {
     for (size_t i = 0; i < b->count; ++i) {
       int x = b->coords[i].x, y = b->coords[i].y, z = b->coords[i].z;
-      if (tvdb_hash_get(ha, ma, a->coords, x, y, z) >= 0) continue;
+      if (tvdb_hash_get(ha, ma, a->coords, x, y, z) >= 0 ||
+          tvdb_hash_get(hb,mb,b->coords,x,y,z) != (int)i) continue;
       float vb = b->values[i];
-      float v = background < vb ? background : vb;
+      float v = op == 0 ? (background < vb ? background : vb) :
+                op == 1 ? (background > vb ? background : vb) :
+                          (background > -vb ? background : -vb);
       if (!tvdb_sparse_push(out, x, y, z, v)) { free(ha); free(hb); return false; }
     }
   }
@@ -232,15 +246,15 @@ static bool tvdb_csg_sparse_impl(const tvdb_sparse_grid* a, const tvdb_sparse_gr
   return true;
 }
 
-bool tvdb_csg_union_sparse(const tvdb_sparse_grid* a, const tvdb_sparse_grid* b,
+static bool tvdb_csg_union_sparse_impl(const tvdb_sparse_grid* a, const tvdb_sparse_grid* b,
                            float background, tvdb_sparse_grid* out) {
   return tvdb_csg_sparse_impl(a, b, background, out, 0);
 }
-bool tvdb_csg_intersection_sparse(const tvdb_sparse_grid* a, const tvdb_sparse_grid* b,
+static bool tvdb_csg_intersection_sparse_impl(const tvdb_sparse_grid* a, const tvdb_sparse_grid* b,
                                   float background, tvdb_sparse_grid* out) {
   return tvdb_csg_sparse_impl(a, b, background, out, 1);
 }
-bool tvdb_csg_difference_sparse(const tvdb_sparse_grid* a, const tvdb_sparse_grid* b,
+static bool tvdb_csg_difference_sparse_impl(const tvdb_sparse_grid* a, const tvdb_sparse_grid* b,
                                 float background, tvdb_sparse_grid* out) {
   return tvdb_csg_sparse_impl(a, b, background, out, 2);
 }
@@ -271,6 +285,7 @@ static bool tvdb_dilate_sparse_step(const tvdb_sparse_grid* in,
   static const int N[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
   for (size_t i = 0; i < in->count; ++i) {
     int x = in->coords[i].x, y = in->coords[i].y, z = in->coords[i].z;
+    if(tvdb_hash_get(hin,mask,in->coords,x,y,z)!=(int)i) continue;
     float v_self = in->values[i];
 
     // self
@@ -321,7 +336,7 @@ static bool tvdb_dilate_sparse_step(const tvdb_sparse_grid* in,
   return true;
 }
 
-bool tvdb_dilate_sparse(const tvdb_sparse_grid* in,
+static bool tvdb_dilate_sparse_impl(const tvdb_sparse_grid* in,
                         float background, int iterations,
                         tvdb_sparse_grid* out) {
   if (!in || !out || iterations <= 0) return false;
@@ -360,6 +375,7 @@ static bool tvdb_erode_sparse_step(const tvdb_sparse_grid* in,
   static const int N[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
   for (size_t i = 0; i < in->count; ++i) {
     int x = in->coords[i].x, y = in->coords[i].y, z = in->coords[i].z;
+    if(tvdb_hash_get(hin,mask,in->coords,x,y,z)!=(int)i) continue;
     float v_self = in->values[i];
     float r = v_self;
     bool keep = true;
@@ -379,7 +395,7 @@ static bool tvdb_erode_sparse_step(const tvdb_sparse_grid* in,
   return true;
 }
 
-bool tvdb_erode_sparse(const tvdb_sparse_grid* in, int iterations,
+static bool tvdb_erode_sparse_impl(const tvdb_sparse_grid* in, int iterations,
                        tvdb_sparse_grid* out) {
   if (!in || !out || iterations <= 0) return false;
   tvdb_sparse_grid scratch; tvdb_sparse_grid_init(&scratch);
@@ -406,7 +422,7 @@ bool tvdb_erode_sparse(const tvdb_sparse_grid* in, int iterations,
 // 3D convolution (same-topology)
 // -------------------------------------------------------------------------
 
-bool tvdb_sparse_conv3d(const tvdb_sparse_grid* in,
+static bool tvdb_sparse_conv3d_impl(const tvdb_sparse_grid* in,
                         const float* kernel,
                         int kx, int ky, int kz,
                         float pad_value,
@@ -440,7 +456,7 @@ bool tvdb_sparse_conv3d(const tvdb_sparse_grid* in,
         int64_t oy = (int64_t)cy + (dj - ay);
         for (int di = 0; di < kx; ++di) {
           int64_t ox = (int64_t)cx + (di - ax);
-          float w = kernel[((dk * ky) + dj) * kx + di];
+          float w = kernel[(((size_t)dk * ky) + dj) * kx + di];
           if (w == 0.0f) continue;
           int j = (ox < INT32_MIN || ox > INT32_MAX || oy < INT32_MIN || oy > INT32_MAX ||
                    oz < INT32_MIN || oz > INT32_MAX) ? -1 :
@@ -464,7 +480,7 @@ bool tvdb_sparse_conv3d(const tvdb_sparse_grid* in,
 // Multi-channel sparse 3D convolution
 // -------------------------------------------------------------------------
 
-bool tvdb_sparse_conv3d_mc(const tvdb_sparse_grid* in,
+static bool tvdb_sparse_conv3d_mc_impl(const tvdb_sparse_grid* in,
                            const float* in_values, int c_in,
                            const float* kernel, int kx, int ky, int kz,
                            int c_out,
@@ -539,4 +555,122 @@ bool tvdb_sparse_conv3d_mc(const tvdb_sparse_grid* in,
   out->count = in->count;
   free(tbl);
   return true;
+}
+
+static bool tvdb_sparse_input_valid(const tvdb_sparse_grid* g) {
+  size_t bytes;
+  return g && isfinite(g->voxel_size) && g->voxel_size > 0 &&
+    isfinite(g->ox) && isfinite(g->oy) && isfinite(g->oz) &&
+    g->count <= INT_MAX && (!g->count || (g->coords && g->values)) &&
+    tvdb_size_mul(g->count,sizeof(tvdb_vec3i),&bytes);
+}
+static bool tvdb_sparse_output_valid(const tvdb_sparse_grid* g) {
+  return g && g->count <= g->capacity &&
+    (g->capacity ? (g->coords && g->values) : (!g->coords && !g->values));
+}
+static bool tvdb_sparse_distinct_storage(const tvdb_sparse_grid* in, const tvdb_sparse_grid* out) {
+  size_t ci,vi,co,vo;
+  if (in == out) return true;
+  if (!tvdb_size_mul(in->count,sizeof(tvdb_vec3i),&ci) ||
+      !tvdb_size_mul(in->count,sizeof(float),&vi) ||
+      !tvdb_size_mul(out->capacity,sizeof(tvdb_vec3i),&co) ||
+      !tvdb_size_mul(out->capacity,sizeof(float),&vo)) return false;
+  return !tvdb_buffers_overlap(in->coords,ci,out->coords,co) &&
+         !tvdb_buffers_overlap(in->values,vi,out->values,vo) &&
+         !tvdb_buffers_overlap(in->coords,ci,out->values,vo) &&
+         !tvdb_buffers_overlap(in->values,vi,out->coords,co);
+}
+static void tvdb_sparse_commit(tvdb_sparse_grid* out, tvdb_sparse_grid* result) {
+  tvdb_sparse_grid_free(out); *out = *result;
+}
+
+bool tvdb_csg_union_sparse(const tvdb_sparse_grid* a, const tvdb_sparse_grid* b,
+ float background, tvdb_sparse_grid* out) {
+  if (!tvdb_sparse_input_valid(a) || !tvdb_sparse_input_valid(b) ||
+      !tvdb_sparse_output_valid(out) || !isfinite(background) ||
+      !tvdb_sparse_distinct_storage(a,out) || !tvdb_sparse_distinct_storage(b,out)) return false;
+  tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
+  bool ok = tvdb_csg_union_sparse_impl(a,b,background,&tmp);
+  if (ok) tvdb_sparse_commit(out,&tmp); else tvdb_sparse_grid_free(&tmp);
+  return ok;
+}
+
+bool tvdb_csg_intersection_sparse(const tvdb_sparse_grid* a, const tvdb_sparse_grid* b,
+ float background, tvdb_sparse_grid* out) {
+  if (!tvdb_sparse_input_valid(a) || !tvdb_sparse_input_valid(b) ||
+      !tvdb_sparse_output_valid(out) || !isfinite(background) ||
+      !tvdb_sparse_distinct_storage(a,out) || !tvdb_sparse_distinct_storage(b,out)) return false;
+  tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
+  bool ok = tvdb_csg_intersection_sparse_impl(a,b,background,&tmp);
+  if (ok) tvdb_sparse_commit(out,&tmp); else tvdb_sparse_grid_free(&tmp);
+  return ok;
+}
+
+bool tvdb_csg_difference_sparse(const tvdb_sparse_grid* a, const tvdb_sparse_grid* b,
+ float background, tvdb_sparse_grid* out) {
+  if (!tvdb_sparse_input_valid(a) || !tvdb_sparse_input_valid(b) ||
+      !tvdb_sparse_output_valid(out) || !isfinite(background) ||
+      !tvdb_sparse_distinct_storage(a,out) || !tvdb_sparse_distinct_storage(b,out)) return false;
+  tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
+  bool ok = tvdb_csg_difference_sparse_impl(a,b,background,&tmp);
+  if (ok) tvdb_sparse_commit(out,&tmp); else tvdb_sparse_grid_free(&tmp);
+  return ok;
+}
+
+bool tvdb_dilate_sparse(const tvdb_sparse_grid* in, float background, int iterations, tvdb_sparse_grid* out) {
+  if (!tvdb_sparse_input_valid(in) || !tvdb_sparse_output_valid(out) ||
+      !tvdb_sparse_distinct_storage(in,out) || iterations <= 0) return false;
+  tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
+  bool ok = tvdb_dilate_sparse_impl(in,background, iterations,&tmp);
+  if (ok) tvdb_sparse_commit(out,&tmp); else tvdb_sparse_grid_free(&tmp);
+  return ok;
+}
+
+bool tvdb_erode_sparse(const tvdb_sparse_grid* in, int iterations, tvdb_sparse_grid* out) {
+  if (!tvdb_sparse_input_valid(in) || !tvdb_sparse_output_valid(out) ||
+      !tvdb_sparse_distinct_storage(in,out) || iterations <= 0) return false;
+  tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
+  bool ok = tvdb_erode_sparse_impl(in,iterations,&tmp);
+  if (ok) tvdb_sparse_commit(out,&tmp); else tvdb_sparse_grid_free(&tmp);
+  return ok;
+}
+
+bool tvdb_sparse_conv3d(const tvdb_sparse_grid* in, const float* kernel,
+ int kx,int ky,int kz,float pad_value,tvdb_sparse_grid* out) {
+  size_t bytes;
+  if (!tvdb_sparse_input_valid(in) || !tvdb_sparse_output_valid(out) ||
+      !tvdb_sparse_distinct_storage(in,out) || !kernel ||
+      !tvdb_grid_bytes(kx,ky,kz,sizeof(float),&bytes)) return false;
+  tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
+  bool ok = tvdb_sparse_conv3d_impl(in,kernel,kx,ky,kz,pad_value,&tmp);
+  if (ok) tvdb_sparse_commit(out,&tmp); else tvdb_sparse_grid_free(&tmp);
+  return ok;
+}
+
+bool tvdb_sparse_conv3d_mc(const tvdb_sparse_grid* in,const float* values,int ci,
+ const float* kernel,int kx,int ky,int kz,int co,float pad_value,
+ tvdb_sparse_grid* out,float** out_values) {
+  size_t kb,ib,ob,width;
+  if (!out_values) return false;
+  *out_values = NULL;
+  if (!tvdb_sparse_input_valid(in) || !tvdb_sparse_output_valid(out) ||
+      !tvdb_sparse_distinct_storage(in,out) || !values || !kernel || ci<=0 || co<=0 ||
+      !tvdb_grid_bytes(kx,ky,kz,sizeof(float),&kb) ||
+      !tvdb_size_mul(kb,(size_t)ci,&kb) || !tvdb_size_mul(kb,(size_t)co,&kb) ||
+      !tvdb_size_mul((size_t)ci,sizeof(float),&width) || !tvdb_size_mul(in->count,width,&ib) ||
+      !tvdb_size_mul((size_t)co,sizeof(float),&width) || !tvdb_size_mul(in->count,width,&ob)) return false;
+  tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
+  float *data = NULL;
+  bool ok = tvdb_sparse_conv3d_mc_impl(in,values,ci,kernel,kx,ky,kz,co,pad_value,&tmp,&data);
+  if (ok) { tvdb_sparse_commit(out,&tmp); *out_values=data; }
+  else { tvdb_sparse_grid_free(&tmp); free(data); }
+  return ok;
+}
+
+/* Materialization also stages allocation before replacing an owning output. */
+bool tvdb_dense_to_sparse(const tvdb_dense_grid* dense,float background,float tolerance,tvdb_sparse_grid* out) {
+  if(!tvdb_sparse_output_valid(out)) return false;
+  tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
+  if(!tvdb_dense_to_sparse_impl(dense,background,tolerance,&tmp)) { tvdb_sparse_grid_free(&tmp); return false; }
+  tvdb_sparse_commit(out,&tmp); return true;
 }
