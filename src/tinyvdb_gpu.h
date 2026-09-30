@@ -586,16 +586,12 @@ typedef struct {
   const tvdb_gpu_binding_t* bindings;
   unsigned int num_bindings;  // <= 6
   unsigned int group_count_x; // workgroup count (kernel uses local_size_x = 128)
-  // Queue the dispatch instead of waiting for it. Only valid on Vulkan; the CUDA
-  // path is stream-ordered and already defers, so this is a no-op there. The
-  // caller must drain with tvdb_gpu_dispatch_flush before reading any bound
-  // buffer, and must NOT modify a bound host pointer in between -- deferred
-  // dispatches all read the same memory, so rewriting a uniform or an input
-  // buffer while they are queued feeds every queued dispatch the new contents.
-  // A chained op that alternates between two host buffers (a ping/pong filter) is
-  // the case that actually needs care: with deferred submit each pass would see
-  // the previous pass's output, so leave defer 0 there unless every binding is
-  // device-resident.
+  // On Vulkan, queue the dispatch and copy outputs back on dispatch_flush.
+  // Input and uniform contents are copied during dispatch; callers may reuse
+  // them after it returns. Output/INOUT host storage must remain valid until
+  // flush (or context destruction) completes. Flush before reading an output
+  // or using it as a subsequent dispatch's input. Queues belong to each context.
+  // CUDA dispatches are synchronous and ignore this flag.
   int defer;
 } tvdb_gpu_dispatch_spec_t;
 

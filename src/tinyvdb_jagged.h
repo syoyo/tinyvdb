@@ -49,7 +49,8 @@ int64_t tvdb_jagged_list_size(const tvdb_jagged_t* jt, int64_t i); // elements i
 float* tvdb_jagged_list_ptr(const tvdb_jagged_t* jt, int64_t i, int64_t* out_size);
 
 // Concatenate along the list dimension: out has sum(parts[k].num_lists) lists.
-// All parts must share `channels`.
+// All parts must share `channels`. out must not be one of the parts;
+// such aliases are rejected without modifying the input.
 bool tvdb_jagged_concat(tvdb_jagged_t* out, const tvdb_jagged_t* const* parts,
                         int64_t num_parts);
 

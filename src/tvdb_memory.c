@@ -18,10 +18,11 @@ void tvdb_arena_destroy(tvdb_arena_allocator_t* arena) {
 
 void* tvdb_arena_alloc(tvdb_arena_allocator_t* arena, size_t size) {
     size_t alignment = 8; // Align to 8-byte boundary
+    if (!arena || !arena->buffer || arena->current_offset > SIZE_MAX - (alignment - 1)) return NULL;
     size_t aligned_offset = (arena->current_offset + alignment - 1) & ~(alignment - 1);
     size_t required_size = size;
 
-    if (aligned_offset + required_size > arena->buffer_size) {
+    if (aligned_offset > arena->buffer_size || required_size > arena->buffer_size - aligned_offset) {
         return NULL; // Not enough space
     }
 

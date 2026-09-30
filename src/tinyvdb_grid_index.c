@@ -2,6 +2,7 @@
 // tinyvdb_grid_index.h.
 
 #include "tinyvdb_grid_index.h"
+#include "tinyvdb_checked.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -9,17 +10,35 @@
 #define GI_BIAS (1 << 20)          // 2^20; coords in [-2^20, 2^20-1]
 #define GI_MASK21 ((1u << 21) - 1)
 
+static bool gi_world_component(float point, float size, float origin, int32_t *out) {
+  if (!isfinite(point) || !isfinite(size) || size <= 0.0f || !isfinite(origin)) return false;
+  float value = floorf((point - origin) / size);
+  if (!isfinite(value) || (double)value < INT32_MIN || (double)value > INT32_MAX) return false;
+  *out = (int32_t)value;
+  return true;
+}
+
+static bool gi_world_valid(const float *points, size_t n, const float *size, const float *origin) {
+  if (!size || !origin || (n && !points) || n > SIZE_MAX / (3 * sizeof(int32_t))) return false;
+  for (int a = 0; a < 3; ++a)
+    if (!isfinite(size[a]) || size[a] <= 0.0f || !isfinite(origin[a])) return false;
+  int32_t component;
+  for (size_t i = 0; i < n; ++i)
+    for (int a = 0; a < 3; ++a)
+      if (!gi_world_component(points[3*i+a], size[a], origin[a], &component)) return false;
+  return true;
+}
+
 // ---- coordinate <-> world ---------------------------------------------------
 
 void tvdb_world_to_ijk(const float* points, size_t n,
                        const float voxel_size[3], const float origin[3],
                        int32_t* out_ijk) {
+  if (!out_ijk || !voxel_size || !origin || (n && !points) || n > SIZE_MAX / (3 * sizeof(int32_t))) return;
   for (size_t i = 0; i < n; ++i)
     for (int a = 0; a < 3; ++a)
-      // Guard against a non-positive voxel size: dividing would yield inf/nan
-      // and casting that to int is UB.
-      out_ijk[3*i+a] = voxel_size[a] > 0.0f
-          ? (int32_t)floorf((points[3*i+a] - origin[a]) / voxel_size[a]) : 0;
+      if (!gi_world_component(points[3*i+a], voxel_size[a], origin[a], &out_ijk[3*i+a]))
+        out_ijk[3*i+a] = 0;
 }
 
 void tvdb_ijk_to_world(const int32_t* ijk, size_t n,
@@ -79,11 +98,18 @@ static uint64_t gi_mix(uint64_t x) {
 }
 
 typedef struct { uint64_t key; int64_t idx; } gi_entry;  // key stored as packed+1 (0 = empty)
-typedef struct { gi_entry* e; size_t mask; } gi_hash;
+typedef struct { gi_entry* e; size_t mask; const int32_t *coords; } gi_hash;
+
+static bool gi_coord_equal(const gi_hash *h, size_t slot, int32_t x, int32_t y, int32_t z) {
+  const int32_t *p = h->coords + 3 * (size_t)h->e[slot].idx;
+  return p[0] == x && p[1] == y && p[2] == z;
+}
 
 static bool gi_hash_build(gi_hash* h, const int32_t* coords, size_t n) {
-  size_t cap = 16;
-  while (cap < (n + 1) * 2) cap <<= 1;
+  size_t cap;
+  if ((n && !coords) || n > INT64_MAX || n > SIZE_MAX / (3 * sizeof(int32_t)) ||
+      !tvdb_hash_capacity(n, 2, &cap)) return false;
+  h->coords = coords;
   h->e = (gi_entry*)calloc(cap, sizeof(gi_entry));
   h->mask = cap - 1;
   if (!h->e) return false;
@@ -91,7 +117,7 @@ static bool gi_hash_build(gi_hash* h, const int32_t* coords, size_t n) {
     uint64_t key = gi_pack(coords[3*i], coords[3*i+1], coords[3*i+2]) + 1;
     size_t s = (size_t)gi_mix(key) & h->mask;
     while (h->e[s].key) {
-      if (h->e[s].key == key) break;               // already present (keep first index)
+      if (h->e[s].key == key && gi_coord_equal(h, s, coords[3*i], coords[3*i+1], coords[3*i+2])) break; // Keep the first exact coordinate match.
       s = (s + 1) & h->mask;
     }
     if (!h->e[s].key) { h->e[s].key = key; h->e[s].idx = (int64_t)i; }
@@ -102,7 +128,7 @@ static int64_t gi_hash_get(const gi_hash* h, int32_t x, int32_t y, int32_t z) {
   uint64_t key = gi_pack(x, y, z) + 1;
   size_t s = (size_t)gi_mix(key) & h->mask;
   while (h->e[s].key) {
-    if (h->e[s].key == key) return h->e[s].idx;
+    if (h->e[s].key == key && gi_coord_equal(h, s, x, y, z)) return h->e[s].idx;
     s = (s + 1) & h->mask;
   }
   return -1;
@@ -113,6 +139,7 @@ static void gi_hash_free(gi_hash* h) { free(h->e); h->e = NULL; }
 
 bool tvdb_coords_in_set(const int32_t* active, size_t na,
                         const int32_t* query, size_t nq, uint8_t* out) {
+  if ((nq && (!query || !out)) || nq > SIZE_MAX / (3 * sizeof(int32_t))) return false;
   gi_hash h;
   if (!gi_hash_build(&h, active, na)) return false;
   for (size_t i = 0; i < nq; ++i)
@@ -124,13 +151,13 @@ bool tvdb_coords_in_set(const int32_t* active, size_t na,
 bool tvdb_points_in_set(const float* points, size_t np,
                         const float voxel_size[3], const float origin[3],
                         const int32_t* active, size_t na, uint8_t* out) {
-  if (voxel_size[0] <= 0.0f || voxel_size[1] <= 0.0f || voxel_size[2] <= 0.0f) return false;
+  if ((np && !out) || !gi_world_valid(points, np, voxel_size, origin)) return false;
   gi_hash h;
   if (!gi_hash_build(&h, active, na)) return false;
   for (size_t i = 0; i < np; ++i) {
     int32_t ijk[3];
     for (int a = 0; a < 3; ++a)
-      ijk[a] = (int32_t)floorf((points[3*i+a] - origin[a]) / voxel_size[a]);
+      gi_world_component(points[3*i+a], voxel_size[a], origin[a], &ijk[a]);
     out[i] = gi_hash_get(&h, ijk[0], ijk[1], ijk[2]) >= 0 ? 1 : 0;
   }
   gi_hash_free(&h);
@@ -139,6 +166,7 @@ bool tvdb_points_in_set(const float* points, size_t np,
 
 bool tvdb_ijk_to_index(const int32_t* active, size_t na,
                        const int32_t* query, size_t nq, int64_t* out) {
+  if ((nq && (!query || !out)) || nq > SIZE_MAX / (3 * sizeof(int32_t))) return false;
   gi_hash h;
   if (!gi_hash_build(&h, active, na)) return false;
   for (size_t i = 0; i < nq; ++i)
@@ -149,6 +177,7 @@ bool tvdb_ijk_to_index(const int32_t* active, size_t na,
 
 bool tvdb_neighbor_counts(const int32_t* active, size_t na,
                           int connectivity, int32_t* out_counts) {
+  if ((na && !out_counts) || (connectivity != 6 && connectivity != 26)) return false;
   gi_hash h;
   if (!gi_hash_build(&h, active, na)) return false;
   int off[26][3]; int noff;
@@ -166,8 +195,11 @@ bool tvdb_neighbor_counts(const int32_t* active, size_t na,
   for (size_t i = 0; i < na; ++i) {
     int32_t x = active[3*i], y = active[3*i+1], z = active[3*i+2];
     int32_t c = 0;
-    for (int t = 0; t < noff; ++t)
-      if (gi_hash_get(&h, x+off[t][0], y+off[t][1], z+off[t][2]) >= 0) ++c;
+    for (int t = 0; t < noff; ++t) {
+      int nx, ny, nz;
+      if (tvdb_coord_offset(x, y, z, off[t][0], off[t][1], off[t][2], &nx, &ny, &nz) &&
+          gi_hash_get(&h, nx, ny, nz) >= 0) ++c;
+    }
     out_counts[i] = c;
   }
   gi_hash_free(&h);
@@ -177,26 +209,33 @@ bool tvdb_neighbor_counts(const int32_t* active, size_t na,
 bool tvdb_voxelize_points(const float* points, size_t n,
                           const float voxel_size[3], const float origin[3],
                           int32_t** out_coords, size_t* out_count) {
+  if (!out_coords || !out_count) return false;
   *out_coords = NULL; *out_count = 0;
-  if (voxel_size[0] <= 0.0f || voxel_size[1] <= 0.0f || voxel_size[2] <= 0.0f) return false;
+  if (!gi_world_valid(points, n, voxel_size, origin)) return false;
   if (n == 0) return true;
   gi_hash h;
-  size_t cap = 16; while (cap < (n + 1) * 2) cap <<= 1;
+  size_t cap, bytes;
+  if (n > INT64_MAX || !tvdb_hash_capacity(n, 2, &cap) ||
+      !tvdb_size_mul(n, 3 * sizeof(int32_t), &bytes)) return false;
   h.e = (gi_entry*)calloc(cap, sizeof(gi_entry)); h.mask = cap - 1;
   if (!h.e) return false;
-  int32_t* coords = (int32_t*)malloc(n * 3 * sizeof(int32_t));
+  int32_t* coords = (int32_t*)malloc(bytes);
   if (!coords) { free(h.e); return false; }
+  h.coords = coords;
   size_t cnt = 0;
   for (size_t i = 0; i < n; ++i) {
     int32_t ijk[3];
     for (int a = 0; a < 3; ++a)
-      ijk[a] = (int32_t)floorf((points[3*i+a] - origin[a]) / voxel_size[a]);
+      gi_world_component(points[3*i+a], voxel_size[a], origin[a], &ijk[a]);
     uint64_t key = gi_pack(ijk[0], ijk[1], ijk[2]) + 1;
     size_t s = (size_t)gi_mix(key) & h.mask;
     int found = 0;
-    while (h.e[s].key) { if (h.e[s].key == key) { found = 1; break; } s = (s + 1) & h.mask; }
+    while (h.e[s].key) {
+      if (h.e[s].key == key && gi_coord_equal(&h, s, ijk[0], ijk[1], ijk[2])) { found = 1; break; }
+      s = (s + 1) & h.mask;
+    }
     if (!found) {
-      h.e[s].key = key;
+      h.e[s].key = key; h.e[s].idx = (int64_t)cnt;
       coords[3*cnt+0] = ijk[0]; coords[3*cnt+1] = ijk[1]; coords[3*cnt+2] = ijk[2];
       ++cnt;
     }

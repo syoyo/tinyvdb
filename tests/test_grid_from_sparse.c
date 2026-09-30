@@ -42,6 +42,30 @@ int main(int argc, char **argv) {
     }
 
     const tvdb_grid_t *src = &file.grids[0];
+    // Negative coordinates on both sides of a leaf boundary must round-trip.
+    tvdb_vec3i negative_coords[] = {{-1,-1,-1}, {-8,-8,-8}, {-9,-9,-9}};
+    float negative_values[] = {1,2,3};
+    tvdb_sparse_grid negative = {negative_coords, negative_values, 3, 0, 1, 0, 0, 0};
+    tvdb_grid_t negative_grid;
+    bool negative_ok = tvdb_grid_from_sparse_using_template(src, &negative, "negative", 0, &negative_grid);
+    EXPECT(negative_ok);
+    if (negative_ok) {
+        tvdb_sparse_grid extracted; tvdb_sparse_grid_init(&extracted);
+        EXPECT(tvdb_grid_to_sparse(&negative_grid, &extracted));
+        EXPECT(extracted.count == 3);
+        for (int n = 0; n < 3; ++n) {
+            int found = 0;
+            for (size_t j = 0; j < extracted.count; ++j)
+                if (extracted.coords[j].x == negative_coords[n].x &&
+                    extracted.coords[j].y == negative_coords[n].y &&
+                    extracted.coords[j].z == negative_coords[n].z &&
+                    extracted.values[j] == negative_values[n]) found = 1;
+            EXPECT(found);
+        }
+        tvdb_sparse_grid_free(&extracted);
+        tvdb_grid_destroy_owned(&negative_grid);
+    }
+
     size_t orig_count = tvdb_grid_active_voxel_count(src);
     printf("[from-sparse] original active count: %zu\n", orig_count);
     EXPECT(orig_count > 0);

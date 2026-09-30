@@ -1,6 +1,7 @@
 #include "tinyvdb_ops.h"
 #include "tinyvdb_ops_internal.h"
 #include "tinyvdb_simd.h"
+#include "tinyvdb_checked.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -12,15 +13,17 @@
 // -------------------------------------------------------------------------
 
 void tvdb_dense_vec_grid_init(tvdb_dense_vec_grid* grid, int nx, int ny, int nz) {
+  if (!grid) return;
   grid->nx = nx;
   grid->ny = ny;
   grid->nz = nz;
   grid->ox = grid->oy = grid->oz = 0.0f;
   grid->voxel_size = 1.0f;
-  grid->data = (float*)malloc((size_t)nx * (size_t)ny * (size_t)nz * 3u * sizeof(float));
-  if (grid->data) {
-    memset(grid->data, 0, (size_t)nx * (size_t)ny * (size_t)nz * 3u * sizeof(float));
+  size_t bytes;
+  if (!tvdb_grid_bytes(nx, ny, nz, 3u * sizeof(float), &bytes)) {
+    grid->data = NULL; grid->nx = grid->ny = grid->nz = 0; return;
   }
+  grid->data = (float*)calloc(1, bytes);
 }
 
 void tvdb_dense_vec_grid_free(tvdb_dense_vec_grid* grid) {
@@ -569,38 +572,54 @@ static float tvdb_select_kth(float* a, size_t n, size_t k) {
 }
 
 void tvdb_median_filter(tvdb_dense_grid* grid, int radius, int iterations) {
-  if (!grid->data || radius < 1 || iterations < 1) return;
+  if (!grid || !grid->data || radius < 1 || iterations < 1) return;
   const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
-  const size_t nv = (size_t)nx * ny * nz;
-  float* tmp = (float*)malloc(nv * sizeof(float));
+  size_t bytes, width, wsize, window_bytes;
+  if (!tvdb_grid_bytes(nx, ny, nz, sizeof(float), &bytes)) return;
+  width = 2u * (size_t)radius + 1u;
+  if (!tvdb_size_mul(width, width, &wsize) ||
+      !tvdb_size_mul(wsize, width, &wsize) ||
+      !tvdb_size_mul(wsize, sizeof(float), &window_bytes)) return;
+  float* tmp = (float*)malloc(bytes);
   if (!tmp) return;
-  for (int it = 0; it < iterations; ++it) {
-    memcpy(tmp, grid->data, nv * sizeof(float));
-    /* `win` is per-thread scratch, so a naive `parallel for` would race. The
-       copy into tmp makes every read here read-only, so the only shared
-       mutable state is the window buffer. */
-    size_t wsize = (size_t)(2 * radius + 1) * (2 * radius + 1) * (2 * radius + 1);
-    #pragma omp parallel
-    {
-      float* lwin = (float*)malloc(wsize * sizeof(float));
-      #pragma omp for collapse(2) schedule(static)
-      for (int iz = 0; iz < nz; ++iz)
-        for (int iy = 0; iy < ny; ++iy)
-          for (int ix = 0; ix < nx; ++ix) {
-            size_t n = 0;
-            for (int dz = -radius; dz <= radius; ++dz)
-              for (int dy = -radius; dy <= radius; ++dy)
-                for (int dx = -radius; dx <= radius; ++dx) {
-                  int x = ix + dx, y = iy + dy, z = iz + dz;       // clamp to border
-                  if (x < 0) x = 0; else if (x >= nx) x = nx - 1;
-                  if (y < 0) y = 0; else if (y >= ny) y = ny - 1;
-                  if (z < 0) z = 0; else if (z >= nz) z = nz - 1;
-                  lwin[n++] = tmp[(size_t)(z * ny + y) * nx + x];
-                }
-            grid->data[(size_t)(iz * ny + iy) * nx + ix] = tvdb_select_kth(lwin, n, n / 2);
-          }
-      free(lwin);
+  int allocation_failed = 0;
+  /* Keep one team and one window per worker across all iterations. */
+  #pragma omp parallel
+  {
+    float* lwin = (float*)malloc(window_bytes);
+    if (!lwin) {
+      #pragma omp atomic write
+      allocation_failed = 1;
     }
+    #pragma omp barrier
+    if (!allocation_failed) {
+      for (int it = 0; it < iterations; ++it) {
+        #pragma omp single
+        memcpy(tmp, grid->data, bytes);
+        #pragma omp for collapse(2) schedule(static)
+        for (int iz = 0; iz < nz; ++iz)
+          for (int iy = 0; iy < ny; ++iy)
+            for (int ix = 0; ix < nx; ++ix) {
+              size_t n = 0;
+              for (int64_t dz = -(int64_t)radius; dz <= radius; ++dz) {
+                int64_t z = iz + dz;
+                if (z < 0) z = 0; else if (z >= nz) z = nz - 1;
+                for (int64_t dy = -(int64_t)radius; dy <= radius; ++dy) {
+                  int64_t y = iy + dy;
+                  if (y < 0) y = 0; else if (y >= ny) y = ny - 1;
+                  size_t row = ((size_t)z * ny + (size_t)y) * nx;
+                  for (int64_t dx = -(int64_t)radius; dx <= radius; ++dx) {
+                    int64_t x = ix + dx;
+                    if (x < 0) x = 0; else if (x >= nx) x = nx - 1;
+                    lwin[n++] = tmp[row + (size_t)x];
+                  }
+                }
+              }
+              grid->data[tvdb_idx(grid, ix, iy, iz)] = tvdb_select_kth(lwin, n, n / 2);
+            }
+      }
+    }
+    free(lwin);
   }
   free(tmp);
 }
@@ -1008,17 +1027,17 @@ int tvdb_solve_poisson_d(const tvdb_dense_grid* rhs,
       for (int iz = 0; iz < nz; ++iz) {
         for (int iy = 0; iy < ny; ++iy) {
           for (int ix = 0; ix < nx; ++ix) {
-            size_t i = (size_t)((iz * ny + iy) * nx + ix);
+            size_t i = (((size_t)iz * ny + iy) * nx + ix);
             int cxm = ix > 0 ? ix - 1 : 0, cxp = ix + 1 < nx ? ix + 1 : nx - 1;
             int cym = iy > 0 ? iy - 1 : 0, cyp = iy + 1 < ny ? iy + 1 : ny - 1;
             int czm = iz > 0 ? iz - 1 : 0, czp = iz + 1 < nz ? iz + 1 : nz - 1;
             double c = pd[i];
-            double s = pd[(size_t)((iz * ny + iy) * nx + cxm)]
-                     + pd[(size_t)((iz * ny + iy) * nx + cxp)]
-                     + pd[(size_t)((iz * ny + cym) * nx + ix)]
-                     + pd[(size_t)((iz * ny + cyp) * nx + ix)]
-                     + pd[(size_t)((czm * ny + iy) * nx + ix)]
-                     + pd[(size_t)((czp * ny + iy) * nx + ix)];
+            double s = pd[(((size_t)iz * ny + iy) * nx + cxm)]
+                     + pd[(((size_t)iz * ny + iy) * nx + cxp)]
+                     + pd[(((size_t)iz * ny + cym) * nx + ix)]
+                     + pd[(((size_t)iz * ny + cyp) * nx + ix)]
+                     + pd[(((size_t)czm * ny + iy) * nx + ix)]
+                     + pd[(((size_t)czp * ny + iy) * nx + ix)];
             double L = (s - 6.0 * c) * inv_h2;
             Apd[i] = L;
             s_pAp += pd[i] * L;
@@ -1050,6 +1069,8 @@ int tvdb_solve_poisson_d(const tvdb_dense_grid* rhs,
       for (long long i = 0; i < (long long)n; ++i) zd[i] = Minv * rd[i];
       #pragma omp for schedule(static) nowait reduction(+ : s_rz)
       for (long long i = 0; i < (long long)n; ++i) s_rz += rd[i] * zd[i];
+      /* Complete both reductions before a thread reads their shared totals. */
+      #pragma omp barrier
       #pragma omp single
       {
         converged = (s_rr < tol2);
@@ -1138,8 +1159,9 @@ int tvdb_solve_poisson(const tvdb_dense_grid* rhs,
      *    that must read the completed sum would only see one thread's
      *    partial. On the `omp for` the partials are combined into the shared
      *    variable by that construct's own (implicit) closing barrier.
-     *  - `nowait` appears only where a later construct supplies the ordering;
-     *    every `omp for` whose output is consumed later keeps its barrier. */
+     *  - The stage-2 elementwise loops use identical static schedules, so
+     *    each thread consumes the elements it just wrote. An explicit barrier
+     *    completes both reductions before `single` reads their totals. */
     double s_pAp = 0.0;
     double alpha = 0.0;
     int converged = 0;
@@ -1151,17 +1173,17 @@ int tvdb_solve_poisson(const tvdb_dense_grid* rhs,
       for (int iz = 0; iz < nz; ++iz) {
         for (int iy = 0; iy < ny; ++iy) {
           for (int ix = 0; ix < nx; ++ix) {
-            size_t i = (size_t)((iz * ny + iy) * nx + ix);
+            size_t i = (((size_t)iz * ny + iy) * nx + ix);
             int cxm = ix > 0 ? ix - 1 : 0, cxp = ix + 1 < nx ? ix + 1 : nx - 1;
             int cym = iy > 0 ? iy - 1 : 0, cyp = iy + 1 < ny ? iy + 1 : ny - 1;
             int czm = iz > 0 ? iz - 1 : 0, czp = iz + 1 < nz ? iz + 1 : nz - 1;
             float c = p[i];
-            float s = p[(size_t)((iz * ny + iy) * nx + cxm)]
-                    + p[(size_t)((iz * ny + iy) * nx + cxp)]
-                    + p[(size_t)((iz * ny + cym) * nx + ix)]
-                    + p[(size_t)((iz * ny + cyp) * nx + ix)]
-                    + p[(size_t)((czm * ny + iy) * nx + ix)]
-                    + p[(size_t)((czp * ny + iy) * nx + ix)];
+            float s = p[(((size_t)iz * ny + iy) * nx + cxm)]
+                    + p[(((size_t)iz * ny + iy) * nx + cxp)]
+                    + p[(((size_t)iz * ny + cym) * nx + ix)]
+                    + p[(((size_t)iz * ny + cyp) * nx + ix)]
+                    + p[(((size_t)czm * ny + iy) * nx + ix)]
+                    + p[(((size_t)czp * ny + iy) * nx + ix)];
             float L = (s - 6.0f * c) * inv_h2;
             Ap[i] = L;
             s_pAp += (double)p[i] * (double)L;
@@ -1203,6 +1225,8 @@ int tvdb_solve_poisson(const tvdb_dense_grid* rhs,
         #pragma omp for schedule(static) nowait reduction(+ : s_rz)
         for (long long i = 0; i < (long long)n; ++i)
           s_rz += (double)r[i] * (double)z[i];
+        /* Complete both reductions before a thread reads their shared totals. */
+        #pragma omp barrier
         #pragma omp single
         {
           converged = (s_rr < tol2);
@@ -1346,11 +1370,15 @@ int tvdb_fast_sweeping(tvdb_dense_grid* grid, float frozen_band,
 // =============================================================================
 
 void tvdb_dense_grid_d_init(tvdb_dense_grid_d* g, int nx, int ny, int nz) {
+  if (!g) return;
   g->nx = nx; g->ny = ny; g->nz = nz;
   g->voxel_size = 1.0;
   g->ox = g->oy = g->oz = 0.0;
-  size_t n = (size_t)nx * (size_t)ny * (size_t)nz;
-  g->data = (double*)calloc(n, sizeof(double));
+  size_t bytes;
+  if (!tvdb_grid_bytes(nx, ny, nz, sizeof(double), &bytes)) {
+    g->data = NULL; g->nx = g->ny = g->nz = 0; return;
+  }
+  g->data = (double*)calloc(1, bytes);
 }
 
 void tvdb_dense_grid_d_free(tvdb_dense_grid_d* g) {

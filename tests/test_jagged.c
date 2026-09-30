@@ -26,6 +26,37 @@ static void fill_grid(tvdb_sparse_grid* g, int base, int n, float vs, float ox) 
 }
 
 int main(void) {
+  // Reject overflowing allocation shapes and sums before touching payloads.
+  {
+    tvdb_jagged_t jt;
+    int64_t sizes[2] = {INT64_MAX, 1};
+    EXPECT(!tvdb_jagged_create(&jt, INT64_MAX, sizes, 1), "offset count overflow");
+    EXPECT(!jt.data && !jt.offsets, "failed create is empty");
+    EXPECT(!tvdb_jagged_create(&jt, 2, sizes, 1), "offset sum overflow");
+    EXPECT(!tvdb_jagged_create(&jt, 1, sizes, 2), "payload byte overflow");
+    sizes[0] = 1;
+    EXPECT(tvdb_jagged_create(&jt, 1, sizes, 1), "alias fixture");
+    jt.data[0] = 42;
+    const tvdb_jagged_t* parts[1] = {&jt};
+    float* original = jt.data;
+    EXPECT(!tvdb_jagged_concat(&jt, parts, 1), "concat rejects output alias");
+    EXPECT(jt.data == original && jt.data[0] == 42 && jt.num_lists == 1,
+           "rejected alias preserves input");
+    int64_t bad_offsets[2] = {0, -1};
+    tvdb_jagged_t bad = {NULL, bad_offsets, 1, 1};
+    float result = 9;
+    EXPECT(!tvdb_jagged_sum(&bad, &result) && result == 9, "reject descending offsets");
+    tvdb_jagged_free(&jt);
+    tvdb_grid_batch_t gb;
+    EXPECT(!tvdb_grid_batch_from_grids(&gb, NULL, INT64_MAX), "batch count overflow");
+    tvdb_sparse_grid grid;
+    tvdb_sparse_grid_init(&grid);
+    grid.count = SIZE_MAX;
+    EXPECT(!tvdb_grid_batch_from_grids(&gb, &grid, 1), "batch voxel count overflow");
+    grid.count = 1;
+    EXPECT(!tvdb_grid_batch_from_grids(&gb, &grid, 1), "batch missing payload");
+    EXPECT(!gb.coords && !gb.offsets, "failed batch is empty");
+  }
   // ---- JaggedTensor: build, accessors, list pointers ----
   {
     float l0[3] = {1.0f, 2.0f, 3.0f};

@@ -17,13 +17,40 @@ static int g_failures = 0;
   fprintf(stderr, "FAIL [%s:%d]: %s\n", __FILE__, __LINE__, #cond); \
   ++g_failures; } } while (0)
 
+/* Return an interior aligned pointer so plain free() cannot accidentally pass. */
+typedef union { max_align_t alignment; size_t size; } alloc_header;
+static size_t live_allocations;
+static void *tracked_malloc(size_t size, void *user) {
+    (void)user;
+    alloc_header *h = (alloc_header *)malloc(sizeof(*h) + size);
+    if (!h) return NULL;
+    h->size = size; ++live_allocations;
+    return h + 1;
+}
+static void tracked_free(void *ptr, size_t size, void *user) {
+    (void)user;
+    if (!ptr) return;
+    alloc_header *h = (alloc_header *)ptr - 1;
+    EXPECT(h->size == size);
+    --live_allocations;
+    free(h);
+}
+static void *tracked_realloc(void *ptr, size_t old_size, size_t size, void *user) {
+    void *next = tracked_malloc(size, user);
+    if (!next) return NULL;
+    if (ptr) memcpy(next, ptr, old_size < size ? old_size : size);
+    tracked_free(ptr, old_size, user);
+    return next;
+}
+
 int main(int argc, char **argv) {
     const char *path = argc > 1 ? argv[1] : "../sphere.vdb";
 
     tvdb_file_t file;
     memset(&file, 0, sizeof(file));
     tvdb_error_t err = {0};
-    if (tvdb_file_open(&file, path, NULL, &err) != TVDB_OK) {
+    tvdb_allocator_t allocator = {tracked_malloc, tracked_realloc, tracked_free, NULL};
+    if (tvdb_file_open(&file, path, &allocator, &err) != TVDB_OK) {
         fprintf(stderr, "FAIL: tvdb_file_open(%s): %s\n", path, err.message);
         return 1;
     }
@@ -121,6 +148,7 @@ int main(int argc, char **argv) {
     tvdb_dense_grid_free(&dense);
     tvdb_file_close(&file);
 
+    EXPECT(live_allocations == 0);
     if (g_failures == 0) {
         printf("\nAll bridge tests passed.\n");
         return 0;

@@ -634,9 +634,9 @@ static bool dilate_step(const leaf_collect_t *leaves,
             }
         }
 
-        int32_t origin_x = leaf->lcoord[0] << L;
-        int32_t origin_y = leaf->lcoord[1] << L;
-        int32_t origin_z = leaf->lcoord[2] << L;
+        int32_t origin_x = (int32_t)((int64_t)leaf->lcoord[0] * dim);
+        int32_t origin_y = (int32_t)((int64_t)leaf->lcoord[1] * dim);
+        int32_t origin_z = (int32_t)((int64_t)leaf->lcoord[2] * dim);
 
         for (int32_t i = 0; i < dim; ++i) {
             for (int32_t j = 0; j < dim; ++j) {
@@ -1285,9 +1285,9 @@ bool tvdb_grid_from_sparse_typed_using_template(const tvdb_grid_t *tmpl,
     }
     for (size_t ii = 0; ii < count; ++ii) {
         int32_t cx = coords[ii].x, cy = coords[ii].y, cz = coords[ii].z;
-        int32_t lx = (cx >> leaf_log2dim) << leaf_log2dim;
-        int32_t ly = (cy >> leaf_log2dim) << leaf_log2dim;
-        int32_t lz = (cz >> leaf_log2dim) << leaf_log2dim;
+        int32_t lx = (int32_t)((int64_t)cx - (((int64_t)cx % leaf_dim + leaf_dim) % leaf_dim));
+        int32_t ly = (int32_t)((int64_t)cy - (((int64_t)cy % leaf_dim + leaf_dim) % leaf_dim));
+        int32_t lz = (int32_t)((int64_t)cz - (((int64_t)cz % leaf_dim + leaf_dim) % leaf_dim));
         ce[ii].lorig[0] = lx; ce[ii].lorig[1] = ly; ce[ii].lorig[2] = lz;
         int slx = cx & leaf_dim_mask;
         int sly = cy & leaf_dim_mask;

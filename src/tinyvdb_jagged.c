@@ -1,7 +1,28 @@
 #include "tinyvdb_jagged.h"
+#include "tinyvdb_checked.h"
 
 #include <stdlib.h>
 #include <string.h>
+
+/* Check signed container counts before conversion, addition, or allocation. */
+static bool tvdb_batch_bytes(int64_t count, size_t width, size_t* bytes) {
+  return count >= 0 && (uint64_t)count <= SIZE_MAX &&
+         tvdb_size_mul((size_t)count, width, bytes);
+}
+
+static bool tvdb_jagged_valid(const tvdb_jagged_t* jt) {
+  size_t bytes, width;
+  if (!jt || jt->num_lists < 0 || jt->num_lists == INT64_MAX ||
+      jt->channels < 1 || !jt->offsets ||
+      !tvdb_batch_bytes(jt->num_lists + 1, sizeof(int64_t), &bytes) ||
+      jt->offsets[0] != 0 ||
+      !tvdb_size_mul((size_t)jt->channels, sizeof(float), &width)) return false;
+  for (int64_t i = 0; i < jt->num_lists; ++i)
+    if (jt->offsets[i + 1] < jt->offsets[i]) return false;
+  return tvdb_batch_bytes(jt->offsets[jt->num_lists],
+                           width, &bytes) &&
+         (jt->offsets[jt->num_lists] == 0 || jt->data);
+}
 
 // ---- JaggedTensor -----------------------------------------------------------
 
@@ -19,17 +40,22 @@ void tvdb_jagged_free(tvdb_jagged_t* jt) {
 static bool tvdb_jagged_alloc(tvdb_jagged_t* jt, int64_t num_lists,
                               const int64_t* list_sizes, int channels) {
   tvdb_jagged_init(jt);
-  if (num_lists < 0 || channels < 1 || (num_lists > 0 && !list_sizes)) return false;
-  int64_t* offsets = (int64_t*)malloc((size_t)(num_lists + 1) * sizeof(int64_t));
+  size_t bytes, width;
+  if (num_lists < 0 || num_lists == INT64_MAX || channels < 1 ||
+      (num_lists > 0 && !list_sizes) ||
+      !tvdb_batch_bytes(num_lists + 1, sizeof(int64_t), &bytes) ||
+      !tvdb_size_mul((size_t)channels, sizeof(float), &width)) return false;
+  int64_t* offsets = (int64_t*)malloc(bytes);
   if (!offsets) return false;
   offsets[0] = 0;
   for (int64_t i = 0; i < num_lists; ++i) {
     int64_t s = list_sizes[i];
-    if (s < 0) { free(offsets); return false; }
+    if (s < 0 || s > INT64_MAX - offsets[i]) { free(offsets); return false; }
     offsets[i + 1] = offsets[i] + s;
   }
   int64_t total = offsets[num_lists];
-  float* data = (float*)calloc((size_t)(total > 0 ? total : 1) * (size_t)channels, sizeof(float));
+  if (!tvdb_batch_bytes(total > 0 ? total : 1, width, &bytes)) { free(offsets); return false; }
+  float* data = (float*)calloc(1, bytes);
   if (!data) { free(offsets); return false; }
   jt->data = data; jt->offsets = offsets; jt->num_lists = num_lists; jt->channels = channels;
   return true;
@@ -48,14 +74,14 @@ bool tvdb_jagged_from_lists(tvdb_jagged_t* jt, int64_t num_lists,
   for (int64_t i = 0; i < num_lists; ++i) {
     int64_t s = list_sizes[i];
     if (s > 0 && list_data && list_data[i])
-      memcpy(jt->data + jt->offsets[i] * channels, list_data[i],
+      memcpy(jt->data + (size_t)jt->offsets[i] * (size_t)channels, list_data[i],
              (size_t)s * (size_t)channels * sizeof(float));
   }
   return true;
 }
 
 int64_t tvdb_jagged_total(const tvdb_jagged_t* jt) {
-  return (jt && jt->offsets) ? jt->offsets[jt->num_lists] : 0;
+  return (jt && jt->offsets && jt->num_lists >= 0) ? jt->offsets[jt->num_lists] : 0;
 }
 
 int64_t tvdb_jagged_list_count(const tvdb_jagged_t* jt) { return jt ? jt->num_lists : 0; }
@@ -68,23 +94,28 @@ int64_t tvdb_jagged_list_size(const tvdb_jagged_t* jt, int64_t i) {
 float* tvdb_jagged_list_ptr(const tvdb_jagged_t* jt, int64_t i, int64_t* out_size) {
   if (!jt || !jt->offsets || i < 0 || i >= jt->num_lists) { if (out_size) *out_size = 0; return NULL; }
   if (out_size) *out_size = jt->offsets[i + 1] - jt->offsets[i];
-  return jt->data + jt->offsets[i] * jt->channels;
+  return jt->data ? jt->data + (size_t)jt->offsets[i] * (size_t)jt->channels : NULL;
 }
 
 bool tvdb_jagged_concat(tvdb_jagged_t* out, const tvdb_jagged_t* const* parts,
                         int64_t num_parts) {
   if (!out || num_parts < 0 || (num_parts > 0 && !parts)) return false;
+  for (int64_t k = 0; k < num_parts; ++k)
+    if (parts[k] == out) return false;
   tvdb_jagged_init(out);
   int channels = 0;
   int64_t total_lists = 0;
   for (int64_t k = 0; k < num_parts; ++k) {
-    if (!parts[k]) return false;
+    if (!tvdb_jagged_valid(parts[k]) ||
+        parts[k]->num_lists > INT64_MAX - total_lists) return false;
     if (k == 0) channels = parts[k]->channels;
     else if (parts[k]->channels != channels) return false;
     total_lists += parts[k]->num_lists;
   }
   if (channels < 1) channels = 1;
-  int64_t* sizes = (int64_t*)malloc((size_t)(total_lists > 0 ? total_lists : 1) * sizeof(int64_t));
+  size_t bytes;
+  if (!tvdb_batch_bytes(total_lists > 0 ? total_lists : 1, sizeof(int64_t), &bytes)) return false;
+  int64_t* sizes = (int64_t*)malloc(bytes);
   if (!sizes) return false;
   int64_t li = 0;
   for (int64_t k = 0; k < num_parts; ++k)
@@ -97,8 +128,8 @@ bool tvdb_jagged_concat(tvdb_jagged_t* out, const tvdb_jagged_t* const* parts,
     for (int64_t j = 0; j < parts[k]->num_lists; ++j) {
       int64_t s = tvdb_jagged_list_size(parts[k], j);
       if (s > 0) {
-        const float* src = parts[k]->data + parts[k]->offsets[j] * channels;
-        memcpy(out->data + out->offsets[li] * channels, src,
+        const float* src = parts[k]->data + (size_t)parts[k]->offsets[j] * (size_t)channels;
+        memcpy(out->data + (size_t)out->offsets[li] * (size_t)channels, src,
                (size_t)s * (size_t)channels * sizeof(float));
       }
       ++li;
@@ -110,17 +141,20 @@ bool tvdb_jagged_concat(tvdb_jagged_t* out, const tvdb_jagged_t* const* parts,
 typedef enum { TVDB_RED_SUM, TVDB_RED_MEAN, TVDB_RED_MAX, TVDB_RED_MIN } tvdb_reduce_op;
 
 static bool tvdb_jagged_reduce(const tvdb_jagged_t* jt, float* out, tvdb_reduce_op op) {
-  if (!jt || !jt->offsets || !out) return false;
+  size_t bytes, width;
+  if (!out || !tvdb_jagged_valid(jt) ||
+      !tvdb_size_mul((size_t)jt->channels, sizeof(float), &width) ||
+      !tvdb_batch_bytes(jt->num_lists, width, &bytes)) return false;
   int c = jt->channels;
   for (int64_t i = 0; i < jt->num_lists; ++i) {
     int64_t s = jt->offsets[i + 1] - jt->offsets[i];
-    const float* base = jt->data + jt->offsets[i] * c;
+    const float* base = jt->data ? jt->data + (size_t)jt->offsets[i] * (size_t)c : NULL;
     for (int ch = 0; ch < c; ++ch) {
       float acc = 0.0f;
       if (s > 0) {
         acc = base[ch];
         for (int64_t e = 1; e < s; ++e) {
-          float v = base[e * c + ch];
+          float v = base[(size_t)e * (size_t)c + ch];
           switch (op) {
             case TVDB_RED_SUM: case TVDB_RED_MEAN: acc += v; break;
             case TVDB_RED_MAX: if (v > acc) acc = v; break;
@@ -129,7 +163,7 @@ static bool tvdb_jagged_reduce(const tvdb_jagged_t* jt, float* out, tvdb_reduce_
         }
         if (op == TVDB_RED_MEAN) acc /= (float)s;
       }
-      out[i * c + ch] = acc;
+      out[(size_t)i * (size_t)c + ch] = acc;
     }
   }
   return true;
@@ -158,20 +192,33 @@ void tvdb_grid_batch_free(tvdb_grid_batch_t* gb) {
 bool tvdb_grid_batch_from_grids(tvdb_grid_batch_t* gb, const tvdb_sparse_grid* grids, int64_t n) {
   if (!gb) return false;
   tvdb_grid_batch_init(gb);
-  if (n < 0 || (n > 0 && !grids)) return false;
-  int64_t* offsets = (int64_t*)malloc((size_t)(n + 1) * sizeof(int64_t));
-  float* vs = (float*)malloc((size_t)(n > 0 ? n : 1) * sizeof(float));
-  float* org = (float*)malloc((size_t)(n > 0 ? n : 1) * 3 * sizeof(float));
+  size_t offset_bytes, vs_bytes, org_bytes;
+  if (n < 0 || n == INT64_MAX || (n > 0 && !grids) ||
+      !tvdb_batch_bytes(n + 1, sizeof(int64_t), &offset_bytes) ||
+      !tvdb_batch_bytes(n > 0 ? n : 1, sizeof(float), &vs_bytes) ||
+      !tvdb_batch_bytes(n > 0 ? n : 1, 3 * sizeof(float), &org_bytes)) return false;
+  int64_t* offsets = (int64_t*)malloc(offset_bytes);
+  float* vs = (float*)malloc(vs_bytes);
+  float* org = (float*)malloc(org_bytes);
   if (!offsets || !vs || !org) { free(offsets); free(vs); free(org); return false; }
   offsets[0] = 0;
   for (int64_t i = 0; i < n; ++i) {
+    if (grids[i].count > (uint64_t)(INT64_MAX - offsets[i]) ||
+        (grids[i].count && (!grids[i].coords || !grids[i].values))) {
+      free(offsets); free(vs); free(org); return false;
+    }
     offsets[i + 1] = offsets[i] + (int64_t)grids[i].count;
     vs[i] = grids[i].voxel_size;
-    org[3*i+0] = grids[i].ox; org[3*i+1] = grids[i].oy; org[3*i+2] = grids[i].oz;
+    org[3*(size_t)i+0] = grids[i].ox; org[3*(size_t)i+1] = grids[i].oy; org[3*(size_t)i+2] = grids[i].oz;
   }
   int64_t total = offsets[n];
-  tvdb_vec3i* coords = (tvdb_vec3i*)malloc((size_t)(total > 0 ? total : 1) * sizeof(tvdb_vec3i));
-  float* values = (float*)malloc((size_t)(total > 0 ? total : 1) * sizeof(float));
+  size_t coord_bytes, value_bytes;
+  if (!tvdb_batch_bytes(total > 0 ? total : 1, sizeof(tvdb_vec3i), &coord_bytes) ||
+      !tvdb_batch_bytes(total > 0 ? total : 1, sizeof(float), &value_bytes)) {
+    free(offsets); free(vs); free(org); return false;
+  }
+  tvdb_vec3i* coords = (tvdb_vec3i*)malloc(coord_bytes);
+  float* values = (float*)malloc(value_bytes);
   if (!coords || !values) { free(offsets); free(vs); free(org); free(coords); free(values); return false; }
   for (int64_t i = 0; i < n; ++i) {
     size_t cnt = grids[i].count;
@@ -188,7 +235,7 @@ bool tvdb_grid_batch_from_grids(tvdb_grid_batch_t* gb, const tvdb_sparse_grid* g
 int64_t tvdb_grid_batch_size(const tvdb_grid_batch_t* gb) { return gb ? gb->num_grids : 0; }
 
 int64_t tvdb_grid_batch_total_voxels(const tvdb_grid_batch_t* gb) {
-  return (gb && gb->offsets) ? gb->offsets[gb->num_grids] : 0;
+  return (gb && gb->offsets && gb->num_grids >= 0) ? gb->offsets[gb->num_grids] : 0;
 }
 
 int64_t tvdb_grid_batch_grid_size(const tvdb_grid_batch_t* gb, int64_t i) {
@@ -215,9 +262,19 @@ bool tvdb_grid_batch_views(const tvdb_grid_batch_t* gb, tvdb_sparse_grid* out_vi
 }
 
 bool tvdb_grid_batch_values_jagged(const tvdb_grid_batch_t* gb, tvdb_jagged_t* out) {
-  if (!gb || !gb->offsets || !out) return false;
+  if (!gb || !gb->offsets || !out || gb->num_grids < 0 ||
+      gb->num_grids == INT64_MAX) return false;
+  size_t checked_bytes;
+  if (!tvdb_batch_bytes(gb->num_grids + 1, sizeof(int64_t), &checked_bytes) ||
+      gb->offsets[0] != 0) return false;
+  for (int64_t i = 0; i < gb->num_grids; ++i)
+    if (gb->offsets[i + 1] < gb->offsets[i]) return false;
+  if (!tvdb_batch_bytes(gb->offsets[gb->num_grids], sizeof(float), &checked_bytes) ||
+      (gb->offsets[gb->num_grids] && !gb->values)) return false;
   int64_t n = gb->num_grids;
-  int64_t* sizes = (int64_t*)malloc((size_t)(n > 0 ? n : 1) * sizeof(int64_t));
+  size_t bytes;
+  if (!tvdb_batch_bytes(n > 0 ? n : 1, sizeof(int64_t), &bytes) || n < 0) return false;
+  int64_t* sizes = (int64_t*)malloc(bytes);
   if (!sizes) return false;
   for (int64_t i = 0; i < n; ++i) sizes[i] = gb->offsets[i + 1] - gb->offsets[i];
   bool ok = tvdb_jagged_create(out, n, sizes, 1);

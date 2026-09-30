@@ -649,7 +649,19 @@ typedef struct {
 #define TVDB_VK_DEFERRED_SUBMIT 1
 #endif
 
+#define TVDB_GPU_DEFER_MAX 8
+typedef struct {
+  tvdb_vk_buffer bufs[6];
+  unsigned int nbufs;
+  void* host[6];
+  size_t bytes[6];
+  unsigned int nout;
+  unsigned int output_binding[6];
+} tvdb_gpu_deferred;
+
 struct tvdb_gpu_context {
+  tvdb_gpu_deferred deferred[TVDB_GPU_DEFER_MAX];
+  unsigned int deferred_count;
   tvdb_gpu_backend_t backend;
   tvdb_vk_table vk;
   VkInstance instance;
@@ -955,6 +967,8 @@ static VkDeviceSize tvdb_align_up_device_size(VkDeviceSize v, VkDeviceSize align
   return (v + align - 1u) / align * align;
 }
 
+static void tvdb_vk_destroy_buffer(tvdb_gpu_context_t* ctx, tvdb_vk_buffer* buf);
+
 static tvdb_status_t tvdb_vk_create_buffer(tvdb_gpu_context_t* ctx, VkDeviceSize size,
                                            uint32_t usage, tvdb_vk_buffer* out,
                                            tvdb_error_t* err) {
@@ -965,12 +979,13 @@ static tvdb_status_t tvdb_vk_create_buffer(tvdb_gpu_context_t* ctx, VkDeviceSize
   bci.size = size ? size : 4;
   bci.usage = usage;
   bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  if (!tvdb_vk_ok(ctx->vk.CreateBuffer(ctx->device, &bci, NULL, &out->buffer), err, "vkCreateBuffer")) return err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(ctx->vk.CreateBuffer(ctx->device, &bci, NULL, &out->buffer), err, "vkCreateBuffer")) goto failed;
   VkMemoryRequirements req;
   ctx->vk.GetBufferMemoryRequirements(ctx->device, out->buffer, &req);
   uint32_t mt = tvdb_vk_find_memory_type(ctx, req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
   if (mt == UINT32_MAX) {
     tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "no host-visible coherent Vulkan memory type");
+    tvdb_vk_destroy_buffer(ctx, out);
     return TVDB_ERROR_UNIMPLEMENTED;
   }
   VkMemoryAllocateInfo mai;
@@ -978,11 +993,14 @@ static tvdb_status_t tvdb_vk_create_buffer(tvdb_gpu_context_t* ctx, VkDeviceSize
   mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
   mai.allocationSize = req.size;
   mai.memoryTypeIndex = mt;
-  if (!tvdb_vk_ok(ctx->vk.AllocateMemory(ctx->device, &mai, NULL, &out->memory), err, "vkAllocateMemory")) return err ? err->status : TVDB_ERROR_IO;
-  if (!tvdb_vk_ok(ctx->vk.BindBufferMemory(ctx->device, out->buffer, out->memory, 0), err, "vkBindBufferMemory")) return err ? err->status : TVDB_ERROR_IO;
-  if (!tvdb_vk_ok(ctx->vk.MapMemory(ctx->device, out->memory, 0, size ? size : 4, 0, &out->mapped), err, "vkMapMemory")) return err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(ctx->vk.AllocateMemory(ctx->device, &mai, NULL, &out->memory), err, "vkAllocateMemory")) goto failed;
+  if (!tvdb_vk_ok(ctx->vk.BindBufferMemory(ctx->device, out->buffer, out->memory, 0), err, "vkBindBufferMemory")) goto failed;
+  if (!tvdb_vk_ok(ctx->vk.MapMemory(ctx->device, out->memory, 0, size ? size : 4, 0, &out->mapped), err, "vkMapMemory")) goto failed;
   out->size = size ? size : 4;
   return TVDB_OK;
+failed:
+  tvdb_vk_destroy_buffer(ctx, out);
+  return err ? err->status : TVDB_ERROR_IO;
 }
 
 static tvdb_status_t tvdb_vk_ensure_pools(tvdb_gpu_context_t* ctx, tvdb_error_t* err);
@@ -1005,12 +1023,13 @@ static tvdb_status_t tvdb_vk_create_device_buffer(tvdb_gpu_context_t* ctx, size_
   bci.size = size ? size : 4;
   bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-  if (!tvdb_vk_ok(ctx->vk.CreateBuffer(ctx->device, &bci, NULL, &out->buffer), err, "vkCreateBuffer(device)")) return err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(ctx->vk.CreateBuffer(ctx->device, &bci, NULL, &out->buffer), err, "vkCreateBuffer(device)")) goto failed;
   VkMemoryRequirements req;
   ctx->vk.GetBufferMemoryRequirements(ctx->device, out->buffer, &req);
   uint32_t mt = tvdb_vk_find_memory_type(ctx, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   if (mt == UINT32_MAX) {
     tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "no device-local Vulkan memory type");
+    tvdb_vk_destroy_buffer(ctx, out);
     return TVDB_ERROR_UNIMPLEMENTED;
   }
   VkMemoryAllocateInfo mai;
@@ -1018,10 +1037,13 @@ static tvdb_status_t tvdb_vk_create_device_buffer(tvdb_gpu_context_t* ctx, size_
   mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
   mai.allocationSize = req.size;
   mai.memoryTypeIndex = mt;
-  if (!tvdb_vk_ok(ctx->vk.AllocateMemory(ctx->device, &mai, NULL, &out->memory), err, "vkAllocateMemory(device)")) return err ? err->status : TVDB_ERROR_IO;
-  if (!tvdb_vk_ok(ctx->vk.BindBufferMemory(ctx->device, out->buffer, out->memory, 0), err, "vkBindBufferMemory(device)")) return err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(ctx->vk.AllocateMemory(ctx->device, &mai, NULL, &out->memory), err, "vkAllocateMemory(device)")) goto failed;
+  if (!tvdb_vk_ok(ctx->vk.BindBufferMemory(ctx->device, out->buffer, out->memory, 0), err, "vkBindBufferMemory(device)")) goto failed;
   out->size = size ? size : 4;
   return TVDB_OK;
+failed:
+  tvdb_vk_destroy_buffer(ctx, out);
+  return err ? err->status : TVDB_ERROR_IO;
 }
 
 /* One full-buffer copy, with the barriers that make it actually happen.
@@ -4355,6 +4377,7 @@ void tvdb_gpu_context_destroy(tvdb_gpu_context_t* ctx) {
     tvdb_dyn_close(ctx->cuda.libcuda);
   } else {
     if (ctx->device && ctx->vk.DeviceWaitIdle) ctx->vk.DeviceWaitIdle(ctx->device);
+    if (ctx->device) tvdb_gpu_dispatch_flush(ctx, NULL);
     /* Release the cached pipelines before the device goes away. */
     for (uint32_t i = 0; i < ctx->pipeline_cache_count; ++i) {
       tvdb_vk_pipeline_entry *e = &ctx->pipeline_cache[i];
@@ -4370,7 +4393,7 @@ void tvdb_gpu_context_destroy(tvdb_gpu_context_t* ctx) {
       /* Best effort: the device is going away, so a failed wait must not abort
        * teardown, but the objects still need releasing. */
       while (ctx->pending_count) {
-        uint32_t i = 0;
+        uint32_t i = ctx->pending_count - 1;
         VkFence f = ctx->pending_fence[i];
         VkCommandBuffer c = ctx->pending_cmd[i];
         ctx->pending_count--;
@@ -12610,33 +12633,21 @@ tc_build:
  * pointer to a local -- holding a pointer to the caller's frame is exactly the
  * dangling-reference bug this is here to avoid.
  *
- * The queue is a plain file-scope array rather than per-context state. That is
- * fine for the workloads that use it (a few grid passes inside one op) and is
- * called out here because it is a real limit, not an accident: two contexts
- * deferring at once would share it. */
-#define TVDB_GPU_DEFER_MAX 8
-typedef struct {
-  tvdb_vk_buffer bufs[6];
-  unsigned int nbufs;
-  void* host[6];
-  size_t bytes[6];
-  unsigned int nout;
-} tvdb_gpu_deferred;
-static tvdb_gpu_deferred g_defer[TVDB_GPU_DEFER_MAX];
-static unsigned int g_defer_n = 0;
-
+ * Each context owns its queue and releases it before destroying the device.
+ */
 tvdb_status_t tvdb_gpu_dispatch_flush(tvdb_gpu_context_t* ctx, tvdb_error_t* err) {
   if (!ctx) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "flush: null ctx"); return TVDB_ERROR_INVALID_ARGUMENT; }
   tvdb_status_t st = TVDB_OK;
   if (ctx->backend == TVDB_GPU_BACKEND_VULKAN) st = tvdb_vk_flush(ctx, err);
-  for (unsigned int q = 0; q < g_defer_n; ++q) {
-    tvdb_gpu_deferred* d = &g_defer[q];
+  for (unsigned int q = 0; q < ctx->deferred_count; ++q) {
+    tvdb_gpu_deferred* d = &ctx->deferred[q];
     if (st == TVDB_OK)
       for (unsigned int i = 0; i < d->nout; ++i)
-        if (d->bufs[i].mapped) memcpy(d->host[i], d->bufs[i].mapped, d->bytes[i]);
+        if (d->bufs[d->output_binding[i]].mapped)
+          memcpy(d->host[i], d->bufs[d->output_binding[i]].mapped, d->bytes[i]);
     for (unsigned int i = 0; i < d->nbufs; ++i) tvdb_vk_destroy_buffer(ctx, &d->bufs[i]);
   }
-  g_defer_n = 0;
+  ctx->deferred_count = 0;
   return st;
 }
 
@@ -12648,7 +12659,8 @@ tvdb_status_t tvdb_gpu_dispatch(tvdb_gpu_context_t* ctx, const tvdb_gpu_dispatch
   }
   for (unsigned int i = 0; i < spec->num_bindings; ++i) {
     const tvdb_gpu_binding_t* b = &spec->bindings[i];
-    if (b->size_bytes == 0 || (b->kind != TVDB_GPU_BIND_STORAGE_OUT && !b->host_data) ||
+    if (b->kind < TVDB_GPU_BIND_STORAGE_IN || b->kind > TVDB_GPU_BIND_UNIFORM ||
+        b->size_bytes == 0 || (b->kind != TVDB_GPU_BIND_STORAGE_OUT && !b->host_data) ||
         ((b->kind == TVDB_GPU_BIND_STORAGE_OUT || b->kind == TVDB_GPU_BIND_STORAGE_INOUT) && !b->host_data)) {
       tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid dispatch binding");
       return TVDB_ERROR_INVALID_ARGUMENT;
@@ -12713,19 +12725,20 @@ tvdb_status_t tvdb_gpu_dispatch(tvdb_gpu_context_t* ctx, const tvdb_gpu_dispatch
        non-deferred call skipped the dispatch entirely while `st` stayed TVDB_OK
        from the buffer-creation loop -- a silently "successful" no-op that showed
        up as five ops reading back their uninitialised input buffers. */
-    const int can_defer = spec->defer && (g_defer_n < TVDB_GPU_DEFER_MAX);
+    const int can_defer = spec->defer && (ctx->deferred_count < TVDB_GPU_DEFER_MAX);
     if (can_defer) d.defer_wait = TVDB_VK_DEFERRED_SUBMIT;
     st = tvdb_vk_dispatch(ctx, &d, err);
     if (st == TVDB_OK && can_defer) {
       /* Ownership of the buffers moves to the queue: a queued command buffer
          still references them, and Vulkan requires them to outlive it. */
-      tvdb_gpu_deferred* q = &g_defer[g_defer_n++];
+      tvdb_gpu_deferred* q = &ctx->deferred[ctx->deferred_count++];
       q->nbufs = created;
       for (unsigned int i = 0; i < created; ++i) q->bufs[i] = bufs[i];
       q->nout = 0;
       for (unsigned int i = 0; i < spec->num_bindings; ++i) {
         const tvdb_gpu_binding_t* b = &spec->bindings[i];
         if (b->kind == TVDB_GPU_BIND_STORAGE_OUT || b->kind == TVDB_GPU_BIND_STORAGE_INOUT) {
+          q->output_binding[q->nout] = i;
           q->host[q->nout] = b->host_data;
           q->bytes[q->nout] = b->size_bytes;
           q->nout++;

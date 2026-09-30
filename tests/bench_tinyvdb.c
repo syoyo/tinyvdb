@@ -31,6 +31,7 @@
 #include "tinyvdb_sparse.h"
 #include "tinyvdb_sparse_tree.h"
 #include "tinyvdb_nanovdb.h"
+#include "tinyvdb_grid_index.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -325,6 +326,70 @@ static void case_median(int dim, int reps) {
     free(g.data);
 }
 
+/* Repeated passes exercise window reuse and team lifetime. */
+static void case_median_iter(int dim, int reps) {
+    tvdb_dense_grid g; make_sphere_sdf(&g, dim, 0.4f);
+    for (int r = 0; r < reps; ++r) tvdb_median_filter(&g, 2, 5);
+    free(g.data);
+}
+
+/* Build and probe a coordinate table, including equal-hash distinct triples. */
+static void case_sparse_query(int dim, int reps) {
+    size_t n = (size_t)dim * dim * dim;
+    int32_t *coords = (int32_t*)malloc(n * 3 * sizeof(*coords));
+    int64_t *out = (int64_t*)malloc(n * sizeof(*out));
+    if (!coords || !out) { free(coords); free(out); return; }
+    for (size_t i = 0; i < n; ++i) {
+        coords[3*i] = (int32_t)(i % dim);
+        coords[3*i+1] = (int32_t)((i / dim) % dim);
+        coords[3*i+2] = (int32_t)(i / ((size_t)dim * dim));
+    }
+    for (int r = 0; r < reps; ++r) tvdb_ijk_to_index(coords, n, coords, n, out);
+    volatile int64_t sink = out[0]; (void)sink;
+    free(coords); free(out);
+}
+
+/* ZIP writer/reader throughput with a valid empty-root grid and 1 MiB payload. */
+static void case_zip_roundtrip(int dim, int reps) {
+    (void)dim;
+    const size_t size = 1024 * 1024;
+    uint8_t *data = (uint8_t*)calloc(1, size);
+    if (!data) return;
+    uint64_t magic = TVDB_NANOVDB_MAGIC_GRID, bytes = size, root_offset = 64;
+    uint32_t version = (32u << 21) | (6u << 10), type = TVDB_NANOVDB_GRID_TYPE_FLOAT;
+    uint32_t grid_class = TVDB_NANOVDB_GRID_CLASS_LEVEL_SET;
+    memcpy(data, &magic, 8); memcpy(data + 16, &version, 4); memcpy(data + 32, &bytes, 8);
+    memcpy(data + 632, &grid_class, 4); memcpy(data + 636, &type, 4);
+    memcpy(data + 696, &root_offset, 8);
+    double identity[9] = {1,0,0,0,1,0,0,0,1};
+    memcpy(data + 384, identity, sizeof(identity));
+    for (int i = 0; i < 3; ++i) {
+        double one = 1, voxel = 0.1;
+        memcpy(data + 528 + 8*i, &one, 8); memcpy(data + 552 + 8*i, &one, 8);
+        memcpy(data + 608 + 8*i, &voxel, 8);
+    }
+    int32_t bbox_max[3] = {7,7,7}; memcpy(data + 748, bbox_max, sizeof(bbox_max));
+    for (size_t i = 800; i < size; ++i) data[i] = (uint8_t)((i / 13) % 251);
+    tvdb_nanovdb_grid_t grid; memset(&grid, 0, sizeof(grid));
+    grid.name = (char*)"zip_bench"; grid.grid_type = type; grid.grid_class = grid_class;
+    grid.size = size; grid.data = data;
+    for (int i = 0; i < 3; ++i) { grid.voxel_size[i] = 0.1; grid.index_bbox_max[i] = 7; }
+    tvdb_nanovdb_file_t file; memset(&file, 0, sizeof(file)); file.grids = &grid; file.num_grids = 1;
+    for (int r = 0; r < reps; ++r) {
+        uint8_t *encoded = NULL; size_t encoded_size = 0; tvdb_error_t err = {0};
+        tvdb_nanovdb_file_t decoded; memset(&decoded, 0, sizeof(decoded));
+        if (tvdb_nanovdb_write_to_memory(&file, TVDB_NANOVDB_CODEC_ZIP, &encoded, &encoded_size, &err) != TVDB_OK ||
+            tvdb_nanovdb_file_open_memory(&decoded, encoded, encoded_size, NULL, &err) != TVDB_OK) {
+            fprintf(stderr, "ZIP benchmark failed: %s\n", err.message); free(encoded); free(data); exit(1);
+        }
+        if (decoded.num_grids != 1 || decoded.grids[0].size != size || memcmp(decoded.grids[0].data, data, size)) {
+            fprintf(stderr, "ZIP benchmark payload mismatch\n"); exit(1);
+        }
+        tvdb_nanovdb_file_close(&decoded); free(encoded);
+    }
+    free(data);
+}
+
 /* Sparse extraction: dense -> COO. The scan itself is fine; this measures the
  * cost of the layout change itself. */
 static void case_dense_to_sparse(int dim, int reps) {
@@ -485,6 +550,9 @@ static const bench_case g_cases[] = {
     {"sweeping", case_sweeping},
     {"flood", case_flood},
     {"median", case_median},
+    {"median_iter", case_median_iter},
+    {"sparse_query", case_sparse_query},
+    {"zip_roundtrip", case_zip_roundtrip},
     {"dense_to_sparse", case_dense_to_sparse},
     {"tree_build", case_tree_build},
     {"tree_dilate", case_tree_dilate},

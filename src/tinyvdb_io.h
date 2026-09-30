@@ -2165,30 +2165,17 @@ static tvdb_value_t tvdb__negate_value(tvdb_value_t v) {
  * tvdb__read_mask_values. */
 typedef struct tvdb__deser_params tvdb__deser_params_t;
 
-/* Reusable staging buffer shared by every tvdb__read_mask_values call during
- * one grid load. Previously each node allocated, zeroed and freed its own
- * scratch buffer, which was the single largest cost in a load (5 allocations
- * per node; ~148k for bunny.vdb). The buffer is fully consumed before the
- * caller recurses into children, so one instance can be reused throughout.
- *
- * This is file-static rather than a deser-params field because every reader
- * takes `const tvdb__deser_params_t *`, and threading a mutable pointer
- * through twelve signatures would buy nothing: a load walks one tree on one
- * thread, and the buffer is reset at the start of each grid. */
-static uint8_t *tvdb__scratch_buf = NULL;
-static size_t   tvdb__scratch_size = 0;
-
-static void tvdb__scratch_reset(void) {
-    if (tvdb__scratch_buf) free(tvdb__scratch_buf);
-    tvdb__scratch_buf = NULL;
-    tvdb__scratch_size = 0;
-}
+/* Scratch belongs to one grid load and uses that load's allocator. */
+typedef struct tvdb__scratch {
+    uint8_t *data;
+    size_t size;
+} tvdb__scratch_t;
 
 static tvdb_status_t tvdb__read_mask_values(
     tvdb__sr_t *sr, uint32_t compression_flags, uint32_t file_version,
     tvdb_value_t background, size_t num_values, tvdb_value_type_t value_type,
     const tvdb_nodemask_t *value_mask, uint8_t *values,
-    int half_precision,
+    int half_precision, tvdb__scratch_t *scratch,
     tvdb_allocator_t *alloc, tvdb_error_t *err) {
 
     int mask_compressed = (compression_flags & TVDB_COMPRESS_ACTIVE_MASK) != 0;
@@ -2256,7 +2243,7 @@ static tvdb_status_t tvdb__read_mask_values(
      * before the caller recurses, so sharing across nodes is safe. */
     uint8_t *tmp_buf = NULL;
     if (tmp_size > 0) {
-        if (tvdb__scratch_size < tmp_size) {
+        if (scratch->size < tmp_size) {
             uint8_t *grown = (uint8_t *)tvdb__alloc(alloc, tmp_size);
             if (!grown) {
                 tvdb__nodemask_destroy(&selection_mask);
@@ -2264,12 +2251,12 @@ static tvdb_status_t tvdb__read_mask_values(
                                 "OOM in read_mask_values");
                 return TVDB_ERROR_OUT_OF_MEMORY;
             }
-            if (tvdb__scratch_buf)
-                tvdb__free(alloc, tvdb__scratch_buf, tvdb__scratch_size);
-            tvdb__scratch_buf = grown;
-            tvdb__scratch_size = tmp_size;
+            if (scratch->data)
+                tvdb__free(alloc, scratch->data, scratch->size);
+            scratch->data = grown;
+            scratch->size = tmp_size;
         }
-        tmp_buf = tvdb__scratch_buf;
+        tmp_buf = scratch->data;
     }
     /* The buffer is reused across nodes, so it must start zeroed: a previous
      * node's payload would otherwise leak into this node's inactive slots. */
@@ -2389,6 +2376,7 @@ typedef struct tvdb__deser_params {
     uint32_t compression_flags;
     int      half_precision;
     tvdb_value_t background;
+    tvdb__scratch_t *scratch;
 } tvdb__deser_params_t;
 /* Forward declaration for recursive calls */
 static tvdb_status_t tvdb__read_node_topology(
@@ -2568,7 +2556,7 @@ static tvdb_status_t tvdb__read_internal_topology(
         sr, params->compression_flags, params->file_version,
         params->background, (size_t)num_values, vt,
         &inode->value_mask, inode->values,
-        params->half_precision, a, err);
+        params->half_precision, params->scratch, a, err);
     if (mst != TVDB_OK) return mst;
 
     /* Read child nodes */
@@ -2769,7 +2757,7 @@ static tvdb_status_t tvdb__read_leaf_buffer(
         sr, params->compression_flags, params->file_version,
         params->background, num_values, vt,
         &leaf->value_mask, leaf->data,
-        params->half_precision, a, err);
+        params->half_precision, params->scratch, a, err);
     if (st != TVDB_OK) return st;
     }
 
@@ -2933,6 +2921,7 @@ static void tvdb__grid_destroy(tvdb_grid_t *grid, tvdb_allocator_t *a) {
 
 static tvdb_status_t tvdb__read_grid_inner(tvdb__sr_t *sr, tvdb_grid_t *grid,
                                           const tvdb_header_t *header,
+                                          tvdb__scratch_t *scratch,
                                           tvdb_allocator_t *alloc,
                                           tvdb_error_t *err);
 
@@ -2942,13 +2931,15 @@ static tvdb_status_t tvdb__read_grid(tvdb__sr_t *sr, tvdb_grid_t *grid,
                                      const tvdb_header_t *header,
                                      tvdb_allocator_t *alloc,
                                      tvdb_error_t *err) {
-    tvdb_status_t st = tvdb__read_grid_inner(sr, grid, header, alloc, err);
-    tvdb__scratch_reset();
+    tvdb__scratch_t scratch = { NULL, 0 };
+    tvdb_status_t st = tvdb__read_grid_inner(sr, grid, header, &scratch, alloc, err);
+    if (scratch.data) tvdb__free(alloc, scratch.data, scratch.size);
     return st;
 }
 
 static tvdb_status_t tvdb__read_grid_inner(tvdb__sr_t *sr, tvdb_grid_t *grid,
                                           const tvdb_header_t *header,
+                                          tvdb__scratch_t *scratch,
                                           tvdb_allocator_t *alloc,
                                           tvdb_error_t *err) {
     uint32_t file_version = header->file_version;
@@ -3006,6 +2997,7 @@ static tvdb_status_t tvdb__read_grid_inner(tvdb__sr_t *sr, tvdb_grid_t *grid,
     }
 
     tvdb__deser_params_t params;
+    params.scratch = scratch;
     params.file_version      = file_version;
     params.compression_flags = grid->compression_flags;
     params.half_precision    = grid->descriptor.save_float_as_half;

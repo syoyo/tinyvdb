@@ -29,7 +29,7 @@ int main(int argc,char**argv){
     int backend = (argc>1&&argv[1][0]=='c')?TVDB_GPU_BACKEND_CUDA:TVDB_GPU_BACKEND_VULKAN;
     tvdb_error_t e; memset(&e,0,sizeof e);
     tvdb_gpu_context_t*ctx=NULL;
-    if(tvdb_gpu_context_create(backend,0,&ctx,&e)!=TVDB_OK){printf("no ctx\n");return 1;}
+    if(tvdb_gpu_context_create(backend,0,&ctx,&e)!=TVDB_OK){printf("SKIP: no GPU context: %s\n", e.message);return 77;}
     printf("backend=%s\n", backend==TVDB_GPU_BACKEND_CUDA?"cuda":"vulkan");
     if(backend==TVDB_GPU_BACKEND_VULKAN && !tvdb_gpu_spirv_available()){
         printf("SKIP: built without GPU SPIR-V\n");tvdb_gpu_context_destroy(ctx);return 77;}

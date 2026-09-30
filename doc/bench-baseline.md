@@ -2006,3 +2006,128 @@ placement differ.
 The queue is file-scope rather than per-context, which is fine for the workloads
 that use it (a few grid passes inside one op) and is a real limit rather than an
 accident: two contexts deferring concurrently would share it.
+
+## Follow-up hardening audit (2026-10-01)
+
+This pass preserves public signatures and file formats. It builds on the
+uncommitted pre-push fixes: allocator-owned reader scratch, context-owned deferred
+GPU buffers, correct output-binding readback, synchronized Poisson reductions,
+median allocation failure handling, and CUDA-unavailable test skips.
+
+The additional review found two reproducible UBSan failures: left-shifting
+negative sparse-tree coordinates, and unaligned integer accesses in bundled
+miniz. With `UBSAN_OPTIONS=halt_on_error=1`, these stopped four CPU tests. Both
+are corrected. Origin alignment now uses arithmetic floor alignment, and miniz
+uses `memcpy` for native unaligned loads/stores, including when callers explicitly
+enable its fast path. A two-byte match-distance record now copies exactly two
+bytes rather than four.
+
+CPU sparse and coordinate queries compare complete coordinate triples after
+hash matches. Previously, querying `(2097152, 0, 0)` incorrectly matched
+`(0, 0, 0)`. Hash entries remain compact and duplicate lookups retain the first
+index. Integer-boundary neighbors are missing rather than wrapping, and invalid
+world coordinates never reach an undefined float-to-integer conversion.
+
+Checked arithmetic protects dense constructors, median scratch, sparse capacity
+and hash growth, and arena allocation. Sparse reserve allocates both replacements
+before committing, preserving its state on either allocation failure. Vulkan
+buffer helpers similarly clean up at every failed creation stage. Dispatch
+binding kinds are validated before allocation, and linking the GPU CMake target
+alone now carries its NanoVDB dependency.
+
+### Retained median optimization
+
+Each worker keeps its window across iterations, and one OpenMP team processes all
+passes. Z/Y boundary clamps and row offsets are computed outside the innermost
+window loop. Scratch-size and indexing arithmetic remain checked/wide; a failed
+worker allocation prevents all writes. A sorted-window reference verifies three
+passes on a non-cubic grid.
+
+The table reports medians of three paired Release runs, reversing before/after
+order in the middle pair. Both executables use the same benchmark source; the
+baseline links the pre-pass libraries. Affinity is restricted to the first eight
+available logical CPUs, with `OMP_PROC_BIND=true` and `OMP_PLACES=cores`.
+Compiler: GCC 13.3, `-O3 -DNDEBUG`, SIMD enabled, OpenMP enabled. Host reports an
+AMD Ryzen Threadripper 1950X. Times are totals for ten repetitions; `median_iter`
+performs five passes per repetition. Measurements are local, not portable speed
+claims.
+
+| Dimension | Threads | Case | Before (ms) | After (ms) | Improvement |
+|---|---:|---|---:|---:|---:|
+| 32³ | 1 | median | 115.33 | 100.47 | 12.9% |
+| 32³ | 1 | median_iter | 487.32 | 409.58 | 16.0% |
+| 32³ | 8 | median | 27.17 | 23.18 | 14.7% |
+| 32³ | 8 | median_iter | 110.32 | 96.58 | 12.5% |
+| 64³ | 1 | median | 766.55 | 648.34 | 15.4% |
+| 64³ | 1 | median_iter | 3759.32 | 3211.57 | 14.6% |
+| 64³ | 8 | median | 161.11 | 150.91 | 6.3% |
+| 64³ | 8 | median_iter | 802.13 | 699.47 | 12.8% |
+
+Earlier full-harness measurements varied enough to obscure the scratch-reuse
+benefit. Hoisting row work and using an isolated comparison produced the results
+above. All eight retained cases meet the no-regression gate, and seven improve
+by more than 10%.
+
+Reproduce the workloads with `bench_tinyvdb --case median,median_iter --dim 32
+--reps 10 --threads 1,8`, then repeat at dimension 64. Compare paired binaries
+with equivalent compiler settings and CPU affinity.
+
+### Rejected optimization and correctness costs
+
+Fusing Poisson's residual update, preconditioning, and two reductions improved
+single-thread measurements, but repeatedly regressed the 64³/eight-thread case.
+A three-pair confirmation with twenty repetitions measured 92.38 ms before and
+99.05 ms after (7.2% slower). The fusion was reverted. The reduction barrier and
+wide stencil indices remain.
+
+Full-coordinate equality checks add work to sparse queries. Three paired runs
+of `sparse_query` at ten repetitions measured approximately 8–12% overhead across
+32³/64³ and one/eight-thread harness settings. This is the cost of correcting
+coordinate aliasing, not an acceleration claim. A bounded-coordinate shortcut
+was tried and removed because it did not beat direct full-coordinate checks by
+5%. Transactional sparse reserve also temporarily holds old and new arrays
+during growth; failure leaves the old pointers, count, and capacity intact.
+
+`zip_roundtrip` adds a repeatable API benchmark: a valid empty-root NanoVDB grid
+with a 1 MiB patterned payload, ZIP encoding, memory decoding, and byte equality
+verification. Ten repetitions measured roughly 30–34 ms before and after in
+paired runs, with no consistent speedup claim. A separate single-core miniz
+roundtrip check (100 × 1 MiB, three pairs) measured medians of 335.97 and 316.71 ms;
+encoded sizes matched at 6567 bytes. The alignment fixes are retained for
+correctness regardless of noisy throughput differences.
+
+### Regression checks
+
+New tests cover coordinate aliases and duplicates, invalid world frames,
+integer-boundary morphology, checked allocation sizes, median reference results,
+sparse allocation rollback, median allocation failure, and each Vulkan buffer
+failure stage. Allocation tests count outstanding allocations independently of
+LeakSanitizer. Deferred dispatch tests exercise multiple output bindings,
+interleaved contexts, queue capacity, repeated flushes, and context teardown.
+Negative coordinates on both sides of a leaf boundary round-trip explicitly.
+
+CPU tests run with SIMD off under ASan/UBSan, and with SIMD/OpenMP enabled at one
+and eight threads. Generated-shader GPU tests, the Vulkan ABI check, and the GPU
+lifetime check pass; CUDA cases skip when unavailable. A fresh build with
+`-DTINYVDB_GLSLANG_VALIDATOR:FILEPATH=` verifies the actual fallback without stale
+generated shader includes. GPU operations skip there, while CPU tests and mocked
+Vulkan failure tests run.
+
+ASan uses `detect_leaks=0` in this ptrace-managed environment because
+LeakSanitizer cannot run here. UBSan halts on the first error; the CPU suite is
+clean. Leak detection on a non-ptrace host remains a separate verification step.
+
+### Additional container review (2026-10-01)
+
+Jagged tensors and grid batches now check offset-array sizes, cumulative
+counts, channel widths, and payload sizes before allocation or copying.
+Grid-batch construction rejects nonempty grids with missing coordinate or
+value arrays. Jagged reductions and the batch-to-jagged bridge reject
+nonmonotonic offsets. Concatenation rejects an output handle that is one of
+its inputs before modifying that handle; this restriction is documented.
+Regression cases were added to `test_jagged`.
+
+Validation: all 22 CPU tests passed under ASan/UBSan (LeakSanitizer disabled
+for the existing environment limitation) and in the OpenMP build with eight
+threads. `git diff --check` passed. No performance claim is made for these
+additional validation checks.
