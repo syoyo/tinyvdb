@@ -23,11 +23,16 @@ float quad1(float v0, float v1, float v2, float w) {
   return w * (w * a + b) + v1;
 }
 
+float safe_coord(float x, int dim) {
+  if (isnan(x)) return 0.0;
+  return x < -1.0 ? -1.0 : (x >= float(dim) ? float(dim-1) : x);
+}
 void main() {
   uint idx = gl_GlobalInvocationID.x;
   if (idx >= u.count) return;
   vec3 p = pts[idx].xyz;
   vec3 c = (p - u.origin_voxel.xyz) / u.origin_voxel.w - vec3(0.5);  // cell-center voxel coord
+  c = vec3(safe_coord(c.x,u.dim.x),safe_coord(c.y,u.dim.y),safe_coord(c.z,u.dim.z));
   ivec3 i0 = ivec3(floor(c));
   vec3 t = c - vec3(i0);
   float vx[3];

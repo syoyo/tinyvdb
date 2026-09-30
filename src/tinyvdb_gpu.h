@@ -432,10 +432,9 @@ tvdb_status_t tvdb_gpu_grid_checksum(tvdb_gpu_context_t* ctx, const tvdb_dense_g
 // tvdb_solve_poisson / tvdb_solve_poisson_d). Returns the iteration count, or 0
 // on a shape mismatch, empty grid, or already-converged input, matching the CPU.
 //
-// CG is sequential, so this does two grid-wide dispatches per host sync; the win
-// is per-iteration cost, not end-to-end latency. The two solvers differ exactly
-// where the CPU pair differs, including solve_poisson_d building its initial
-// residual with zero Dirichlet while clamping inside the loop.
+// The checked _ex variants below use a device edge-clamped Laplacian with host
+// projected PCG updates and double reductions. Buffers persist through a solve;
+// each iteration transfers vectors and synchronizes. No speedup is claimed.
 int tvdb_gpu_solve_poisson(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* rhs,
                            tvdb_dense_grid* x, int max_iters, float tolerance,
                            tvdb_error_t* err);
@@ -451,16 +450,14 @@ int tvdb_gpu_solve_poisson_dd(tvdb_gpu_context_t* ctx, const tvdb_dense_grid_d* 
                               tvdb_error_t* err);
 
 // Elementwise binary scalar-grid ops (parallels tvdb_comp_max/min/sum/mult).
-// A shape mismatch among a, b or result is not an error: the CPU ops return
-// immediately and leave `result` untouched, and that is reproduced here. A NULL
-// data pointer likewise leaves `result` untouched.
+// Invalid data or shape mismatch returns INVALID_ARGUMENT and leaves result
+// untouched. Exact same-handle in-place output is supported.
 // Semi-Lagrangian advection of a scalar grid by a vec3 velocity grid
 // (parallels tvdb_advect). All six schemes are supported: the four RK ones in a
 // single pass, MacCormack and BFECC in three to four.
 //
-// A NULL data pointer or a shape mismatch among field, velocity and result is not
-// an error: the CPU returns without writing, and `result` is left untouched. An
-// unknown scheme is INVALID_ARGUMENT.
+// Invalid input or options return INVALID_ARGUMENT without changing result.
+// Same-handle in-place output is supported through transactional scratch.
 // Dense scalar-grid filters (parallels tvdb_mean_filter, tvdb_gaussian_filter and
 // tvdb_laplacian_filter). These modify the grid in place, and `grid` is left
 // untouched if any pass fails, so a failure cannot leave it half-filtered.
@@ -479,7 +476,7 @@ tvdb_status_t tvdb_gpu_laplacian_filter(tvdb_gpu_context_t* ctx, tvdb_dense_grid
 // Single-node (Euler) semi-Lagrangian advect (parallels
 // tvdb_advect_semi_lagrangian). Unlike the RK family in tvdb_gpu_advect above,
 // this reads the velocity at the voxel itself rather than interpolating it. A
-// shape mismatch leaves `result` untouched, as the CPU does.
+// shape mismatch returns INVALID_ARGUMENT and leaves result untouched.
 // Windowed median (parallels tvdb_median_filter), Jacobi like the CPU.
 //
 // This is a coverage port, not an accelerated one: it counts ranks, which is
@@ -739,6 +736,18 @@ tvdb_status_t tvdb_gpu_sparse_conv3d_batched(tvdb_gpu_context_t* ctx,
 tvdb_status_t tvdb_gpu_multi_sparse_conv3d_batched(tvdb_gpu_context_t* const* ctxs, size_t n_ctx,
     const tvdb_sparse_grid* in, size_t n_grids, const float* kernel, int kx, int ky, int kz,
     float pad_value, tvdb_sparse_grid* out, tvdb_error_t* err);
+
+// Checked projected PCG: device Laplacian, host projection/double reductions.
+tvdb_status_t tvdb_gpu_solve_poisson_ex(tvdb_gpu_context_t* ctx,const tvdb_dense_grid* rhs,tvdb_dense_grid* x,
+  int max_iters,float tolerance,tvdb_poisson_result_t* result,tvdb_error_t* err);
+
+// Checked projected PCG: device Laplacian, host projection/double reductions.
+tvdb_status_t tvdb_gpu_solve_poisson_d_ex(tvdb_gpu_context_t* ctx,const tvdb_dense_grid* rhs,tvdb_dense_grid* x,
+  int max_iters,double tolerance,tvdb_poisson_result_t* result,tvdb_error_t* err);
+
+// Checked projected PCG: device Laplacian, host projection/double reductions.
+tvdb_status_t tvdb_gpu_solve_poisson_dd_ex(tvdb_gpu_context_t* ctx,const tvdb_dense_grid_d* rhs,tvdb_dense_grid_d* x,
+  int max_iters,double tolerance,tvdb_poisson_result_t* result,tvdb_error_t* err);
 
 #ifdef __cplusplus
 }

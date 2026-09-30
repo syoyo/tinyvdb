@@ -16,11 +16,16 @@ float fetch(int x, int y, int z) {
   return grid[x + u.dim.x * (y + u.dim.y * z)];
 }
 
+float safe_coord(float x, int dim) {
+  if (isnan(x)) return 0.0;
+  return x < -1.0 ? -1.0 : (x >= float(dim) ? float(dim-1) : x);
+}
 void main() {
   uint idx = gl_GlobalInvocationID.x;
   if (idx >= u.count) return;
   vec3 p = pts[idx].xyz;
   vec3 f = (p - u.origin_voxel.xyz) / u.origin_voxel.w - vec3(0.5);
+  f = vec3(safe_coord(f.x,u.dim.x),safe_coord(f.y,u.dim.y),safe_coord(f.z,u.dim.z));
   ivec3 i0 = ivec3(floor(f));
   vec3 t = f - vec3(i0);
   float c000 = fetch(i0.x,     i0.y,     i0.z);

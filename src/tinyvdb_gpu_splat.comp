@@ -14,13 +14,13 @@ layout(std140, set = 0, binding = 4) uniform Params {
 } u;
 
 void atomic_add_f(uint i, float v) {
-  uint old = data[i], assumed;
+  uint old = atomicAdd(data[i],0u), assumed;
   do { assumed = old;
        old = atomicCompSwap(data[i], assumed, floatBitsToUint(uintBitsToFloat(assumed) + v));
   } while (old != assumed);
 }
 void atomic_add_w(uint i, float v) {
-  uint old = wdata[i], assumed;
+  uint old = atomicAdd(wdata[i],0u), assumed;
   do { assumed = old;
        old = atomicCompSwap(wdata[i], assumed, floatBitsToUint(uintBitsToFloat(assumed) + v));
   } while (old != assumed);
@@ -38,6 +38,7 @@ void main() {
   float vx = (pos.x - u.grid.x) / vs - 0.5;
   float vy = (pos.y - u.grid.y) / vs - 0.5;
   float vz = (pos.z - u.grid.z) / vs - 0.5;
+  if(isnan(vx) || vx < -1.0 || vx >= float(nx) || isnan(vy) || vy < -1.0 || vy >= float(ny) || isnan(vz) || vz < -1.0 || vz >= float(nz)) return;
   int ix = int(floor(vx)), iy = int(floor(vy)), iz = int(floor(vz));
   float fx = vx - float(ix), fy = vy - float(iy), fz = vz - float(iz);
   float v = vals[p];

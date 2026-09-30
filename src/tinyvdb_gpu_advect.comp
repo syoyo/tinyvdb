@@ -55,8 +55,13 @@ float v_at(int ix, int iy, int iz, int c) {
   return vel[i];
 }
 
+float safe_coord(float x, int dim) {
+  if (isnan(x)) return 0.0;
+  return x < -1.0 ? -1.0 : (x >= float(dim) ? float(dim-1) : x);
+}
 // tvdb_sample_dense_voxel: trilinear with clamped indices.
 float sample_dense(float vx, float vy, float vz) {
+  vx=safe_coord(vx,u.dim.x); vy=safe_coord(vy,u.dim.y); vz=safe_coord(vz,u.dim.z);
   int ix = int(floor(vx)), iy = int(floor(vy)), iz = int(floor(vz));
   float fx = vx - float(ix), fy = vy - float(iy), fz = vz - float(iz);
   float c000 = at(ix,     iy,     iz    ), c100 = at(ix + 1, iy,     iz    );
@@ -73,6 +78,7 @@ float sample_dense(float vx, float vy, float vz) {
 }
 
 vec3 sample_vec(float vx, float vy, float vz) {
+  vx=safe_coord(vx,u.dim.x); vy=safe_coord(vy,u.dim.y); vz=safe_coord(vz,u.dim.z);
   int ix = int(floor(vx)), iy = int(floor(vy)), iz = int(floor(vz));
   float fx = vx - float(ix), fy = vy - float(iy), fz = vz - float(iz);
   int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
@@ -123,6 +129,7 @@ void rk_backtrace(vec3 p, out vec3 b) {
 // point. Starting from +/-3.4e38 rather than the first corner reproduces the CPU's
 // sentinel exactly, which matters for an all-sentinel field.
 void stencil_minmax(vec3 bp, out float mn, out float mx) {
+  bp=vec3(safe_coord(bp.x,u.dim.x),safe_coord(bp.y,u.dim.y),safe_coord(bp.z,u.dim.z));
   int ix = int(floor(bp.x)), iy = int(floor(bp.y)), iz = int(floor(bp.z));
   mn = 3.4e38; mx = -3.4e38;
   for (int dz = 0; dz < 2; ++dz)

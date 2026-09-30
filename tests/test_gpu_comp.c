@@ -115,12 +115,12 @@ int main(int argc, char** argv) {
     tvdb_gpu_comp_sum(ctx, &a, &b, &rg, &e);
     int untouched = 1;
     for (size_t i = 0; i < m; ++i) if (rg.data[i] != -777.0f) untouched = 0;
-    if (!untouched || e.status == TVDB_ERROR_INVALID_ARGUMENT) {
-      printf("  FAIL %-22s mismatch must leave result untouched and report OK\n", "comp_sum-shape-mismatch");
-      if (e.status == TVDB_ERROR_INVALID_ARGUMENT) printf("       (got INVALID_ARGUMENT, expected OK)\n");
+    if (!untouched || e.status != TVDB_ERROR_INVALID_ARGUMENT) {
+      printf("  FAIL %-22s mismatch must leave result untouched and report INVALID_ARGUMENT\n", "comp_sum-shape-mismatch");
+
       fails++;
     } else {
-      printf("  ok   %-22s result untouched, status OK\n", "comp_sum-shape-mismatch");
+      printf("  ok   %-22s result untouched, status INVALID_ARGUMENT\n", "comp_sum-shape-mismatch");
     }
     free(a.data); free(b.data); free(rc.data); free(rg.data);
   }

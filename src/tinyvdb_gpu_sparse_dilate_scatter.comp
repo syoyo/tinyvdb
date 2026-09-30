@@ -12,7 +12,7 @@ layout(std140, set = 0, binding = 4) uniform Params {
 
 // Portable CAS atomic-min on a float aliased as uint.
 void amin_f(uint i, float val) {
-  uint old = v2[i], assumed;
+  uint old = atomicAdd(v2[i],0u), assumed;
   do {
     assumed = old;
     if (uintBitsToFloat(assumed) <= val) break;
@@ -32,8 +32,9 @@ void main() {
   const ivec3 O[7] = ivec3[7](ivec3(0,0,0), ivec3(1,0,0), ivec3(-1,0,0), ivec3(0,1,0), ivec3(0,-1,0), ivec3(0,0,1), ivec3(0,0,-1));
   for (int k = 0; k < 7; ++k) {
     int qx = cx + O[k].x, qy = cy + O[k].y, qz = cz + O[k].z;
+    if(qx<0 || qx>=u.dims.x || qy<0 || qy>=u.dims.y || qz<0 || qz>=u.dims.z) continue;
     uint lin = uint((qz * u.dims.y + qy) * u.dims.x + qx);
     amin_f(lin, vs);
-    outocc[lin] = 1u;
+    atomicOr(outocc[lin],1u);
   }
 }

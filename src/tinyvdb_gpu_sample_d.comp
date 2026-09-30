@@ -38,6 +38,10 @@ double fetch(int x, int y, int z) {
   return grid[x + u.dim.x * (y + u.dim.y * z)];
 }
 
+double safe_coord(double x, int dim) {
+  if (isnan(x)) return 0.0;
+  return x < -1.0 ? -1.0 : (x >= double(dim) ? double(dim-1) : x);
+}
 void main() {
   uint idx = gl_GlobalInvocationID.x;
   if (idx >= u.count) return;
@@ -45,6 +49,7 @@ void main() {
   double fxv = (px - u.ox) / u.vs - 0.5;
   double fyv = (py - u.oy) / u.vs - 0.5;
   double fzv = (pz - u.oz) / u.vs - 0.5;
+  fxv=safe_coord(fxv,u.dim.x); fyv=safe_coord(fyv,u.dim.y); fzv=safe_coord(fzv,u.dim.z);
   int ix = int(floor(fxv));
   int iy = int(floor(fyv));
   int iz = int(floor(fzv));

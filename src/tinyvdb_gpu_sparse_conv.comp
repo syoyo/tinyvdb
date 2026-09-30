@@ -17,6 +17,14 @@ float lookup(ivec3 q) {
   return u.pad_value;
 }
 
+
+// Range-check before adding signed voxel offsets; never wrap across int32 ends.
+bool offset_ok(ivec3 c,ivec3 d) {
+  const int hi=2147483647,lo=(-2147483647-1);
+  return (d.x>=0 ? c.x<=hi-d.x : c.x>=lo-d.x) &&
+         (d.y>=0 ? c.y<=hi-d.y : c.y>=lo-d.y) &&
+         (d.z>=0 ? c.z<=hi-d.z : c.z>=lo-d.z);
+}
 void main() {
   uint i = gl_GlobalInvocationID.x;
   if (i >= u.count) return;
@@ -29,8 +37,8 @@ void main() {
     for (int dj = 0; dj < u.kdim.y; ++dj) {
       for (int di = 0; di < u.kdim.x; ++di) {
         uint ki = uint((dk * u.kdim.y + dj) * u.kdim.x + di);
-        ivec3 q = c + ivec3(di - ax, dj - ay, dk - az);
-        acc += kernel[ki] * lookup(q);
+        ivec3 d=ivec3(di-ax,dj-ay,dk-az);
+        acc += kernel[ki] * (offset_ok(c,d) ? lookup(c+d) : u.pad_value);
       }
     }
   }

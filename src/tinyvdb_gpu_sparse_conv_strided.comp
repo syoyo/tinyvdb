@@ -22,6 +22,23 @@ float lookup(ivec3 q) {
 
 // Strided sparse convolution: one thread per output coord oc; the kernel samples
 // the input around oc*stride. (stride 1 reduces to same-topology conv.)
+
+// Unsigned magnitudes cover floor(coord/stride)*stride just below INT_MIN.
+bool scaled_offset(int c,int scale,int d,out int q) {
+  bool negative=c<0;
+  uint mag=negative ? 0u-uint(c) : uint(c),factor=uint(scale);
+  if(mag>0xffffffffu/factor) return false;
+  mag*=factor;
+  uint dm=d<0 ? 0u-uint(d) : uint(d);
+  if((d<0)==negative) {
+    uint limit=negative ? 2147483648u : 2147483647u;
+    if(mag>limit || dm>limit-mag) return false;
+    mag+=dm;
+  } else if(dm>mag) { mag=dm-mag; negative=!negative; }
+  else mag-=dm;
+  if(mag>(negative ? 2147483648u : 2147483647u)) return false;
+  q=int(negative ? 0u-mag : mag); return true;
+}
 void main() {
   uint i = gl_GlobalInvocationID.x;
   if (i >= u.n_out) return;
@@ -32,8 +49,9 @@ void main() {
     for (int dj = 0; dj < u.kdim.y; ++dj)
       for (int di = 0; di < u.kdim.x; ++di) {
         uint ki = uint((dk * u.kdim.y + dj) * u.kdim.x + di);
-        ivec3 q = oc * u.stride + ivec3(di - ax, dj - ay, dk - az);
-        acc += kernel[ki] * lookup(q);
+        ivec3 q;
+        bool valid=scaled_offset(oc.x,u.stride,di-ax,q.x) && scaled_offset(oc.y,u.stride,dj-ay,q.y) && scaled_offset(oc.z,u.stride,dk-az,q.z);
+        acc += kernel[ki] * (valid ? lookup(q) : u.pad_value);
       }
   out_values[i] = acc;
 }
