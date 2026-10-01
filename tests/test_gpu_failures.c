@@ -1,4 +1,4 @@
-/* A fake Vulkan driver exercises cleanup without hardware or public hooks. */
+/* Fake drivers exercise cleanup and backend selection without hardware. */
 #include "../src/tinyvdb_gpu.c"
 static int fail_step, live_buffers, live_memory, live_maps;
 static unsigned char host[64];
@@ -26,6 +26,45 @@ static VkResult map_memory(VkDevice d, VkDeviceMemory m, VkDeviceSize o, VkDevic
     *p = host; ++live_maps; return VK_SUCCESS;
 }
 static void unmap_memory(VkDevice d, VkDeviceMemory m) { (void)d; (void)m; --live_maps; }
+/* Stop at CUDA kernel lookup: reaching it proves SPIR-V did not gate CUDA. */
+static int cuda_lookup_calls;
+static CUresult fail_cuda_lookup(CUfunction* function, CUmodule module, const char* name) {
+    (void)function;
+    if (module != (CUmodule)(uintptr_t)1 || strcmp(name, "tvdb_cuda_comp")) return 1;
+    ++cuda_lookup_calls;
+    return 1; /* Inject a driver error before allocation or kernel execution. */
+}
+static int test_composite_backend_selection(void) {
+    tvdb_gpu_context_t ctx; memset(&ctx, 0, sizeof(ctx));
+    ctx.backend = TVDB_GPU_BACKEND_CUDA;
+    ctx.cu_module = (CUmodule)(uintptr_t)1;
+    ctx.cuda.cuModuleGetFunction = fail_cuda_lookup;
+    float av = 2, bv = 3, value = 42;
+    tvdb_dense_grid a = {0}, b = {0}, out = {0};
+    a.nx = a.ny = a.nz = b.nx = b.ny = b.nz = out.nx = out.ny = out.nz = 1;
+    a.voxel_size = b.voxel_size = out.voxel_size = 1;
+    a.data = &av; b.data = &bv; out.data = &value;
+    tvdb_status_t (*ops[])(tvdb_gpu_context_t*, const tvdb_dense_grid*,
+        const tvdb_dense_grid*, tvdb_dense_grid*, tvdb_error_t*) = {
+        tvdb_gpu_comp_max, tvdb_gpu_comp_min, tvdb_gpu_comp_sum, tvdb_gpu_comp_mult
+    };
+    for (size_t i = 0; i < sizeof(ops)/sizeof(ops[0]); ++i) {
+        tvdb_error_t error = {0}; cuda_lookup_calls = 0;
+        tvdb_status_t status = ops[i](&ctx, &a, &b, &out, &error);
+        if (status != TVDB_ERROR_IO || error.status != status || cuda_lookup_calls != 1 || value != 42) {
+            fprintf(stderr, "composite CUDA dispatch failed: op=%zu status=%d lookups=%d\n",
+                i, (int)status, cuda_lookup_calls);
+            return 1;
+        }
+        if (kTvdbGpuCompSpv_len == 0) {
+            ctx.backend = TVDB_GPU_BACKEND_VULKAN;
+            status = ops[i](&ctx, &a, &b, &out, &error);
+            ctx.backend = TVDB_GPU_BACKEND_CUDA;
+            if (status != TVDB_ERROR_UNIMPLEMENTED || value != 42 || cuda_lookup_calls != 1) return 1;
+        }
+    }
+    return 0;
+}
 int main(void) {
     tvdb_gpu_context_t ctx; memset(&ctx, 0, sizeof(ctx));
     ctx.device = (VkDevice)(uintptr_t)1;
@@ -55,5 +94,5 @@ int main(void) {
     tvdb_gpu_dispatch_spec_t spec; memset(&spec, 0, sizeof(spec));
     spec.bindings = &binding; spec.num_bindings = 1;
     if (tvdb_gpu_dispatch(&ctx, &spec, NULL) != TVDB_ERROR_INVALID_ARGUMENT) return 1;
-    return 0;
+    return test_composite_backend_selection();
 }

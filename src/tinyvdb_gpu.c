@@ -11333,7 +11333,7 @@ static tvdb_status_t tvdb_gpu_comp(tvdb_gpu_context_t* ctx, int op,
   const int nx = a->nx, ny = a->ny, nz = a->nz;
   const size_t n = (size_t)nx * (size_t)ny * (size_t)nz;
   if (n == 0) return TVDB_OK;
-  if (kTvdbGpuCompSpv_len == 0) {
+  if (ctx->backend == TVDB_GPU_BACKEND_VULKAN && kTvdbGpuCompSpv_len == 0) {
     tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "comp SPIR-V unavailable; rebuild with glslangValidator");
     return TVDB_ERROR_UNIMPLEMENTED;
   }
