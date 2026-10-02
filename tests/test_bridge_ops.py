@@ -7,19 +7,15 @@ import struct
 # Allow running from either repo root or the tests/ dir.
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, os.path.join(ROOT, "python"))
+if os.environ.get("TINYVDB_TEST_INSTALLED") != "1":
+    sys.path.insert(0, os.path.join(ROOT, "python"))
 
-# Find the built .so (cmake places it under build/python/ or build/tinyvdb/);
-# copy it into python/tinyvdb/ if absent so the package can import.
-_PKG = os.path.join(ROOT, "python", "tinyvdb")
-if not any(name.endswith(".abi3.so") for name in os.listdir(_PKG)):
-    import glob, shutil
-    for cand in glob.glob(os.path.join(ROOT, "build", "**", "_tinyvdb.abi3.so"), recursive=True):
-        shutil.copy(cand, _PKG)
+from python_test_bootstrap import load_extensions
+load_extensions()
 
 import tinyvdb  # noqa: E402
 
-VDB_PATH = os.path.join(ROOT, "sphere.vdb")
+VDB_PATH = os.environ.get("TINYVDB_TEST_FIXTURE", os.path.join(ROOT, "sphere.vdb"))
 
 
 def main():

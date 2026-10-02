@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 static int fails = 0;
 #define EXPECT(cond, msg) do { \
@@ -152,6 +153,11 @@ int main(int argc, char **argv) {
     for (int i = 0; i < n; ++i) {
         char in_path[512], out_path[512];
         snprintf(in_path, sizeof(in_path), "%s/%s", root, files[i]);
+        struct stat st;
+        if (stat(in_path, &st) != 0 && i < 4) {
+            printf("[skip] optional downloaded corpus file: %s\n", files[i]);
+            continue;
+        }
         // Out filename: replace '/' with '_'.
         char fn[256]; strncpy(fn, files[i], sizeof(fn) - 1); fn[sizeof(fn)-1] = 0;
         for (char *p = fn; *p; ++p) if (*p == '/') *p = '_';

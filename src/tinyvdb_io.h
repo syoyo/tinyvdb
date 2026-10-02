@@ -418,6 +418,9 @@ void tvdb_file_close(tvdb_file_t *file);
    their recorded allocators. The grid is cleared and can be destroyed again. */
 void tvdb_grid_destroy(tvdb_grid_t *grid, const tvdb_allocator_t *alloc);
 
+/* Each successful read replaces that grid's payload using independent storage.
+ * A failed read preserves that grid, including its descriptor, and other grids
+ * are still attempted. Reload requires valid offsets into the original file. */
 tvdb_status_t tvdb_read_all_grids(tvdb_file_t *file, tvdb_error_t *err);
 
 size_t        tvdb_grid_count(const tvdb_file_t *file);
@@ -3330,10 +3333,22 @@ tvdb_status_t tvdb_read_all_grids(tvdb_file_t *file, tvdb_error_t *err) {
     for (size_t i = 0; i < file->num_grids; i++) {
         if (err) err->grid_index = (int32_t)i;
 
-        tvdb__sr_seek_set(&sr, file->grids[i].descriptor.grid_byte_offset);
-
-        tvdb_status_t st = tvdb__read_grid(&sr, &file->grids[i],
-                                           &file->header, &file->alloc, err);
+        tvdb_grid_t *current = &file->grids[i];
+        tvdb_grid_t loaded;
+        memset(&loaded, 0, sizeof(loaded));
+        /* Borrow the descriptor while reading into independent storage. Repeated
+           reads must not overwrite owning metadata/tree pointers and leak them. */
+        loaded.descriptor = current->descriptor;
+        tvdb_status_t st;
+        if (!file->file_data.data || !loaded.descriptor.grid_byte_offset ||
+            loaded.descriptor.grid_byte_offset > loaded.descriptor.end_byte_offset ||
+            loaded.descriptor.end_byte_offset > file->file_data.data_len) {
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA, "Grid has no valid serialized offsets");
+            st = TVDB_ERROR_INVALID_DATA;
+        } else {
+            tvdb__sr_seek_set(&sr, loaded.descriptor.grid_byte_offset);
+            st = tvdb__read_grid(&sr, &loaded, &file->header, &file->alloc, err);
+        }
         if (st != TVDB_OK) {
             if (first_err == TVDB_OK) {
                 first_err = st;
@@ -3343,10 +3358,12 @@ tvdb_status_t tvdb_read_all_grids(tvdb_file_t *file, tvdb_error_t *err) {
                     first_err_msg[sizeof(first_err_msg) - 1] = '\0';
                 }
             }
-            /* Reset the partially-read grid to a safe empty state; it stays in
-               the grid array (so indices/count are stable) but carries no data
-               and is safe to destroy at file close. */
-            tvdb__grid_destroy(&file->grids[i], &file->alloc);
+            memset(&loaded.descriptor, 0, sizeof(loaded.descriptor));
+            tvdb__grid_destroy(&loaded, &file->alloc);
+        } else {
+            memset(&current->descriptor, 0, sizeof(current->descriptor));
+            tvdb__grid_destroy(current, &file->alloc);
+            *current = loaded;
         }
     }
 

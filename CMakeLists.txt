@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.5)
 
-project(tinyvdb VERSION 0.9.0 LANGUAGES C CXX)
+project(tinyvdb VERSION 0.10.0 LANGUAGES C CXX)
 
 # options
 option(TINYVDB_USE_CCACHE "Use ccache for faster recompile." ON)
@@ -13,6 +13,7 @@ option(TINYVDB_USE_SYSTEM_ZSTD "Use system zstd instead of bundled deps/zstd" OF
 option(TINYVDB_USE_SYSTEM_BLOSC "Link system libblosc for real BLOSC framing in NanoVDB I/O" OFF)
 option(TINYVDB_BUILD_VDBRENDER "Build vdbrender volume path tracer example" ON)
 option(TINYVDB_BUILD_TVDBVIEW "Build tvdbview OpenGL VDB viewer example" ON)
+option(TINYVDB_BUILD_OPENVDB_TESTS "Build optional maintenance tests against installed OpenVDB" OFF)
 option(TINYVDB_BUILD_PYTHON "Build Python extension" OFF)
 option(TINYVDB_OPENMP "Enable OpenMP parallelism in mesh/ops kernels" OFF)
 set(TINYVDB_THREAD_BACKEND "AUTO" CACHE STRING "Task backend: AUTO, C11, GCD, PTHREAD, NONE")
@@ -33,6 +34,13 @@ set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Resolve an interpreter and its stable-ABI development files together, so
+# CTest cannot select a newer interpreter whose headers are unavailable.
+if(TINYVDB_BUILD_PYTHON)
+  cmake_minimum_required(VERSION 3.26)
+  find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter Development.SABIModule)
+endif()
 
 # [ccache]
 if(TINYVDB_USE_CCACHE)
@@ -67,6 +75,8 @@ add_library(tinyvdb_mesh_ops STATIC
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_ray.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_sparse.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_sparse_tree.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_tree.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_sparse_tools.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_autograd.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_levelset.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_thread.c
@@ -447,10 +457,21 @@ endif()
 
 # Tests
 if(TINYVDB_BUILD_TESTS)
+  enable_testing()
+  # Generate an analytic level set in the build tree; no local downloads needed.
+  set(TINYVDB_TEST_FIXTURE "${CMAKE_BINARY_DIR}/fixtures/sphere.vdb")
+  add_executable(generate_test_fixture tests/generate_test_fixture.c)
+  target_link_libraries(generate_test_fixture PRIVATE tinyvdb_mesh_ops)
+  add_custom_command(OUTPUT "${TINYVDB_TEST_FIXTURE}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/fixtures"
+    COMMAND generate_test_fixture "${PROJECT_SOURCE_DIR}/data/sphere-div1.vdb" "${TINYVDB_TEST_FIXTURE}"
+    DEPENDS generate_test_fixture "${PROJECT_SOURCE_DIR}/data/sphere-div1.vdb"
+    VERBATIM)
+  add_custom_target(tinyvdb_test_fixture ALL DEPENDS "${TINYVDB_TEST_FIXTURE}")
   foreach(_test test_thread_pool test_sdf_tree test_mesh_conversion test_mesh_conversion_failure)
     add_executable(${_test} ${PROJECT_SOURCE_DIR}/tests/${_test}.c)
     target_link_libraries(${_test} PRIVATE tinyvdb_mesh_ops)
-    add_test(NAME ${_test} COMMAND ${_test} ${PROJECT_SOURCE_DIR}/sphere.vdb)
+    add_test(NAME ${_test} COMMAND ${_test} ${TINYVDB_TEST_FIXTURE})
   endforeach()
   if(_tvdb_thread_backend STREQUAL "C11")
     add_executable(test_thread_pool_failure ${PROJECT_SOURCE_DIR}/tests/test_thread_pool_failure.c)
@@ -459,7 +480,7 @@ if(TINYVDB_BUILD_TESTS)
   endif()
   add_executable(test_io_ownership ${PROJECT_SOURCE_DIR}/tests/test_io_ownership.c)
   target_link_libraries(test_io_ownership PRIVATE tinyvdb_mesh_ops tinyvdb)
-  add_test(NAME test_io_ownership COMMAND test_io_ownership)
+  add_test(NAME test_io_ownership COMMAND test_io_ownership ${TINYVDB_TEST_FIXTURE})
   add_executable(test_ops ${PROJECT_SOURCE_DIR}/tests/test_ops.c)
   target_link_libraries(test_ops PRIVATE tinyvdb_mesh_ops)
   enable_testing()
@@ -488,12 +509,12 @@ if(TINYVDB_BUILD_TESTS)
   add_executable(test_sparse_tree ${PROJECT_SOURCE_DIR}/tests/test_sparse_tree.c)
   target_link_libraries(test_sparse_tree PRIVATE tinyvdb_mesh_ops tinyvdb)
   add_test(NAME test_sparse_tree
-           COMMAND test_sparse_tree ${PROJECT_SOURCE_DIR}/sphere.vdb)
+           COMMAND test_sparse_tree ${TINYVDB_TEST_FIXTURE})
 
   add_executable(test_grid_from_sparse ${PROJECT_SOURCE_DIR}/tests/test_grid_from_sparse.c)
   target_link_libraries(test_grid_from_sparse PRIVATE tinyvdb_mesh_ops tinyvdb)
   add_test(NAME test_grid_from_sparse
-           COMMAND test_grid_from_sparse ${PROJECT_SOURCE_DIR}/sphere.vdb)
+           COMMAND test_grid_from_sparse ${TINYVDB_TEST_FIXTURE})
 
   add_executable(test_simd ${PROJECT_SOURCE_DIR}/tests/test_simd.c)
   target_link_libraries(test_simd PRIVATE tinyvdb_mesh_ops)
@@ -535,7 +556,7 @@ if(TINYVDB_BUILD_TESTS)
   add_executable(test_vec3_extend ${PROJECT_SOURCE_DIR}/tests/test_vec3_extend.c)
   target_link_libraries(test_vec3_extend PRIVATE tinyvdb_mesh_ops tinyvdb)
   add_test(NAME test_vec3_extend
-           COMMAND test_vec3_extend ${PROJECT_SOURCE_DIR}/sphere.vdb)
+           COMMAND test_vec3_extend ${TINYVDB_TEST_FIXTURE})
 
   add_executable(test_dense_d ${PROJECT_SOURCE_DIR}/tests/test_dense_d.c)
   target_link_libraries(test_dense_d PRIVATE tinyvdb_mesh_ops m)
@@ -552,7 +573,7 @@ if(TINYVDB_BUILD_TESTS)
   add_executable(test_scalar_writer_audit ${PROJECT_SOURCE_DIR}/tests/test_scalar_writer_audit.c)
   target_link_libraries(test_scalar_writer_audit PRIVATE tinyvdb_mesh_ops tinyvdb)
   add_test(NAME test_scalar_writer_audit
-           COMMAND test_scalar_writer_audit ${PROJECT_SOURCE_DIR}/sphere.vdb ${CMAKE_BINARY_DIR})
+           COMMAND test_scalar_writer_audit ${TINYVDB_TEST_FIXTURE} ${CMAKE_BINARY_DIR})
 
   add_executable(test_corpus_roundtrip ${PROJECT_SOURCE_DIR}/tests/test_corpus_roundtrip.c)
   target_link_libraries(test_corpus_roundtrip PRIVATE tinyvdb m)
@@ -564,6 +585,45 @@ if(TINYVDB_BUILD_TESTS)
   target_link_libraries(test_reference_roundtrip PRIVATE tinyvdb m)
   add_test(NAME test_reference_roundtrip
            COMMAND test_reference_roundtrip ${PROJECT_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+  set_tests_properties(test_reference_roundtrip PROPERTIES SKIP_RETURN_CODE 77)
+
+  if(TINYVDB_BUILD_OPENVDB_TESTS)
+    if(CMAKE_VERSION VERSION_LESS 3.8)
+      message(FATAL_ERROR "C++17 OpenVDB oracle tests require CMake 3.8 or newer")
+    endif()
+    find_path(TINYVDB_OPENVDB_INCLUDE_DIR openvdb/openvdb.h)
+    find_library(TINYVDB_OPENVDB_LIBRARY NAMES openvdb)
+    if(NOT TINYVDB_OPENVDB_INCLUDE_DIR OR NOT TINYVDB_OPENVDB_LIBRARY)
+      message(FATAL_ERROR "OpenVDB oracle tests require matching installed headers and library")
+    endif()
+    find_package(TBB REQUIRED)
+    find_package(Imath CONFIG REQUIRED)
+    foreach(_oracle test_tree_openvdb test_sparse_tools_openvdb)
+      add_executable(${_oracle} tests/${_oracle}.cc)
+      set_target_properties(${_oracle} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+      target_include_directories(${_oracle} PRIVATE ${TINYVDB_OPENVDB_INCLUDE_DIR})
+      target_link_libraries(${_oracle} PRIVATE tinyvdb_mesh_ops ${TINYVDB_OPENVDB_LIBRARY} TBB::tbb Imath::Imath)
+      add_test(NAME ${_oracle} COMMAND ${_oracle})
+    endforeach()
+  endif()
+  add_executable(test_tree_maintenance tests/test_tree_maintenance.c)
+  add_executable(test_sparse_tools tests/test_sparse_tools.c)
+  target_link_libraries(test_sparse_tools PRIVATE tinyvdb_mesh_ops m)
+  add_test(NAME test_sparse_tools COMMAND test_sparse_tools)
+  add_executable(test_sparse_tools_failure tests/test_sparse_tools_failure.c)
+  target_link_libraries(test_sparse_tools_failure PRIVATE tinyvdb_mesh_ops m)
+  add_test(NAME test_sparse_tools_failure COMMAND test_sparse_tools_failure)
+  target_link_libraries(test_tree_maintenance PRIVATE tinyvdb_mesh_ops m)
+  add_test(NAME test_tree_maintenance COMMAND test_tree_maintenance ${TINYVDB_TEST_FIXTURE})
+  add_executable(test_tree_failure tests/test_tree_failure.c)
+  target_link_libraries(test_tree_failure PRIVATE tinyvdb_mesh_ops m)
+  add_test(NAME test_tree_failure COMMAND test_tree_failure ${TINYVDB_TEST_FIXTURE})
+  add_executable(test_gaussian_failure tests/test_gaussian_failure.c)
+  target_link_libraries(test_gaussian_failure PRIVATE tinyvdb m)
+  add_test(NAME test_gaussian_failure COMMAND test_gaussian_failure)
+  add_executable(test_gaussian_raster tests/test_gaussian_raster.c)
+  target_link_libraries(test_gaussian_raster PRIVATE tinyvdb_nanovdb m)
+  add_test(NAME test_gaussian_raster COMMAND test_gaussian_raster)
 
   add_executable(test_gaussian_backward
                  ${PROJECT_SOURCE_DIR}/tests/test_gaussian_backward.c)
@@ -727,6 +787,12 @@ if(TINYVDB_BUILD_TESTS)
     # The index-map paths. The 44-case suite's active set is 64 voxels, below
     # TVDB_INDEX_MAP_MIN_ACTIVE, so on both backends it always takes the linear
     # scan and the map is never checked against the CPU. This covers it.
+    add_executable(test_gpu_hash_publish tests/test_gpu_hash_publish.c)
+    target_link_libraries(test_gpu_hash_publish PRIVATE tinyvdb_gpu m)
+    add_test(NAME test_gpu_hash_publish COMMAND test_gpu_hash_publish)
+    add_test(NAME test_gpu_hash_publish_cuda COMMAND test_gpu_hash_publish c)
+    set_tests_properties(test_gpu_hash_publish test_gpu_hash_publish_cuda PROPERTIES SKIP_RETURN_CODE 77)
+
     add_executable(test_gpu_index_map ${PROJECT_SOURCE_DIR}/tests/test_gpu_index_map.c)
     target_link_libraries(test_gpu_index_map PRIVATE tinyvdb_gpu tinyvdb_mesh_ops tinyvdb_nanovdb m)
     add_test(NAME test_gpu_index_map COMMAND test_gpu_index_map)
@@ -743,13 +809,16 @@ if(TINYVDB_BUILD_TESTS)
   endif()
 
   if(TINYVDB_BUILD_PYTHON)
-    find_program(PYTHON3_EXE NAMES python3 python)
-    if(PYTHON3_EXE)
+    if(Python3_EXECUTABLE)
+      add_test(NAME test_tree_python COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_tree_python.py)
+      add_test(NAME test_sparse_tools_python COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_sparse_tools_python.py)
+      set_tests_properties(test_sparse_tools_python PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR};TINYVDB_TEST_FIXTURE=${TINYVDB_TEST_FIXTURE}")
+      set_tests_properties(test_tree_python PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR};TINYVDB_TEST_FIXTURE=${TINYVDB_TEST_FIXTURE}")
       add_test(NAME test_bridge_ops_py
-               COMMAND ${PYTHON3_EXE} ${PROJECT_SOURCE_DIR}/tests/test_bridge_ops.py)
+               COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tests/test_bridge_ops.py)
       set_tests_properties(test_bridge_ops_py PROPERTIES
         WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
-        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}")
+        ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR};TINYVDB_TEST_FIXTURE=${TINYVDB_TEST_FIXTURE}")
     endif()
   endif()
 endif()
@@ -764,6 +833,8 @@ if(TINYVDB_BUILD_BENCH AND TINYVDB_BUILD_GPU)
 endif()
 
 if(TINYVDB_BUILD_BENCH)
+  add_executable(bench_tree_review tests/bench_tree_review.c)
+  target_link_libraries(bench_tree_review PRIVATE tinyvdb_mesh_ops tinyvdb_nanovdb m)
   add_executable(bench_mesh_conversion ${PROJECT_SOURCE_DIR}/tests/bench_mesh_conversion.c)
   target_link_libraries(bench_mesh_conversion PRIVATE tinyvdb_mesh_ops)
   add_executable(bench_sdf_tree ${PROJECT_SOURCE_DIR}/tests/bench_sdf_tree.c)

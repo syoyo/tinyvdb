@@ -8,7 +8,7 @@ import tinyvdb
 
 def test_version():
     assert hasattr(tinyvdb, "__version__")
-    assert tinyvdb.__version__ == "0.9.0"
+    assert tinyvdb.__version__ == "0.10.0"
 
 
 def test_constants():
@@ -141,13 +141,11 @@ class TestMeasurement:
 
 
 class TestVDBFileIO:
-    """Tests requiring VDB files - skipped if no test data available."""
+    """I/O tests using a procedural VDB fixture."""
 
     @pytest.fixture
     def sphere_path(self, data_dir):
         p = os.path.join(data_dir, "sphere.vdb")
-        if not os.path.exists(p):
-            pytest.skip("sphere.vdb not found")
         return p
 
     def test_open_and_read(self, sphere_path):
@@ -184,7 +182,6 @@ class TestVDBFileIO:
             with pytest.raises(tinyvdb.VDBError):
                 g.set_point_data_blob(b"\x00\x01")
 
-    @pytest.mark.skip(reason="NanoVDB roundtrip test disabled: stale NanoVDB source tree was removed.")
     def test_round_trip_bytes(self, sphere_path):
         with tinyvdb.open(sphere_path) as f:
             f.read_grids()

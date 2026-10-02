@@ -37,3 +37,8 @@ gmon.out
 *~
 .DS_Store
 Thumbs.db
+
+# Local agent state and nested worktrees
+.codex
+.agents/
+backport-tinyusdz-dense-decode/

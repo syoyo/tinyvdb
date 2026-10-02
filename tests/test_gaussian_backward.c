@@ -49,7 +49,7 @@ static double scalar_loss(const tvdb_raster_output_t *fwd) {
 static double run_loss(tvdb_projected_gaussian_t *gs) {
     tvdb_raster_output_t out;
     tvdb_error_t err = {0};
-    float bg[3] = { 0.0f, 0.0f, 0.0f };
+    float bg[3] = { 0.3f, 0.2f, 0.1f };
     if (tvdb_gaussian_rasterize_forward(gs, N, W, H, F, bg, EPS_THRESH, &out, &err) != TVDB_OK) {
         fprintf(stderr, "forward failed: %s\n", err.message);
         return 0.0;
@@ -78,10 +78,12 @@ static int check(const char *name, float ana, float fd, float scale) {
 int main(void) {
     tvdb_projected_gaussian_t gs[N];
     make_gauss(gs);
+    /* Avoid integer locations exactly on the hard sigma=10 cutoff. */
+    for(int i=0;i<N;++i) { gs[i].x+=.27f;gs[i].y+=.13f; }
 
     /* Forward + backward: dL/dC = 2C, dL/dA = 2A (since L = Σ C² + Σ A²). */
     tvdb_raster_output_t fwd; tvdb_error_t err = {0};
-    float bg[3] = { 0.0f, 0.0f, 0.0f };
+    float bg[3] = { 0.3f, 0.2f, 0.1f };
     if (tvdb_gaussian_rasterize_forward(gs, N, W, H, F, bg, EPS_THRESH, &fwd, &err) != TVDB_OK) {
         fprintf(stderr, "forward: %s\n", err.message); return 1;
     }
@@ -121,7 +123,7 @@ int main(void) {
             double Lm = run_loss(gs);
             *params[k].p = orig;
             float fd = (float)((Lp - Lm) / (2.0 * h));
-            char nm[32]; snprintf(nm, sizeof(nm), "g[%d].%s", i, params[k].n);
+            char nm[64]; snprintf(nm, sizeof(nm), "g[%d].%s", i, params[k].n);
             if (!check(nm, *params[k].g, fd, params[k].scale)) ++fails;
             ++total;
         }
@@ -133,7 +135,7 @@ int main(void) {
             double Lm = run_loss(gs);
             gs[i].feature[f] = orig;
             float fd = (float)((Lp - Lm) / (2.0 * h));
-            char nm[32]; snprintf(nm, sizeof(nm), "g[%d].feat[%d]", i, f);
+            char nm[64]; snprintf(nm, sizeof(nm), "g[%d].feat[%d]", i, f);
             float ana = grad.grad_feature[i * F + f];
             if (!check(nm, ana, fd, 1.0f)) ++fails;
             ++total;

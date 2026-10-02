@@ -1,6 +1,7 @@
 #pragma once
 #include "tinyvdb_sparse_tree.h"
 #include "tinyvdb_thread.h"
+#include "tinyvdb_sparse.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -46,6 +47,11 @@ void tvdb_sdf_tree_info(const tvdb_sdf_tree_t *workspace, tvdb_sdf_tree_info_t *
  * as fixed boundary data in every pass. Zero iterations is a validated no-op. */
 tvdb_status_t tvdb_sdf_tree_filter(tvdb_sdf_tree_t *workspace, tvdb_sdf_filter_t kind,
                                    int iterations, tvdb_error_t *err);
+/* Compute the same filter without committing to the source tree. The owning
+ * sparse output is replaced only on success. Flat transform restrictions
+ * apply; inactive values and signed tiles remain fixed in every pass. */
+tvdb_status_t tvdb_sdf_tree_filter_to_sparse(tvdb_sdf_tree_t *workspace,
+    tvdb_sdf_filter_t kind, int iterations, tvdb_sparse_grid *out, tvdb_error_t *err);
 /* Adds a world-distance offset to active values. This does not grow the band. */
 tvdb_status_t tvdb_sdf_tree_offset(tvdb_sdf_tree_t *workspace, float distance, tvdb_error_t *err);
 

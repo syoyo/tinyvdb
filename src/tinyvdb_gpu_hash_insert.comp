@@ -2,10 +2,10 @@
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 // Open-addressing hash set keyed by voxel ijk, sized O(point count) so the
 // construction is independent of the ijk bounding-box volume. state: 0=empty,
-// 1=occupied. keys: cap*3 int32 (ix,iy,iz). One thread per point claims a slot
+// 1=being written, 2=published. keys: cap*3 int32 (ix,iy,iz). One thread per point claims a slot
 // via CAS and linear-probes on collision; an exact-key match is a duplicate.
-layout(std430, set = 0, binding = 0) buffer StateBuf { uint state[]; };
-layout(std430, set = 0, binding = 1) buffer KeyBuf { int keys[]; };
+layout(std430, set = 0, binding = 0) coherent buffer StateBuf { uint state[]; };
+layout(std430, set = 0, binding = 1) coherent buffer KeyBuf { int keys[]; };
 layout(std430, set = 0, binding = 2) readonly buffer PtBuf { vec4 pts[]; };
 layout(std140, set = 0, binding = 3) uniform Params {
   vec4 vs;        // voxel size xyz
@@ -29,12 +29,17 @@ void main() {
     uint prev = atomicCompSwap(state[slot], 0u, 1u);
     if (prev == 0u) {
       keys[slot*3u + 0u] = ix; keys[slot*3u + 1u] = iy; keys[slot*3u + 2u] = iz;
+      memoryBarrierBuffer();
+      atomicExchange(state[slot], 2u);
       return;
     }
-    // Occupied: an exact match is a duplicate. The owner may still be mid-write
-    // (keys not yet visible), in which case we fall through and probe on; any
-    // resulting duplicate slot is removed by the host-side finalize pass.
-    if (keys[slot*3u + 0u] == ix && keys[slot*3u + 1u] == iy && keys[slot*3u + 2u] == iz) return;
+    // Never inspect keys while the owner is mid-write. Probe onward instead
+    // of spinning: duplicates are removed on the host, and <= count slots
+    // can be claimed in a table with capacity >= 2*count.
+    if (prev == 2u) {
+      memoryBarrierBuffer();
+      if (keys[slot*3u + 0u] == ix && keys[slot*3u + 1u] == iy && keys[slot*3u + 2u] == iz) return;
+    }
     slot = (slot + 1u) & u.mask;
   }
 }

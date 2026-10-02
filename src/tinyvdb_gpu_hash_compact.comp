@@ -14,7 +14,7 @@ layout(std140, set = 0, binding = 4) uniform Params {
 void main() {
   uint s = gl_GlobalInvocationID.x;
   if (s >= u.cap) return;
-  if (state[s] == 0u) return;
+  if (state[s] != 2u) return;
   uint idx = atomicAdd(counter, 1u);
   if (idx >= u.cap) return;
   outc[idx*3u + 0u] = keys[s*3u + 0u];

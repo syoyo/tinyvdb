@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-find_package(Python3 REQUIRED COMPONENTS Development.SABIModule)
+find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter Development.SABIModule)
 
 Python3_add_library(_tinyvdb MODULE WITH_SOABI USE_SABI 3.11
     src/_tinyvdb.c
@@ -15,7 +15,7 @@ target_include_directories(_tinyvdb PRIVATE
 # Py_LIMITED_API is defined in the source file itself
 
 # C++11 for the mesh/ops wrapper
-set_source_files_properties(src/_tinyvdb_mesh_ops.cc PROPERTIES
+set_target_properties(_tinyvdb PROPERTIES
     CXX_STANDARD 11
     CXX_STANDARD_REQUIRED ON
 )
@@ -28,6 +28,7 @@ Python3_add_library(_tinyvdb_nanovdb MODULE WITH_SOABI USE_SABI 3.11
 )
 
 target_link_libraries(_tinyvdb_nanovdb PRIVATE tinyvdb_nanovdb)
+target_compile_definitions(_tinyvdb_nanovdb PRIVATE TINYVDB_PYTHON_VERSION="${PROJECT_VERSION}")
 target_include_directories(_tinyvdb_nanovdb PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src

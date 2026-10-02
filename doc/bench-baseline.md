@@ -2947,3 +2947,72 @@ paths and the Vulkan shader ABI check. A fresh build with explicitly empty
 `TINYVDB_GLSLANG_VALIDATOR` contains no generated SPIR-V includes: 49 tests passed
 and 17 Vulkan shader paths skipped, with CUDA still exercised. A successful
 fallback build is not counted as Vulkan arithmetic coverage.
+
+## Tree/raster review (2026-10-03)
+
+Compared `080ac455` with this maintenance implementation using the same
+`tests/bench_tree_review.c` harness. Release GCC 13.3, SIMD on, OpenMP off,
+C11 task backend, same Threadripper host; best of three measured runs after one
+warmup, including workspace construction/output allocation. Tree operations use
+up to eight task workers. Commands: `bench_tree_review 64 4000` and
+`bench_tree_review 128 4000`. Results are observations, not performance assertions.
+
+| Case | Previous ms | Current ms | Note |
+|---|---:|---:|---|
+| Erode three passes, 64³ narrow fixture, 32,680 active | 1.272 | 1.845 | Correct inactive boundaries and checked topology add cost in this case. |
+| Erode three passes, 128³ narrow fixture, 130,240 active | 5.051 | 5.988 | Same correctness change; no speedup claimed. |
+| Raster 4,000 splats, 256² RGB (64 fixture run) | 30.693 | 16.162 | 1.90× faster with shared O(E log E) tile/depth sorting. |
+| Raster 4,000 splats, 256² RGB (128 fixture run) | 28.743 | 16.774 | 1.71× faster on the repeated raster workload. |
+
+For the 64³ fixture (152 leaves), compact filter value scratch is 261,440 bytes
+(two floats per active voxel), with 25,896 bytes of workspace metadata. Previous
+whole-leaf value buffers alone used 622,592 bytes, plus an additional sparse
+scratch output. Counts match, but morphology checksums intentionally differ:
+previous 2,841,003.51 versus current 2,372,529.53, because the old second pass
+replaced stored inactive values with the root background. Raster checksums are
+4,404.29798 versus 4,404.26960; double evaluation changes inclusion near the hard
+sigma=10 cutoff. Independent pixel-reference and finite-difference tests validate
+the current raster behavior; this comparison does not claim bitwise equivalence.
+
+Validation: scalar ASan/UBSan/float-cast-overflow 34/34; SIMD/OpenMP 37/37 with
+one/eight threads, including the optional OpenVDB 10.0.1 oracle; rebuilt Python
+bindings 110 passed with one existing NanoVDB Python roundtrip skip. The traced runner cannot use
+LeakSanitizer; leak detection was disabled while the other sanitizers stayed on.
+Valgrind allocation-failure tests reported no lost blocks or memory errors for
+maintenance/raster paths. CUDA device arithmetic was unavailable; compiling the
+CUDA module with NVRTC is separate coverage. Generated-shader validation passed
+56 tests with 16 CUDA skips on software Vulkan, llvmpipe (LLVM 20.1.2, 256 bits).
+The fresh fallback build explicitly disabled shader generation: 37 tests passed
+and 35 unavailable shader/device tests skipped. These checks do not establish
+physical GPU coverage.
+
+## Sparse tool implementation (2026-10-03)
+
+The four OpenVDB-inspired feature groups now have C11 APIs and Python grid
+methods: geometric narrow-band tracking/rebuild, affine nearest/trilinear
+resampling, sparse indexed meshing with bounded vertex clustering, and sparse
+variable-coefficient Poisson with boundary callbacks and component nullspaces.
+The narrow sphere fixture rebuilds with maximum analytic distance error
+0.0682834 voxels; comparison with OpenVDB 10.0.1 gives maximum difference
+0.10508 voxels. Meshing matches dense classic-MC counts/volume, handles reflections
+and stored inactive tiles, and extracts two samples separated by two million
+voxels within a 1,000-cell budget. PDE checks cover manufactured anisotropic
+variable-coefficient solutions, mixed boundaries, disconnected pure-Neumann
+components, active-tile expansion and incompatible RHS/flux rejection.
+
+Validation: scalar ASan/UBSan/float-cast-overflow 36/36; SIMD/OpenMP 41/41 at
+one/eight threads, including both OpenVDB oracles and Python sparse-tool tests;
+rebuilt Python package suite 110 passed with the existing NanoVDB Python skip.
+Generated shaders: 58 passed, 16 CUDA skips on llvmpipe. Fresh fallback
+configuration: 39 passed, 35 shader/device skips. These four APIs are CPU-only;
+backend suites also verify existing GPU behavior after integration.
+
+Allocation injection checks 7 resampling, 22 meshing, 49 rebuild and 20 PDE
+operation-local allocation failures, with prior outputs/reports preserved.
+Shared tree/mesh allocation suites also pass. Valgrind reports no lost blocks
+or memory errors for normal sparse-tool paths and allocation-failure sweeps;
+104 bytes in two OpenMP runtime allocations remain reachable. An initial
+Valgrind finding came from comparing unspecified result-struct padding in the
+regression test; field comparisons corrected the test and the rerun is clean.
+LeakSanitizer remains unavailable under the traced runner; the other scalar
+sanitizers stay enabled. Physical Vulkan/CUDA execution remains unavailable.

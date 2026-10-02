@@ -12,6 +12,8 @@
 #include "tinyvdb_tsdf.h"
 #include "tinyvdb_topology.h"
 #include "tinyvdb_sparse_tree.h"
+#include "tinyvdb_tree_internal.h"
+#include "tinyvdb_checked.h"
 #include "tinyvdb_autograd.h"
 #include "tinyvdb_levelset.h"
 #include "tinyvdb_stats.h"
@@ -1768,76 +1770,47 @@ int tvdb_py_grid_to_sparse(const tvdb_grid_t *grid,
    out_coords = int32[count*3], out_values = count * tvdb_value_type_size(vt)
    bytes, out_value_type = the leaf-level value type. Both buffers are malloc'd
    (caller frees); NULL when count == 0. Returns 0 on success, -1 on error. */
-typedef struct {
-    std::vector<int32_t> coords;
-    std::vector<uint8_t> values;
-    size_t vsize;
-} typed_sparse_acc_t;
-
-static int typed_sparse_visit(const tvdb_leaf_view_t *leaf, void *user) {
-    typed_sparse_acc_t *a = (typed_sparse_acc_t *)user;
-    int log2dim = leaf->log2dim;
-    int dim = 1 << log2dim;
-    int mask = dim - 1;
-    int nslots = 1 << (3 * log2dim);
-    /* leaf->data is the raw byte buffer typed as float* in the view. */
-    const uint8_t *bytes = (const uint8_t *)leaf->data;
-    /* OpenVDB leaf layout: slot = (x<<2L) | (y<<L) | z within the dim^3 block. */
-    for (int s = 0; s < nslots; ++s) {
-        if (!tvdb_nodemask_is_on(leaf->value_mask, s)) continue;
-        int lx = (s >> (2 * log2dim)) & mask;
-        int ly = (s >> log2dim) & mask;
-        int lz = s & mask;
-        a->coords.push_back(leaf->origin[0] + lx);
-        a->coords.push_back(leaf->origin[1] + ly);
-        a->coords.push_back(leaf->origin[2] + lz);
-        a->values.insert(a->values.end(), bytes + (size_t)s * a->vsize,
-                         bytes + (size_t)(s + 1) * a->vsize);
-    }
-    return 0;
-}
-
 int tvdb_py_grid_to_sparse_typed(const tvdb_grid_t *grid,
                                  int32_t **out_coords, void **out_values,
                                  size_t *out_count, int *out_value_type) {
     *out_coords = NULL; *out_values = NULL; *out_count = 0;
-    if (!grid) {
-        snprintf(s_error_msg, sizeof(s_error_msg), "to_sparse_typed: NULL grid");
-        return -1;
+    tvdb_tree_index p;
+    tvdb_error_t err = {};
+    if (tvdb_tree_index_create(grid, 0, &p, &err) != TVDB_OK) {
+        snprintf(s_error_msg, sizeof(s_error_msg), "%s", err.message); return -1;
     }
-    int num_levels = grid->tree.layout.num_levels;
-    if (num_levels <= 0) {
-        snprintf(s_error_msg, sizeof(s_error_msg), "to_sparse_typed: empty layout");
-        return -1;
+    if (p.active_tiles) {
+        tvdb_tree_index_destroy(&p);
+        snprintf(s_error_msg, sizeof(s_error_msg), "flat extraction requires explicit active-tile expansion"); return -1;
     }
-    tvdb_value_type_t vt = grid->tree.layout.levels[num_levels - 1].value_type;
-    size_t vsize = tvdb_value_type_size(vt);
+    tvdb_value_type_t vt = grid->tree.layout.levels[p.levels - 1].value_type;
     *out_value_type = (int)vt;
-    if (vsize == 0) {
-        snprintf(s_error_msg, sizeof(s_error_msg), "to_sparse_typed: unsupported value type");
-        return -1;
+    size_t coord_bytes, value_bytes, total = p.active_voxels, vsize = tvdb_value_type_size(vt);
+    if (!tvdb_size_mul(total, 3*sizeof(int32_t), &coord_bytes) ||
+        !tvdb_size_mul(total, vsize, &value_bytes)) {
+        tvdb_tree_index_destroy(&p);
+        snprintf(s_error_msg, sizeof(s_error_msg), "typed sparse size overflow"); return -1;
     }
-
-    typed_sparse_acc_t acc;
-    acc.vsize = vsize;
-    tvdb_grid_visit_leaves(grid, typed_sparse_visit, &acc);
-
-    size_t total = acc.coords.size() / 3;
-    *out_count = total;
-    if (total == 0) return 0;
-
-    int32_t *coords = (int32_t *)malloc(total * 3 * sizeof(int32_t));
-    uint8_t *vals = (uint8_t *)malloc(total * vsize);
-    if (!coords || !vals) {
-        free(coords); free(vals);
-        snprintf(s_error_msg, sizeof(s_error_msg), "to_sparse_typed: alloc failed");
-        return -1;
+    int32_t *coords = total ? (int32_t *)malloc(coord_bytes) : NULL;
+    uint8_t *vals = total ? (uint8_t *)malloc(value_bytes) : NULL;
+    if (total && (!coords || !vals)) {
+        free(coords); free(vals); tvdb_tree_index_destroy(&p);
+        snprintf(s_error_msg, sizeof(s_error_msg), "typed sparse allocation failed"); return -1;
     }
-    memcpy(coords, acc.coords.data(), total * 3 * sizeof(int32_t));
-    memcpy(vals, acc.values.data(), total * vsize);
-    *out_coords = coords;
-    *out_values = vals;
-    return 0;
+    size_t k = 0;
+    for (size_t at = 1; at < grid->tree.num_nodes; ++at) {
+        size_t ni = p.order[at]; const tvdb_tree_node_t *n = grid->tree.nodes + ni;
+        if (n->type != TVDB_NODE_LEAF) continue;
+        int L = n->u.leaf.value_mask.log2dim, dim = 1 << L;
+        size_t slots = (size_t)1 << (3*L);
+        for (size_t s = 0; s < slots; ++s) if (tvdb_nodemask_is_on(&n->u.leaf.value_mask, (int)s)) {
+            for (int a = 0; a < 3; ++a)
+                coords[3*k+a] = (int32_t)((int64_t)p.origins[ni][a] + ((s >> ((2-a)*L)) & (dim-1)));
+            memcpy(vals + k*vsize, n->u.leaf.data + s*vsize, vsize); ++k;
+        }
+    }
+    tvdb_tree_index_destroy(&p);
+    *out_coords = coords; *out_values = vals; *out_count = total; return 0;
 }
 
 int tvdb_py_merge_grids(const float *a_data, int a_nx, int a_ny, int a_nz,

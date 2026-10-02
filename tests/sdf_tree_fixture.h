@@ -6,7 +6,7 @@
 
 static void sdf_fixture_template(tvdb_grid_t *g) {
     memset(g, 0, sizeof(*g));
-    g->descriptor.grid_type = "Tree_float_5_4_3";
+    g->descriptor.grid_type = (char *)"Tree_float_5_4_3";
     g->transform.type = TVDB_TRANSFORM_UNIFORM_SCALE;
     g->transform.voxel_size[0] = 1;
     g->tree.layout.num_levels = 4;

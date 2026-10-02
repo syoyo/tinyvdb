@@ -559,6 +559,11 @@ tvdb_projected_gaussian_t *tvdb_gaussian_project(const tvdb_gaussian_splat_t *sp
                                                   uint32_t *out_count,
                                                   tvdb_error_t *err);
 
+/* Complete symmetric tile footprints, sorted by tile/depth/input index.
+ * num_features is 1..3 (zero defaults to 3). Opacity is finite in [0,1];
+ * conics must be finite positive semidefinite. Nonpositive radii are skipped.
+ * Background is composited by final transmittance. Output must be empty or
+ * uninitialized, never a live result; failure leaves it zero/destructible. */
 tvdb_status_t tvdb_gaussian_rasterize_forward(
     const tvdb_projected_gaussian_t *gaussians,
     uint32_t num_gaussians,
@@ -574,7 +579,9 @@ tvdb_status_t tvdb_gaussian_rasterize_forward(
  * per-tile depth-sorted alpha blend, replaying T and the post-i color
  * accumulator analytically (no per-pixel intersection list saved).
  * Caller pre-zeros the accumulator arrays in grad_out (or calls
- * tvdb_gaussian_grad_init); this routine accumulates contributions. */
+ * tvdb_gaussian_grad_init); this routine accumulates contributions. Forward
+ * dimensions, inputs, background and threshold must match. Failure preserves
+ * all accumulator arrays, including allocation or numeric failure. */
 typedef struct tvdb_gaussian_grad {
     float *grad_x;
     float *grad_y;
@@ -662,6 +669,8 @@ tvdb_status_t tvdb_gaussian_mcmc_add_noise(uint32_t num_gaussians, const float *
 #include <stdio.h>
 #include <assert.h>
 #include <math.h>
+#include <float.h>
+#include "tinyvdb_checked.h"
 
 /* Vendored PNanoVDB.h provides byte-exact NanoVDB hierarchical accessors
    (Root → Upper → Lower → Leaf) in pure C, matching nanovdb::ReadAccessor.
@@ -2694,6 +2703,84 @@ tvdb_status_t tvdb_gaussian_mcmc_add_noise(uint32_t num_gaussians, const float *
     return TVDB_OK;
 }
 
+/* Shared complete tile list: count first, allocate exactly, and impose a total
+ * order so forward and backward agree even for equal-depth splats. */
+typedef struct {
+    uint32_t gaussian_id;
+    float depth;
+    int32_t tile_x, tile_y;
+} tvdb__raster_entry;
+static tvdb_status_t tvdb__raster_error(tvdb_error_t *err,tvdb_status_t st,const char *msg) {
+    if(err) { memset(err,0,sizeof(*err));err->status=st;snprintf(err->message,sizeof(err->message),"%s",msg); }
+    return st;
+}
+static int tvdb__raster_cmp(const void *aa,const void *bb) {
+    const tvdb__raster_entry *a=(const tvdb__raster_entry*)aa,*b=(const tvdb__raster_entry*)bb;
+    if(a->tile_x!=b->tile_x)return a->tile_x<b->tile_x?-1:1;
+    if(a->tile_y!=b->tile_y)return a->tile_y<b->tile_y?-1:1;
+    if(a->depth!=b->depth)return a->depth<b->depth?-1:1;
+    return a->gaussian_id<b->gaussian_id?-1:a->gaussian_id>b->gaussian_id;
+}
+static int tvdb__raster_bounds(const tvdb_projected_gaussian_t *g,uint32_t w,uint32_t h,
+    int32_t b[4]) {
+    if(g->radius<=0 || g->opacity<=0)return 0;
+    double x0=floor(((double)g->x-g->radius)/TVDB_GAUSSIAN_RASTER_TILE_SIZE);
+    double y0=floor(((double)g->y-g->radius)/TVDB_GAUSSIAN_RASTER_TILE_SIZE);
+    double x1=floor(((double)g->x+g->radius)/TVDB_GAUSSIAN_RASTER_TILE_SIZE);
+    double y1=floor(((double)g->y+g->radius)/TVDB_GAUSSIAN_RASTER_TILE_SIZE);
+    double mx=(w-1)/TVDB_GAUSSIAN_RASTER_TILE_SIZE,my=(h-1)/TVDB_GAUSSIAN_RASTER_TILE_SIZE;
+    if(x1<0 || y1<0 || x0>mx || y0>my)return 0;
+    b[0]=(int32_t)fmax(0,x0);b[1]=(int32_t)fmax(0,y0);
+    b[2]=(int32_t)fmin(mx,x1);b[3]=(int32_t)fmin(my,y1);
+    return 1;
+}
+static tvdb_status_t tvdb__raster_entries(const tvdb_projected_gaussian_t *g,uint32_t n,
+    uint32_t w,uint32_t h,uint32_t features,tvdb__raster_entry **out,size_t *count,tvdb_error_t *err) {
+    *out=NULL;*count=0;
+    size_t pixels,values,bytes;
+    if((n && !g) || n>INT32_MAX || !w || !h || w>INT32_MAX || h>INT32_MAX ||
+        features<1 || features>3 || !tvdb_size_mul(w,h,&pixels) ||
+        !tvdb_size_mul(pixels,features,&values) || !tvdb_size_mul(values,sizeof(float),&bytes))
+        return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid raster shape/features");
+    size_t total=0;
+    for(uint32_t i=0;i<n;++i) {
+        if(!isfinite(g[i].x) || !isfinite(g[i].y) || !isfinite(g[i].depth) ||
+            !isfinite(g[i].radius) || !isfinite(g[i].opacity) || g[i].opacity<0 || g[i].opacity>1 ||
+            !isfinite(g[i].conic_a) || !isfinite(g[i].conic_b) || !isfinite(g[i].conic_c) ||
+            g[i].conic_a<0 || g[i].conic_c<0 ||
+            (double)g[i].conic_a*g[i].conic_c<(double)g[i].conic_b*g[i].conic_b)
+            return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid Gaussian geometry/opacity");
+        for(uint32_t f=0;f<features;++f)if(!isfinite(g[i].feature[f]))
+            return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"nonfinite Gaussian feature");
+        int32_t b[4];if(!tvdb__raster_bounds(g+i,w,h,b))continue;
+        size_t take;
+        if(!tvdb_size_mul((size_t)(b[2]-b[0])+1,(size_t)(b[3]-b[1])+1,&take) || take>SIZE_MAX-total)
+            return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"raster intersection count overflow");
+        total+=take;
+    }
+    if(!tvdb_size_mul(total,sizeof(tvdb__raster_entry),&bytes))
+        return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"raster intersection size overflow");
+    tvdb__raster_entry *entries=bytes?(tvdb__raster_entry*)malloc(bytes):NULL;
+    if(bytes && !entries)return tvdb__raster_error(err,TVDB_ERROR_OUT_OF_MEMORY,"raster intersections allocation failed");
+    size_t at=0;
+    for(uint32_t i=0;i<n;++i) {
+        int32_t b[4];if(!tvdb__raster_bounds(g+i,w,h,b))continue;
+        for(int32_t y=b[1];y<=b[3];++y)for(int32_t x=b[0];x<=b[2];++x) {
+            entries[at].gaussian_id=i;entries[at].depth=g[i].depth;
+            entries[at].tile_x=x;entries[at++].tile_y=y;
+        }
+    }
+    if(total>1)qsort(entries,total,sizeof(*entries),tvdb__raster_cmp);
+    *out=entries;*count=total;return TVDB_OK;
+}
+static float tvdb__raster_alpha(const tvdb_projected_gaussian_t *g,uint32_t x,uint32_t y) {
+    double dx=(double)x-g->x,dy=(double)y-g->y;
+    double sigma=0.5*((double)g->conic_a*dx*dx+2*(double)g->conic_b*dx*dy+(double)g->conic_c*dy*dy);
+    if(sigma>10)return 0;
+    if(sigma<0)sigma=0; /* Roundoff at a positive-semidefinite conic. */
+    return (float)(g->opacity*exp(-sigma));
+}
+
 /* Forward rasterization */
 tvdb_status_t tvdb_gaussian_rasterize_forward(
     const tvdb_projected_gaussian_t *gaussians,
@@ -2706,96 +2793,28 @@ tvdb_status_t tvdb_gaussian_rasterize_forward(
     tvdb_raster_output_t *out,
     tvdb_error_t *err) {
 
-    if (!gaussians || !out || width == 0 || height == 0) {
-        if (err) snprintf(err->message, sizeof(err->message), "Invalid argument");
-        return TVDB_ERROR_INVALID_ARGUMENT;
+    if(!out)return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"NULL raster output");
+    /* Legacy output may be uninitialized. It must not contain a live result. */
+    memset(out,0,sizeof(*out));
+    if(num_features==0)num_features=3;
+    if(!isfinite(alpha_threshold))return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"nonfinite alpha threshold");
+    if(alpha_threshold<=0)alpha_threshold=TVDB_GAUSSIAN_RASTER_DEFAULT_ALPHA_THRESHOLD;
+    if(background)for(uint32_t f=0;f<num_features && f<3;++f)if(!isfinite(background[f]))
+        return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"nonfinite background");
+    tvdb__raster_entry *entries=NULL;size_t num_entries=0;
+    tvdb_status_t status=tvdb__raster_entries(gaussians,num_gaussians,width,height,num_features,&entries,&num_entries,err);
+    if(status!=TVDB_OK)return status;
+    size_t pixel_count=(size_t)width*height;
+    out->width=width;out->height=height;out->num_features=num_features;out->owns_data=1;
+    out->image=(float*)calloc(pixel_count*num_features,sizeof(float));
+    out->alpha=(float*)calloc(pixel_count,sizeof(float));
+    out->last_ids=(int32_t*)malloc(pixel_count*sizeof(int32_t));
+    if(!out->image || !out->alpha || !out->last_ids) {
+        free(entries);tvdb_raster_output_destroy(out);
+        return tvdb__raster_error(err,TVDB_ERROR_OUT_OF_MEMORY,"raster output allocation failed");
     }
-
-    if (num_features == 0) num_features = 3;
-    if (alpha_threshold <= 0) alpha_threshold = TVDB_GAUSSIAN_RASTER_DEFAULT_ALPHA_THRESHOLD;
-
-    memset(out, 0, sizeof(*out));
-    out->width = width;
-    out->height = height;
-    out->num_features = num_features;
-    out->owns_data = 1;
-
-    size_t pixel_count = (size_t)width * height;
-    out->image = (float *)calloc(pixel_count * num_features, sizeof(float));
-    out->alpha = (float *)calloc(pixel_count, sizeof(float));
-    out->last_ids = (int32_t *)malloc(pixel_count * sizeof(int32_t));
-
-    if (!out->image || !out->alpha || !out->last_ids) {
-        if (out->image) free(out->image);
-        if (out->alpha) free(out->alpha);
-        if (out->last_ids) free(out->last_ids);
-        if (err) snprintf(err->message, sizeof(err->message), "Out of memory");
-        return TVDB_ERROR_OUT_OF_MEMORY;
-    }
-
-    for (size_t i = 0; i < pixel_count; i++) {
-        for (uint32_t f = 0; f < num_features; f++) {
-            out->image[i * num_features + f] = background ? background[f] : 0.0f;
-        }
-    }
-
-    uint32_t tile_size = TVDB_GAUSSIAN_RASTER_TILE_SIZE;
-    uint32_t num_tiles_x = (width + tile_size - 1) / tile_size;
-    uint32_t num_tiles_y = (height + tile_size - 1) / tile_size;
-
-    typedef struct {
-        uint32_t gaussian_id;
-        float depth;
-        int32_t tile_x, tile_y;
-    } tile_entry_t;
-
-    size_t max_entries = num_gaussians * 16;
-    tile_entry_t *entries = (tile_entry_t *)malloc(max_entries * sizeof(tile_entry_t));
-    if (!entries) {
-        free(out->image);
-        free(out->alpha);
-        free(out->last_ids);
-        if (err) snprintf(err->message, sizeof(err->message), "Out of memory");
-        return TVDB_ERROR_OUT_OF_MEMORY;
-    }
-    size_t num_entries = 0;
-
-    for (uint32_t i = 0; i < num_gaussians; i++) {
-        if (gaussians[i].radius <= 0.0f || gaussians[i].opacity <= 0.0f) continue;
-
-        int32_t center_x = (int32_t)gaussians[i].x;
-        int32_t center_y = (int32_t)gaussians[i].y;
-        int32_t radius = (int32_t)(gaussians[i].radius + 0.5f);
-
-        int32_t tile_x0 = center_x / (int32_t)tile_size;
-        int32_t tile_y0 = center_y / (int32_t)tile_size;
-        int32_t tile_x1 = (center_x + radius) / (int32_t)tile_size;
-        int32_t tile_y1 = (center_y + radius) / (int32_t)tile_size;
-
-        for (int32_t ty = tile_y0; ty <= tile_y1; ty++) {
-            for (int32_t tx = tile_x0; tx <= tile_x1; tx++) {
-                if (tx < 0 || ty < 0 || (uint32_t)tx >= num_tiles_x || (uint32_t)ty >= num_tiles_y) continue;
-                if (num_entries >= max_entries) continue;
-                entries[num_entries].gaussian_id = i;
-                entries[num_entries].depth = gaussians[i].depth;
-                entries[num_entries].tile_x = tx;
-                entries[num_entries].tile_y = ty;
-                num_entries++;
-            }
-        }
-    }
-
-    for (size_t e = 0; e < num_entries; e++) {
-        for (size_t k = e + 1; k < num_entries; k++) {
-            if (entries[e].tile_x > entries[k].tile_x ||
-                (entries[e].tile_x == entries[k].tile_x && entries[e].tile_y > entries[k].tile_y) ||
-                (entries[e].tile_x == entries[k].tile_x && entries[e].tile_y == entries[k].tile_y && entries[e].depth > entries[k].depth)) {
-                tile_entry_t tmp = entries[e];
-                entries[e] = entries[k];
-                entries[k] = tmp;
-            }
-        }
-    }
+    for(size_t i=0;i<pixel_count;++i)out->last_ids[i]=-1;
+    uint32_t tile_size=TVDB_GAUSSIAN_RASTER_TILE_SIZE;
 
     for (size_t e = 0; e < num_entries; e++) {
         uint32_t gid = entries[e].gaussian_id;
@@ -2810,21 +2829,10 @@ tvdb_status_t tvdb_gaussian_rasterize_forward(
         if (px1 > width) px1 = width;
         if (py1 > height) py1 = height;
 
-        float conic_a = g->conic_a, conic_b = g->conic_b, conic_c = g->conic_c;
-        float gx = g->x, gy = g->y;
-        float alpha = g->opacity;
-
         for (uint32_t py = py0; py < py1; py++) {
             for (uint32_t px = px0; px < px1; px++) {
-                float dx = (float)px - gx;
-                float dy = (float)py - gy;
-                float sigma = 0.5f * (conic_a * dx * dx + 2.0f * conic_b * dx * dy + conic_c * dy * dy);
-                if (sigma > 10.0f) continue;
-
-                /* α = opacity · exp(-σ): natural exp matches the standard
-                   Gaussian-splatting density; the backward uses the same. */
-                float gaussian_alpha = alpha * expf(-sigma);
-                if (gaussian_alpha < alpha_threshold) continue;
+                float gaussian_alpha=tvdb__raster_alpha(g,px,py);
+                if(gaussian_alpha<=0 || gaussian_alpha<alpha_threshold)continue;
 
                 size_t pixel_idx = (size_t)py * width + px;
 
@@ -2840,8 +2848,14 @@ tvdb_status_t tvdb_gaussian_rasterize_forward(
         }
     }
 
+    if(background)for(size_t p=0;p<pixel_count;++p)for(uint32_t f=0;f<num_features;++f)
+        out->image[p*num_features+f]+=background[f]*(1-out->alpha[p]);
     free(entries);
-    return TVDB_OK;
+    for(size_t p=0;p<pixel_count*num_features;++p)if(!isfinite(out->image[p])) {
+        tvdb_raster_output_destroy(out);
+        return tvdb__raster_error(err,TVDB_ERROR_INVALID_DATA,"raster color overflow");
+    }
+    return tvdb__raster_error(err,TVDB_OK,"");
 }
 
 void tvdb_raster_output_destroy(tvdb_raster_output_t *out) {
@@ -2861,8 +2875,12 @@ tvdb_status_t tvdb_gaussian_grad_init(tvdb_gaussian_grad_t *g,
                                       uint32_t num_features) {
     if (!g) return TVDB_ERROR_INVALID_ARGUMENT;
     memset(g, 0, sizeof(*g));
-    if (num_gaussians == 0) return TVDB_OK;
     if (num_features == 0) num_features = 3;
+    size_t count, bytes;
+    if(num_features>3 || num_gaussians>INT32_MAX ||
+       !tvdb_size_mul(num_gaussians,num_features,&count) || !tvdb_size_mul(count,sizeof(float),&bytes))
+        return TVDB_ERROR_INVALID_ARGUMENT;
+    if(num_gaussians==0) { g->num_features=num_features;return TVDB_OK; }
     g->num_gaussians = num_gaussians;
     g->num_features = num_features;
     g->grad_x       = (float *)calloc(num_gaussians, sizeof(float));
@@ -2907,191 +2925,106 @@ tvdb_status_t tvdb_gaussian_rasterize_backward(
     tvdb_gaussian_grad_t *grad_out,
     tvdb_error_t *err) {
 
-    if (!gaussians || !fwd || !dL_dC || !grad_out) {
-        if (err) snprintf(err->message, sizeof(err->message), "Invalid argument");
-        return TVDB_ERROR_INVALID_ARGUMENT;
+    if(!fwd || !dL_dC || !grad_out || !fwd->image || !fwd->alpha ||
+       grad_out->num_gaussians!=num_gaussians || grad_out->num_features!=fwd->num_features ||
+       !isfinite(alpha_threshold))
+        return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid backward arguments/shape");
+    uint32_t width=fwd->width,height=fwd->height,F=fwd->num_features;
+    if(alpha_threshold<=0)alpha_threshold=TVDB_GAUSSIAN_RASTER_DEFAULT_ALPHA_THRESHOLD;
+    tvdb__raster_entry *entries=NULL;size_t count=0;
+    tvdb_status_t st=tvdb__raster_entries(gaussians,num_gaussians,width,height,F,&entries,&count,err);
+    if(st!=TVDB_OK)return st;
+    float *dst[7]={grad_out->grad_x,grad_out->grad_y,grad_out->grad_conic_a,
+        grad_out->grad_conic_b,grad_out->grad_conic_c,grad_out->grad_opacity,grad_out->grad_feature};
+    for(int k=0;k<7;++k)if(num_gaussians && !dst[k]) {
+        free(entries);return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"missing gradient storage");
     }
-    if (grad_out->num_gaussians != num_gaussians ||
-        grad_out->num_features != fwd->num_features) {
-        if (err) snprintf(err->message, sizeof(err->message),
-                          "grad_out shape mismatch");
-        return TVDB_ERROR_INVALID_ARGUMENT;
+    size_t pixels=(size_t)width*height;
+    for(size_t p=0;p<pixels;++p) {
+        if(!isfinite(fwd->alpha[p]) || fwd->alpha[p]<0 || fwd->alpha[p]>1 || (dL_dA && !isfinite(dL_dA[p]))) {
+            free(entries);return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid alpha/gradient input");
+        }
+        for(uint32_t f=0;f<F;++f)if(!isfinite(dL_dC[p*F+f])) {
+            free(entries);return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"nonfinite image gradient");
+        }
     }
-
-    uint32_t width  = fwd->width;
-    uint32_t height = fwd->height;
-    uint32_t F      = fwd->num_features;
-    if (alpha_threshold <= 0) alpha_threshold = TVDB_GAUSSIAN_RASTER_DEFAULT_ALPHA_THRESHOLD;
-
-    /* Re-derive the same per-tile, depth-sorted entry list as the forward
-       pass. We must traverse it in REVERSE order. */
-    uint32_t tile_size = TVDB_GAUSSIAN_RASTER_TILE_SIZE;
-    uint32_t num_tiles_x = (width + tile_size - 1) / tile_size;
-    uint32_t num_tiles_y = (height + tile_size - 1) / tile_size;
-
-    typedef struct {
-        uint32_t gaussian_id;
-        float    depth;
-        int32_t  tile_x, tile_y;
-    } tile_entry_t;
-
-    size_t max_entries = (size_t)num_gaussians * 16;
-    tile_entry_t *entries = (tile_entry_t *)malloc(max_entries * sizeof(*entries));
-    if (!entries) {
-        if (err) snprintf(err->message, sizeof(err->message), "OOM");
-        return TVDB_ERROR_OUT_OF_MEMORY;
+    for(uint32_t f=0;f<F;++f)if(background && !isfinite(background[f])) {
+        free(entries);return tvdb__raster_error(err,TVDB_ERROR_INVALID_ARGUMENT,"nonfinite background");
     }
-    size_t num_entries = 0;
-    for (uint32_t i = 0; i < num_gaussians; ++i) {
-        if (gaussians[i].radius <= 0.0f || gaussians[i].opacity <= 0.0f) continue;
-        int32_t cx = (int32_t)gaussians[i].x;
-        int32_t cy = (int32_t)gaussians[i].y;
-        int32_t r  = (int32_t)(gaussians[i].radius + 0.5f);
-        int32_t tx0 = cx / (int32_t)tile_size, ty0 = cy / (int32_t)tile_size;
-        int32_t tx1 = (cx + r) / (int32_t)tile_size;
-        int32_t ty1 = (cy + r) / (int32_t)tile_size;
-        for (int32_t ty = ty0; ty <= ty1; ++ty) {
-            for (int32_t tx = tx0; tx <= tx1; ++tx) {
-                if (tx < 0 || ty < 0 || (uint32_t)tx >= num_tiles_x ||
-                    (uint32_t)ty >= num_tiles_y) continue;
-                if (num_entries >= max_entries) continue;
-                entries[num_entries].gaussian_id = i;
-                entries[num_entries].depth = gaussians[i].depth;
-                entries[num_entries].tile_x = tx;
-                entries[num_entries].tile_y = ty;
-                ++num_entries;
+    size_t max_group=0;
+    for(size_t a=0;a<count;) {
+        size_t b=a+1;
+        while(b<count && entries[b].tile_x==entries[a].tile_x && entries[b].tile_y==entries[a].tile_y)++b;
+        if(b-a>max_group)max_group=b-a;a=b;
+    }
+    float *prefix=max_group?(float*)malloc(max_group*sizeof(float)):NULL;
+    if(max_group && !prefix) { free(entries);return tvdb__raster_error(err,TVDB_ERROR_OUT_OF_MEMORY,"raster prefix allocation failed"); }
+    tvdb_gaussian_grad_t temp;
+    st=tvdb_gaussian_grad_init(&temp,num_gaussians,F);
+    if(st!=TVDB_OK) { free(entries);free(prefix);return tvdb__raster_error(err,st,"gradient allocation failed"); }
+    float *src[7]={temp.grad_x,temp.grad_y,temp.grad_conic_a,temp.grad_conic_b,
+        temp.grad_conic_c,temp.grad_opacity,temp.grad_feature};
+    /* Replay the exact forward prefix per pixel. Reverse compositing uses a
+     * relative suffix, avoiding division by (1-alpha), including alpha==1. */
+    for(size_t a=0;a<count;) {
+        size_t b=a+1;
+        while(b<count && entries[b].tile_x==entries[a].tile_x && entries[b].tile_y==entries[a].tile_y)++b;
+        uint32_t x0=(uint32_t)entries[a].tile_x*TVDB_GAUSSIAN_RASTER_TILE_SIZE;
+        uint32_t y0=(uint32_t)entries[a].tile_y*TVDB_GAUSSIAN_RASTER_TILE_SIZE;
+        uint32_t x1=x0+TVDB_GAUSSIAN_RASTER_TILE_SIZE,y1=y0+TVDB_GAUSSIAN_RASTER_TILE_SIZE;
+        if(x1>width)x1=width;if(y1>height)y1=height;
+        for(uint32_t y=y0;y<y1;++y)for(uint32_t x=x0;x<x1;++x) {
+            float T=1;
+            for(size_t e=a;e<b;++e) {
+                float alpha=tvdb__raster_alpha(gaussians+entries[e].gaussian_id,x,y);
+                prefix[e-a]=-1;
+                if(T<0.001f || alpha<=0 || alpha<alpha_threshold)continue;
+                prefix[e-a]=T;T=1-(1-T+alpha*T);
+            }
+            double suffix[3]={0,0,0},later=1;
+            for(uint32_t f=0;f<F;++f)suffix[f]=background?background[f]:0;
+            size_t p=(size_t)y*width+x;
+            for(size_t e=b;e>a;) {
+                --e;if(prefix[e-a]<0)continue;
+                uint32_t id=entries[e].gaussian_id;
+                const tvdb_projected_gaussian_t *g=gaussians+id;
+                double alpha=tvdb__raster_alpha(g,x,y),pre=prefix[e-a];
+                double da=dL_dA?(double)dL_dA[p]*pre*later:0;
+                for(uint32_t f=0;f<F;++f) {
+                    double dc=dL_dC[p*F+f];
+                    temp.grad_feature[(size_t)id*F+f]+=(float)(dc*pre*alpha);
+                    da+=dc*pre*((double)g->feature[f]-suffix[f]);
+                }
+                double dx=(double)x-g->x,dy=(double)y-g->y;
+                double sigma=0.5*((double)g->conic_a*dx*dx+2*(double)g->conic_b*dx*dy+(double)g->conic_c*dy*dy);
+                double G=exp(-fmax(0,sigma)),ds=-alpha*da;
+                temp.grad_opacity[id]+=(float)(da*G);
+                temp.grad_x[id]+=(float)(ds*(-((double)g->conic_a*dx+g->conic_b*dy)));
+                temp.grad_y[id]+=(float)(ds*(-((double)g->conic_b*dx+g->conic_c*dy)));
+                temp.grad_conic_a[id]+=(float)(ds*0.5*dx*dx);
+                temp.grad_conic_b[id]+=(float)(ds*dx*dy);
+                temp.grad_conic_c[id]+=(float)(ds*0.5*dy*dy);
+                for(uint32_t f=0;f<F;++f)suffix[f]=alpha*g->feature[f]+(1-alpha)*suffix[f];
+                later*=1-alpha;
             }
         }
+        a=b;
     }
-    /* Same naive O(N²) sort as forward (so order matches). */
-    for (size_t e = 0; e < num_entries; ++e) {
-        for (size_t k = e + 1; k < num_entries; ++k) {
-            int swap =
-                (entries[e].tile_x > entries[k].tile_x) ||
-                (entries[e].tile_x == entries[k].tile_x &&
-                 entries[e].tile_y > entries[k].tile_y) ||
-                (entries[e].tile_x == entries[k].tile_x &&
-                 entries[e].tile_y == entries[k].tile_y &&
-                 entries[e].depth > entries[k].depth);
-            if (swap) {
-                tile_entry_t tmp = entries[e];
-                entries[e] = entries[k];
-                entries[k] = tmp;
-            }
+    /* Commit accumulated gradients only after every value is representable. */
+    for(int k=0;k<7;++k) {
+        size_t n=(size_t)num_gaussians*(k==6?F:1);
+        for(size_t i=0;i<n;++i)if(!isfinite(src[k][i]) || !isfinite(dst[k][i]) ||
+            fabs((double)src[k][i]+dst[k][i])>FLT_MAX) {
+            st=TVDB_ERROR_INVALID_DATA;goto backward_done;
         }
     }
-
-    size_t pixel_count = (size_t)width * height;
-    float *T_curr = (float *)malloc(pixel_count * sizeof(float));
-    float *S_curr = (float *)calloc(pixel_count * F, sizeof(float));
-    if (!T_curr || !S_curr) {
-        free(entries); free(T_curr); free(S_curr);
-        if (err) snprintf(err->message, sizeof(err->message), "OOM");
-        return TVDB_ERROR_OUT_OF_MEMORY;
+    for(int k=0;k<7;++k) {
+        size_t n=(size_t)num_gaussians*(k==6?F:1);
+        for(size_t i=0;i<n;++i)dst[k][i]+=src[k][i];
     }
-    /* Initialize: T_curr[p] = T_final = 1 - alpha_final.
-     *             S_curr[p,f] = T_final * bg[f] (post-all-gaussians color). */
-    for (size_t p = 0; p < pixel_count; ++p) {
-        float Tfin = 1.0f - fwd->alpha[p];
-        if (Tfin < 0.0f) Tfin = 0.0f;
-        T_curr[p] = Tfin;
-        for (uint32_t f = 0; f < F; ++f) {
-            S_curr[p * F + f] = Tfin * (background ? background[f] : 0.0f);
-        }
-    }
-
-    /* Walk entries in REVERSE forward order. */
-    for (size_t e = num_entries; e > 0; --e) {
-        const tile_entry_t *en = &entries[e - 1];
-        const tvdb_projected_gaussian_t *g = &gaussians[en->gaussian_id];
-        uint32_t gid = en->gaussian_id;
-
-        uint32_t px0 = (uint32_t)(en->tile_x * (int32_t)tile_size);
-        uint32_t py0 = (uint32_t)(en->tile_y * (int32_t)tile_size);
-        uint32_t px1 = px0 + tile_size;
-        uint32_t py1 = py0 + tile_size;
-        if (px1 > width)  px1 = width;
-        if (py1 > height) py1 = height;
-
-        float a_c = g->conic_a, b_c = g->conic_b, c_c = g->conic_c;
-        float gx = g->x, gy = g->y;
-        float opac = g->opacity;
-
-        for (uint32_t py = py0; py < py1; ++py) {
-            for (uint32_t px = px0; px < px1; ++px) {
-                float dx = (float)px - gx;
-                float dy = (float)py - gy;
-                float sigma = 0.5f * (a_c*dx*dx + 2.0f*b_c*dx*dy + c_c*dy*dy);
-                if (sigma > 10.0f) continue;
-                float G = (float)exp(-(double)sigma);
-                float alpha = opac * G;
-                if (alpha < alpha_threshold) continue;
-
-                /* T_pre is the transmittance entering this gaussian during
-                 * the forward pass (i.e. what the forward called `T`). The
-                 * forward skipped if T_pre < 0.001, so we replicate that
-                 * test on T_pre, not T_curr. */
-                float one_m_alpha = 1.0f - alpha;
-                if (one_m_alpha < 1e-7f) one_m_alpha = 1e-7f;
-                float T_pre = T_curr[(size_t)py * width + px] / one_m_alpha;
-                if (T_pre < 0.001f) continue;
-
-                size_t pidx = (size_t)py * width + px;
-
-                /* dL/df_i [p] += dL/dC[p] * (T_pre * alpha) */
-                float w = T_pre * alpha;
-                /* Also compute:
-                 *   dotCf  = Σ_f dL/dC[p,f] * f_i[f]  (for dα via C)
-                 *   dotCS  = Σ_f dL/dC[p,f] * S_curr[p,f]  (for dα via C)
-                 * dα/dα = T_pre*f_i - S_curr/(1-α). */
-                float dotCf = 0.0f, dotCS = 0.0f;
-                for (uint32_t f = 0; f < F; ++f) {
-                    float dLdCf = dL_dC[pidx * F + f];
-                    float feat  = (f < 3) ? g->feature[f] : 0.0f;
-                    dotCf += dLdCf * feat;
-                    dotCS += dLdCf * S_curr[pidx * F + f];
-                    grad_out->grad_feature[(size_t)gid * F + f] += dLdCf * w;
-                }
-                float Tfin = 1.0f - fwd->alpha[pidx];
-                if (Tfin < 0.0f) Tfin = 0.0f;
-                float dL_dalpha = T_pre * dotCf - dotCS / one_m_alpha;
-                if (dL_dA) {
-                    /* dA_final/dα_i = T_N / (1 - α_i) */
-                    dL_dalpha += dL_dA[pidx] * Tfin / one_m_alpha;
-                }
-
-                /* α = opacity * G  →  dα/dopacity = G, dα/dG = opacity,
-                 * G = exp(-σ) → dG/dσ = -G → dα/dσ = -α. */
-                grad_out->grad_opacity[gid] += dL_dalpha * G;
-                float dL_dsigma = -alpha * dL_dalpha;
-
-                /* σ-grads:
-                 *   ∂σ/∂gx = -(a*dx + b*dy)
-                 *   ∂σ/∂gy = -(b*dx + c*dy)
-                 *   ∂σ/∂a  = 0.5 * dx²
-                 *   ∂σ/∂b  = dx * dy
-                 *   ∂σ/∂c  = 0.5 * dy² */
-                grad_out->grad_x[gid]       += dL_dsigma * -(a_c*dx + b_c*dy);
-                grad_out->grad_y[gid]       += dL_dsigma * -(b_c*dx + c_c*dy);
-                grad_out->grad_conic_a[gid] += dL_dsigma * 0.5f * dx * dx;
-                grad_out->grad_conic_b[gid] += dL_dsigma * dx * dy;
-                grad_out->grad_conic_c[gid] += dL_dsigma * 0.5f * dy * dy;
-
-                /* Update running state: S_curr[p,f] += w * f_i[f];
-                 *                       T_curr[p]    = T_pre. */
-                for (uint32_t f = 0; f < F; ++f) {
-                    float feat = (f < 3) ? g->feature[f] : 0.0f;
-                    S_curr[pidx * F + f] += w * feat;
-                }
-                T_curr[pidx] = T_pre;
-            }
-        }
-    }
-
-    free(entries);
-    free(T_curr);
-    free(S_curr);
-    return TVDB_OK;
+backward_done:
+    tvdb_gaussian_grad_destroy(&temp);free(entries);free(prefix);
+    return tvdb__raster_error(err,st,st==TVDB_OK?"":"nonfinite/overflowing raster gradient");
 }
 
 #endif /* TINYVDB_NANOVDB_IMPLEMENTATION */

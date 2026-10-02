@@ -18,29 +18,24 @@ jobs:
         with:
           submodules: recursive
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DTINYVDB_BUILD_TVDBVIEW=OFF
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DTINYVDB_BUILD_TVDBVIEW=OFF -DTINYVDB_BUILD_TESTS=ON \
+            -DTINYVDB_BUILD_GPU=OFF -DTINYVDB_OPENMP=ON
       - name: Build
         run: cmake --build build -j$(nproc)
       - name: Verify binaries
         run: |
-          ./build/vdbdump --help || true
-          ./build/vdbrender --help || true
-      - name: Run tests
+          test -x ./build/vdbdump
+          test -x ./build/vdbrender
+      - name: Run CPU regressions at one and eight threads
         run: |
-          # Run loader_test with sample VDB files
-          for f in sphere.vdb smoke.vdb cube.vdb bunny.vdb; do
-            if [ -f "$f" ]; then
-              echo "Testing $f..."
-              ./loader_test "$f" || echo "Failed: $f"
-            fi
-          done
-          # Run vdbdump on sample files
-          for f in sphere.vdb smoke.vdb; do
-            if [ -f "$f" ]; then
-              echo "vdbdump $f..."
-              ./build/vdbdump "$f" | head -20
-            fi
-          done
+          OMP_NUM_THREADS=1 ctest --test-dir build --output-on-failure
+          OMP_NUM_THREADS=8 ctest --test-dir build --output-on-failure
+      - name: Read maintained fixtures
+        run: |
+          ./build/vdbdump data/sphere-div1.vdb
+          ./build/vdbdump data/sphere-div2.vdb
 
   # ---------------------------------------------------------------------------
   #  Linux arm64 (cross-compile)
@@ -83,17 +78,10 @@ jobs:
         run: cmake --build build -j$(sysctl -n hw.ncpu)
       - name: Verify binaries
         run: |
-          ./build/vdbdump --help || true
-          ./build/vdbrender --help || true
-      - name: Run tests
-        run: |
-          # Run loader_test with sample VDB files
-          for f in sphere.vdb smoke.vdb cube.vdb bunny.vdb; do
-            if [ -f "$f" ]; then
-              echo "Testing $f..."
-              ./loader_test "$f" || echo "Failed: $f"
-            fi
-          done
+          test -x ./build/vdbdump
+          test -x ./build/vdbrender
+      - name: Read maintained fixture
+        run: ./build/vdbdump data/sphere-div1.vdb
 
   # ---------------------------------------------------------------------------
   #  Windows x64 (MSVC)
@@ -111,15 +99,10 @@ jobs:
       - name: Verify binaries
         run: |
           dir build\Release\*.exe
-      - name: Run tests
+      - name: Read maintained fixture
         run: |
-          # Run loader_test with sample VDB files
-          ForEach ($f in @("sphere.vdb", "smoke.vdb")) {
-            if (Test-Path $f) {
-              Write-Host "Testing $f..."
-              .\loader_test.exe $f
-            }
-          }
+          .\build\Release\vdbdump.exe data/sphere-div1.vdb
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # ---------------------------------------------------------------------------
   #  Windows arm64 (MSVC cross-compile)
@@ -168,5 +151,5 @@ jobs:
             -DTINYVDB_OPENMP=OFF
       - name: Build SDF tests
         run: cmake --build build-sdf --parallel 4
-      - name: Run SDF, mesh conversion, and task regressions
-        run: ctest --test-dir build-sdf -R 'test_(sdf_tree|mesh_conversion.*|thread_pool.*)' --output-on-failure
+      - name: Run CPU regressions
+        run: ctest --test-dir build-sdf --output-on-failure

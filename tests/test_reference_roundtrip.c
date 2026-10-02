@@ -9,7 +9,7 @@
 //
 // Reference files are gitignored (*.vdb); regenerate them via
 // scripts/gen_openvdb_reference.cc. If data/reference/ is missing the test
-// reports "skipped" with exit 0 — there's nothing to validate, but absence
+// reports "skipped" with exit 77 — there's nothing to validate, but absence
 // alone isn't a regression.
 //
 // This is the "do we agree with the canonical OpenVDB byte format?" guard.
@@ -101,7 +101,7 @@ int main(int argc, char **argv) {
     if (stat(probe, &st) != 0) {
         printf("[skip] reference corpus not present at %s/data/reference/\n", root);
         printf("       regenerate via scripts/gen_openvdb_reference.cc\n");
-        return 0;
+        return 77;
     }
 
     const char *names[] = {

@@ -1,5 +1,7 @@
 """TinyVDB — lightweight OpenVDB I/O, mesh, and grid operations."""
 
+from tinyvdb import _tinyvdb_nanovdb as nanovdb
+
 from tinyvdb._tinyvdb import (
     # Exception
     VDBError,
@@ -669,9 +671,10 @@ def level_set_icosahedron(radius, center=(0.0, 0.0, 0.0), voxel_size=0.1, half_w
     return level_set_platonic(20, radius, center=center, voxel_size=voxel_size, half_width=half_width)
 
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 __all__ = [
+    "nanovdb",
     "VDBError",
     "VDBFile",
     "VDBGrid",

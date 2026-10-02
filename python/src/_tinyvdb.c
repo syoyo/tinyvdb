@@ -9,9 +9,13 @@
 #ifndef Py_LIMITED_API
 #define Py_LIMITED_API 0x030B0000
 #endif
-#include <Python.h>
+#include "tinyvdb_python_compat.h"
 
 #include "tinyvdb_io.h"
+#include "tinyvdb_tree.h"
+#include "tinyvdb_sparse_tools.h"
+#include "tinyvdb_checked.h"
+#include <float.h>
 
 #include <string.h>
 #include <stdlib.h>
@@ -307,6 +311,7 @@ static PyObject *raise_tvdb_status(tvdb_status_t status, const tvdb_error_t *err
 typedef struct {
     PyObject_HEAD
     float *data;
+    int initialized;
     int nx, ny, nz;
     float ox, oy, oz;
     float voxel_size;
@@ -340,14 +345,18 @@ static int DenseGrid_init(PyObject *self, PyObject *args, PyObject *kw) {
     if (!PyArg_ParseTupleAndKeywords(args, kw, "|iiiffff", kwlist,
                                      &nx, &ny, &nz, &voxel_size, &ox, &oy, &oz))
         return -1;
+    size_t bytes=0;
+    if(g->initialized) { PyErr_SetString(PyExc_ValueError,"grid is already initialized");return -1; }
+    if(!isfinite(voxel_size) || voxel_size<=0 || !isfinite(ox) || !isfinite(oy) || !isfinite(oz) ||
+        ((nx || ny || nz) && (!tvdb_grid_bytes(nx,ny,nz,4,&bytes) || bytes>PY_SSIZE_T_MAX))) {
+        PyErr_SetString(PyExc_ValueError,"invalid grid dimensions, spacing or allocation size");return -1;
+    }
+    float *data=bytes?(float*)calloc(1,bytes):NULL;
+    if(bytes && !data) { PyErr_NoMemory();return -1; }
     g->nx = nx; g->ny = ny; g->nz = nz;
     g->voxel_size = voxel_size;
     g->ox = ox; g->oy = oy; g->oz = oz;
-    if (nx > 0 && ny > 0 && nz > 0) {
-        size_t n = (size_t)nx * ny * nz;
-        g->data = (float *)calloc(n, sizeof(float));
-        if (!g->data) { PyErr_NoMemory(); return -1; }
-    }
+    g->data=data;g->initialized=1;
     return 0;
 }
 
@@ -367,7 +376,7 @@ static PyObject *DenseGrid_get_voxel_size(PyObject *self, void *closure) {
 
 static PyObject *DenseGrid_to_bytes(PyObject *self, PyObject *Py_UNUSED(args)) {
     PyDenseGrid *g = (PyDenseGrid *)self;
-    if (!g->data) Py_RETURN_NONE;
+    if (!g->data) TVDB_PY_RETURN_NONE;
     size_t n = (size_t)g->nx * g->ny * g->nz;
     return PyBytes_FromStringAndSize((const char *)g->data, (Py_ssize_t)(n * sizeof(float)));
 }
@@ -410,7 +419,7 @@ static PyObject *DenseGrid_getitem(PyObject *self, PyObject *args) {
         PyErr_SetString(PyExc_IndexError, "index out of range");
         return NULL;
     }
-    return PyFloat_FromDouble(g->data[x + g->nx * (y + g->ny * z)]);
+    return PyFloat_FromDouble(g->data[(size_t)x + (size_t)g->nx * ((size_t)y + (size_t)g->ny * z)]);
 }
 
 static PyObject *DenseGrid_setitem(PyObject *self, PyObject *args) {
@@ -422,8 +431,8 @@ static PyObject *DenseGrid_setitem(PyObject *self, PyObject *args) {
         PyErr_SetString(PyExc_IndexError, "index out of range");
         return NULL;
     }
-    g->data[x + g->nx * (y + g->ny * z)] = val;
-    Py_RETURN_NONE;
+    g->data[(size_t)x + (size_t)g->nx * ((size_t)y + (size_t)g->ny * z)] = val;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *DenseGrid_size(PyObject *self, PyObject *Py_UNUSED(args)) {
@@ -468,7 +477,7 @@ static PyObject *DenseGrid_from_c(PyObject *type, float *data,
                                   float voxel_size, float ox, float oy, float oz) {
     PyDenseGrid *g = (PyDenseGrid *)alloc_from_type(type);
     if (!g) { free(data); return NULL; }
-    g->data = data;
+    g->data = data;g->initialized=1;
     g->nx = nx; g->ny = ny; g->nz = nz;
     g->voxel_size = voxel_size;
     g->ox = ox; g->oy = oy; g->oz = oz;
@@ -482,6 +491,7 @@ static PyObject *DenseGrid_from_c(PyObject *type, float *data,
 typedef struct {
     PyObject_HEAD
     float *data;
+    int initialized;
     int nx, ny, nz;
     float ox, oy, oz;
     float voxel_size;
@@ -562,14 +572,18 @@ static int DenseVecGrid_init(PyObject *self, PyObject *args, PyObject *kw) {
     if (!PyArg_ParseTupleAndKeywords(args, kw, "|iiiffff", kwlist,
                                      &nx, &ny, &nz, &voxel_size, &ox, &oy, &oz))
         return -1;
+    size_t bytes=0;
+    if(g->initialized) { PyErr_SetString(PyExc_ValueError,"grid is already initialized");return -1; }
+    if(!isfinite(voxel_size) || voxel_size<=0 || !isfinite(ox) || !isfinite(oy) || !isfinite(oz) ||
+        ((nx || ny || nz) && (!tvdb_grid_bytes(nx,ny,nz,12,&bytes) || bytes>PY_SSIZE_T_MAX))) {
+        PyErr_SetString(PyExc_ValueError,"invalid grid dimensions, spacing or allocation size");return -1;
+    }
+    float *data=bytes?(float*)calloc(1,bytes):NULL;
+    if(bytes && !data) { PyErr_NoMemory();return -1; }
     g->nx = nx; g->ny = ny; g->nz = nz;
     g->voxel_size = voxel_size;
     g->ox = ox; g->oy = oy; g->oz = oz;
-    if (nx > 0 && ny > 0 && nz > 0) {
-        size_t n = (size_t)nx * ny * nz * 3;
-        g->data = (float *)calloc(n, sizeof(float));
-        if (!g->data) { PyErr_NoMemory(); return -1; }
-    }
+    g->data=data;g->initialized=1;
     return 0;
 }
 
@@ -595,7 +609,7 @@ static PyObject *DenseVecGrid_from_c(PyObject *type, float *data,
                                      float ox, float oy, float oz) {
     PyDenseVecGrid *g = (PyDenseVecGrid *)alloc_from_type(type);
     if (!g) { free(data); return NULL; }
-    g->data = data;
+    g->data = data;g->initialized=1;
     g->nx = nx; g->ny = ny; g->nz = nz;
     g->voxel_size = voxel_size;
     g->ox = ox; g->oy = oy; g->oz = oz;
@@ -639,13 +653,13 @@ static PyObject *TriangleMesh_get_num_faces(PyObject *self, void *c) {
 }
 static PyObject *TriangleMesh_get_vertices_bytes(PyObject *self, void *c) {
     PyTriangleMesh *m = (PyTriangleMesh *)self;
-    if (!m->vertices) Py_RETURN_NONE;
+    if (!m->vertices) TVDB_PY_RETURN_NONE;
     return PyBytes_FromStringAndSize((const char *)m->vertices,
                                     (Py_ssize_t)(m->num_vertices * 3 * sizeof(float)));
 }
 static PyObject *TriangleMesh_get_faces_bytes(PyObject *self, void *c) {
     PyTriangleMesh *m = (PyTriangleMesh *)self;
-    if (!m->faces) Py_RETURN_NONE;
+    if (!m->faces) TVDB_PY_RETURN_NONE;
     return PyBytes_FromStringAndSize((const char *)m->faces,
                                     (Py_ssize_t)(m->num_faces * 3 * sizeof(uint32_t)));
 }
@@ -653,7 +667,7 @@ static PyObject *TriangleMesh_get_faces_bytes(PyObject *self, void *c) {
 /* Build a 2D memoryview backed by mesh data; mesh keeps memory alive. */
 static PyObject *TriangleMesh_get_vertices(PyObject *self, void *c) {
     PyTriangleMesh *m = (PyTriangleMesh *)self;
-    if (!m->vertices || m->num_vertices == 0) Py_RETURN_NONE;
+    if (!m->vertices || m->num_vertices == 0) TVDB_PY_RETURN_NONE;
     m->vert_shape[0] = (Py_ssize_t)m->num_vertices;
     m->vert_shape[1] = 3;
     m->vert_strides[0] = 3 * (Py_ssize_t)sizeof(float);
@@ -675,7 +689,7 @@ static PyObject *TriangleMesh_get_vertices(PyObject *self, void *c) {
 
 static PyObject *TriangleMesh_get_faces(PyObject *self, void *c) {
     PyTriangleMesh *m = (PyTriangleMesh *)self;
-    if (!m->faces || m->num_faces == 0) Py_RETURN_NONE;
+    if (!m->faces || m->num_faces == 0) TVDB_PY_RETURN_NONE;
     m->face_shape[0] = (Py_ssize_t)m->num_faces;
     m->face_shape[1] = 3;
     m->face_strides[0] = 3 * (Py_ssize_t)sizeof(uint32_t);
@@ -759,6 +773,28 @@ static PyObject *TriangleMesh_from_c(PyObject *type, float *verts, size_t nv,
     return (PyObject *)m;
 }
 
+typedef struct {
+    PyObject_HEAD
+    tvdb_file_t file;
+    int is_open, busy;
+    size_t generation;
+    PyObject *bytes_ref;
+} PyVDBFile;
+
+/* These counters are accessed with the GIL held. Heavy work sets busy before
+ * releasing it; competing close/mutation/view operations fail without waiting. */
+static int file_available(PyVDBFile *f) {
+    if(!f || !f->is_open) { PyErr_SetString(PyExc_ValueError,"VDB file is closed");return 0; }
+    if(f->busy) { PyErr_SetString(PyExc_RuntimeError,"VDB owner is busy");return 0; }
+    return 1;
+}
+static int view_valid(PyObject *owner,size_t generation) {
+    PyVDBFile *f=(PyVDBFile*)owner;
+    if(!file_available(f))return 0;
+    if(generation!=f->generation) { PyErr_SetString(PyExc_ValueError,"VDB view was invalidated by grid replacement/reload");return 0; }
+    return 1;
+}
+
 /* ======================================================================== */
 /*  VDBNode type                                                            */
 /* ======================================================================== */
@@ -767,6 +803,7 @@ typedef struct {
     PyObject_HEAD
     PyObject *file_ref;
     tvdb_tree_node_t *node;
+    size_t generation;
 } PyVDBNode;
 
 static void VDBNode_dealloc(PyObject *self) {
@@ -790,11 +827,12 @@ static PyObject *value_to_py(const tvdb_value_t *v) {
         case TVDB_VALUE_STRING:
             if (v->u.s.str) return PyUnicode_FromStringAndSize(v->u.s.str, (Py_ssize_t)v->u.s.len);
             /* fall through */
-        default: Py_RETURN_NONE;
+        default: TVDB_PY_RETURN_NONE;
     }
 }
 
 static PyObject *VDBNode_get_type(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBNode*)self)->file_ref,((PyVDBNode*)self)->generation))return NULL;
     switch (((PyVDBNode *)self)->node->type) {
         case TVDB_NODE_ROOT: return PyUnicode_FromString("root");
         case TVDB_NODE_INTERNAL: return PyUnicode_FromString("internal");
@@ -804,15 +842,18 @@ static PyObject *VDBNode_get_type(PyObject *self, void *c) {
 }
 
 static PyObject *VDBNode_get_level(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBNode*)self)->file_ref,((PyVDBNode*)self)->generation))return NULL;
     return PyLong_FromLong(((PyVDBNode *)self)->node->level);
 }
 
 static PyObject *VDBNode_get_origin(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBNode*)self)->file_ref,((PyVDBNode*)self)->generation))return NULL;
     tvdb_tree_node_t *n = ((PyVDBNode *)self)->node;
     return Py_BuildValue("(iii)", n->origin[0], n->origin[1], n->origin[2]);
 }
 
 static PyObject *VDBNode_get_active_voxel_count(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBNode*)self)->file_ref,((PyVDBNode*)self)->generation))return NULL;
     tvdb_tree_node_t *n = ((PyVDBNode *)self)->node;
     if (n->type == TVDB_NODE_LEAF)
         return PyLong_FromSize_t(tvdb_nodemask_count_on(&n->u.leaf.value_mask));
@@ -824,30 +865,34 @@ static PyObject *VDBNode_get_active_voxel_count(PyObject *self, void *c) {
 }
 
 static PyObject *VDBNode_get_data(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBNode*)self)->file_ref,((PyVDBNode*)self)->generation))return NULL;
     tvdb_tree_node_t *n = ((PyVDBNode *)self)->node;
     if (n->type == TVDB_NODE_LEAF && n->u.leaf.data)
         return PyBytes_FromStringAndSize((const char *)n->u.leaf.data,
                                         (Py_ssize_t)n->u.leaf.data_size);
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *VDBNode_get_point_indices(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBNode*)self)->file_ref,((PyVDBNode*)self)->generation))return NULL;
     tvdb_tree_node_t *n = ((PyVDBNode *)self)->node;
-    if (n->type != TVDB_NODE_LEAF || !n->u.leaf.point_indices) Py_RETURN_NONE;
+    if (n->type != TVDB_NODE_LEAF || !n->u.leaf.point_indices) TVDB_PY_RETURN_NONE;
     return PyBytes_FromStringAndSize((const char *)n->u.leaf.point_indices,
                                      (Py_ssize_t)(n->u.leaf.num_point_indices * sizeof(int32_t)));
 }
 
 static PyObject *VDBNode_get_point_aux_data(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBNode*)self)->file_ref,((PyVDBNode*)self)->generation))return NULL;
     tvdb_tree_node_t *n = ((PyVDBNode *)self)->node;
-    if (n->type != TVDB_NODE_LEAF || !n->u.leaf.point_aux_data) Py_RETURN_NONE;
+    if (n->type != TVDB_NODE_LEAF || !n->u.leaf.point_aux_data) TVDB_PY_RETURN_NONE;
     return PyBytes_FromStringAndSize((const char *)n->u.leaf.point_aux_data,
                                      (Py_ssize_t)n->u.leaf.point_aux_data_size);
 }
 
 static PyObject *VDBNode_get_background(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBNode*)self)->file_ref,((PyVDBNode*)self)->generation))return NULL;
     tvdb_tree_node_t *n = ((PyVDBNode *)self)->node;
-    if (n->type != TVDB_NODE_ROOT) Py_RETURN_NONE;
+    if (n->type != TVDB_NODE_ROOT) TVDB_PY_RETURN_NONE;
     return value_to_py(&n->u.root.background);
 }
 
@@ -884,6 +929,7 @@ typedef struct {
     PyObject_HEAD
     PyObject *file_ref;
     tvdb_tree_t *tree;
+    size_t generation;
 } PyVDBTree;
 
 static void VDBTree_dealloc(PyObject *self) {
@@ -892,10 +938,12 @@ static void VDBTree_dealloc(PyObject *self) {
 }
 
 static PyObject *VDBTree_get_num_nodes(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBTree*)self)->file_ref,((PyVDBTree*)self)->generation))return NULL;
     return PyLong_FromSize_t(((PyVDBTree *)self)->tree->num_nodes);
 }
 
 static PyObject *VDBTree_node(PyObject *self, PyObject *args) {
+    if(!view_valid(((PyVDBTree*)self)->file_ref,((PyVDBTree*)self)->generation))return NULL;
     Py_ssize_t idx;
     if (!PyArg_ParseTuple(args, "n", &idx)) return NULL;
     PyVDBTree *t = (PyVDBTree *)self;
@@ -912,6 +960,7 @@ static PyObject *VDBTree_node(PyObject *self, PyObject *args) {
     n->file_ref = t->file_ref;
     Py_INCREF(n->file_ref);
     n->node = &t->tree->nodes[idx];
+    n->generation=t->generation;
     return (PyObject *)n;
 }
 
@@ -947,6 +996,7 @@ typedef struct {
     PyObject_HEAD
     PyObject *file_ref;
     tvdb_grid_t *grid;
+    size_t generation;
 } PyVDBGrid;
 
 static void VDBGrid_dealloc(PyObject *self) {
@@ -955,18 +1005,21 @@ static void VDBGrid_dealloc(PyObject *self) {
 }
 
 static PyObject *VDBGrid_get_name(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     return g->descriptor.grid_name ? PyUnicode_FromString(g->descriptor.grid_name)
                                    : PyUnicode_FromString("");
 }
 
 static PyObject *VDBGrid_get_type_name(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     return g->descriptor.grid_type ? PyUnicode_FromString(g->descriptor.grid_type)
                                    : PyUnicode_FromString("");
 }
 
 static PyObject *VDBGrid_get_metadata(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     PyObject *d = PyDict_New();
     if (!d) return NULL;
@@ -983,6 +1036,7 @@ static PyObject *VDBGrid_get_metadata(PyObject *self, void *c) {
 }
 
 static PyObject *VDBGrid_get_transform(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_transform_t *t = &((PyVDBGrid *)self)->grid->transform;
     PyObject *d = PyDict_New();
     if (!d) return NULL;
@@ -1015,6 +1069,7 @@ static PyObject *VDBGrid_get_transform(PyObject *self, void *c) {
 }
 
 static PyObject *VDBGrid_get_tree(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     PyVDBGrid *g = (PyVDBGrid *)self;
     PyObject *mod = PyState_FindModule(&tinyvdb_module);
     if (!mod) return NULL;
@@ -1025,22 +1080,26 @@ static PyObject *VDBGrid_get_tree(PyObject *self, void *c) {
     t->file_ref = g->file_ref;
     Py_INCREF(t->file_ref);
     t->tree = &g->grid->tree;
+    t->generation=g->generation;
     return (PyObject *)t;
 }
 
 static PyObject *VDBGrid_get_is_point_data(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     return PyBool_FromLong(g->tree.is_point_data_grid ? 1 : 0);
 }
 
 static PyObject *VDBGrid_get_is_point_index(PyObject *self, void *c) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     return PyBool_FromLong(g->tree.is_point_index_grid ? 1 : 0);
 }
 
 static PyObject *VDBGrid_point_data_blob(PyObject *self, PyObject *Py_UNUSED(args)) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
-    if (!g->tree.is_point_data_grid || !g->point_data_blob) Py_RETURN_NONE;
+    if (!g->tree.is_point_data_grid || !g->point_data_blob) TVDB_PY_RETURN_NONE;
     return PyBytes_FromStringAndSize((const char *)g->point_data_blob,
                                      (Py_ssize_t)g->point_data_blob_size);
 }
@@ -1075,23 +1134,27 @@ extern int    tvdb_py_grid_update_from_sparse(tvdb_grid_t *,
                                               size_t, size_t *, size_t *);
 
 static PyObject *VDBGrid_active_voxel_count(PyObject *self, PyObject *Py_UNUSED(args)) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     return PyLong_FromSize_t(tvdb_py_grid_active_voxel_count(g));
 }
 
 static PyObject *VDBGrid_active_bbox(PyObject *self, PyObject *Py_UNUSED(args)) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     int32_t mn[3], mx[3];
-    if (tvdb_py_grid_active_bbox(g, mn, mx) != 0) Py_RETURN_NONE;
+    if (tvdb_py_grid_active_bbox(g, mn, mx) != 0) TVDB_PY_RETURN_NONE;
     return Py_BuildValue("((iii)(iii))", mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]);
 }
 
 static PyObject *VDBGrid_float_background(PyObject *self, PyObject *Py_UNUSED(args)) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     return PyFloat_FromDouble((double)tvdb_py_grid_float_background(g));
 }
 
 static PyObject *VDBGrid_materialize_dense(PyObject *self, PyObject *args, PyObject *kw) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     PyObject *bb_min_t, *bb_max_t;
     float background = 0.0f;
     static char *kwlist[] = {"bbox_min", "bbox_max", "background", NULL};
@@ -1103,49 +1166,71 @@ static PyObject *VDBGrid_materialize_dense(PyObject *self, PyObject *args, PyObj
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     float *out = NULL; int onx, ony, onz; float ovs, oox, ooy, ooz;
     int rc;
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=1;
     Py_BEGIN_ALLOW_THREADS
     rc = tvdb_py_grid_materialize_dense(g, mn, mx, background,
                                         &out, &onx, &ony, &onz,
                                         &ovs, &oox, &ooy, &ooz);
     Py_END_ALLOW_THREADS
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=0;
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
     PyObject *mod = PyState_FindModule(&tinyvdb_module);
     return DenseGrid_from_c(get_state(mod)->DenseGridType, out, onx, ony, onz, ovs, oox, ooy, ooz);
 }
 
+/* Transfers C buffers and checks Python byte-size limits before allocation. */
+static PyObject *sparse_result_bytes(int32_t *coords,void *values,size_t count,size_t width,const char *dtype) {
+    size_t cb_size,vb_size;
+    if(!tvdb_size_mul(count,3*sizeof(int32_t),&cb_size) ||
+       !tvdb_size_mul(count,width,&vb_size) || cb_size>PY_SSIZE_T_MAX || vb_size>PY_SSIZE_T_MAX) {
+        free(coords);free(values);PyErr_SetString(PyExc_OverflowError,"sparse result exceeds Python buffer limits");return NULL;
+    }
+    PyObject *cb=PyBytes_FromStringAndSize((const char*)coords,(Py_ssize_t)cb_size);
+    PyObject *vb=cb?PyBytes_FromStringAndSize((const char*)values,(Py_ssize_t)vb_size):NULL;
+    free(coords);free(values);
+    if(!cb || !vb) { Py_XDECREF(cb);Py_XDECREF(vb);return NULL; }
+    if(dtype)return Py_BuildValue("{s:N,s:N,s:n,s:s}","coords",cb,"values",vb,"count",(Py_ssize_t)count,"dtype",dtype);
+    return Py_BuildValue("{s:N,s:N,s:n}","coords",cb,"values",vb,"count",(Py_ssize_t)count);
+}
+
 static PyObject *VDBGrid_morph_active(PyObject *self, PyObject *args, PyObject *kw,
                                       int (*fn)(const tvdb_grid_t *, int,
                                                 int32_t **, float **, size_t *)) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     int iterations = 1;
     static char *kwlist[] = {"iterations", NULL};
     if (!PyArg_ParseTupleAndKeywords(args, kw, "|i", kwlist, &iterations)) return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     int32_t *coords = NULL; float *values = NULL; size_t cnt = 0;
     int rc;
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=1;
     Py_BEGIN_ALLOW_THREADS
     rc = fn(g, iterations, &coords, &values, &cnt);
     Py_END_ALLOW_THREADS
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=0;
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
-    PyObject *cb = PyBytes_FromStringAndSize((const char *)coords, (Py_ssize_t)(cnt * 3 * sizeof(int32_t)));
-    PyObject *vb = PyBytes_FromStringAndSize((const char *)values, (Py_ssize_t)(cnt * sizeof(float)));
-    free(coords); free(values);
-    return Py_BuildValue("{s:N,s:N,s:n}", "coords", cb, "values", vb, "count", (Py_ssize_t)cnt);
+    return sparse_result_bytes(coords,values,cnt,sizeof(float),NULL);
 }
 
 static PyObject *VDBGrid_dilate_active(PyObject *self, PyObject *args, PyObject *kw) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     return VDBGrid_morph_active(self, args, kw, tvdb_py_grid_dilate_active);
 }
 static PyObject *VDBGrid_erode_active(PyObject *self, PyObject *args, PyObject *kw) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     return VDBGrid_morph_active(self, args, kw, tvdb_py_grid_erode_active);
 }
 static PyObject *VDBGrid_dilate_topology(PyObject *self, PyObject *args, PyObject *kw) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     return VDBGrid_morph_active(self, args, kw, tvdb_py_grid_dilate_topology);
 }
 static PyObject *VDBGrid_erode_topology(PyObject *self, PyObject *args, PyObject *kw) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     return VDBGrid_morph_active(self, args, kw, tvdb_py_grid_erode_topology);
 }
 
 static PyObject *VDBGrid_update_from_sparse(PyObject *self, PyObject *args, PyObject *kw) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     Py_buffer cb, vb;
     static char *kwlist[] = {"coords", "values", NULL};
     if (!PyArg_ParseTupleAndKeywords(args, kw, "y*y*", kwlist, &cb, &vb)) return NULL;
@@ -1159,11 +1244,13 @@ static PyObject *VDBGrid_update_from_sparse(PyObject *self, PyObject *args, PyOb
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     size_t updated = 0, skipped = 0;
     int rc;
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=1;
     Py_BEGIN_ALLOW_THREADS
     rc = tvdb_py_grid_update_from_sparse(g, (const int32_t *)cb.buf,
                                          (const float *)vb.buf, count,
                                          &updated, &skipped);
     Py_END_ALLOW_THREADS
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=0;
     PyBuffer_Release(&cb); PyBuffer_Release(&vb);
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
     return Py_BuildValue("{s:n,s:n}", "updated", (Py_ssize_t)updated,
@@ -1171,6 +1258,7 @@ static PyObject *VDBGrid_update_from_sparse(PyObject *self, PyObject *args, PyOb
 }
 
 static PyObject *VDBGrid_csg(PyObject *self, PyObject *args, PyObject *kw) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     PyObject *other = NULL;
     int op = 0;
     static char *kwlist[] = {"other", "op", NULL};
@@ -1180,32 +1268,32 @@ static PyObject *VDBGrid_csg(PyObject *self, PyObject *args, PyObject *kw) {
         PyErr_SetString(PyExc_TypeError, "other must be a VDBGrid");
         return NULL;
     }
+    if(!view_valid(((PyVDBGrid*)other)->file_ref,((PyVDBGrid*)other)->generation))return NULL;
     tvdb_grid_t *a = ((PyVDBGrid *)self)->grid;
     tvdb_grid_t *b = ((PyVDBGrid *)other)->grid;
     int32_t *coords = NULL; float *values = NULL; size_t cnt = 0;
     int rc;
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=1; ((PyVDBFile*)((PyVDBGrid*)other)->file_ref)->busy=1;
     Py_BEGIN_ALLOW_THREADS
     rc = tvdb_py_grid_csg(a, b, op, &coords, &values, &cnt);
     Py_END_ALLOW_THREADS
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=0; ((PyVDBFile*)((PyVDBGrid*)other)->file_ref)->busy=0;
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
-    PyObject *cb = PyBytes_FromStringAndSize((const char *)coords, (Py_ssize_t)(cnt * 3 * sizeof(int32_t)));
-    PyObject *vb = PyBytes_FromStringAndSize((const char *)values, (Py_ssize_t)(cnt * sizeof(float)));
-    free(coords); free(values);
-    return Py_BuildValue("{s:N,s:N,s:n}", "coords", cb, "values", vb, "count", (Py_ssize_t)cnt);
+    return sparse_result_bytes(coords,values,cnt,sizeof(float),NULL);
 }
 
 static PyObject *VDBGrid_to_sparse(PyObject *self, PyObject *Py_UNUSED(args)) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     int32_t *coords = NULL; float *values = NULL; size_t cnt = 0;
     int rc;
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=1;
     Py_BEGIN_ALLOW_THREADS
     rc = tvdb_py_grid_to_sparse(g, &coords, &values, &cnt);
     Py_END_ALLOW_THREADS
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=0;
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
-    PyObject *cb = PyBytes_FromStringAndSize((const char *)coords, (Py_ssize_t)(cnt * 3 * sizeof(int32_t)));
-    PyObject *vb = PyBytes_FromStringAndSize((const char *)values, (Py_ssize_t)(cnt * sizeof(float)));
-    free(coords); free(values);
-    return Py_BuildValue("{s:N,s:N,s:n}", "coords", cb, "values", vb, "count", (Py_ssize_t)cnt);
+    return sparse_result_bytes(coords,values,cnt,sizeof(float),NULL);
 }
 
 /* dtype string <-> tvdb_value_type mapping for the typed dense writer/reader. */
@@ -1244,19 +1332,497 @@ static size_t tvdb_py__vt_size(int vt) {
 }
 
 static PyObject *VDBGrid_to_sparse_typed(PyObject *self, PyObject *Py_UNUSED(args)) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     tvdb_grid_t *g = ((PyVDBGrid *)self)->grid;
     int32_t *coords = NULL; void *values = NULL; size_t cnt = 0; int vt = 0;
     int rc;
-    Py_BEGIN_ALLOW_THREADS
-    rc = tvdb_py_grid_to_sparse_typed(g, &coords, &values, &cnt, &vt);
-    Py_END_ALLOW_THREADS
+    ((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy=1;
+    Py_BEGIN_ALLOW_THREADS rc =
+        tvdb_py_grid_to_sparse_typed(g, &coords, &values, &cnt, &vt);
+    Py_END_ALLOW_THREADS((PyVDBFile*)((PyVDBGrid*)self)->file_ref)->busy = 0;
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
     size_t vsize = tvdb_py__vt_size(vt);
-    PyObject *cb = PyBytes_FromStringAndSize((const char *)coords, (Py_ssize_t)(cnt * 3 * sizeof(int32_t)));
-    PyObject *vb = PyBytes_FromStringAndSize((const char *)values, (Py_ssize_t)(cnt * vsize));
-    free(coords); free(values);
-    return Py_BuildValue("{s:N,s:N,s:n,s:s}", "coords", cb, "values", vb,
-                         "count", (Py_ssize_t)cnt, "dtype", tvdb_py__vt_to_dtype(vt));
+    return sparse_result_bytes(coords, values, cnt, vsize,
+                               tvdb_py__vt_to_dtype(vt));
+}
+
+static void* py_owned_malloc(size_t n, void* u) {
+  (void)u;
+  return malloc(n);
+}
+static void* py_owned_realloc(void* p, size_t old, size_t n, void* u) {
+  (void)old;
+  (void)u;
+  return realloc(p, n);
+}
+static void py_owned_free(void* p, size_t n, void* u) {
+  (void)n;
+  (void)u;
+  free(p);
+}
+static PyObject* owned_grid_result(PyVDBGrid* source, tvdb_grid_t* result) {
+  tvdb_header_t header = ((PyVDBFile*)source->file_ref)->file.header;
+  PyObject* mod = PyState_FindModule(&tinyvdb_module);
+  if (!mod) return NULL;
+  module_state* st = get_state(mod);
+  PyVDBFile* owner = (PyVDBFile*)alloc_from_type(st->VDBFileType);
+  if (!owner) return NULL;
+  memset(&owner->file, 0, sizeof(owner->file));
+  owner->file.alloc = (tvdb_allocator_t){py_owned_malloc, py_owned_realloc,
+                                         py_owned_free, NULL};
+  owner->file.header = header;
+  owner->file.file_metadata.alloc = &owner->file.alloc;
+  owner->file.grids = calloc(1, sizeof(tvdb_grid_t));
+  if (!owner->file.grids) {
+    Py_DECREF(owner);
+    return PyErr_NoMemory();
+  }
+  owner->file.num_grids = 1;
+  owner->file.grids[0] = *result;
+  memset(result, 0, sizeof(*result));
+  owner->is_open = 1;
+  owner->generation = 1;
+  PyVDBGrid* grid = (PyVDBGrid*)alloc_from_type(st->VDBGridType);
+  if (!grid) {
+    Py_DECREF(owner);
+    return NULL;
+  }
+  grid->file_ref = (PyObject*)owner;
+  grid->grid = owner->file.grids;
+  grid->generation = 1;
+  return (PyObject*)grid;
+}
+static PyObject* VDBGrid_diagnose(PyObject* self, PyObject* args,
+                                  PyObject* kw) {
+  PyVDBGrid* g = (PyVDBGrid*)self;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  const char* kind = "generic";
+  int gradients = 0;
+  double tolerance = 0.1;
+  static char* names[] = {"kind", "check_gradient", "tolerance", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "|spd", names, &kind, &gradients,
+                                   &tolerance))
+    return NULL;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  tvdb_tree_diagnostic_kind_t k;
+  if (!strcmp(kind, "generic"))
+    k = TVDB_TREE_DIAG_GENERIC;
+  else if (!strcmp(kind, "level_set"))
+    k = TVDB_TREE_DIAG_LEVEL_SET;
+  else if (!strcmp(kind, "fog"))
+    k = TVDB_TREE_DIAG_FOG;
+  else {
+    PyErr_SetString(PyExc_ValueError, "kind must be generic, level_set or fog");
+    return NULL;
+  }
+  if (!isfinite(tolerance) || tolerance < 0 ||
+      (gradients && k != TVDB_TREE_DIAG_LEVEL_SET)) {
+    PyErr_SetString(PyExc_ValueError,
+                    "invalid diagnostic tolerance/gradient mode");
+    return NULL;
+  }
+  PyVDBFile* owner = (PyVDBFile*)g->file_ref;
+  owner->busy = 1;
+  tvdb_tree_diagnostics_t d;
+  tvdb_error_t err = {0};
+  tvdb_status_t status;
+  Py_BEGIN_ALLOW_THREADS status =
+      tvdb_grid_diagnose(g->grid, k, gradients, tolerance, &d, &err);
+  Py_END_ALLOW_THREADS owner->busy = 0;
+  if (status != TVDB_OK) return raise_tvdb_status(status, &err);
+  PyObject* result = PyDict_New();
+  if (!result) return NULL;
+#define DIAG_ITEM(key, obj)                        \
+  do {                                             \
+    PyObject* v = (obj);                           \
+    if (!v) goto fail;                             \
+    int rc = PyDict_SetItemString(result, key, v); \
+    Py_DECREF(v);                                  \
+    if (rc < 0) goto fail;                         \
+  } while (0)
+  DIAG_ITEM("valid", PyBool_FromLong(d.valid));
+  DIAG_ITEM("flags", PyLong_FromUnsignedLong(d.flags));
+  DIAG_ITEM("active_voxels", PyLong_FromSize_t(d.active_voxels));
+  DIAG_ITEM("active_tiles", PyLong_FromSize_t(d.active_tiles));
+  DIAG_ITEM("nonfinite_values", PyLong_FromSize_t(d.nonfinite_values));
+  if (d.first_bad_node == SIZE_MAX) {
+    Py_INCREF(Py_None);
+    DIAG_ITEM("first_bad_node", Py_None);
+  } else
+    DIAG_ITEM("first_bad_node", PyLong_FromSize_t(d.first_bad_node));
+  DIAG_ITEM("first_bad_coord",
+            Py_BuildValue("(LLL)", (long long)d.first_bad_coord[0],
+                          (long long)d.first_bad_coord[1],
+                          (long long)d.first_bad_coord[2]));
+  if (d.has_active_bbox)
+    DIAG_ITEM(
+        "active_bbox",
+        Py_BuildValue("((LLL)(LLL))", (long long)d.active_min[0],
+                      (long long)d.active_min[1], (long long)d.active_min[2],
+                      (long long)d.active_max[0], (long long)d.active_max[1],
+                      (long long)d.active_max[2]));
+  else {
+    Py_INCREF(Py_None);
+    DIAG_ITEM("active_bbox", Py_None);
+  }
+  DIAG_ITEM("band_count", PyLong_FromSize_t(d.gradient.band_count));
+  DIAG_ITEM("mean_grad_mag", PyFloat_FromDouble(d.gradient.mean_grad_mag));
+  DIAG_ITEM("max_grad_error", PyFloat_FromDouble(d.gradient.max_grad_error));
+  DIAG_ITEM("bad_fraction", PyFloat_FromDouble(d.gradient.bad_fraction));
+#undef DIAG_ITEM
+  return result;
+fail:
+  Py_DECREF(result);
+  return NULL;
+}
+static PyObject* VDBGrid_signed_flood_fill(PyObject* self, PyObject* args,
+                                           PyObject* kw) {
+  PyVDBGrid* g = (PyVDBGrid*)self;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  PyObject *outside_obj = Py_None, *inside_obj = Py_None;
+  static char* names[] = {"outside_width", "inside_width", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "|OO", names, &outside_obj,
+                                   &inside_obj))
+    return NULL;
+  double outside = outside_obj == Py_None ? tvdb_grid_float_background(g->grid)
+                                          : PyFloat_AsDouble(outside_obj);
+  if (PyErr_Occurred()) return NULL;
+  double inside =
+      inside_obj == Py_None ? -outside : PyFloat_AsDouble(inside_obj);
+  if (PyErr_Occurred()) return NULL;
+  if (!isfinite(outside) || !isfinite(inside) || outside <= 0 || inside >= 0 ||
+      outside > FLT_MAX || inside < -FLT_MAX) {
+    PyErr_SetString(PyExc_ValueError,
+                    "outside_width must be positive and inside_width negative "
+                    "finite float distances");
+    return NULL;
+  }
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  tvdb_grid_t result = {0};
+  tvdb_error_t err = {0};
+  tvdb_status_t status;
+  PyVDBFile* owner = (PyVDBFile*)g->file_ref;
+  owner->busy = 1;
+  Py_BEGIN_ALLOW_THREADS status = tvdb_grid_signed_flood_fill(
+      g->grid, (float)outside, (float)inside, &result, &err);
+  Py_END_ALLOW_THREADS owner->busy = 0;
+  if (status != TVDB_OK) return raise_tvdb_status(status, &err);
+  PyObject* obj = owned_grid_result(g, &result);
+  tvdb_grid_destroy_owned(&result);
+  return obj;
+}
+static PyObject* VDBGrid_prune(PyObject* self, PyObject* Py_UNUSED(args)) {
+  PyVDBGrid* g = (PyVDBGrid*)self;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  tvdb_grid_t result = {0};
+  tvdb_error_t err = {0};
+  tvdb_status_t status;
+  PyVDBFile* owner = (PyVDBFile*)g->file_ref;
+  owner->busy = 1;
+  Py_BEGIN_ALLOW_THREADS status = tvdb_grid_prune(g->grid, &result, &err);
+  Py_END_ALLOW_THREADS owner->busy = 0;
+  if (status != TVDB_OK) return raise_tvdb_status(status, &err);
+  PyObject* obj = owned_grid_result(g, &result);
+  tvdb_grid_destroy_owned(&result);
+  return obj;
+}
+static PyObject* VDBGrid_rebuild_impl(PyObject* self, PyObject* args,
+                                      PyObject* kw, int tracking) {
+  PyVDBGrid* g = (PyVDBGrid*)self;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  double iso = 0, outside = tvdb_grid_float_background(g->grid),
+         inside = outside;
+  Py_ssize_t budget = 0;
+  static char* rebuild_kw[] = {"isovalue", "outside_width", "inside_width",
+                               "max_voxels", NULL};
+  static char* track_kw[] = {"outside_width", "inside_width", "max_voxels",
+                             NULL};
+  if (tracking) {
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "|ddn", track_kw, &outside,
+                                     &inside, &budget))
+      return NULL;
+  } else if (!PyArg_ParseTupleAndKeywords(args, kw, "|dddn", rebuild_kw, &iso,
+                                          &outside, &inside, &budget))
+    return NULL;
+  if (budget < 0 || !isfinite(iso) || fabs(iso) > FLT_MAX ||
+      !isfinite(outside) || outside <= 0 || outside > FLT_MAX ||
+      !isfinite(inside) || inside <= 0 || inside > FLT_MAX) {
+    PyErr_SetString(PyExc_ValueError,
+                    "finite isovalue, positive float widths and nonnegative "
+                    "budget required");
+    return NULL;
+  }
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  tvdb_grid_t result = {0};
+  tvdb_error_t err = {0};
+  tvdb_status_t status;
+  PyVDBFile* owner = (PyVDBFile*)g->file_ref;
+  owner->busy = 1;
+  Py_BEGIN_ALLOW_THREADS status = tvdb_grid_level_set_rebuild(
+      g->grid, (float)iso, (float)outside, (float)inside, (size_t)budget,
+      &result, NULL, &err);
+  Py_END_ALLOW_THREADS owner->busy = 0;
+  if (status != TVDB_OK) return raise_tvdb_status(status, &err);
+  PyObject* obj = owned_grid_result(g, &result);
+  tvdb_grid_destroy_owned(&result);
+  return obj;
+}
+static PyObject* VDBGrid_rebuild_level_set(PyObject* s, PyObject* a,
+                                           PyObject* k) {
+  return VDBGrid_rebuild_impl(s, a, k, 0);
+}
+static PyObject* VDBGrid_track_level_set(PyObject* s, PyObject* a,
+                                         PyObject* k) {
+  return VDBGrid_rebuild_impl(s, a, k, 1);
+}
+static int py_affine_matrix(PyObject* obj, tvdb_transform_t* transform) {
+  Py_ssize_t n = PySequence_Size(obj);
+  if (n < 0) return 0;
+  if (n != 4 && n != 16) {
+    PyErr_SetString(
+        PyExc_ValueError,
+        "matrix must contain four rows or sixteen row-major values");
+    return 0;
+  }
+  memset(transform, 0, sizeof(*transform));
+  transform->type = TVDB_TRANSFORM_AFFINE;
+  for (int a = 0; a < 4; ++a) {
+    PyObject* row = n == 4 ? PySequence_GetItem(obj, a) : NULL;
+    if (n == 4 && (!row || PySequence_Size(row) != 4)) {
+      Py_XDECREF(row);
+      if (!PyErr_Occurred())
+        PyErr_SetString(PyExc_ValueError,
+                        "each matrix row must have four values");
+      return 0;
+    }
+    for (int b = 0; b < 4; ++b) {
+      PyObject* v =
+          PySequence_GetItem(n == 4 ? row : obj, n == 4 ? b : 4 * a + b);
+      if (!v) {
+        Py_XDECREF(row);
+        return 0;
+      }
+      transform->matrix[a][b] = PyFloat_AsDouble(v);
+      Py_DECREF(v);
+      if (PyErr_Occurred()) {
+        Py_XDECREF(row);
+        return 0;
+      }
+    }
+    Py_XDECREF(row);
+  }
+  return 1;
+}
+static PyObject* VDBGrid_resample(PyObject* self, PyObject* args,
+                                  PyObject* kw) {
+  PyVDBGrid* g = (PyVDBGrid*)self;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  PyObject* matrix;
+  const char* sampler = "linear";
+  Py_ssize_t budget = 0;
+  static char* names[] = {"matrix", "sampler", "max_voxels", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "O|sn", names, &matrix, &sampler,
+                                   &budget))
+    return NULL;
+  if (budget < 0 || (strcmp(sampler, "linear") && strcmp(sampler, "nearest"))) {
+    PyErr_SetString(
+        PyExc_ValueError,
+        "sampler must be linear or nearest; budget must be nonnegative");
+    return NULL;
+  }
+  tvdb_transform_t transform;
+  if (!py_affine_matrix(matrix, &transform)) return NULL;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  tvdb_grid_t result = {0};
+  tvdb_error_t err = {0};
+  tvdb_status_t status;
+  PyVDBFile* owner = (PyVDBFile*)g->file_ref;
+  owner->busy = 1;
+  tvdb_tree_sampler_t mode =
+      !strcmp(sampler, "linear") ? TVDB_SAMPLE_LINEAR : TVDB_SAMPLE_NEAREST;
+  Py_BEGIN_ALLOW_THREADS status = tvdb_grid_resample(
+      g->grid, &transform, mode, (size_t)budget, &result, &err);
+  Py_END_ALLOW_THREADS owner->busy = 0;
+  if (status != TVDB_OK) return raise_tvdb_status(status, &err);
+  PyObject* obj = owned_grid_result(g, &result);
+  tvdb_grid_destroy_owned(&result);
+  return obj;
+}
+static PyObject* VDBGrid_volume_to_mesh(PyObject* self, PyObject* args,
+                                        PyObject* kw) {
+  PyVDBGrid* g = (PyVDBGrid*)self;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  double iso = 0, adapt = 0;
+  Py_ssize_t budget = 0;
+  static char* names[] = {"isovalue", "adaptivity", "max_cells", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "|ddn", names, &iso, &adapt,
+                                   &budget))
+    return NULL;
+  if (!isfinite(iso) || fabs(iso) > FLT_MAX || !isfinite(adapt) || adapt < 0 ||
+      budget < 0) {
+    PyErr_SetString(PyExc_ValueError, "invalid isovalue, adaptivity or budget");
+    return NULL;
+  }
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  tvdb_triangle_mesh mesh = {0};
+  tvdb_error_t err = {0};
+  tvdb_status_t status;
+  PyVDBFile* owner = (PyVDBFile*)g->file_ref;
+  owner->busy = 1;
+  Py_BEGIN_ALLOW_THREADS status = tvdb_grid_volume_to_mesh(
+      g->grid, (float)iso, adapt, (size_t)budget, &mesh, &err);
+  Py_END_ALLOW_THREADS owner->busy = 0;
+  if (status != TVDB_OK) return raise_tvdb_status(status, &err);
+  if (mesh.vertex_count > (size_t)PY_SSIZE_T_MAX / (3 * sizeof(float)) ||
+      mesh.face_count > (size_t)PY_SSIZE_T_MAX / (3 * sizeof(uint32_t))) {
+    tvdb_triangle_mesh_free(&mesh);
+    PyErr_SetString(PyExc_OverflowError, "mesh exceeds Python buffer limits");
+    return NULL;
+  }
+  PyObject* module = PyState_FindModule(&tinyvdb_module);
+  if (!module) {
+    tvdb_triangle_mesh_free(&mesh);
+    return NULL;
+  }
+  return TriangleMesh_from_c(get_state(module)->TriangleMeshType,
+                             (float*)mesh.vertices, mesh.vertex_count,
+                             (uint32_t*)mesh.faces, mesh.face_count);
+}
+typedef struct {
+  tvdb_boundary_kind_t kind;
+  double value, coefficient;
+} py_sparse_pde;
+static int py_sparse_boundary(const int32_t c[3], const int64_t n[3],
+                              tvdb_boundary_kind_t* kind, double* value,
+                              void* user) {
+  (void)c;
+  (void)n;
+  py_sparse_pde* p = user;
+  *kind = p->kind;
+  *value = p->value;
+  return 1;
+}
+static double py_sparse_coefficient(const int32_t c[3], const int64_t n[3],
+                                    void* user) {
+  (void)c;
+  (void)n;
+  return ((py_sparse_pde*)user)->coefficient;
+}
+static PyObject* VDBGrid_solve_poisson(PyObject* self, PyObject* args,
+                                       PyObject* kw) {
+  PyVDBGrid* g = (PyVDBGrid*)self;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  int iterations = 500;
+  double tolerance = 1e-6, value = 0, coefficient = 1;
+  const char* boundary = "dirichlet";
+  Py_ssize_t budget = 0;
+  static char* names[] = {
+      "max_iterations", "tolerance",  "boundary", "boundary_value",
+      "coefficient",    "max_voxels", NULL};
+  if (!PyArg_ParseTupleAndKeywords(args, kw, "|idsddn", names, &iterations,
+                                   &tolerance, &boundary, &value, &coefficient,
+                                   &budget))
+    return NULL;
+  if (iterations < 0 || !isfinite(tolerance) || tolerance < 0 ||
+      !isfinite(value) || !isfinite(coefficient) || coefficient <= 0 ||
+      budget < 0 ||
+      (strcmp(boundary, "dirichlet") && strcmp(boundary, "neumann"))) {
+    PyErr_SetString(PyExc_ValueError, "invalid sparse PDE parameters");
+    return NULL;
+  }
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  py_sparse_pde parameters = {!strcmp(boundary, "dirichlet")
+                                  ? TVDB_BOUNDARY_DIRICHLET
+                                  : TVDB_BOUNDARY_NEUMANN,
+                              value, coefficient};
+  tvdb_sparse_poisson_options_t options = {iterations,
+                                           tolerance,
+                                           (size_t)budget,
+                                           py_sparse_boundary,
+                                           py_sparse_coefficient,
+                                           &parameters};
+  tvdb_grid_t result = {0};
+  tvdb_poisson_result_t report;
+  tvdb_error_t err = {0};
+  tvdb_status_t status;
+  PyVDBFile* owner = (PyVDBFile*)g->file_ref;
+  owner->busy = 1;
+  Py_BEGIN_ALLOW_THREADS status =
+      tvdb_grid_solve_poisson(g->grid, &options, &result, &report, &err);
+  Py_END_ALLOW_THREADS owner->busy = 0;
+  if (status != TVDB_OK) return raise_tvdb_status(status, &err);
+  PyObject* grid = owned_grid_result(g, &result);
+  tvdb_grid_destroy_owned(&result);
+  if (!grid) return NULL;
+  PyObject* dict =
+      Py_BuildValue("{s:i,s:O,s:d,s:d}", "iterations", report.iterations,
+                    "converged", report.converged ? Py_True : Py_False,
+                    "initial_residual_norm", report.initial_residual_norm,
+                    "final_residual_norm", report.final_residual_norm);
+  if (!dict) {
+    Py_DECREF(grid);
+    return NULL;
+  }
+  PyObject* tuple = PyTuple_Pack(2, grid, dict);
+  Py_DECREF(grid);
+  Py_DECREF(dict);
+  return tuple;
+}
+static PyObject* VDBGrid_serialize(PyObject* self, PyObject* args, PyObject* kw,
+                                   int save) {
+  PyVDBGrid* g = (PyVDBGrid*)self;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  const char* path = NULL;
+  unsigned compression = 0;
+  int level = 0, use_mmap = 0;
+  static char* save_names[] = {"path", "compression", "level", "use_mmap",
+                               NULL};
+  static char* memory_names[] = {"compression", "level", NULL};
+  if (save) {
+    if (!PyArg_ParseTupleAndKeywords(args, kw, "s|Iip", save_names, &path,
+                                     &compression, &level, &use_mmap))
+      return NULL;
+  } else if (!PyArg_ParseTupleAndKeywords(args, kw, "|Ii", memory_names,
+                                          &compression, &level))
+    return NULL;
+  if (!view_valid(g->file_ref, g->generation)) return NULL;
+  if (g->grid->descriptor.instance_parent_name &&
+      g->grid->descriptor.instance_parent_name[0]) {
+    PyErr_SetString(
+        PyExc_ValueError,
+        "serialize an independent maintenance result for instanced grids");
+    return NULL;
+  }
+  PyVDBFile* owner = (PyVDBFile*)g->file_ref;
+  tvdb_file_t single = owner->file;
+  single.grids = g->grid;
+  single.num_grids = 1;
+  uint8_t* data = NULL;
+  size_t size = 0;
+  tvdb_error_t err = {0};
+  tvdb_status_t status;
+  owner->busy = 1;
+  Py_BEGIN_ALLOW_THREADS status =
+      save ? tvdb_file_save(&single, path, compression, level, use_mmap, &err)
+           : tvdb_write_to_memory(&single, compression, level, &data, &size,
+                                  &err);
+  Py_END_ALLOW_THREADS owner->busy = 0;
+  if (status != TVDB_OK) return raise_tvdb_status(status, &err);
+  if (save) TVDB_PY_RETURN_NONE;
+  if (size > PY_SSIZE_T_MAX) {
+    free(data);
+    return PyErr_NoMemory();
+  }
+  PyObject* bytes =
+      PyBytes_FromStringAndSize((const char*)data, (Py_ssize_t)size);
+  free(data);
+  return bytes;
+}
+static PyObject* VDBGrid_save(PyObject* self, PyObject* args, PyObject* kw) {
+  return VDBGrid_serialize(self, args, kw, 1);
+}
+static PyObject *VDBGrid_to_bytes(PyObject *self,PyObject *args,PyObject *kw) {
+    return VDBGrid_serialize(self,args,kw,0);
 }
 
 static PyGetSetDef VDBGrid_getset[] = {
@@ -1271,10 +1837,20 @@ static PyGetSetDef VDBGrid_getset[] = {
 };
 
 static PyMethodDef VDBGrid_methods[] = {
+    {"diagnose",(PyCFunction)VDBGrid_diagnose,METH_VARARGS|METH_KEYWORDS,"Diagnose stored float tree values, activity and optional SDF gradients."},
+    {"signed_flood_fill",(PyCFunction)VDBGrid_signed_flood_fill,METH_VARARGS|METH_KEYWORDS,"Return an independent signed-flood-filled grid."},
+    {"rebuild_level_set",(PyCFunction)VDBGrid_rebuild_level_set,METH_VARARGS|METH_KEYWORDS,"Rebuild a sparse world-distance narrow band around an isosurface."},
+    {"track_level_set",(PyCFunction)VDBGrid_track_level_set,METH_VARARGS|METH_KEYWORDS,"Rebuild the zero-isovalue band after edits."},
+    {"resample",(PyCFunction)VDBGrid_resample,METH_VARARGS|METH_KEYWORDS,"Resample into a target affine index-to-world matrix."},
+    {"volume_to_mesh",(PyCFunction)VDBGrid_volume_to_mesh,METH_VARARGS|METH_KEYWORDS,"Extract a sparse indexed mesh with optional world-error clustering."},
+    {"solve_poisson",(PyCFunction)VDBGrid_solve_poisson,METH_VARARGS|METH_KEYWORDS,"Solve -div(k grad u)=rhs on active topology; return (grid, report)."},
+    {"prune",VDBGrid_prune,METH_NOARGS,"Return an independent exactly pruned float grid."},
+    {"save",(PyCFunction)VDBGrid_save,METH_VARARGS|METH_KEYWORDS,"Save this complete grid, including inactive values and tiles."},
+    {"to_bytes",(PyCFunction)VDBGrid_to_bytes,METH_VARARGS|METH_KEYWORDS,"Serialize this complete grid."},
     {"point_data_blob", VDBGrid_point_data_blob, METH_NOARGS, "Get opaque PointData payload as bytes"},
     {"set_point_data_blob", VDBGrid_set_point_data_blob, METH_VARARGS, "Replace opaque PointData payload from bytes"},
-    {"active_voxel_count", VDBGrid_active_voxel_count, METH_NOARGS, "Number of active voxels across all leaves"},
-    {"active_bbox", VDBGrid_active_bbox, METH_NOARGS, "Voxel-space ((min), (max)) bbox enclosing all active leaves; None if empty"},
+    {"active_voxel_count", VDBGrid_active_voxel_count, METH_NOARGS, "Number of active voxels including active tile volumes"},
+    {"active_bbox", VDBGrid_active_bbox, METH_NOARGS, "Exact active voxel/tile bbox with exclusive maximum; None if empty/unrepresentable"},
     {"float_background", VDBGrid_float_background, METH_NOARGS, "Root-tile background value (float grids only; 0 otherwise)"},
     {"materialize_dense", (PyCFunction)VDBGrid_materialize_dense, METH_VARARGS | METH_KEYWORDS, "Materialize a voxel-space sub-bbox into a DenseGrid"},
     {"dilate_active", (PyCFunction)VDBGrid_dilate_active, METH_VARARGS | METH_KEYWORDS, "Leaf-stamp 6-neighbor min over active voxels; returns {coords, values, count}"},
@@ -1310,14 +1886,10 @@ static PyType_Spec VDBGrid_spec = {
 /*  VDBFile type                                                            */
 /* ======================================================================== */
 
-typedef struct {
-    PyObject_HEAD
-    tvdb_file_t file;
-    int is_open;
-    PyObject *bytes_ref;
-} PyVDBFile;
+
 
 static PyObject *VDBGrid_set_point_data_blob(PyObject *self, PyObject *args) {
+    if(!view_valid(((PyVDBGrid*)self)->file_ref,((PyVDBGrid*)self)->generation))return NULL;
     PyVDBGrid *g = (PyVDBGrid *)self;
     Py_buffer view;
     if (!PyArg_ParseTuple(args, "y*", &view)) return NULL;
@@ -1347,7 +1919,7 @@ static PyObject *VDBGrid_set_point_data_blob(PyObject *self, PyObject *args) {
                                                      (size_t)view.len, &err);
     PyBuffer_Release(&view);
     if (st != TVDB_OK) return raise_tvdb_status(st, &err);
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 static void VDBFile_dealloc(PyObject *self) {
@@ -1369,6 +1941,7 @@ static PyObject *VDBFile_new(PyTypeObject *type, PyObject *args, PyObject *kw) {
 
 static int VDBFile_init(PyObject *self, PyObject *args, PyObject *kw) {
     PyVDBFile *f = (PyVDBFile *)self;
+    if(f->is_open || f->busy || f->bytes_ref) { PyErr_SetString(PyExc_ValueError,"VDBFile is already initialized");return -1; }
     const char *path = NULL;
     Py_buffer buf = {0};
     static char *kwlist[] = {"path", "data", NULL};
@@ -1387,10 +1960,12 @@ static int VDBFile_init(PyObject *self, PyObject *args, PyObject *kw) {
     tvdb_status_t status;
 
     if (path) {
-        Py_BEGIN_ALLOW_THREADS
+        f->busy=1;
+    Py_BEGIN_ALLOW_THREADS
         status = tvdb_file_open(&f->file, path, NULL, &err);
         Py_END_ALLOW_THREADS
-        if (status != TVDB_OK) { raise_tvdb_status(status, &err); return -1; }
+    f->busy=0;
+        if (status != TVDB_OK) { tvdb_file_close(&f->file);Py_CLEAR(f->bytes_ref);raise_tvdb_status(status, &err); return -1; }
         f->is_open = 1;
     } else if (buf.buf) {
         f->bytes_ref = PyBytes_FromStringAndSize(buf.buf, buf.len);
@@ -1400,10 +1975,12 @@ static int VDBFile_init(PyObject *self, PyObject *args, PyObject *kw) {
         const uint8_t *data = (const uint8_t *)PyBytes_AsString(f->bytes_ref);
         Py_ssize_t len = PyBytes_Size(f->bytes_ref);
 
-        Py_BEGIN_ALLOW_THREADS
+        f->busy=1;
+    Py_BEGIN_ALLOW_THREADS
         status = tvdb_file_open_memory(&f->file, data, (size_t)len, NULL, &err);
         Py_END_ALLOW_THREADS
-        if (status != TVDB_OK) { raise_tvdb_status(status, &err); return -1; }
+    f->busy=0;
+        if (status != TVDB_OK) { tvdb_file_close(&f->file);Py_CLEAR(f->bytes_ref);raise_tvdb_status(status, &err); return -1; }
         f->is_open = 1;
     }
 
@@ -1411,16 +1988,16 @@ static int VDBFile_init(PyObject *self, PyObject *args, PyObject *kw) {
 }
 
 #define CHECK_OPEN(f) do { \
-    if (!(f)->is_open) { \
-        PyErr_SetString(PyExc_ValueError, "VDB file is closed"); \
+    if (!file_available(f)) { \
         return NULL; \
     } \
 } while (0)
 
 static PyObject *VDBFile_close(PyObject *self, PyObject *Py_UNUSED(a)) {
     PyVDBFile *f = (PyVDBFile *)self;
-    if (f->is_open) { tvdb_file_close(&f->file); f->is_open = 0; }
-    Py_RETURN_NONE;
+    if(f->busy) { PyErr_SetString(PyExc_RuntimeError,"VDB owner is busy");return NULL; }
+    if (f->is_open) { tvdb_file_close(&f->file); f->is_open = 0; ++f->generation; }
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *VDBFile_read_grids(PyObject *self, PyObject *Py_UNUSED(a)) {
@@ -1428,11 +2005,14 @@ static PyObject *VDBFile_read_grids(PyObject *self, PyObject *Py_UNUSED(a)) {
     CHECK_OPEN(f);
     tvdb_error_t err; memset(&err, 0, sizeof(err));
     tvdb_status_t status;
+    ++f->generation;
+    f->busy=1;
     Py_BEGIN_ALLOW_THREADS
     status = tvdb_read_all_grids(&f->file, &err);
     Py_END_ALLOW_THREADS
+    f->busy=0;
     if (status != TVDB_OK) return raise_tvdb_status(status, &err);
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *VDBFile_get_grid_count(PyObject *self, void *c) {
@@ -1479,6 +2059,7 @@ static PyObject *VDBFile_grid(PyObject *self, PyObject *args) {
     g->file_ref = self;
     Py_INCREF(self);
     g->grid = &f->file.grids[idx];
+    g->generation=f->generation;
     return (PyObject *)g;
 }
 
@@ -1516,15 +2097,18 @@ static PyObject *VDBFile_extend_grid_from_sparse(PyObject *self, PyObject *args,
         return NULL;
     }
     int rc;
+    f->busy=1;
     Py_BEGIN_ALLOW_THREADS
     rc = tvdb_py_extend_grid_from_sparse(&f->file, (size_t)grid_idx,
                                          (const int32_t *)cb.buf,
                                          (const float *)vb.buf, count,
                                          new_name, background);
     Py_END_ALLOW_THREADS
+    f->busy=0;
     PyBuffer_Release(&cb); PyBuffer_Release(&vb);
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
-    Py_RETURN_NONE;
+    ++f->generation;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *VDBFile_replace_grid_from_sparse(PyObject *self, PyObject *args, PyObject *kw) {
@@ -1554,15 +2138,18 @@ static PyObject *VDBFile_replace_grid_from_sparse(PyObject *self, PyObject *args
         return NULL;
     }
     int rc;
+    f->busy=1;
     Py_BEGIN_ALLOW_THREADS
     rc = tvdb_py_replace_grid_from_sparse(&f->file, (size_t)grid_idx,
                                           (const int32_t *)cb.buf,
                                           (const float *)vb.buf, count,
                                           new_name, background);
     Py_END_ALLOW_THREADS
+    f->busy=0;
     PyBuffer_Release(&cb); PyBuffer_Release(&vb);
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
-    Py_RETURN_NONE;
+    ++f->generation;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *VDBFile_save(PyObject *self, PyObject *args, PyObject *kw) {
@@ -1575,11 +2162,13 @@ static PyObject *VDBFile_save(PyObject *self, PyObject *args, PyObject *kw) {
         return NULL;
     tvdb_error_t err; memset(&err, 0, sizeof(err));
     tvdb_status_t status;
+    f->busy=1;
     Py_BEGIN_ALLOW_THREADS
     status = tvdb_file_save(&f->file, path, compression, level, use_mmap, &err);
     Py_END_ALLOW_THREADS
+    f->busy=0;
     if (status != TVDB_OK) return raise_tvdb_status(status, &err);
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *VDBFile_to_bytes(PyObject *self, PyObject *args, PyObject *kw) {
@@ -1591,9 +2180,11 @@ static PyObject *VDBFile_to_bytes(PyObject *self, PyObject *args, PyObject *kw) 
     tvdb_error_t err; memset(&err, 0, sizeof(err));
     uint8_t *out_data = NULL; size_t out_size = 0;
     tvdb_status_t status;
+    f->busy=1;
     Py_BEGIN_ALLOW_THREADS
     status = tvdb_write_to_memory(&f->file, compression, level, &out_data, &out_size, &err);
     Py_END_ALLOW_THREADS
+    f->busy=0;
     if (status != TVDB_OK) return raise_tvdb_status(status, &err);
     PyObject *result = PyBytes_FromStringAndSize((const char *)out_data, (Py_ssize_t)out_size);
     free(out_data);
@@ -1602,7 +2193,7 @@ static PyObject *VDBFile_to_bytes(PyObject *self, PyObject *args, PyObject *kw) 
 
 static PyObject *VDBFile_get_header(PyObject *self, void *c) {
     PyVDBFile *f = (PyVDBFile *)self;
-    if (!f->is_open) Py_RETURN_NONE;
+    if (!f->is_open) TVDB_PY_RETURN_NONE;
     tvdb_header_t *h = &f->file.header;
     PyObject *d = PyDict_New();
     if (!d) return NULL;
@@ -1707,20 +2298,24 @@ static PyObject *mod_from_bytes(PyObject *module, PyObject *args) {
 static float *extract_floats(PyObject *obj, Py_ssize_t *count) {
     Py_buffer buf;
     if (PyObject_GetBuffer(obj, &buf, PyBUF_C_CONTIGUOUS) < 0) return NULL;
+    if(buf.len % (Py_ssize_t)sizeof(float)) { PyBuffer_Release(&buf);PyErr_SetString(PyExc_ValueError,"float buffer length must be a multiple of four");return NULL; }
     *count = buf.len / (Py_ssize_t)sizeof(float);
-    float *data = (float *)malloc((size_t)buf.len);
+    float *data = (float *)malloc(buf.len ? (size_t)buf.len : 1);
     if (data) memcpy(data, buf.buf, (size_t)buf.len);
     PyBuffer_Release(&buf);
+    if(!data)PyErr_NoMemory();
     return data;
 }
 
 static uint32_t *extract_uint32s(PyObject *obj, Py_ssize_t *count) {
     Py_buffer buf;
     if (PyObject_GetBuffer(obj, &buf, PyBUF_C_CONTIGUOUS) < 0) return NULL;
+    if(buf.len % (Py_ssize_t)sizeof(uint32_t)) { PyBuffer_Release(&buf);PyErr_SetString(PyExc_ValueError,"index buffer length must be a multiple of four");return NULL; }
     *count = buf.len / (Py_ssize_t)sizeof(uint32_t);
-    uint32_t *data = (uint32_t *)malloc((size_t)buf.len);
+    uint32_t *data = (uint32_t *)malloc(buf.len ? (size_t)buf.len : 1);
     if (data) memcpy(data, buf.buf, (size_t)buf.len);
     PyBuffer_Release(&buf);
+    if(!data)PyErr_NoMemory();
     return data;
 }
 
@@ -1742,6 +2337,7 @@ static PyObject *mod_mesh_to_sdf(PyObject *module, PyObject *args, PyObject *kw)
     if (!verts) return NULL;
     uint32_t *faces = extract_uint32s(faces_obj, &nuints);
     if (!faces) { free(verts); return NULL; }
+    if(nfloats%3 || nuints%3) { free(verts);free(faces);PyErr_SetString(PyExc_ValueError,"vertices and faces must contain complete triples");return NULL; }
 
     float *out_data = NULL;
     int nx, ny, nz; float out_vs, ox, oy, oz;
@@ -1793,7 +2389,7 @@ static PyObject *mod_write_float_grid(PyObject *module, PyObject *args, PyObject
     Py_END_ALLOW_THREADS
     free(vals);
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 /* Typed dense writer: values/background are raw element-byte buffers and dtype
@@ -1856,7 +2452,7 @@ static PyObject *mod_write_grid(PyObject *module, PyObject *args, PyObject *kw) 
     Py_END_ALLOW_THREADS
     PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 /* Typed sparse writer: coords is an int32 xyz-triple buffer, values/background
@@ -1919,7 +2515,7 @@ static PyObject *mod_write_sparse_grid(PyObject *module, PyObject *args, PyObjec
     Py_END_ALLOW_THREADS
     PyBuffer_Release(&coords_buf); PyBuffer_Release(&values_buf); PyBuffer_Release(&bg_buf);
     if (rc != 0) return raise_vdb_error(tvdb_py_last_error());
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 /* ---- Level-set primitive generators -> DenseGrid ---- */
@@ -2225,6 +2821,7 @@ static PyObject *mod_make_manifold(PyObject *module, PyObject *args, PyObject *k
     if (!verts) return NULL;
     uint32_t *faces = extract_uint32s(faces_obj, &nuints);
     if (!faces) { free(verts); return NULL; }
+    if(nfloats%3 || nuints%3) { free(verts);free(faces);PyErr_SetString(PyExc_ValueError,"vertices and faces must contain complete triples");return NULL; }
     float *out_verts = NULL; uint32_t *out_tris = NULL; size_t out_nv, out_nt;
     int rc;
     Py_BEGIN_ALLOW_THREADS
@@ -3031,7 +3628,7 @@ static PyObject *mod_ray_cast_sdf(PyObject *module, PyObject *args, PyObject *kw
                          ray_ox, ray_oy, ray_oz, ray_dx, ray_dy, ray_dz, max_t,
                          &hit, &t, &px, &py, &pz, &nx, &ny, &nz);
     Py_END_ALLOW_THREADS
-    if (!hit) Py_RETURN_NONE;
+    if (!hit) TVDB_PY_RETURN_NONE;
     return Py_BuildValue("{s:f,s:(fff),s:(fff)}", "t", t,
                          "position", px, py, pz, "normal", nx, ny, nz);
 }
@@ -3332,7 +3929,7 @@ static PyObject *mod_splat_trilinear(PyObject *module, PyObject *args, PyObject 
                             g->ox, g->oy, g->oz, pts, vals, n, weights);
     Py_END_ALLOW_THREADS
     free(pts); free(vals);
-    if (!with_weights) { Py_RETURN_NONE; }
+    if (!with_weights) { TVDB_PY_RETURN_NONE; }
     PyObject *wgrid = DenseGrid_from_c(st->DenseGridType, weights,
                                        g->nx, g->ny, g->nz,
                                        g->voxel_size, g->ox, g->oy, g->oz);
@@ -3466,7 +4063,7 @@ static PyObject *mod_prune_grid(PyObject *module, PyObject *args, PyObject *kw) 
     tvdb_py_prune_grid(g->data, g->nx, g->ny, g->nz, g->voxel_size,
                        g->ox, g->oy, g->oz, background, tolerance);
     Py_END_ALLOW_THREADS
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *mod_integrate_tsdf_into(PyObject *module, PyObject *args, PyObject *kw) {
@@ -3509,7 +4106,7 @@ static PyObject *mod_integrate_tsdf_into(PyObject *module, PyObject *args, PyObj
     Py_END_ALLOW_THREADS
     free(depth); free(pose);
     if (rc != 0) return raise_vdb_error("integrate_tsdf_into failed");
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *mod_integrate_tsdf_with_color_into(PyObject *module, PyObject *args, PyObject *kw) {
@@ -3564,7 +4161,7 @@ static PyObject *mod_integrate_tsdf_with_color_into(PyObject *module, PyObject *
     PyBuffer_Release(&rgb_buf);
     free(depth); free(pose);
     if (rc != 0) return raise_vdb_error("integrate_tsdf_with_color_into failed");
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *mod_merge_grids(PyObject *module, PyObject *args, PyObject *kw) {

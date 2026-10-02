@@ -18,6 +18,11 @@ tvdb_status_t tvdb_mesh_sdf_create(const tvdb_triangle_mesh *mesh, tvdb_mesh_sdf
                                    tvdb_error_t *err);
 void tvdb_mesh_sdf_destroy(tvdb_mesh_sdf_t *workspace);
 void tvdb_mesh_sdf_info(const tvdb_mesh_sdf_t *workspace, tvdb_mesh_sdf_info_t *out);
+/* Unsigned closest-triangle distance at a finite world point. Output is
+ * preserved on failure; the workspace continues borrowing the mesh. BVH
+ * traversal rounds query positions to float; returned distance uses double. */
+tvdb_status_t tvdb_mesh_sdf_distance(const tvdb_mesh_sdf_t *workspace,
+    const double point[3], double *distance, tvdb_error_t *err);
 /* Generate a padded, cell-centered dense lattice with values clamped to band.
  * Positive finite spacing/band required; each dimension is capped at 2048.
  * out must be an initialized owning grid, and must not overlap the input mesh.

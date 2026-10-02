@@ -2,7 +2,11 @@
 
 Lightweight Python bindings for [TinyVDB](https://github.com/syoyo/tinyvdb) — a lightweight C/C++ library for OpenVDB and NanoVDB file I/O, mesh-to-SDF conversion, and grid operations. No OpenVDB dependency required.
 
-Built with the Python C Stable API (abi3) for broad compatibility: one wheel per platform works across Python 3.11+.
+Built with the Python C Stable API (abi3) for broad compatibility: one wheel per platform works across CPython 3.11+.
+
+The 0.10.0 release candidate adds owning tree-maintenance results and sparse
+rebuild, resampling, meshing, and Poisson methods. Python views raise errors
+after their source is closed, reloaded, or replaced.
 
 ## Installation
 
@@ -17,6 +21,14 @@ Pre-built wheels are available for:
 | Linux | x86_64, aarch64 |
 | macOS | x86_64, arm64 |
 | Windows | AMD64 |
+
+Default wheels use portable scalar CPU kernels and do not require AVX2, OpenMP,
+Vulkan, or CUDA. NumPy is optional for array convenience functions. To enable
+SIMD when compiling from source for a compatible machine:
+
+```bash
+pip install --no-binary=tinyvdb tinyvdb -Ccmake.define.TINYVDB_SIMD=ON
+```
 
 ## Quick start
 
@@ -44,11 +56,12 @@ with tinyvdb.open("smoke.vdb") as f:
 ### Read a NanoVDB file
 
 ```python
-import tinyvdb
+from contextlib import closing
+from tinyvdb import nanovdb
 
-with tinyvdb.NanoVDBFile("sphere.nvdb") as f:
-    print(f.grid_count, "grids")
-    for i in range(f.grid_count):
+with closing(nanovdb.NanoVDBFile("sphere.nvdb")) as f:
+    print(f.grid_count(), "grids")
+    for i in range(f.grid_count()):
         print(f"  Grid {i}: {f.grid_name(i)}")
         print(f"  Type: {f.grid_type(i)}")
         print(f"  Class: {f.grid_class(i)}")
@@ -62,20 +75,20 @@ with tinyvdb.NanoVDBFile("sphere.nvdb") as f:
 ### NanoVDB utilities
 
 ```python
-import tinyvdb
+from tinyvdb import nanovdb
 
 # Node sizes
-leaf_size = tinyvdb.leaf_node_size()          # Default: Float
-lower_size = tinyvdb.lower_node_size()         # Default: Float
-upper_size = tinyvdb.upper_node_size()         # Default: Float
+leaf_size = nanovdb.leaf_node_size()          # Default: Float
+lower_size = nanovdb.lower_node_size()         # Default: Float
+upper_size = nanovdb.upper_node_size()         # Default: Float
 
 # Value sizes
-float_size = tinyvdb.value_size()              # 4 bytes
-vec3f_size = tinyvdb.value_size(tinyvdb.GRID_TYPE_VEC3F)  # 12 bytes
-double_size = tinyvdb.value_size(tinyvdb.GRID_TYPE_DOUBLE) # 8 bytes
+float_size = nanovdb.value_size()              # 4 bytes
+vec3f_size = nanovdb.value_size(nanovdb.GRID_TYPE_VEC3F)  # 12 bytes
+double_size = nanovdb.value_size(nanovdb.GRID_TYPE_DOUBLE) # 8 bytes
 
 # Grid type names
-name = tinyvdb.grid_type_name(tinyvdb.GRID_TYPE_FLOAT)  # "Float"
+name = nanovdb.grid_type_name(nanovdb.GRID_TYPE_FLOAT)  # "Float"
 ```
 
 ### Load from bytes / save round-trip
@@ -398,6 +411,8 @@ arr = np.frombuffer(grid, dtype=np.float32).reshape(grid.shape)
 | `SIGN_FLOOD_FILL` | 0 | Exterior flood fill sign method |
 | `SIGN_SWEEP` | 1 | Directional sweep sign method |
 
+NanoVDB constants below are available through `tinyvdb.nanovdb`.
+
 #### NanoVDB Codecs
 
 | Constant | Value | Description |
@@ -424,6 +439,109 @@ arr = np.frombuffer(grid, dtype=np.float32).reshape(grid.shape)
 | `GRID_CLASS_LEVEL_SET` | 1 | Level set |
 | `GRID_CLASS_FOG_VOLUME` | 2 | Fog volume |
 | `GRID_CLASS_POINT_DATA` | 6 | Point data |
+
+## Loaded-tree maintenance and ownership
+
+```python
+with tinyvdb.open("sphere.vdb") as f:
+    f.read_grids()
+    grid = f.grid(0)
+    report = grid.diagnose()  # generic finite-value/structural/transform checks
+    level_set = grid.diagnose(kind="level_set", check_gradient=True, tolerance=0.1)
+    result = grid.signed_flood_fill().prune()
+
+# The result owns an independent tree and remains usable after f closes.
+result.save("maintained.vdb")
+payload = result.to_bytes()
+```
+
+`diagnose(kind="generic" | "level_set" | "fog", check_gradient=False,
+tolerance=0.1)` returns `valid`, `flags`, active voxel/tile counts, exact int64
+`active_bbox` (exclusive maximum, or `None`), `nonfinite_values`, first bad node
+and coordinate, and gradient statistics (`band_count`, `mean_grad_mag`,
+`max_grad_error`, `bad_fraction`). Gradient checks require `kind="level_set"`.
+Flags match `tinyvdb_tree.h`: nonfinite=1, transform=2, background=4, active
+tiles=8, range=16, inactive=32, gradient=64, class=128. Numeric defects are reports;
+unsupported or structurally invalid trees raise `VDBError`.
+
+`signed_flood_fill(outside_width=None, inside_width=None)` defaults to the root
+background and its negation. Widths are finite positive/negative float world
+distances. Use only on closed narrow bands; it propagates signs rather than
+reconstructing distance. `prune()` is exact, preserving value bits and active
+states; mixed signs/states never collapse. Both methods are float-tree only,
+reject nonfinite data, return independently owned `VDBGrid` objects and preserve
+the source. Flood fill rejects active tiles; pruning can create them. `to_sparse`
+and `to_sparse_typed` reject active tiles rather than silently omitting their
+volume. `save` and `to_bytes` serialize one grid using the existing compression
+arguments (`compression`, `level`; `save` also accepts `use_mmap`). Borrowed
+instance grids must first be made independent through maintenance.
+
+Borrowed grid/tree/node views keep their file owner alive, but explicit `close`,
+`read_grids`, `replace_grid_from_sparse`, and `extend_grid_from_sparse` invalidate
+old views. Reacquire views after a reload or replacement. A reload invalidates
+views even when it fails; a failed replacement does not. Any successful grid
+replacement invalidates all views in that file. Access through a stale view
+raises `ValueError`. Competing owner/view calls while heavy work releases the GIL
+raise `RuntimeError`; serialize operations on the same owner. Dense constructors
+validate dimensions/geometry and refuse reinitialization, preserving exported
+buffers. Raw float/index input buffers require complete four-byte elements;
+mesh buffers require complete triples.
+
+## Sparse tracking, affine sampling, meshing and PDE
+
+```python
+with tinyvdb.open("sphere.vdb") as f:
+    f.read_grids()
+    source = f.grid(0).signed_flood_fill()
+    tracked = source.track_level_set(outside_width=3, inside_width=3)
+    rebuilt = source.rebuild_level_set(isovalue=0.2, outside_width=3, inside_width=3)
+    mesh = tracked.volume_to_mesh(adaptivity=0.05)
+    target = [[0, -0.5, 0.1, 0], [0.5, 0, 0, 0],
+              [0, 0, 0.75, 0], [0, 0, 0, 1]]
+    sampled = tracked.resample(target, sampler="linear")
+
+# All results remain usable independently after file closure.
+tracked.save("tracked.vdb")
+```
+
+`rebuild_level_set(isovalue=0, outside_width=background,
+inside_width=background, max_voxels=0)` reconstructs a world-distance band around
+a closed, resolved isosurface. `track_level_set` has the same width/budget
+arguments and uses isovalue zero. Both widths are positive magnitudes. These
+methods change active values and topology, require orthogonal isotropic axes and
+positive exterior background, and use geometric redistancing rather than
+iterative advection/tracking. A nonzero isovalue must still lie below background.
+They cannot repair unresolved/open surfaces.
+
+`resample(matrix, sampler="linear", max_voxels=0)` accepts four matrix rows or
+sixteen row-major values, mapping integer target indices to world coordinates.
+Nearest sampling uses `floor(x+0.5)` per source axis; linear sampling uses eight
+weighted taps. All finite invertible affine transforms are supported. Stored
+inactive values and tiles contribute; only nonzero-weight active taps activate
+the output. Values retain their scalar units; no redistancing is performed.
+
+`volume_to_mesh(isovalue=0, adaptivity=0, max_cells=0)` returns an owning
+`TriangleMesh`. Stored inactive values also determine the surface. Positive
+adaptivity bounds vertex displacement in world units, using global clustering;
+it does not guarantee topology preservation or manifoldness. Reflection-aware
+winding is outward for the phase below isovalue. No dense bounding box is built.
+
+`rhs.solve_poisson(max_iterations=500, tolerance=1e-6,
+boundary="dirichlet", boundary_value=0, coefficient=1, max_voxels=0)` returns
+`(solution, report)` for `-div(k grad u)=rhs` over active voxels. The report has
+`iterations`, `converged`, `initial_residual_norm` and `final_residual_norm`.
+Python exposes constant conductivity and uniform Dirichlet/Neumann data; C callers
+can supply per-face boundary and coefficient callbacks. Dirichlet values are at
+missing neighbor centers; Neumann values are outward flux at half-cell faces.
+Pure-Neumann components require compatible summed RHS/flux and get separate
+zero means. Orthogonal anisotropic axes are supported; shear is rejected. The
+solver starts at zero, uses double PCG, and checks residuals after float rounding.
+A finite iterate is returned on iteration exhaustion with `converged=False`.
+
+These methods preserve the source, produce independent libc-owned results and
+use the existing stale-view/busy-owner guards. Zero budgets select 1,000,000
+coordinates/cells; exceeding a working-set or scan budget raises `VDBError`.
+Active tiles can expand within these budgets. Sparse methods are CPU-only.
 
 ## Supported VDB versions
 

@@ -1,17 +1,18 @@
 [build-system]
-requires = ["scikit-build-core>=0.10"]
+requires = ["scikit-build-core>=0.11"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "tinyvdb"
-version = "0.9.0"
-description = "Lightweight OpenVDB and NanoVDB I/O (cross-validated against libopenvdb 13 / libnanovdb 32), mesh-to-SDF, dense/sparse grid ops, CPU autograd, Gaussian-splat rasterizer (forward+backward)"
+version = "0.10.0"
+description = "OpenVDB and NanoVDB I/O, sparse volume processing, mesh conversion, and CPU autograd"
 readme = "python/README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{name = "Syoyo Fujita"}]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: C",
     "Programming Language :: C++",
     "Topic :: Scientific/Engineering",
@@ -22,21 +23,37 @@ Homepage = "https://github.com/syoyo/tinyvdb"
 Repository = "https://github.com/syoyo/tinyvdb"
 
 [tool.scikit-build]
-cmake.args = [
-    "-DTINYVDB_BUILD_PYTHON=ON",
-    "-DTINYVDB_BUILD_EXAMPLES=OFF",
-    "-DTINYVDB_BUILD_VDBRENDER=OFF",
-    "-DTINYVDB_BUILD_TESTS=OFF",
-]
 wheel.py-api = "cp311"
+wheel.license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 wheel.packages = ["python/tinyvdb"]
 cmake.source-dir = "."
 cmake.version = ">=3.26"
 
+# Include the maintained fixtures even though local volume downloads are ignored.
+sdist.include = ["data/sphere-div1.vdb", "data/sphere-div2.vdb"]
+sdist.exclude = [
+    ".codex", ".codex/**", ".agents/**", ".aws/**", ".env", ".env.*",
+    "backport-tinyusdz-dense-decode/**", "build*/**", "Testing/**",
+    "dist/**", "wheelhouse/**", "**/__pycache__/**", "**/*.pyc",
+    "third_party/tinyexr/examples/**", "third_party/tinyexr/test/**",
+    "third_party/tinyexr/*.exr", "third_party/tinyexr/*.png",
+]
+
+[tool.scikit-build.cmake.define]
+TINYVDB_BUILD_PYTHON = "ON"
+TINYVDB_BUILD_EXAMPLES = "OFF"
+TINYVDB_BUILD_VDBRENDER = "OFF"
+TINYVDB_BUILD_TESTS = "OFF"
+TINYVDB_BUILD_GPU = "OFF"
+TINYVDB_BUILD_TVDBVIEW = "OFF"
+TINYVDB_SIMD = "OFF"
+TINYVDB_OPENMP = "OFF"
+TINYVDB_USE_CCACHE = "OFF"
+
 [tool.cibuildwheel]
 build = "cp311-*"
 skip = "*-musllinux_i686"
-test-requires = "pytest"
+test-requires = ["pytest", "numpy"]
 test-command = "pytest {project}/python/tests -x"
 
 [tool.cibuildwheel.linux]

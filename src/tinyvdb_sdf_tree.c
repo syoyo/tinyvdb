@@ -1,5 +1,6 @@
 #include "tinyvdb_sdf_tree.h"
 #include "tinyvdb_checked.h"
+#include "tinyvdb_tree_internal.h"
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
@@ -734,11 +735,12 @@ static void sdf_commit(size_t begin, size_t end, void *user) {
         }
     }
 }
-tvdb_status_t tvdb_sdf_tree_filter(tvdb_sdf_tree_t *p, tvdb_sdf_filter_t kind, int iterations,
-                                   tvdb_error_t *err) {
+static tvdb_status_t sdf_filter_values(tvdb_sdf_tree_t *p, tvdb_sdf_filter_t kind, int iterations,
+                                   float **result, tvdb_error_t *err) {
     if (!p || kind < TVDB_SDF_FILTER_MEAN || kind > TVDB_SDF_FILTER_ERODE || iterations < 0)
         return sdf_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid SDF filter arguments");
     tvdb_status_t st = sdf_prepare(p, err);
+    *result = p->values[0];
     if (st != TVDB_OK || !iterations || !p->nactive)
         return st;
     if (!p->values[1]) {
@@ -761,8 +763,49 @@ tvdb_status_t tvdb_sdf_tree_filter(tvdb_sdf_tree_t *p, tvdb_sdf_filter_t kind, i
             input = output;
             output = tmp;
         }
-    sdf_commit_job job = {p, input, 0};
-    return tvdb_thread_pool_for(p->pool, 0, p->nleaves, 1, sdf_commit, &job, err);
+    *result=input;return TVDB_OK;
+}
+tvdb_status_t tvdb_sdf_tree_filter(tvdb_sdf_tree_t *p,tvdb_sdf_filter_t kind,int iterations,
+                                 tvdb_error_t *err) {
+    float *result=NULL;
+    tvdb_status_t st=sdf_filter_values(p,kind,iterations,&result,err);
+    if(st!=TVDB_OK || !iterations || !p->nactive)return st;
+    sdf_commit_job job={p,result,0};
+    return tvdb_thread_pool_for(p->pool,0,p->nleaves,1,sdf_commit,&job,err);
+}
+tvdb_status_t tvdb_sdf_tree_filter_to_sparse(tvdb_sdf_tree_t *p,tvdb_sdf_filter_t kind,
+    int iterations,tvdb_sparse_grid *out,tvdb_error_t *err) {
+    if(!p || !out)return sdf_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid filter output");
+    tvdb_sparse_grid d={0};float origin[3];
+    if(!tvdb_tree_dense_geometry(&p->grid->transform,&d.voxel_size,origin))
+        return sdf_error(err,TVDB_ERROR_UNSUPPORTED_TRANSFORM,"flat output cannot represent this transform");
+    for(size_t i=0;i<p->grid->tree.num_nodes;++i) {
+        const tvdb_tree_node_t *n=p->grid->tree.nodes+i;
+        if(n->type==TVDB_NODE_ROOT) {
+            for(size_t t=0;t<n->u.root.num_tiles;++t)if(n->u.root.tile_active[t])
+                return sdf_error(err,TVDB_ERROR_UNIMPLEMENTED,"flat output requires active-tile expansion");
+        } else if(n->type==TVDB_NODE_INTERNAL && tvdb_nodemask_count_on(&n->u.internal.value_mask))
+            return sdf_error(err,TVDB_ERROR_UNIMPLEMENTED,"flat output requires active-tile expansion");
+    }
+    float *result=NULL;
+    tvdb_status_t st=sdf_filter_values(p,kind,iterations,&result,err);
+    if(st!=TVDB_OK)return st;
+    d.ox=origin[0];d.oy=origin[1];d.oz=origin[2];
+    if(!tvdb_sparse_grid_reserve(&d,p->nactive))
+        return sdf_error(err,TVDB_ERROR_OUT_OF_MEMORY,"filter output allocation failed");
+    for(size_t li=0;li<p->nleaves;++li)for(size_t w=0;w<p->nwords;++w) {
+        uint64_t bits=p->masks[li*p->nwords+w];
+        while(bits) {
+            unsigned b=sdf_first(bits);bits&=bits-1;
+            size_t slot=w*64+b;
+            d.coords[d.count].x=(int32_t)((int64_t)p->leaves[li].origin[0]+((slot>>(2*p->L))&(p->dim-1)));
+            d.coords[d.count].y=(int32_t)((int64_t)p->leaves[li].origin[1]+((slot>>p->L)&(p->dim-1)));
+            d.coords[d.count].z=(int32_t)((int64_t)p->leaves[li].origin[2]+(slot&(p->dim-1)));
+            d.values[d.count++]=result[sdf_index(p,li,slot)];
+        }
+    }
+    tvdb_sparse_grid_free(out);*out=d;
+    return TVDB_OK;
 }
 typedef struct {
     tvdb_sdf_tree_t *p;

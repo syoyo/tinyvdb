@@ -27,7 +27,7 @@ static void tracked_free(void *p, size_t n, void *ctx) {
     if (p) { --t->live; free(p); }
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     /* One string-valued metadata entry: name="n", type="string", value="v". */
     static const uint8_t bytes[] = {
         1,0,0,0, 1,0,0,0,'n', 6,0,0,0,'s','t','r','i','n','g',
@@ -60,5 +60,27 @@ int main(void) {
     tvdb_grid_destroy_owned(&grid);
     tvdb_grid_destroy_owned(&grid);
     if (t.live) { fprintf(stderr,"owned grid leaked %zu metadata allocations\n",t.live); ++failures; }
+    /* Repeated reads replace independent payloads; a failed reload preserves
+       existing grids, and frees every partially loaded allocation. */
+    if (argc > 1) {
+        tracker rt = {0};
+        tvdb_allocator_t ra = {tracked_alloc, tracked_realloc, tracked_free, &rt};
+        tvdb_file_t file = {0};
+        if (tvdb_file_open(&file, argv[1], &ra, &err) != TVDB_OK ||
+            tvdb_read_all_grids(&file, &err) != TVDB_OK) return 1;
+        size_t loaded_live = rt.live;
+        for (int pass = 0; pass < 3; ++pass) {
+            tvdb_tree_node_t *prior = file.grids[0].tree.nodes;
+            if (tvdb_read_all_grids(&file, &err) != TVDB_OK ||
+                file.grids[0].tree.nodes == prior || rt.live != loaded_live) ++failures;
+        }
+        tvdb_tree_node_t *prior = file.grids[0].tree.nodes;
+        rt.fail = rt.calls + 1;
+        if (tvdb_read_all_grids(&file, &err) == TVDB_OK ||
+            file.grids[0].tree.nodes != prior || rt.live != loaded_live) ++failures;
+        rt.fail = 0;
+        tvdb_file_close(&file);
+        if (rt.live) { fprintf(stderr,"reload leaked %zu allocations\n",rt.live); ++failures; }
+    }
     return failures ? 1 : 0;
 }

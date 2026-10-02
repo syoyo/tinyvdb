@@ -6,6 +6,10 @@ TinyVDB provides lightweight C/C++ libraries for working with OpenVDB data. It i
 
 TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, physics simulation, and any project that needs lightweight VDB functionality.
 
+The 0.10.0 release candidate adds checked tree maintenance and sparse volume
+tools. See the [release notes](CHANGELOG.md) for new APIs, behavior changes, and
+migration details. Python bindings require Python 3.11 or newer.
+
 ## Modules
 
 All public APIs are pure-C11 with `extern "C"` linkage (consumable from
@@ -21,6 +25,8 @@ C and C++).
 | `tinyvdb_sample.h` / `tinyvdb_tsdf.h` | Trilinear sampling/splatting; depth-frame TSDF fusion (single-frame and in-place multi-frame) |
 | `tinyvdb_topology.h` / `tinyvdb_ray.h` | Coarsen / refine / prune / clip / merge / pool; Amanatides–Woo DDA, ray-cast SDF, segments-along-ray, batched marching cubes |
 | `tinyvdb_sparse.h` / `tinyvdb_sparse_tree.h` | Flat sparse-grid representation (hash-based CSG/morphology, sparse 3D conv); operations on a loaded `tvdb_grid_t` (leaf iter, dilate/erode active or topology, tree-aware CSG, from-scratch rebuilders) |
+| `tinyvdb_tree.h` | Checked float-tree diagnostics, signed flood fill, exact pruning and sparse/dense bridges |
+| `tinyvdb_sparse_tools.h` | Sparse level-set tracking/rebuild, affine resampling, indexed/adaptive meshing and Poisson/PDE domains |
 | `tinyvdb_sdf_tree.h` | In-place hierarchical SDF fast sweeping, filtering, morphology and offsets with compact active-voxel workspaces |
 | `tinyvdb_thread.h` | Reusable synchronous task pool: C11, GCD, pthread or serial backend |
 | `tinyvdb_autograd.h` | Per-op CPU VJPs (sample, splat, CSG, sparse_conv3d) — framework-free |
@@ -61,6 +67,139 @@ On fp64-capable devices, GPU Poisson retains vectors, projection, PCG updates,
 and double reductions on the device. Host decisions read reduced scalars and
 dependent kernels share submissions. The float host API on devices without
 fp64 retains its vector-transfer implementation.
+
+### Checked tree maintenance
+
+`tinyvdb_tree.h` provides `tvdb_grid_diagnose`,
+`tvdb_grid_signed_flood_fill`, and `tvdb_grid_prune` for loaded float trees.
+Maintenance constructors take distinct initialized owning outputs (`{0}` is
+valid), preserve source and destination on failure, and produce independent
+libc-owned grids freed with `tvdb_grid_destroy_owned`. Source workspaces and
+borrowed views remain valid when a separate result is constructed. Metadata,
+transforms and active values/states are copied; maintenance accepts no custom
+output allocator. Point grids and other value types are unsupported.
+
+Diagnostics validate hierarchy, masks, child indices, buffers and coordinates
+before inspecting values. Numeric defects return a report with `valid=0`;
+structural/type/allocation errors return an error status and preserve the prior
+report. Generic diagnostics require finite stored values and a finite invertible
+affine transform. Level-set checks additionally require a positive symmetric
+background, orthogonal uniform scale, no active tiles, valid band values and
+string `class="level set"` metadata. Fog checks require zero background/inactive
+values, active values in `[0,1]`, and `class="fog volume"`. Optional central
+world-distance gradient checks apply to active level-set voxels inside the band;
+tolerance is absolute and also applies to value checks.
+
+Signed flood fill propagates signs through inactive voxels and tiles in a
+**closed narrow-band level set**. It preserves active values and masks, accepts
+positive exterior and negative interior widths in world units, and rejects
+active tiles/nonfinite values. It does not validate watertightness or rebuild
+distances. Exact pruning collapses only identical float bit patterns and active
+states, preserving mixed signs and signed zero distinctions. It compacts nodes
+and child arrays and may produce active tiles.
+
+Active counts include tile volumes; bounds describe the exact active region
+with an exclusive maximum. Legacy int32 bounds return false when that maximum
+is unrepresentable; diagnostic bounds use int64. Flat extraction explicitly
+rejects active-tile expansion. Flat sparse/dense bridges and morphology require
+positive axis-aligned isotropic spacing representable in their float geometry.
+Dense materialization fills inactive cells with the caller's background, while
+morphology/CSG sample each source's stored inactive values. Morphology uses fixed
+inactive boundaries in every iteration and accepts zero iterations as identity.
+All tree CSG operations use union active topology and require identical complete
+transforms. `_ex` bridges report errors and replace initialized owning outputs
+only on success; the legacy dense constructor accepts an uninitialized output.
+
+CPU Gaussian rasterization now sorts complete symmetric tile footprints by
+tile, depth and input index. It has no per-splat tile cap, composites the
+background with final transmittance, validates finite inputs/positive semidefinite
+conics, and keeps failed outputs safely destructible. Backward replays the same
+ordering and termination decisions, supports opaque splats, and preserves gradient
+accumulators on failure. GPU hash voxelization publishes all three coordinates
+before allowing duplicate comparisons; threads skip slots still being written.
+
+Optional OpenVDB maintenance comparisons need a matching installed header/library
+pair and C++17, TBB and Imath. The default library has no OpenVDB dependency:
+
+```sh
+cmake -S . -B /tmp/tinyvdb-oracle -G Ninja \
+  -DTINYVDB_BUILD_TESTS=ON -DTINYVDB_BUILD_OPENVDB_TESTS=ON \
+  -DTINYVDB_BUILD_GPU=OFF -DTINYVDB_BUILD_EXAMPLES=OFF \
+  -DTINYVDB_BUILD_VDBRENDER=OFF
+cmake --build /tmp/tinyvdb-oracle
+ctest --test-dir /tmp/tinyvdb-oracle -R openvdb --output-on-failure
+```
+
+### Sparse tools inspired by OpenVDB
+
+`tinyvdb_sparse_tools.h` adds all four feature groups identified in the OpenVDB
+source review at `86b5ea9e` (13.1.1 configuration). The library remains C11 and has
+no OpenVDB dependency. Optional reference tests use matching installed OpenVDB
+10.0.1 headers/libraries, comparing interpolation, rebuild distances, surface
+geometry and immediate-neighbor Poisson solutions.
+
+| API | Behavior |
+|---|---|
+| `tvdb_grid_level_set_rebuild` / `tvdb_grid_level_set_track` | Reconstruct a piecewise-linear isosurface, compute closest-triangle world distances with a BVH, expand/trim the narrow band, fill inactive signs and prune. Tracking rebuilds the zero isosurface after edits. |
+| `tvdb_grid_resample` | Resample scalar values into a complete affine target transform with nearest/trilinear interpolation. Includes inactive stored values and tiles; a sample is active when a nonzero-weight tap is active. |
+| `tvdb_grid_volume_to_mesh` | Indexed classic marching cubes over sparse stored regions and tile boundaries. Shared edges and reflection-aware outward winding; optional global vertex clustering bounded by a world-space displacement. |
+| `tvdb_grid_solve_poisson` | Solve `-div(k grad u)=rhs` on active topology, with double Jacobi-preconditioned CG, positive face conductivity callbacks and Dirichlet/Neumann boundary callbacks. |
+
+All outputs must be distinct initialized owning containers (`{0}` is valid).
+Success replaces the old output; errors preserve source, output and result
+reports. Grid results own libc storage and use the standard float 5/4/3 hierarchy;
+mesh results own heap vertex/face arrays. Metadata/transforms are copied, obsolete
+serialized-file statistics are removed, and PDE results get `class="unknown"`.
+Only float scalar trees are supported. These APIs run on the CPU.
+
+Working sets use complete int32 coordinate hashes, never a dense global bounding
+box. A zero coordinate/cell budget selects 1,000,000 entries. Resampling can expand
+constant tiles into individual samples before exact pruning; large transformed
+regions can exceed the budget. Meshing visits only constant-tile boundary slabs,
+with a scan limit of 32 times the cell budget. Budget, allocation, nonfinite and
+coordinate-overflow failures are explicit errors.
+
+Rebuild requires a closed, resolved narrow-band surface, positive exterior
+background relative to the isovalue, and orthogonal isotropic affine axes. Both
+band widths are **positive world-distance magnitudes**, unlike the negative
+interior argument to signed flood fill. It preserves the sampled surface rather
+than the old active values/topology. Asymmetric bands are supported, while the
+level-set diagnostic mode still requires symmetric bands. Distances are to the float mesh's
+piecewise-linear surface. It does not repair holes, advect the interface or use
+OpenVDB's iterative tracker. It has no iterative convergence parameter.
+Resampling accepts rotations, anisotropic scales and shear; scalar values retain
+their units and are not redistanced. Vector transformation policies remain future
+work.
+
+Meshing samples stored inactive values as well as active values; activity does
+not clip the surface. `adaptivity=0` disables reduction; positive adaptivity is a
+**world-space vertex-displacement bound**, not OpenVDB's `[0,1]` parameter.
+Globally shared clusters avoid separate leaf seams and remove faces with repeated
+indices. Classic MC ambiguity/exact-isovalue degeneracy and clustering can affect
+manifoldness or merge nearby components; topology preservation is not guaranteed.
+
+PDE axes must be orthogonal, but may have different spacing; shear requires a
+coupled stencil and is rejected. Dirichlet values are at missing neighbor centers.
+Neumann values are outward `k*du/dn` at half-cell faces, contributing `flux/h` to
+the RHS. Conductivity is evaluated once per undirected edge and used symmetrically.
+Each disconnected pure-Neumann component must have compatible summed RHS/flux
+(with a `1e-10` relative L1 rounding allowance) and receives a zero-mean solution.
+Mixed/Dirichlet components are anchored. Active tiles expand within the voxel
+budget. Inactive output values are zero; callbacks define boundary values.
+Iteration exhaustion returns a finite iterate with `converged=false`; residuals
+include final float storage rounding. Convergence uses relative L2 tolerance.
+
+The optional oracle command above runs both suites with `-R openvdb`. OpenVDB's
+Poisson comparison uses its staggered option to match immediate six-neighbor
+sampling; its default collocated stencil uses two-voxel offsets.
+
+Further parity work includes advection/iterative tracking, vector resampling,
+conservative adaptive meshing and stronger PDE preconditioners/GPU kernels.
+Reference interfaces:
+[LevelSetTracker](https://www.openvdb.org/documentation/doxygen/LevelSetTracker_8h.html),
+[GridTransformer](https://www.openvdb.org/documentation/doxygen/GridTransformer_8h.html),
+[VolumeToMesh](https://www.openvdb.org/documentation/doxygen/VolumeToMesh_8h.html), and
+[PoissonSolver](https://www.openvdb.org/documentation/doxygen/PoissonSolver_8h.html).
 
 ### Hierarchical SDF processing
 
@@ -633,7 +772,7 @@ pip install tinyvdb
 Or build from source:
 
 ```bash
-cd python && pip install .
+pip install .  # from the repository root
 ```
 
 Usage:
@@ -641,18 +780,19 @@ Usage:
 ```python
 import tinyvdb
 
+from contextlib import closing
+from tinyvdb import nanovdb
+
 # Open a NanoVDB file
-with tinyvdb.NanoVDBFile("input.nvdb") as f:
+with closing(nanovdb.NanoVDBFile("input.nvdb")) as f:
     print(f"Grids: {f.grid_count()}")
     for i in range(f.grid_count()):
         print(f"Grid {i}: {f.grid_name(i)}")
         print(f"  Type: {f.grid_type(i)}")
         print(f"  BBox: {f.bbox(i)}")
         print(f"  Voxel size: {f.voxel_size(i, 0)}")
-
-# Get a voxel value
-val = f.get(0, 100, 100, 100)
-print(f"Value at (100, 100, 100): {val}")
+    val = f.get(0, 100, 100, 100)
+    print(f"Value at (100, 100, 100): {val}")
 ```
 
 Writing:

@@ -7,7 +7,7 @@
 #ifndef Py_LIMITED_API
 #define Py_LIMITED_API 0x030B0000
 #endif
-#include <Python.h>
+#include "tinyvdb_python_compat.h"
 
 #include "tinyvdb_nanovdb.h"
 
@@ -81,7 +81,7 @@ static PyObject *NanoVDBFile_close(NanoVDBFile *self, PyObject *Py_UNUSED(ignore
         tvdb_nanovdb_file_close(&self->file);
         self->closed = 1;
     }
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *NanoVDBFile_grid_count(NanoVDBFile *self, PyObject *Py_UNUSED(ignored)) {
@@ -195,7 +195,7 @@ static PyObject *NanoVDBFile_save(NanoVDBFile *self, PyObject *args) {
         PyErr_SetString(PyExc_IOError, err.message);
         return NULL;
     }
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *NanoVDBFile_write_to_bytes(NanoVDBFile *self, PyObject *args) {
@@ -512,7 +512,7 @@ static PyObject *gaussian_splat_save(PyObject *self, PyObject *args) {
         PyErr_SetString(PyExc_IOError, err.message);
         return NULL;
     }
-    Py_RETURN_NONE;
+    TVDB_PY_RETURN_NONE;
 }
 
 static PyObject *gaussian_splat_create_from_arrays(PyObject *self, PyObject *args) {
@@ -654,7 +654,7 @@ PyMODINIT_FUNC PyInit__tinyvdb_nanovdb(void) {
         return NULL;
     }
 
-    if (PyModule_AddStringConstant(m, "__version__", "0.1.0") < 0) return NULL;
+    if (PyModule_AddStringConstant(m, "__version__", TINYVDB_PYTHON_VERSION) < 0) return NULL;
 
     return m;
 }

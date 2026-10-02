@@ -158,6 +158,24 @@ void tvdb_mesh_sdf_info(const tvdb_mesh_sdf_t *p, tvdb_mesh_sdf_info_t *out) {
             (size_t)p->bvh.node_capacity * sizeof(tvdb_bvh_node_t);
     }
 }
+tvdb_status_t tvdb_mesh_sdf_distance(const tvdb_mesh_sdf_t *p, const double point[3],
+                                    double *distance, tvdb_error_t *err) {
+    if (!p || !point || !distance || p->mesh->vertices != p->vertices ||
+        p->mesh->faces != p->faces || p->mesh->vertex_count != p->vertex_count ||
+        p->mesh->face_count != p->face_count)
+        return mesh_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid distance workspace");
+    for (int a = 0; a < 3; ++a)
+        if (!isfinite(point[a]) || fabs(point[a]) > FLT_MAX)
+            return mesh_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid distance point");
+    tvdb_vec3f q = {(float)point[0], (float)point[1], (float)point[2]}, cp, normal;
+    int32_t face;
+    tvdb_bvh_closest(&p->bvh, p->mesh, p->normals, q, INFINITY, -1, &cp, &normal, &face);
+    double d = hypot(hypot(point[0] - cp.x, point[1] - cp.y), point[2] - cp.z);
+    if (face < 0 || !isfinite(d))
+        return mesh_error(err, TVDB_ERROR_INVALID_DATA, "distance query failed");
+    *distance = d;
+    return TVDB_OK;
+}
 static tvdb_status_t mesh_lattice(const tvdb_mesh_sdf_t *p, float h, float band, tvdb_dense_grid *g,
                                   size_t *bytes, tvdb_error_t *err) {
     if (!isfinite(h) || h <= 0 || !isfinite(band) || band <= 0)
