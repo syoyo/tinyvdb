@@ -19,7 +19,10 @@ extern "C" {
 // the accumulated opacity (1-T) composited over `background`:
 //   pixel = (1 - T) + T * background.
 // `out_image` is a pre-allocated width*height float buffer (row-major, top row
-// first). Returns false on bad args.
+// first). Returns false on bad args: non-finite camera vectors, eye == center,
+// fov_y outside (0, pi), non-finite or non-positive step, non-finite sigma or
+// background, an invalid grid, or a step so small that crossing the grid
+// diagonal would take more than 2^24 samples per ray.
 bool tvdb_volume_render(const tvdb_dense_grid* density,
                         const float eye[3], const float center[3], const float up[3],
                         float fov_y, int width, int height,

@@ -102,6 +102,9 @@ size_t tvdb_grid_update_from_sparse(tvdb_grid_t *grid,
 // internal-node tiles. The voxel size and origin in `sg` are not used —
 // the template's transform is preserved.
 //
+// Duplicate coordinates are allowed; the first occurrence in `sg` wins (this
+// also applies to the typed and vec3 variants below).
+//
 // Currently supports only Tree_float_5_4_3 (two internal levels above leaf,
 // float value type). Returns false otherwise.
 //
@@ -141,7 +144,8 @@ bool tvdb_grid_from_sparse_vec3_using_template(const tvdb_grid_t *tmpl,
                                                tvdb_grid_t *out);
 
 // Topology-extending merge: rebuild grid as `existing` ∪ `sg` (sg wins on
-// overlap, new leaves are created where needed). Output ownership matches
+// overlap, new leaves are created where needed). Among duplicate coordinates
+// inside `sg`, the first occurrence wins. Output ownership matches
 // tvdb_grid_from_sparse_using_template. Float layouts only.
 bool tvdb_grid_extend_from_sparse(const tvdb_grid_t *existing,
                                   const tvdb_sparse_grid *sg,

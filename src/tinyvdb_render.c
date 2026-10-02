@@ -4,6 +4,16 @@
 #include "tinyvdb_sample.h"  // tvdb_sample_trilinear_dense
 
 #include <math.h>
+#include <stddef.h>
+
+// Upper bound on samples per ray. A step that would need more samples than
+// this to cross the grid diagonal is rejected instead of rendering for an
+// unbounded time (a step below the float spacing of t never advances).
+#define TVDB_RENDER_MAX_SAMPLES_PER_RAY (1 << 24)
+
+static bool v_finite(const float a[3]) {
+  return a && isfinite(a[0]) && isfinite(a[1]) && isfinite(a[2]);
+}
 
 static void v_sub(const float a[3], const float b[3], float o[3]) {
   o[0]=a[0]-b[0]; o[1]=a[1]-b[1]; o[2]=a[2]-b[2];
@@ -43,12 +53,29 @@ bool tvdb_volume_render(const tvdb_dense_grid* density,
                         float sigma, float step, float background,
                         float* out_image) {
   if (!density || !density->data || !out_image || width < 1 || height < 1 ||
-      step <= 0.0f || fov_y <= 0.0f)
+      density->nx < 1 || density->ny < 1 || density->nz < 1 ||
+      !(density->voxel_size > 0.0f) || !isfinite(density->voxel_size) ||
+      !isfinite(density->ox) || !isfinite(density->oy) || !isfinite(density->oz) ||
+      !v_finite(eye) || !v_finite(center) || !v_finite(up) ||
+      !(step > 0.0f) || !isfinite(step) || !isfinite(sigma) || !isfinite(background) ||
+      !(fov_y > 0.0f) || !(fov_y < 3.14159265f))
     return false;
+
+  // Bound the per-ray sample count by the grid diagonal, in double so the
+  // division cannot overflow, and keep `t` driven by an integer counter.
+  {
+    const double ex = (double)density->nx * density->voxel_size;
+    const double ey = (double)density->ny * density->voxel_size;
+    const double ez = (double)density->nz * density->voxel_size;
+    const double diag = sqrt(ex * ex + ey * ey + ez * ez);
+    if (!(diag / (double)step <= (double)TVDB_RENDER_MAX_SAMPLES_PER_RAY)) return false;
+  }
 
   // Camera basis. If `up` is (nearly) parallel to the view direction, the cross
   // product collapses — fall back to an alternate up axis.
-  float fwd[3]; v_sub(center, eye, fwd); v_norm(fwd);
+  float fwd[3]; v_sub(center, eye, fwd);
+  if (fwd[0]*fwd[0] + fwd[1]*fwd[1] + fwd[2]*fwd[2] <= 0.0f) return false;
+  v_norm(fwd);
   float right[3]; v_cross(fwd, up, right);
   if (right[0]*right[0] + right[1]*right[1] + right[2]*right[2] < 1e-12f) {
     float alt[3] = { 1.0f, 0.0f, 0.0f };
@@ -83,7 +110,12 @@ bool tvdb_volume_render(const tvdb_dense_grid* density,
 
       float t0, t1, transmit = 1.0f;
       if (ray_aabb(eye, dir, lo, hi, &t0, &t1) && t1 > t0) {
-        for (float t = t0 + 0.5f*step; t < t1 && transmit > 1e-3f; t += step) {
+        const double span = ((double)t1 - (double)t0) / (double)step;
+        long long n_samples = (long long)ceil(span - 0.5);
+        if (n_samples < 0) n_samples = 0;
+        if (n_samples > TVDB_RENDER_MAX_SAMPLES_PER_RAY) n_samples = TVDB_RENDER_MAX_SAMPLES_PER_RAY;
+        for (long long k = 0; k < n_samples && transmit > 1e-3f; ++k) {
+          const float t = (float)((double)t0 + ((double)k + 0.5) * (double)step);
           float wx = eye[0] + t*dir[0], wy = eye[1] + t*dir[1], wz = eye[2] + t*dir[2];
           float d = tvdb_sample_trilinear_dense(density, wx, wy, wz);
           if (d <= 0.0f) continue;
@@ -92,7 +124,7 @@ bool tvdb_volume_render(const tvdb_dense_grid* density,
         }
       }
       float opacity = 1.0f - transmit;
-      out_image[py*width + px] = opacity + transmit * background;
+      out_image[(size_t)py * (size_t)width + (size_t)px] = opacity + transmit * background;
     }
   }
   return true;

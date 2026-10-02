@@ -44,7 +44,11 @@ size_t tvdb_voxels_along_ray_dense(const tvdb_dense_grid* g,
                                    const tvdb_ray* ray,
                                    tvdb_vec3i* out_voxels,
                                    size_t cap) {
-  if (!g || !g->data || !ray) return 0;
+  if (!g || !g->data || !ray || g->nx <= 0 || g->ny <= 0 || g->nz <= 0 ||
+      !(g->voxel_size > 0.0f) || !isfinite(g->voxel_size) ||
+      !isfinite(ray->origin.x) || !isfinite(ray->origin.y) || !isfinite(ray->origin.z) ||
+      !isfinite(ray->dir.x) || !isfinite(ray->dir.y) || !isfinite(ray->dir.z) ||
+      isnan(ray->tmin) || isnan(ray->tmax)) return 0;
   float t_enter, t_exit;
   if (!tvdb_ray_voxel_aabb(ray, g, &t_enter, &t_exit)) return 0;
 
@@ -60,13 +64,17 @@ size_t tvdb_voxels_along_ray_dense(const tvdb_dense_grid* g,
   float ex = ox + t_enter * dx;
   float ey = oy + t_enter * dy;
   float ez = oz + t_enter * dz;
+  if (!isfinite(ex) || !isfinite(ey) || !isfinite(ez)) return 0;
 
-  int ix = (int)floorf(ex);
-  int iy = (int)floorf(ey);
-  int iz = (int)floorf(ez);
-  if (ix == g->nx) ix = g->nx - 1;
-  if (iy == g->ny) iy = g->ny - 1;
-  if (iz == g->nz) iz = g->nz - 1;
+  // The slab entry point lies on the grid boundary up to rounding, so its
+  // floor may be -1 or n; clamp it into the grid before converting to int.
+  float fx = floorf(ex), fy = floorf(ey), fz = floorf(ez);
+  if (fx < 0.0f) fx = 0.0f; else if (fx > (float)(g->nx - 1)) fx = (float)(g->nx - 1);
+  if (fy < 0.0f) fy = 0.0f; else if (fy > (float)(g->ny - 1)) fy = (float)(g->ny - 1);
+  if (fz < 0.0f) fz = 0.0f; else if (fz > (float)(g->nz - 1)) fz = (float)(g->nz - 1);
+  int ix = (int)fx;
+  int iy = (int)fy;
+  int iz = (int)fz;
 
   int sx = (dx > 0) ? 1 : (dx < 0 ? -1 : 0);
   int sy = (dy > 0) ? 1 : (dy < 0 ? -1 : 0);
@@ -90,15 +98,18 @@ size_t tvdb_voxels_along_ray_dense(const tvdb_dense_grid* g,
     }
     ++total;
 
+    // Stop when the ray segment ends before it crosses into the next voxel.
+    // The test uses the crossing time of the current voxel, not the exit
+    // time of the voxel being stepped into, so the last voxel is kept.
     if (t_max_x < t_max_y && t_max_x < t_max_z) {
+      if (!(t_max_x < t_exit)) break;
       ix += sx; t_max_x += t_delta_x;
-      if (t_max_x > t_exit && t_max_y > t_exit && t_max_z > t_exit) break;
     } else if (t_max_y < t_max_z) {
+      if (!(t_max_y < t_exit)) break;
       iy += sy; t_max_y += t_delta_y;
-      if (t_max_x > t_exit && t_max_y > t_exit && t_max_z > t_exit) break;
     } else {
+      if (!(t_max_z < t_exit)) break;
       iz += sz; t_max_z += t_delta_z;
-      if (t_max_x > t_exit && t_max_y > t_exit && t_max_z > t_exit) break;
     }
   }
   return out_voxels ? written : total;
@@ -147,21 +158,31 @@ size_t tvdb_segments_along_ray(const tvdb_dense_grid* g,
         ray->origin.y + t * ray->dir.y,
         ray->origin.z + t * ray->dir.z) - isovalue;
 
-    if (v_prev * v < 0.0f) {
-      // Linear-interp the crossing
-      float frac = v_prev / (v_prev - v);
-      float t_cross = t_prev + frac * (t - t_prev);
-      if (!inside) {
+    // Classify each sample (inside means v < 0; NaN counts as outside) and
+    // emit on a state change. Comparing signs instead of testing
+    // v_prev * v < 0 keeps exact-isovalue samples and products that
+    // underflow to zero from hiding a crossing.
+    const bool now_inside = v < 0.0f;
+    if (now_inside != inside) {
+      float t_cross;
+      if ((v_prev < 0.0f && v > 0.0f) || (v_prev > 0.0f && v < 0.0f)) {
+        float frac = v_prev / (v_prev - v);
+        t_cross = t_prev + frac * (t - t_prev);
+      } else {
+        // One endpoint is exactly on the isovalue (or not a number): the
+        // crossing is at the sample that sits on the surface.
+        t_cross = (v_prev == 0.0f) ? t_prev : t;
+      }
+      if (now_inside) {
         t_enter = t_cross;
-        inside = true;
       } else {
         if (out_t_pairs && pairs < cap) {
           out_t_pairs[2 * pairs + 0] = t_enter;
           out_t_pairs[2 * pairs + 1] = t_cross;
         }
         ++pairs;
-        inside = false;
       }
+      inside = now_inside;
     }
     v_prev = v; t_prev = t;
   }

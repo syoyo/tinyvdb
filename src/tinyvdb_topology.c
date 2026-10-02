@@ -18,19 +18,27 @@ static void* tvdb_alloc_or_arena(size_t bytes, tvdb_arena_allocator_t* arena) {
   return malloc(bytes);
 }
 
-static void tvdb_init_grid_buffer(tvdb_dense_grid* g, int nx, int ny, int nz,
+/* Builds the output descriptor locally and assigns it to `g` only once the
+ * dimensions, spacing and origin are valid and the buffer is allocated, so a
+ * rejected spacing (e.g. a coarsened voxel size that overflows to inf, or a
+ * refined one that underflows to 0) or a failed allocation leaves the caller's
+ * prior output untouched, as the header promises. */
+static bool tvdb_init_grid_buffer(tvdb_dense_grid* g, int nx, int ny, int nz,
                                   float voxel_size, float ox, float oy, float oz,
                                   tvdb_arena_allocator_t* arena) {
-  g->nx = nx; g->ny = ny; g->nz = nz;
-  g->voxel_size = voxel_size;
-  g->ox = ox; g->oy = oy; g->oz = oz;
   size_t bytes;
   if (!tvdb_grid_bytes(nx,ny,nz,sizeof(float),&bytes) || !isfinite(voxel_size) || voxel_size <= 0 ||
       !isfinite(ox) || !isfinite(oy) || !isfinite(oz)) {
-    g->data=NULL; g->nx=g->ny=g->nz=0; return;
+    return false;
   }
-  g->data = (float*)tvdb_alloc_or_arena(bytes, arena);
-  if (g->data) memset(g->data, 0, bytes);
+  float* data = (float*)tvdb_alloc_or_arena(bytes, arena);
+  if (!data) return false;
+  memset(data, 0, bytes);
+  g->nx = nx; g->ny = ny; g->nz = nz;
+  g->voxel_size = voxel_size;
+  g->ox = ox; g->oy = oy; g->oz = oz;
+  g->data = data;
+  return true;
 }
 
 bool tvdb_coarsen_grid(const tvdb_dense_grid* in,
@@ -41,10 +49,9 @@ bool tvdb_coarsen_grid(const tvdb_dense_grid* in,
   int nx = in->nx / factor + (in->nx % factor != 0);
   int ny = in->ny / factor + (in->ny % factor != 0);
   int nz = in->nz / factor + (in->nz % factor != 0);
-  tvdb_init_grid_buffer(out, nx, ny, nz,
+  if (!tvdb_init_grid_buffer(out, nx, ny, nz,
                         in->voxel_size * (float)factor,
-                        in->ox, in->oy, in->oz, arena);
-  if (!out->data) return false;
+                        in->ox, in->oy, in->oz, arena)) return false;
 
   #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
@@ -119,8 +126,7 @@ bool tvdb_resample_grid(const tvdb_dense_grid* in,
   if (!isfinite(d_nz) || d_nz > INT_MAX) return false;
   int nz = (int)d_nz;
   if (nx < 1) nx = 1; if (ny < 1) ny = 1; if (nz < 1) nz = 1;
-  tvdb_init_grid_buffer(out, nx, ny, nz, voxel_size, in->ox, in->oy, in->oz, arena);
-  if (!out->data) return false;
+  if (!tvdb_init_grid_buffer(out, nx, ny, nz, voxel_size, in->ox, in->oy, in->oz, arena)) return false;
 
   #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
@@ -155,9 +161,8 @@ bool tvdb_refine_grid(const tvdb_dense_grid* in,
   if (in->nz > INT_MAX / factor) return false;
   int nz = in->nz * factor;
   float new_vs = in->voxel_size / (float)factor;
-  tvdb_init_grid_buffer(out, nx, ny, nz, new_vs,
-                        in->ox, in->oy, in->oz, arena);
-  if (!out->data) return false;
+  if (!tvdb_init_grid_buffer(out, nx, ny, nz, new_vs,
+                        in->ox, in->oy, in->oz, arena)) return false;
 
   #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
@@ -215,12 +220,11 @@ bool tvdb_clip_grid(const tvdb_dense_grid* in,
   if (x1 <= x0 || y1 <= y0 || z1 <= z0) return false;
 
   int nx = x1 - x0, ny = y1 - y0, nz = z1 - z0;
-  tvdb_init_grid_buffer(out, nx, ny, nz, vs,
+  if (!tvdb_init_grid_buffer(out, nx, ny, nz, vs,
                         in->ox + (float)x0 * vs,
                         in->oy + (float)y0 * vs,
                         in->oz + (float)z0 * vs,
-                        arena);
-  if (!out->data) return false;
+                        arena)) return false;
   #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
     for (int iy = 0; iy < ny; ++iy) {
@@ -268,8 +272,7 @@ bool tvdb_merge_grids(const tvdb_dense_grid* a,
   if (!isfinite(d_nz) || d_nz < 1 || d_nz > INT_MAX) return false;
   int nz=(int)d_nz;
 
-  tvdb_init_grid_buffer(out, nx, ny, nz, vs, ox, oy, oz, arena);
-  if (!out->data) return false;
+  if (!tvdb_init_grid_buffer(out, nx, ny, nz, vs, ox, oy, oz, arena)) return false;
   // fill with background
   size_t total = (size_t)nx * (size_t)ny * (size_t)nz;
   #pragma omp parallel for schedule(static)
@@ -309,9 +312,12 @@ static void tvdb_pool_impl(const tvdb_dense_grid* in,
   int nx = in->nx / kx + (in->nx % kx != 0);
   int ny = in->ny / ky + (in->ny % ky != 0);
   int nz = in->nz / kz + (in->nz % kz != 0);
-  tvdb_init_grid_buffer(out, nx, ny, nz, in->voxel_size,
-                        in->ox, in->oy, in->oz, arena);
-  if (!out->data) return;
+  if (!tvdb_init_grid_buffer(out, nx, ny, nz, in->voxel_size,
+                        in->ox, in->oy, in->oz, arena)) {
+    /* The void pooling API reports failure through a NULL output buffer. */
+    out->data = NULL; out->nx = out->ny = out->nz = 0;
+    return;
+  }
 
   #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {

@@ -28,6 +28,15 @@ void tvdb_invert_rigid_pose(const float pose_wc[12], float pose_cw_out[12]) {
   pose_cw_out[8]  = Rt[6]; pose_cw_out[9]  = Rt[7]; pose_cw_out[10] = Rt[8]; pose_cw_out[11] = nt[2];
 }
 
+// Grid storage, spacing and frame dimensions shared by both integrators.
+static bool tvdb_tsdf_args_valid(const tvdb_dense_grid* tsdf, const tvdb_depth_frame* frame) {
+  size_t bytes;
+  return tvdb_grid_bytes(tsdf->nx, tsdf->ny, tsdf->nz, sizeof(float), &bytes) &&
+         tsdf->voxel_size > 0.0f && isfinite(tsdf->voxel_size) &&
+         isfinite(tsdf->ox) && isfinite(tsdf->oy) && isfinite(tsdf->oz) &&
+         frame->width > 0 && frame->height > 0 && !isnan(frame->trunc_distance);
+}
+
 static inline int tvdb_grid_same_shape3(const tvdb_dense_grid* a, const tvdb_dense_grid* b) {
   return a->nx == b->nx && a->ny == b->ny && a->nz == b->nz;
 }
@@ -49,9 +58,15 @@ static bool tvdb_tsdf_project_voxel(int ix, int iy, int iz,
   if (cz <= 0.0f) return false;
   float u = frame->fx * (cx / cz) + frame->cx;
   float v = frame->fy * (cy / cz) + frame->cy;
-  int iu = (int)floorf(u + 0.5f);
-  int iv = (int)floorf(v + 0.5f);
-  if (iu < 0 || iu >= frame->width || iv < 0 || iv >= frame->height) return false;
+  // Range-check the rounded pixel coordinate in float before converting: a
+  // voxel near the camera plane (cz -> 0+) projects to an arbitrarily large
+  // or non-finite u/v, and converting that to int is undefined behavior.
+  const float fu = floorf(u + 0.5f), fv = floorf(v + 0.5f);
+  if (!(fu >= 0.0f && fu < (float)frame->width && fv >= 0.0f && fv < (float)frame->height))
+    return false;
+  int iu = (int)fu;
+  int iv = (int)fv;
+  if (iu >= frame->width || iv >= frame->height) return false;
   float d = frame->depth[(size_t)iv * (size_t)frame->width + (size_t)iu];
   if (!(d >= frame->depth_min && d <= frame->depth_max)) return false;
   float sdf = d - cz;
@@ -67,6 +82,7 @@ bool tvdb_integrate_tsdf(tvdb_dense_grid* tsdf,
   if (!tsdf || !weights || !frame) return false;
   if (!tsdf->data || !weights->data || !frame->depth) return false;
   if (!tvdb_grid_same_shape3(tsdf, weights)) return false;
+  if (!tvdb_tsdf_args_valid(tsdf, frame)) return false;
 
   float pose_cw[12];
   tvdb_invert_rigid_pose(frame->pose, pose_cw);
@@ -100,6 +116,7 @@ bool tvdb_integrate_tsdf_with_color(tvdb_dense_grid* tsdf,
   if (!tsdf || !weights || !color || !frame || !rgb) return false;
   if (!tsdf->data || !weights->data || !color->data || !frame->depth) return false;
   if (!tvdb_grid_same_shape3(tsdf, weights)) return false;
+  if (!tvdb_tsdf_args_valid(tsdf, frame)) return false;
   if (color->nx != tsdf->nx || color->ny != tsdf->ny || color->nz != tsdf->nz) return false;
 
   float pose_cw[12];

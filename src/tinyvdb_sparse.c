@@ -308,14 +308,15 @@ static bool tvdb_dilate_sparse_step(const tvdb_sparse_grid* in,
   // The output value at each voxel = min over (self/contributing neighbors).
   // Use a temporary growing hash for the output.
   //
-  // The output holds at most 7 voxels per input voxel, so sizing the table at 8x
-  // the input count always leaves slack and the fixed-capacity probe loop cannot
-  // fill. That bound is also why the factor is not tightened: a 7x-growth table at
-  // a 0.5 load factor would need 14x and double the memory for a table that stays
-  // mostly empty. The insert asserts the bound anyway, so a future connectivity
-  // change fails loudly instead of spinning forever on a full table.
+  // The output holds at most 7 voxels per input voxel. The insert guard below
+  // keeps the table under a 0.7 load factor (count * 10 < capacity * 7), so the
+  // table must hold 7 * count / 0.7 = 10 * count entries; sizing at 10x the input
+  // count (rounded up to a power of two, plus slack) guarantees the worst case of
+  // isolated voxels each emitting six new neighbors never trips the guard. The
+  // guard is kept so a future connectivity change fails loudly instead of
+  // spinning forever on a full table.
   size_t guess;
-  if (in->count > INT_MAX / 7 || !tvdb_hash_capacity(in->count, 8, &guess)) { free(first); free(hin); return false; }
+  if (in->count > INT_MAX / 7 || !tvdb_hash_capacity(in->count, 10, &guess)) { free(first); free(hin); return false; }
   tvdb_hash_entry* hout = (tvdb_hash_entry*)calloc(guess, sizeof(tvdb_hash_entry));
   if (!hout) { free(first); free(hin); return false; }
   size_t hout_mask = guess - 1;
@@ -339,7 +340,7 @@ static bool tvdb_dilate_sparse_step(const tvdb_sparse_grid* in,
         h = (h + 1) & hout_mask;
       }
       if (hout[h].idx_plus_one == 0) {
-        /* Defensive: the 7x sizing bound above should make this unreachable. */
+        /* Defensive: the 10x sizing bound above makes this unreachable. */
         if (out->count * 10u >= guess * 7u) { free(first); free(hin); free(hout); return false; }
         if (!tvdb_sparse_push(out, x, y, z, v_self)) { free(first); free(hin); free(hout); return false; }
         hout[h].key = key; hout[h].idx_plus_one = (uint32_t)out->count;

@@ -2142,6 +2142,15 @@ static void test_external_memory_interop(void) {
            tvdb_gpu_context_supports_external_memory(vk), tvdb_gpu_context_supports_external_memory(cu));
     tvdb_gpu_context_destroy(cu); tvdb_gpu_context_destroy(vk); return;
   }
+  // Interop only works within one physical device; Vulkan device 0 may be a
+  // software rasterizer (llvmpipe) while CUDA device 0 is a GPU.
+  uint8_t vk_uuid[16], cu_uuid[16];
+  if (tvdb_gpu_context_device_uuid(vk, vk_uuid, NULL) != TVDB_OK ||
+      tvdb_gpu_context_device_uuid(cu, cu_uuid, NULL) != TVDB_OK ||
+      memcmp(vk_uuid, cu_uuid, sizeof(vk_uuid)) != 0) {
+    printf("external-memory: SKIP (Vulkan and CUDA devices differ or report no UUID)\n");
+    tvdb_gpu_context_destroy(cu); tvdb_gpu_context_destroy(vk); return;
+  }
 
   const size_t N = 1024;  // 4 KiB, far under the VRAM budget
   float src[1024], dst[1024];

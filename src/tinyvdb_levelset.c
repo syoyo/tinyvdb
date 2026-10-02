@@ -5,6 +5,7 @@
 #include "tinyvdb_levelset.h"
 #include "tinyvdb_sample.h"  // tvdb_sample_trilinear_dense (rebuild re-signing)
 
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 
@@ -14,6 +15,9 @@ static inline float lvl_clampf(float v, float lo, float hi) {
 
 static inline float lvl_minf(float a, float b) { return a < b ? a : b; }
 static inline float lvl_maxf(float a, float b) { return a > b ? a : b; }
+
+// A usable voxel size: positive and finite (NaN fails both tests).
+static inline bool lvl_valid_vs(float vs) { return vs > 0.0f && isfinite(vs); }
 
 // Resolve a half_width argument (<=0 means default), returning the background
 // distance bg = half_width * voxel_size and writing the effective half_width.
@@ -29,13 +33,18 @@ static inline float lvl_background(float half_width, float voxel_size,
 // center >= hi. Returns false on bad args / OOM.
 static bool lvl_make_grid(const float lo[3], const float hi[3], float vs,
                           tvdb_dense_grid* out) {
-  if (!out || vs <= 0.0f) return false;
+  if (!out || !lvl_valid_vs(vs)) return false;
   int n[3];
   for (int a = 0; a < 3; ++a) {
+    if (!isfinite(lo[a]) || !isfinite(hi[a])) return false;
+    // Keep the float sizing (the GPU generators match it) but range-check in
+    // double before the int conversion: a tiny voxel size or an overflowing
+    // span would otherwise make the cast undefined.
     float span = hi[a] - lo[a];
-    if (span < 0.0f) return false;
-    n[a] = (int)ceilf(span / vs) + 1;  // (n-1)*vs >= span
-    if (n[a] < 1) n[a] = 1;
+    if (!(span >= 0.0f)) return false;
+    double cells = ceil((double)(span / vs)) + 1.0;  // (n-1)*vs >= span
+    if (!(cells >= 1.0) || cells > (double)INT_MAX) return false;
+    n[a] = (int)cells;
   }
   tvdb_dense_grid_init(out, n[0], n[1], n[2]);  // mallocs + zeroes data
   if (!out->data) return false;
@@ -79,7 +88,7 @@ static float lvl_sphere_sdf(float wx, float wy, float wz, const void* p) {
 bool tvdb_level_set_sphere(float radius, const float center[3],
                            float voxel_size, float half_width,
                            tvdb_dense_grid* out) {
-  if (!center || radius <= 0.0f || voxel_size <= 0.0f) return false;
+  if (!center || !(radius > 0.0f) || !lvl_valid_vs(voxel_size)) return false;
   float bg = lvl_background(half_width, voxel_size, NULL);
   float ext = radius + bg;
   float lo[3], hi[3];
@@ -108,8 +117,8 @@ static float lvl_box_sdf(float wx, float wy, float wz, const void* p) {
 bool tvdb_level_set_box(const float half_extents[3], const float center[3],
                         float voxel_size, float half_width,
                         tvdb_dense_grid* out) {
-  if (!half_extents || !center || voxel_size <= 0.0f) return false;
-  if (half_extents[0] <= 0.0f || half_extents[1] <= 0.0f || half_extents[2] <= 0.0f)
+  if (!half_extents || !center || !lvl_valid_vs(voxel_size)) return false;
+  if (!(half_extents[0] > 0.0f) || !(half_extents[1] > 0.0f) || !(half_extents[2] > 0.0f))
     return false;
   float bg = lvl_background(half_width, voxel_size, NULL);
   float lo[3], hi[3];
@@ -138,8 +147,8 @@ static float lvl_torus_sdf(float wx, float wy, float wz, const void* p) {
 bool tvdb_level_set_torus(float major_radius, float minor_radius,
                           const float center[3], float voxel_size,
                           float half_width, tvdb_dense_grid* out) {
-  if (!center || major_radius <= 0.0f || minor_radius <= 0.0f ||
-      voxel_size <= 0.0f)
+  if (!center || !(major_radius > 0.0f) || !(minor_radius > 0.0f) ||
+      !lvl_valid_vs(voxel_size))
     return false;
   float bg = lvl_background(half_width, voxel_size, NULL);
   float ext_xz = major_radius + minor_radius + bg;
@@ -173,7 +182,7 @@ static float lvl_capsule_sdf(float wx, float wy, float wz, const void* p) {
 bool tvdb_level_set_capsule(const float p0[3], const float p1[3], float radius,
                             float voxel_size, float half_width,
                             tvdb_dense_grid* out) {
-  if (!p0 || !p1 || radius <= 0.0f || voxel_size <= 0.0f) return false;
+  if (!p0 || !p1 || !(radius > 0.0f) || !lvl_valid_vs(voxel_size)) return false;
   float bg = lvl_background(half_width, voxel_size, NULL);
   float ext = radius + bg;
   float lo[3], hi[3];
@@ -278,7 +287,7 @@ static float lvl_platonic_sdf(float wx, float wy, float wz, const void* p) {
 bool tvdb_level_set_platonic(int face_count, float radius, const float center[3],
                              float voxel_size, float half_width,
                              tvdb_dense_grid* out) {
-  if (!center || radius <= 0.0f || voxel_size <= 0.0f) return false;
+  if (!center || !(radius > 0.0f) || !lvl_valid_vs(voxel_size)) return false;
   float normals[60];
   float ratio = 0.0f;
   int count = lvl_platonic_normals(face_count, normals, &ratio);
@@ -308,6 +317,7 @@ static bool lvl_clone_shape(const tvdb_dense_grid* in, tvdb_dense_grid* out) {
 
 bool tvdb_sdf_to_fog_volume(const tvdb_dense_grid* sdf, float half_width,
                             tvdb_dense_grid* out) {
+  if (!sdf || !lvl_valid_vs(sdf->voxel_size)) return false;
   if (!lvl_clone_shape(sdf, out)) return false;
   float gamma = lvl_background(half_width, sdf->voxel_size, NULL);
   if (gamma <= 0.0f) gamma = sdf->voxel_size;
@@ -586,9 +596,10 @@ bool tvdb_level_set_rebuild(const tvdb_dense_grid* sdf, float isovalue,
                             float voxel_size, float half_width,
                             int sign_method, tvdb_dense_grid* out) {
   if (!sdf || !sdf->data || !out) return false;
+  if (!lvl_valid_vs(sdf->voxel_size)) return false;
   float vs = (voxel_size > 0.0f) ? voxel_size : sdf->voxel_size;
   float hw = (half_width > 0.0f) ? half_width : TVDB_LEVEL_SET_HALF_WIDTH;
-  if (vs <= 0.0f) return false;
+  if (!lvl_valid_vs(vs) || !isfinite(hw)) return false;
 
   // 1) Extract the isosurface as a world-space triangle mesh.
   tvdb_triangle_mesh mesh;

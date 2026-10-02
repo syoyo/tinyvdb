@@ -279,6 +279,22 @@ typedef struct _nvrtcProgram* nvrtcProgram;
 #define VK_COMMAND_POOL_CREATE_FREE_COMMAND_BUFFER_BIT 0x00000004u
 #define VK_COMMAND_BUFFER_LEVEL_PRIMARY 0
 
+/* vkGetPhysicalDeviceProperties2 with a VkPhysicalDeviceIDProperties chain.
+ * The core VkPhysicalDeviceProperties payload (824 bytes on LP64) is not
+ * read, so it is kept opaque and generously sized. */
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 1000059001
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES 1000071004
+typedef struct {
+  uint32_t sType; void* pNext;
+  uint8_t deviceUUID[16]; uint8_t driverUUID[16]; uint8_t deviceLUID[8];
+  uint32_t deviceNodeMask; uint32_t deviceLUIDValid;
+} VkPhysicalDeviceIDProperties;
+typedef struct {
+  uint32_t sType; void* pNext;
+  union { uint64_t align; uint8_t bytes[2048]; } properties;
+} VkPhysicalDeviceProperties2;
+typedef void (*PFN_vkGetPhysicalDeviceProperties2)(VkPhysicalDevice, VkPhysicalDeviceProperties2*);
+
 typedef struct {
   uint32_t sType;
   const void* pNext;
@@ -571,6 +587,7 @@ typedef struct {
   CUresult (*cuDeviceGetCount)(int*);
   CUresult (*cuDeviceGet)(CUdevice*, int);
   CUresult (*cuDeviceGetName)(char*, int, CUdevice);
+  CUresult (*cuDeviceGetUuid)(uint8_t*, CUdevice);  // optional; CUuuid is 16 bytes
   CUresult (*cuCtxCreate)(CUcontext*, unsigned int, CUdevice);
   CUresult (*cuCtxDestroy)(CUcontext);
   CUresult (*cuCtxSynchronize)(void);
@@ -704,6 +721,8 @@ struct tvdb_gpu_context {
   int supports_sparse_aliased;   // sparseResidencyAliased: legal sparse memory aliasing
   int supports_external_memory;
   char device_name[128];
+  uint8_t device_uuid[16];  // physical-device identity shared by Vulkan and CUDA
+  int has_device_uuid;
   tvdb_vk_pipeline_entry pipeline_cache[TVDB_VK_PIPELINE_CACHE_MAX];
   uint32_t pipeline_cache_count;
   /* Reused across dispatches. Creating and destroying a descriptor pool and a
@@ -901,6 +920,7 @@ static int tvdb_load_cuda_library(tvdb_cuda_table* cu) {
   TVDB_CUDA_SYM(cuModuleGetFunction, "cuModuleGetFunction");
   TVDB_CUDA_SYM(cuLaunchKernel, "cuLaunchKernel");
   cu->cuGetErrorString = (void*)tvdb_dyn_sym(cu->libcuda, "cuGetErrorString");
+  cu->cuDeviceGetUuid = (void*)tvdb_dyn_sym(cu->libcuda, "cuDeviceGetUuid");
   // External-memory interop (optional; absent on very old drivers).
   cu->cuImportExternalMemory = (void*)tvdb_dyn_sym(cu->libcuda, "cuImportExternalMemory");
   cu->cuExternalMemoryGetMappedBuffer = (void*)tvdb_dyn_sym(cu->libcuda, "cuExternalMemoryGetMappedBuffer");
@@ -4716,6 +4736,8 @@ static tvdb_status_t tvdb_cuda_context_create(uint32_t device_index,
   if (ctx->device_name[0] == '\0') {
     snprintf(ctx->device_name, sizeof(ctx->device_name), "CUDA device %u", device_index);
   }
+  if (ctx->cuda.cuDeviceGetUuid && ctx->cuda.cuDeviceGetUuid(ctx->device_uuid, ctx->cu_device) == CUDA_SUCCESS)
+    ctx->has_device_uuid = 1;
   if (!tvdb_cuda_ok(ctx, err, "cuCtxCreate", ctx->cuda.cuCtxCreate(&ctx->cu_ctx, 0, ctx->cu_device))) goto fail;
   *out = ctx;
   return TVDB_OK;
@@ -4811,6 +4833,26 @@ static tvdb_status_t tvdb_vulkan_context_create(uint32_t device_index,
   ctx->supports_sparse_aliased =
       (ctx->supports_sparse_3d_images && features.sparseResidencyAliased) ? 1 : 0;
   ctx->vk.GetPhysicalDeviceMemoryProperties(ctx->physical_device, &ctx->memory_props);
+  {
+    /* Core in Vulkan 1.1; the KHR alias covers 1.0 instances exposing it. */
+    PFN_vkGetPhysicalDeviceProperties2 get_props2 = (PFN_vkGetPhysicalDeviceProperties2)
+        ctx->vk.GetInstanceProcAddr(ctx->instance, "vkGetPhysicalDeviceProperties2");
+    if (!get_props2)
+      get_props2 = (PFN_vkGetPhysicalDeviceProperties2)
+          ctx->vk.GetInstanceProcAddr(ctx->instance, "vkGetPhysicalDeviceProperties2KHR");
+    if (get_props2) {
+      VkPhysicalDeviceIDProperties idp;
+      VkPhysicalDeviceProperties2 p2;
+      memset(&idp, 0, sizeof(idp));
+      memset(&p2, 0, sizeof(p2));
+      idp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+      p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+      p2.pNext = &idp;
+      get_props2(ctx->physical_device, &p2);
+      memcpy(ctx->device_uuid, idp.deviceUUID, sizeof(ctx->device_uuid));
+      ctx->has_device_uuid = 1;
+    }
+  }
   float prio = 1.0f;
   VkDeviceQueueCreateInfo qci;
   memset(&qci, 0, sizeof(qci));
@@ -12618,6 +12660,20 @@ uint64_t tvdb_gpu_buffer_native_handle(const tvdb_gpu_buffer_t* buf) {
 // entry points present, a device-local Vulkan buffer can be shared with CUDA
 // without a host round-trip: export the backing memory as an opaque POSIX fd, then
 // import it into CUDA. Both contexts must reference the same physical GPU.
+
+tvdb_status_t tvdb_gpu_context_device_uuid(const tvdb_gpu_context_t* ctx, uint8_t uuid[16],
+                                           tvdb_error_t* err) {
+  if (!ctx || !uuid) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid device_uuid arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (!ctx->has_device_uuid) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "device UUID is unavailable for this context");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  memcpy(uuid, ctx->device_uuid, 16);
+  return TVDB_OK;
+}
 
 int tvdb_gpu_context_supports_external_memory(const tvdb_gpu_context_t* ctx) {
   if (!ctx) return 0;

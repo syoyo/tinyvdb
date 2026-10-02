@@ -223,7 +223,7 @@ static tvdb_allocator_t s_owned_alloc = {
 // Per-coord entry collected from input. `val_bytes` holds up to 24 bytes
 // (matches the largest tvdb_value_type_t = VEC3D); only `vsize` bytes are
 // meaningful per builder invocation.
-typedef struct { int32_t lorig[3]; int32_t slot; uint8_t val_bytes[24]; } tvdb__coord_entry;
+typedef struct { int32_t lorig[3]; int32_t slot; size_t order; uint8_t val_bytes[24]; } tvdb__coord_entry;
 // Sort PRIMARILY by leaf origin (not by full coord). Coords with the same
 // leaf origin must be contiguous so the per-leaf grouping loop is correct.
 static int tvdb__cmp_coord_entry(const void *a, const void *b) {
@@ -232,8 +232,11 @@ static int tvdb__cmp_coord_entry(const void *a, const void *b) {
     if (A->lorig[0] != B->lorig[0]) return (A->lorig[0] < B->lorig[0]) ? -1 : 1;
     if (A->lorig[1] != B->lorig[1]) return (A->lorig[1] < B->lorig[1]) ? -1 : 1;
     if (A->lorig[2] != B->lorig[2]) return (A->lorig[2] < B->lorig[2]) ? -1 : 1;
-    // Within same leaf, sort by slot (irrelevant but deterministic).
-    return (A->slot < B->slot) ? -1 : (A->slot > B->slot);
+    // Within same leaf, sort by slot, then by input position. qsort is not
+    // stable, so the input-order tie-break is what makes duplicate coordinates
+    // deterministic: the builder keeps the first occurrence of each slot.
+    if (A->slot != B->slot) return (A->slot < B->slot) ? -1 : 1;
+    return (A->order < B->order) ? -1 : (A->order > B->order);
 }
 
 static char *xstrdup_(const char *s) {
@@ -570,6 +573,7 @@ bool tvdb_grid_from_sparse_typed_using_template(const tvdb_grid_t *tmpl,
         int sly = cy & leaf_dim_mask;
         int slz = cz & leaf_dim_mask;
         ce[ii].slot = (slx << (2 * leaf_log2dim)) | (sly << leaf_log2dim) | slz;
+        ce[ii].order = ii;
         memcpy(ce[ii].val_bytes, vbytes + ii * (size_t)vsize, (size_t)vsize);
     }
     if (count > 1) qsort(ce, count, sizeof(tvdb__coord_entry), tvdb__cmp_coord_entry);
@@ -595,12 +599,15 @@ bool tvdb_grid_from_sparse_typed_using_template(const tvdb_grid_t *tmpl,
         for (int k = 0; k < leaf_bitsize; ++k) {
             memcpy(leaf->data + (size_t)k * (size_t)vsize, bg_bytes, (size_t)vsize);
         }
-        // Write active voxels in this group.
+        // Write active voxels in this group. Duplicates of a coordinate are
+        // adjacent and ordered by input position; only the first is written.
+        size_t group_start = i;
         while (i < count &&
                ce[i].lorig[0] == lorig[0] &&
                ce[i].lorig[1] == lorig[1] &&
                ce[i].lorig[2] == lorig[2]) {
             int32_t slot = ce[i].slot;
+            if (i > group_start && ce[i - 1].slot == slot) { ++i; continue; }
             memcpy(leaf->data + (size_t)slot * (size_t)vsize, ce[i].val_bytes, (size_t)vsize);
             nm_set(&leaf->value_mask, slot);
             ++i;
@@ -741,7 +748,8 @@ bool tvdb_grid_extend_from_sparse(const tvdb_grid_t *existing,
             if (sg->coords[pi].x == sg->coords[i].x &&
                 sg->coords[pi].y == sg->coords[i].y &&
                 sg->coords[pi].z == sg->coords[i].z) {
-                // Duplicate inside sg; latter wins.
+                // Duplicate inside sg: this table only marks coordinates
+                // as overridden; the builder keeps sg's first occurrence.
                 break;
             }
             h = (h + 1) & mask;

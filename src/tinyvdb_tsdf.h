@@ -32,7 +32,11 @@ void tvdb_invert_rigid_pose(const float pose_wc[12], float pose_cw_out[12]);
 // Integrate a depth frame into an existing TSDF grid + weight grid.
 // Both grids must be the same shape / origin / voxel_size and pre-allocated.
 // On the first call, callers should initialize tsdf to trunc_distance and
-// weights to 0.
+// weights to 0. Returns false (grids unchanged) for NULL inputs, mismatched
+// shapes, non-positive dimensions, a non-positive or non-finite voxel_size,
+// a non-finite grid origin, a non-positive frame size, or a NaN
+// trunc_distance. Voxels projecting outside the image (including those
+// arbitrarily close to the camera plane) are skipped.
 bool tvdb_integrate_tsdf(tvdb_dense_grid* tsdf,
                          tvdb_dense_grid* weights,
                          const tvdb_depth_frame* frame);

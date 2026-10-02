@@ -2,8 +2,10 @@
 
 #include "tinyvdb_autograd.h"
 #include "tinyvdb_ops_internal.h"
+#include "tinyvdb_checked.h"
 #include "tinyvdb_sample.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -14,12 +16,29 @@
 // Trilinear sample VJPs.
 // ---------------------------------------------------------------------------
 
+// Mirrors the forward sampler in tinyvdb_sample.c exactly: the voxel-index
+// coordinate is computed in double, clamped to [-1, dim - 1] by
+// tvdb_sample_coord, and floored by tvdb_sample_floor (which never converts a
+// distant or nonfinite value to int). The forward then reads its eight taps
+// through tvdb_at, which clamps indices to the grid, so the adjoint must
+// scatter into the same clamped indices rather than dropping border taps.
 static inline void world_to_voxel_idx(const tvdb_dense_grid* g,
                                       float wx, float wy, float wz,
                                       float* vx, float* vy, float* vz) {
-  *vx = (wx - g->ox) / g->voxel_size - 0.5f;
-  *vy = (wy - g->oy) / g->voxel_size - 0.5f;
-  *vz = (wz - g->oz) / g->voxel_size - 0.5f;
+  *vx = (float)tvdb_sample_coord(((double)wx - g->ox) / g->voxel_size - 0.5, g->nx);
+  *vy = (float)tvdb_sample_coord(((double)wy - g->oy) / g->voxel_size - 0.5, g->ny);
+  *vz = (float)tvdb_sample_coord(((double)wz - g->oz) / g->voxel_size - 0.5, g->nz);
+}
+
+// Same validity test as tvdb_sample_trilinear_dense; when it fails the forward
+// returns the constant 0, so the VJPs contribute nothing.
+static inline int sample_grid_valid(const tvdb_dense_grid* g) {
+  return g && tvdb_grid_valid(g->nx, g->ny, g->nz, g->voxel_size, g->data, sizeof(float)) &&
+         isfinite(g->ox) && isfinite(g->oy) && isfinite(g->oz);
+}
+
+static inline int clamp_index(int i, int n) {
+  return i < 0 ? 0 : (i >= n ? n - 1 : i);
 }
 
 void tvdb_sample_trilinear_dense_vjp_grid(const tvdb_dense_grid* grid,
@@ -27,31 +46,35 @@ void tvdb_sample_trilinear_dense_vjp_grid(const tvdb_dense_grid* grid,
                                           size_t n,
                                           const float* grad_out,
                                           tvdb_dense_grid* grad_grid) {
-  if (!grid || !grad_grid || !grad_grid->data) return;
+  if (!sample_grid_valid(grid) || !grad_grid || !grad_grid->data) return;
   if (grid->nx != grad_grid->nx || grid->ny != grad_grid->ny ||
       grid->nz != grad_grid->nz) return;
+  if (n && (!pts || !grad_out)) return;
+  if (n > (size_t)LLONG_MAX) return;
   // grad_grid is *accumulated into*, so we can't reuse splat (which assumes
   // zero-init for normalized splat). The math is identical: scatter
-  // grad_out[j] back to the 8-neighborhood of pts[j] with the same weights.
+  // grad_out[j] back to the (clamped) 8-neighborhood of pts[j] with the same
+  // weights the forward sampler uses.
   #pragma omp parallel for schedule(static)
   for (long long pp = 0; pp < (long long)n; ++pp) {
     size_t p = (size_t)pp;
+    if (!isfinite(pts[p].x) || !isfinite(pts[p].y) || !isfinite(pts[p].z)) continue;
     float vx, vy, vz;
     world_to_voxel_idx(grid, pts[p].x, pts[p].y, pts[p].z, &vx, &vy, &vz);
-    int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);
+    int ix = tvdb_sample_floor(vx, grid->nx);
+    int iy = tvdb_sample_floor(vy, grid->ny);
+    int iz = tvdb_sample_floor(vz, grid->nz);
     float fx = vx - (float)ix, fy = vy - (float)iy, fz = vz - (float)iz;
-    if (ix < -1 || iy < -1 || iz < -1) continue;
-    if (ix >= grid->nx || iy >= grid->ny || iz >= grid->nz) continue;
 
     const float go = grad_out[p];
     for (int dz = 0; dz < 2; ++dz) {
-      int z = iz + dz; if (z < 0 || z >= grid->nz) continue;
+      int z = clamp_index(iz + dz, grid->nz);
       float wz = (dz == 0) ? (1.0f - fz) : fz;
       for (int dy = 0; dy < 2; ++dy) {
-        int y = iy + dy; if (y < 0 || y >= grid->ny) continue;
+        int y = clamp_index(iy + dy, grid->ny);
         float wy = (dy == 0) ? (1.0f - fy) : fy;
         for (int dx = 0; dx < 2; ++dx) {
-          int x = ix + dx; if (x < 0 || x >= grid->nx) continue;
+          int x = clamp_index(ix + dx, grid->nx);
           float wx = (dx == 0) ? (1.0f - fx) : fx;
           float w = wx * wy * wz;
           size_t idx = tvdb_idx(grid, x, y, z);
@@ -69,7 +92,9 @@ void tvdb_sample_trilinear_dense_vjp_pts(const tvdb_dense_grid* grid,
                                          size_t n,
                                          const float* grad_out,
                                          tvdb_vec3f* grad_pts) {
-  if (!grid || !grid->data || !grad_pts) return;
+  if (!sample_grid_valid(grid) || !grad_pts) return;
+  if (n && (!pts || !grad_out)) return;
+  if (n > (size_t)LLONG_MAX) return;
   // Analytic d/dvx of the trilinear interpolation. Let
   //   c00 = c000 (1-fx) + c100 fx, c10 = c010 (1-fx) + c110 fx, ...
   //   c0  = c00 (1-fy) + c10 fy,   c1  = c01 (1-fy) + c11 fy
@@ -79,13 +104,19 @@ void tvdb_sample_trilinear_dense_vjp_pts(const tvdb_dense_grid* grid,
   // d out/d fy = (c10 - c00)(1-fz) + (c11 - c01) fz
   // d out/d fz = c1 - c0
   // d fx/d wx = 1/voxel_size  (since vx = (wx - ox)/vs - 0.5).
+  // Coordinates and taps are clamped exactly as in the forward sampler. In the
+  // clamped border regions the paired taps read the same voxel, so the
+  // difference terms (and hence the gradient) vanish as the forward is constant.
   const float inv_vs = 1.0f / grid->voxel_size;
   #pragma omp parallel for schedule(static)
   for (long long pp = 0; pp < (long long)n; ++pp) {
     size_t p = (size_t)pp;
+    if (!isfinite(pts[p].x) || !isfinite(pts[p].y) || !isfinite(pts[p].z)) continue;
     float vx, vy, vz;
     world_to_voxel_idx(grid, pts[p].x, pts[p].y, pts[p].z, &vx, &vy, &vz);
-    int ix = (int)floorf(vx), iy = (int)floorf(vy), iz = (int)floorf(vz);
+    int ix = tvdb_sample_floor(vx, grid->nx);
+    int iy = tvdb_sample_floor(vy, grid->ny);
+    int iz = tvdb_sample_floor(vz, grid->nz);
     float fx = vx - (float)ix, fy = vy - (float)iy, fz = vz - (float)iz;
     float c000 = tvdb_at(grid, ix,     iy,     iz);
     float c100 = tvdb_at(grid, ix + 1, iy,     iz);
@@ -195,9 +226,6 @@ void tvdb_csg_difference_vjp(const tvdb_dense_grid* a, const tvdb_dense_grid* b,
 
 typedef struct { int x, y, z; int idx_plus_one; } sc_he_t;
 
-static inline size_t sc_pow2_(size_t v) {
-  size_t p = 1; while (p < v) p <<= 1; return p;
-}
 static inline uint64_t sc_pack_(int x, int y, int z) {
   uint64_t ux = ((uint64_t)(int64_t)x) & 0x1FFFFFu;
   uint64_t uy = ((uint64_t)(int64_t)y) & 0x1FFFFFu;
@@ -211,7 +239,8 @@ static inline uint64_t sc_mix_(uint64_t x) {
 }
 
 static int sc_hash_build(const tvdb_sparse_grid* g, sc_he_t** out_tbl, size_t* out_mask) {
-  size_t cap = sc_pow2_(g->count * 2 + 16);
+  size_t cap;
+  if (g->count > (size_t)INT_MAX - 1 || !tvdb_hash_capacity(g->count, 2, &cap)) return 0;
   sc_he_t* tbl = (sc_he_t*)calloc(cap, sizeof(sc_he_t));
   if (!tbl) return 0;
   size_t mask = cap - 1;
@@ -225,7 +254,12 @@ static int sc_hash_build(const tvdb_sparse_grid* g, sc_he_t** out_tbl, size_t* o
   *out_tbl = tbl; *out_mask = mask; return 1;
 }
 
-static int sc_hash_get(const sc_he_t* tbl, size_t mask, int x, int y, int z) {
+/* Offsets are formed in int64 like the forward tvdb_sparse_conv3d; a tap whose
+ * coordinate leaves the int32 range cannot be an active voxel and is missing. */
+static int sc_hash_get(const sc_he_t* tbl, size_t mask, int64_t x64, int64_t y64, int64_t z64) {
+  if (x64 < INT32_MIN || x64 > INT32_MAX || y64 < INT32_MIN || y64 > INT32_MAX ||
+      z64 < INT32_MIN || z64 > INT32_MAX) return -1;
+  const int x = (int)x64, y = (int)y64, z = (int)z64;
   uint64_t h = sc_mix_(sc_pack_(x, y, z));
   size_t k = (size_t)(h & mask);
   while (tbl[k].idx_plus_one) {
@@ -257,12 +291,12 @@ bool tvdb_sparse_conv3d_vjp_values(const tvdb_sparse_grid* in_topo,
     int cz = in_topo->coords[ii].z;
     float go = grad_out_values[(size_t)ii];
     for (int dk = 0; dk < kz; ++dk) {
-      int oz = cz + (dk - az);
+      int64_t oz = (int64_t)cz + (dk - az);
       for (int dj = 0; dj < ky; ++dj) {
-        int oy = cy + (dj - ay);
+        int64_t oy = (int64_t)cy + (dj - ay);
         for (int di = 0; di < kx; ++di) {
-          int ox = cx + (di - ax);
-          float w = kernel[((dk * ky) + dj) * kx + di];
+          int64_t ox = (int64_t)cx + (di - ax);
+          float w = kernel[(((size_t)dk * ky) + dj) * kx + di];
           if (w == 0.0f) continue;
           int j = sc_hash_get(tbl, mask, ox, oy, oz);
           if (j < 0) continue;
@@ -298,14 +332,14 @@ bool tvdb_sparse_conv3d_vjp_kernel(const tvdb_sparse_grid* in_with_values,
     int cz = in_with_values->coords[ii].z;
     float go = grad_out_values[(size_t)ii];
     for (int dk = 0; dk < kz; ++dk) {
-      int oz = cz + (dk - az);
+      int64_t oz = (int64_t)cz + (dk - az);
       for (int dj = 0; dj < ky; ++dj) {
-        int oy = cy + (dj - ay);
+        int64_t oy = (int64_t)cy + (dj - ay);
         for (int di = 0; di < kx; ++di) {
-          int ox = cx + (di - ax);
+          int64_t ox = (int64_t)cx + (di - ax);
           int j = sc_hash_get(tbl, mask, ox, oy, oz);
           if (j < 0) continue;
-          int tap = ((dk * ky) + dj) * kx + di;
+          size_t tap = (((size_t)dk * ky) + dj) * kx + di;
           float c = go * in_with_values->values[j];
           #pragma omp atomic update
           grad_kernel[tap] += c;

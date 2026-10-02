@@ -345,14 +345,34 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
         if (nl > 255) nl = 255;
         memcpy(buf + off_grid + NV_GRID_OFF_GRID_NAME, name, nl);
     }
-    /* Map: identity affine + uniform voxel size derived from grid transform. */
+    /* Map: diagonal scale + translation derived from the grid transform.
+       Transforms with a general linear part are not representable here. */
+    double vs[3] = { 1.0, 1.0, 1.0 };
+    double tr[3] = { 0.0, 0.0, 0.0 };
     {
-        double vs = 1.0;
-        if (grid->transform.type == TVDB_TRANSFORM_UNIFORM_SCALE ||
-            grid->transform.type == TVDB_TRANSFORM_UNIFORM_SCALE_TRANSLATE) {
-            vs = grid->transform.voxel_size[0];
-            if (vs <= 0.0) vs = grid->transform.scale_values[0];
-            if (vs <= 0.0) vs = 1.0;
+        const tvdb_transform_t *x = &grid->transform;
+        switch (x->type) {
+            case TVDB_TRANSFORM_UNIFORM_SCALE:
+            case TVDB_TRANSFORM_UNIFORM_SCALE_TRANSLATE:
+            case TVDB_TRANSFORM_SCALE:
+            case TVDB_TRANSFORM_SCALE_TRANSLATE:
+                for (int k = 0; k < 3; ++k) {
+                    vs[k] = x->voxel_size[k];
+                    if (!(vs[k] > 0.0)) vs[k] = x->scale_values[k];
+                    if (!(vs[k] > 0.0)) vs[k] = 1.0;
+                }
+                if (x->type == TVDB_TRANSFORM_UNIFORM_SCALE ||
+                    x->type == TVDB_TRANSFORM_UNIFORM_SCALE_TRANSLATE)
+                    vs[1] = vs[2] = vs[0];
+                if (x->type == TVDB_TRANSFORM_UNIFORM_SCALE_TRANSLATE ||
+                    x->type == TVDB_TRANSFORM_SCALE_TRANSLATE)
+                    for (int k = 0; k < 3; ++k) tr[k] = x->translation[k];
+                break;
+            case TVDB_TRANSFORM_TRANSLATION:
+                for (int k = 0; k < 3; ++k) tr[k] = x->translation[k];
+                break;
+            default:
+                break;
         }
         /* PNanoVDB Map layout:
              matF[9]    @0  (36)
@@ -364,30 +384,23 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
              vecD[3]    @232 (24)
              taperD     @256 (8)   -> total 264 bytes */
         size_t mat_off = off_grid + NV_GRID_OFF_MAP;
-        /* matF / invMatF: row-major 3x3 scale and its inverse. */
         for (int i = 0; i < 9; ++i) nv__write_f32(buf, mat_off + 4 * i, 0.0f);
-        nv__write_f32(buf, mat_off + 0,  (float)vs);
-        nv__write_f32(buf, mat_off + 16, (float)vs);
-        nv__write_f32(buf, mat_off + 32, (float)vs);
         for (int i = 0; i < 9; ++i) nv__write_f32(buf, mat_off + 36 + 4 * i, 0.0f);
-        nv__write_f32(buf, mat_off + 36 + 0,  (float)(1.0 / vs));
-        nv__write_f32(buf, mat_off + 36 + 16, (float)(1.0 / vs));
-        nv__write_f32(buf, mat_off + 36 + 32, (float)(1.0 / vs));
-        /* matD / invMatD */
         for (int i = 0; i < 9; ++i) nv__write_f64(buf, mat_off + 88 + 8 * i, 0.0);
-        nv__write_f64(buf, mat_off + 88 + 0,  vs);
-        nv__write_f64(buf, mat_off + 88 + 32, vs);
-        nv__write_f64(buf, mat_off + 88 + 64, vs);
         for (int i = 0; i < 9; ++i) nv__write_f64(buf, mat_off + 160 + 8 * i, 0.0);
-        nv__write_f64(buf, mat_off + 160 + 0,  1.0 / vs);
-        nv__write_f64(buf, mat_off + 160 + 32, 1.0 / vs);
-        nv__write_f64(buf, mat_off + 160 + 64, 1.0 / vs);
-        /* vecD / taperD remain zero. */
-
-        /* voxel_size 3 doubles */
-        nv__write_f64(buf, off_grid + NV_GRID_OFF_VOXEL_SIZE + 0,  vs);
-        nv__write_f64(buf, off_grid + NV_GRID_OFF_VOXEL_SIZE + 8,  vs);
-        nv__write_f64(buf, off_grid + NV_GRID_OFF_VOXEL_SIZE + 16, vs);
+        for (int k = 0; k < 3; ++k) {
+            /* Diagonal entries (row-major 3x3: index 4*k). */
+            nv__write_f32(buf, mat_off + 0 + 16 * k, (float)vs[k]);
+            nv__write_f32(buf, mat_off + 36 + 16 * k, (float)(1.0 / vs[k]));
+            nv__write_f64(buf, mat_off + 88 + 32 * k, vs[k]);
+            nv__write_f64(buf, mat_off + 160 + 32 * k, 1.0 / vs[k]);
+            nv__write_f32(buf, mat_off + 72 + 4 * k, (float)tr[k]);
+            nv__write_f64(buf, mat_off + 232 + 8 * k, tr[k]);
+            nv__write_f64(buf, off_grid + NV_GRID_OFF_VOXEL_SIZE + 8 * k, vs[k]);
+        }
+        /* NanoVDB maps always carry taper 1 (no frustum). */
+        nv__write_f32(buf, mat_off + 84, 1.0f);
+        nv__write_f64(buf, mat_off + 256, 1.0);
     }
     /* grid_class / grid_type. tinyvdb's tvdb_grid_t has no grid_class
        field; default to "Unknown" which works for both fog volumes and
@@ -490,7 +503,8 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
                 }
                 /* Tile value lives in low 4 bytes of the 8-byte slot. */
                 float tile_v = bg;
-                if (ui->values && (size_t)s < (size_t)total_bits) {
+                if (ui->values &&
+                    ui->values_size >= (size_t)total_bits * sizeof(float)) {
                     memcpy(&tile_v, ui->values + (size_t)s * sizeof(float),
                            sizeof(float));
                 }
@@ -560,7 +574,8 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
                     nv__set_bit(buf + off_lower + NV_LOWER_VALUE_MASK_OFF, (size_t)s);
                 }
                 float tile_v = bg;
-                if (li->values) {
+                if (li->values &&
+                    li->values_size >= (size_t)total_bits * sizeof(float)) {
                     memcpy(&tile_v, li->values + (size_t)s * sizeof(float),
                            sizeof(float));
                 }
@@ -593,6 +608,17 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
         const tvdb_leaf_node_t *vl =
             &grid->tree.nodes[li->vdb_node_idx].u.leaf;
         const float *vdb_vals = (const float *)vl->data;
+        if (!vdb_vals || vl->data_size < 512u * sizeof(float) ||
+            vl->value_mask.bits.num_bytes < 64u) {
+            free(buf);
+            free(ctx.uppers); free(ctx.lowers); free(ctx.leaves);
+            if (err) {
+                err->status = TVDB_ERROR_INVALID_DATA;
+                snprintf(err->message, sizeof(err->message),
+                         "tvdb_grid_to_nanovdb_float: leaf without 8^3 data");
+            }
+            return TVDB_ERROR_INVALID_DATA;
+        }
 
         nv__write_i32(buf, off_leaf + NV_LEAF_BBOX_MIN_OFF + 0, li->origin[0]);
         nv__write_i32(buf, off_leaf + NV_LEAF_BBOX_MIN_OFF + 4, li->origin[1]);
@@ -686,16 +712,12 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
 
     nv__write_u64(buf, off_tree + NV_TREE_VOXEL_COUNT, total_active);
 
-    /* World bbox = root index bbox * voxel_size. */
-    {
-        double vs = 1.0;
-        memcpy(&vs, buf + off_grid + NV_GRID_OFF_VOXEL_SIZE, 8);
-        nv__write_f64(buf, off_grid + NV_GRID_OFF_WORLD_BBOX + 0,  (double)root_bb_min[0] * vs);
-        nv__write_f64(buf, off_grid + NV_GRID_OFF_WORLD_BBOX + 8,  (double)root_bb_min[1] * vs);
-        nv__write_f64(buf, off_grid + NV_GRID_OFF_WORLD_BBOX + 16, (double)root_bb_min[2] * vs);
-        nv__write_f64(buf, off_grid + NV_GRID_OFF_WORLD_BBOX + 24, (double)(root_bb_max[0] + 1) * vs);
-        nv__write_f64(buf, off_grid + NV_GRID_OFF_WORLD_BBOX + 32, (double)(root_bb_max[1] + 1) * vs);
-        nv__write_f64(buf, off_grid + NV_GRID_OFF_WORLD_BBOX + 40, (double)(root_bb_max[2] + 1) * vs);
+    /* World bbox = map(root index bbox). */
+    for (int k = 0; k < 3; ++k) {
+        nv__write_f64(buf, off_grid + NV_GRID_OFF_WORLD_BBOX + 8 * k,
+                      (double)root_bb_min[k] * vs[k] + tr[k]);
+        nv__write_f64(buf, off_grid + NV_GRID_OFF_WORLD_BBOX + 24 + 8 * k,
+                      ((double)root_bb_max[k] + 1.0) * vs[k] + tr[k]);
     }
 
     free(ctx.uppers); free(ctx.lowers); free(ctx.leaves);

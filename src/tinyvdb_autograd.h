@@ -51,6 +51,11 @@ extern "C" {
 // VJP of `sample(grid, points)` w.r.t. `grid`. Equivalent to splatting
 // `grad_out` onto `grad_grid` with the same trilinear weights. `grad_grid`
 // is *accumulated into* (caller zeros if needed).
+// Border handling matches tvdb_sample_trilinear_dense: coordinates and taps
+// are clamped to the grid, so weight that the forward reads from a clamped
+// edge voxel is scattered back to that voxel (including for points outside
+// the grid). Points with nonfinite coordinates, or an invalid `grid`, add
+// nothing (the forward returns the constant 0 for them).
 void tvdb_sample_trilinear_dense_vjp_grid(const tvdb_dense_grid* grid,
                                           const tvdb_vec3f* pts,
                                           size_t n,

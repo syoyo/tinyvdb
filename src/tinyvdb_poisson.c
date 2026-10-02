@@ -170,7 +170,18 @@ static tvdb_status_t poisson_solve_f(const void* rhs,void* output,int nx,int ny,
     if(restart) {
       double actual=poisson_residual_f(b,x,r,nx,ny,nz,h);
       if(!isfinite(actual)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite true residual"); goto done; }
-      if(actual<=target) break;
+      if(actual<=target) {
+        /* The periodic restart (every 32 iterations) can detect convergence on
+           an iteration the stride did not sample. Score this iterate before
+           stopping, or a stale best (up to 7 iterations old) is returned and
+           reported as not converged. */
+        if(!sample) {
+          double candidate=poisson_true_norm(rhs,input_double,ap,false,nx,ny,nz,h,rhs_mean);
+          if(!isfinite(candidate)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite output residual"); goto done; }
+          if(candidate<best_norm) { best_norm=candidate; memcpy(best,ap,n*sizeof(float)); }
+        }
+        break;
+      }
     }
     poisson_project_f(r,n);
     poisson_precondition_f(r,z,nx,ny,nz,h);
@@ -302,7 +313,18 @@ static tvdb_status_t poisson_solve_d(const void* rhs,void* output,int nx,int ny,
     if(restart) {
       double actual=poisson_residual_d(b,x,r,nx,ny,nz,h);
       if(!isfinite(actual)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite true residual"); goto done; }
-      if(actual<=target) break;
+      if(actual<=target) {
+        /* The periodic restart (every 32 iterations) can detect convergence on
+           an iteration the stride did not sample. Score this iterate before
+           stopping, or a stale best (up to 7 iterations old) is returned and
+           reported as not converged. */
+        if(!sample) {
+          double candidate=poisson_true_norm(rhs,input_double,ap,true,nx,ny,nz,h,rhs_mean);
+          if(!isfinite(candidate)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite output residual"); goto done; }
+          if(candidate<best_norm) { best_norm=candidate; memcpy(best,ap,n*sizeof(double)); }
+        }
+        break;
+      }
     }
     poisson_project_d(r,n);
     poisson_precondition_d(r,z,nx,ny,nz,h);

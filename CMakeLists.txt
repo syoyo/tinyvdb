@@ -498,6 +498,14 @@ if(TINYVDB_BUILD_TESTS)
   target_link_libraries(test_hardening PRIVATE tinyvdb_mesh_ops)
   add_test(NAME test_hardening COMMAND test_hardening)
 
+  # Audit regressions, one program per area (I/O, dense ops, sparse/autograd).
+  foreach(_test test_audit_io test_audit_ops test_audit_sparse)
+    add_executable(${_test} ${PROJECT_SOURCE_DIR}/tests/${_test}.c)
+    target_link_libraries(${_test} PRIVATE tinyvdb_mesh_ops tinyvdb_nanovdb m)
+    target_include_directories(${_test} PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    add_test(NAME ${_test} COMMAND ${_test} ${TINYVDB_TEST_FIXTURE})
+  endforeach()
+
   add_executable(test_alloc_failure ${PROJECT_SOURCE_DIR}/tests/test_alloc_failure.c)
   target_link_libraries(test_alloc_failure PRIVATE tinyvdb_mesh_ops)
   add_test(NAME test_alloc_failure COMMAND test_alloc_failure)

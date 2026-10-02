@@ -26,6 +26,10 @@ extern "C" {
 // (i,j,k) stores the distance at world position
 // (ox + (i+0.5)*vs, oy + (j+0.5)*vs, oz + (k+0.5)*vs) (cell-center convention,
 // matching the samplers). Returns true on success, false on bad args / OOM.
+// Bad args include a non-finite or non-positive voxel_size or size parameter,
+// non-finite centers/endpoints, and a voxel_size so small relative to the
+// extent that an axis would need more than INT_MAX voxels. `out` is not
+// modified when arguments are rejected.
 
 // Sphere of `radius` centered at `center`.
 bool tvdb_level_set_sphere(float radius, const float center[3],
@@ -65,7 +69,8 @@ bool tvdb_level_set_platonic(int face_count, float radius, const float center[3]
 // clamp(-sdf / (half_width*voxel_size), 0, 1). The interior (sdf<0) ramps from
 // 0 at the surface to 1 at `half_width` voxels deep; the exterior is 0. `out`
 // is allocated and inherits `sdf`'s transform. Pass half_width <= 0 for the
-// default. Returns true on success.
+// default. Returns true on success; false (without touching `out`) if `sdf`'s
+// voxel size is not positive and finite.
 bool tvdb_sdf_to_fog_volume(const tvdb_dense_grid* sdf, float half_width,
                             tvdb_dense_grid* out);
 
@@ -120,11 +125,12 @@ int tvdb_level_set_genus(const tvdb_dense_grid* sdf, float isovalue);
 // isosurface as a mesh (marching cubes) and reconvert it to an SDF. This
 // renormalizes a damaged / non-Eikonal / arbitrarily-scaled level set, can
 // resample to a new `voxel_size`, and recenters a non-zero isovalue at 0.
-// `voxel_size` <= 0 reuses the input's voxel size; `half_width` <= 0 uses the
-// default band. `sign_method` is 0 (flood fill) or 1 (sweep). `out` is
+// `voxel_size` <= 0 (or NaN) reuses the input's voxel size; `half_width` <= 0
+// uses the default band. The input's voxel size and the effective voxel size
+// must be positive and finite, and half_width must be finite. `sign_method` is 0 (flood fill) or 1 (sweep). `out` is
 // allocated by mesh-to-SDF (sized to the surface bbox + band) — free with
-// tvdb_dense_grid_free. Returns false on a NULL/empty grid or an empty
-// isosurface.
+// tvdb_dense_grid_free. Returns false on a NULL/empty grid, invalid spacing,
+// or an empty isosurface.
 bool tvdb_level_set_rebuild(const tvdb_dense_grid* sdf, float isovalue,
                             float voxel_size, float half_width,
                             int sign_method, tvdb_dense_grid* out);

@@ -637,6 +637,12 @@ uint64_t tvdb_gpu_buffer_native_handle(const tvdb_gpu_buffer_t* buf);
 // external-memory entry points; the calls return TVDB_ERROR_UNIMPLEMENTED when
 // unsupported, so callers can degrade gracefully.
 //
+// Physical-device identity (Vulkan deviceUUID / CUDA cuDeviceGetUuid). Export
+// and import must use contexts whose UUIDs match; a mismatched pair (for example
+// a software Vulkan device and a CUDA GPU) fails at import. Returns
+// TVDB_ERROR_UNIMPLEMENTED when the driver does not report a UUID.
+tvdb_status_t tvdb_gpu_context_device_uuid(const tvdb_gpu_context_t* ctx, uint8_t uuid[16],
+                                           tvdb_error_t* err);
 // Returns nonzero if `ctx` can participate in external-memory interop: a Vulkan
 // context that can export, or a CUDA context that can import.
 int tvdb_gpu_context_supports_external_memory(const tvdb_gpu_context_t* ctx);

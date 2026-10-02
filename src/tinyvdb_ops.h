@@ -96,6 +96,8 @@ void tvdb_advect_semi_lagrangian(const tvdb_dense_grid* field,
 // `clamp` (0/1) limits the MacCormack/BFECC correction to the trilinear-stencil
 // value range at the backtrace point, suppressing overshoot (recommended; the
 // RK schemes ignore it). `result` is pre-allocated, same shape as `field`.
+// `result` may alias `field` or `velocity`; if any scratch allocation fails,
+// `result` is left unchanged.
 typedef enum {
   TVDB_ADVECT_RK1 = 0,
   TVDB_ADVECT_RK2 = 1,
@@ -196,7 +198,9 @@ void tvdb_csg_union_d(const tvdb_dense_grid_d* a, const tvdb_dense_grid_d* b, tv
 void tvdb_csg_intersection_d(const tvdb_dense_grid_d* a, const tvdb_dense_grid_d* b, tvdb_dense_grid_d* result);
 void tvdb_csg_difference_d(const tvdb_dense_grid_d* a, const tvdb_dense_grid_d* b, tvdb_dense_grid_d* result);
 
-// Measurement (zero-crossing 6-edge area; volume of `value < 0` half-space)
+// Measurement (zero-crossing 6-edge area; volume of `value < 0` half-space).
+// Like the fp32 versions, return 0 for an invalid grid, including a
+// non-positive or non-finite voxel_size.
 double tvdb_surface_area_d(const tvdb_dense_grid_d* grid);
 double tvdb_volume_d(const tvdb_dense_grid_d* grid);
 

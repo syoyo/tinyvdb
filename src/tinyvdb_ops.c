@@ -927,15 +927,16 @@ static void tvdb_stencil_minmax(const tvdb_dense_grid* g, float vx, float vy, fl
       }
 }
 
-static void tvdb_advect_impl(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* velocity,
+static int tvdb_advect_impl(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* velocity,
                  float dt, int scheme, int clamp, tvdb_dense_grid* result) {
-  if (!field->data || !velocity->data || !result->data) return;
-  if (field->nx != velocity->nx || field->ny != velocity->ny || field->nz != velocity->nz) return;
-  if (!tvdb_grid_same_shape(field, result)) return;
+  /* Returns nonzero only when every voxel of `result` was written. */
+  if (!field->data || !velocity->data || !result->data) return 0;
+  if (field->nx != velocity->nx || field->ny != velocity->ny || field->nz != velocity->nz) return 0;
+  if (!tvdb_grid_same_shape(field, result)) return 0;
 
   if (scheme <= TVDB_ADVECT_RK4) {           // pure semi-Lagrangian, RK order = scheme+1
     tvdb_advect_sl(field, velocity, dt, scheme + 1, result);
-    return;
+    return 1;
   }
 
   const int nx = field->nx, ny = field->ny, nz = field->nz;
@@ -944,7 +945,7 @@ static void tvdb_advect_impl(const tvdb_dense_grid* field, const tvdb_dense_vec_
   tvdb_dense_grid phat, pstar;
   tvdb_dense_grid_init(&phat, nx, ny, nz); phat.voxel_size = field->voxel_size;
   tvdb_dense_grid_init(&pstar, nx, ny, nz); pstar.voxel_size = field->voxel_size;
-  if (!phat.data || !pstar.data) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return; }
+  if (!phat.data || !pstar.data) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return 0; }
 
   /* Clamp bounds, produced by the first pass. Both schemes clamp against the
      trilinear stencil of `field` at the RK2 backtrace point of each voxel, and
@@ -955,10 +956,10 @@ static void tvdb_advect_impl(const tvdb_dense_grid* field, const tvdb_dense_vec_
   float* bounds = NULL;
   if (clamp) {
     if (!tvdb_size_mul(n, 2 * sizeof(float), &bnd_bytes)) {
-      tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return;
+      tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return 0;
     }
     bounds = (float*)malloc(bnd_bytes);
-    if (!bounds) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return; }
+    if (!bounds) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return 0; }
   }
 
   // Forward then backward advect (RK2 internally), giving a 2nd-order estimate
@@ -986,7 +987,7 @@ static void tvdb_advect_impl(const tvdb_dense_grid* field, const tvdb_dense_vec_
     tvdb_dense_grid_init(&corr, nx, ny, nz); corr.voxel_size = field->voxel_size;
     if (!corr.data) {
       free(bounds);
-      tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return;
+      tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return 0;
     }
     #pragma omp parallel for schedule(static)
     for (long long i = 0; i < (long long)n; ++i) {
@@ -1011,6 +1012,7 @@ static void tvdb_advect_impl(const tvdb_dense_grid* field, const tvdb_dense_vec_
   }
   free(bounds);
   tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar);
+  return 1;
 }
 
 // -------------------------------------------------------------------------
@@ -1292,7 +1294,9 @@ double tvdb_volume_d(const tvdb_dense_grid_d* g) {
   /* Guarded like the fp32 twin. These two used to dereference `g` on the first
      line (g->voxel_size) with no null check, so a NULL argument was a segfault
      where the fp32 path returned 0. */
-  if (!g || !g->data || g->nx <= 0 || g->ny <= 0 || g->nz <= 0) return 0.0;
+  /* Also reject non-positive/non-finite spacing and overflowing dimensions,
+     matching the fp32 twin (NaN spacing used to pass and return NaN). */
+  if (!g || !tvdb_grid_valid(g->nx,g->ny,g->nz,g->voxel_size,g->data,sizeof(double))) return 0.0;
   // Sum of voxel cells whose value is < 0.
   double cell = g->voxel_size * g->voxel_size * g->voxel_size;
   double vol = 0.0;
@@ -1307,7 +1311,9 @@ double tvdb_volume_d(const tvdb_dense_grid_d* g) {
 double tvdb_surface_area_d(const tvdb_dense_grid_d* g) {
   /* Same guard as tvdb_volume_d: a NULL grid or NULL data used to fault here
      instead of returning 0, and the fp32 twin returns 0. */
-  if (!g || !g->data || g->nx <= 0 || g->ny <= 0 || g->nz <= 0) return 0.0;
+  /* Also reject non-positive/non-finite spacing and overflowing dimensions,
+     matching the fp32 twin (NaN spacing used to pass and return NaN). */
+  if (!g || !tvdb_grid_valid(g->nx,g->ny,g->nz,g->voxel_size,g->data,sizeof(double))) return 0.0;
   // Count zero-crossings over 6-neighbor edges; weight by voxel_size^2.
   double face = g->voxel_size * g->voxel_size;
   double area = 0.0;
@@ -1576,9 +1582,12 @@ void tvdb_advect(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* veloci
     tvdb_dense_grid tmp = *result; tmp.data = (float*)malloc(fb);
     if (!tmp.data) return;
     /* As above: the impl writes every voxel, so the incoming value is not read. */
-    tvdb_advect_impl(field,velocity,dt, scheme, clamp,&tmp);
-    memcpy(result->data,tmp.data,fb); free(tmp.data);
-  } else tvdb_advect_impl(field,velocity,dt, scheme, clamp,result);
+    /* Publish only a complete result: an internal scratch allocation failure
+       leaves tmp partly uninitialized, and the contract keeps result intact. */
+    if (tvdb_advect_impl(field,velocity,dt, scheme, clamp,&tmp))
+      memcpy(result->data,tmp.data,fb);
+    free(tmp.data);
+  } else (void)tvdb_advect_impl(field,velocity,dt, scheme, clamp,result);
 }
 
 tvdb_status_t tvdb_solve_poisson_ex(const tvdb_dense_grid* rhs,tvdb_dense_grid* x,int max_iters,float tolerance,

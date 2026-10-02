@@ -16,9 +16,11 @@ static int tvdb__nv_child_address(uint64_t base,uint64_t delta,uint64_t size,uin
     else {uint64_t magnitude=(~delta)+1;if(magnitude>base)return 0;*out=base-magnitude;}
     return *out>=736 && *out<=size && !(*out&7);
 }
-/* Bound every pointer used by the float/double accessors before exposing the
- * grid. Depth is fixed by the format; declared node counts also bound work
- * for malformed inputs containing repeated child pointers. */
+/* Bound every child pointer reachable by the PNanoVDB accessors before
+ * exposing the grid. Depth is fixed by the format. The per-level visit budget
+ * is the declared node count, capped by how many nodes of that size fit in the
+ * grid, so repeated (aliased) child pointers cannot multiply the work beyond
+ * what the input size allows. */
 static int tvdb__nv_check_node(const uint8_t *p,uint64_t size,uint64_t address,int level,
     const pnanovdb_grid_type_constants_t *c,uint32_t remaining[3]) {
     uint64_t bytes=level==2?c->upper_size:level==1?c->lower_size:c->leaf_size;
@@ -94,8 +96,16 @@ static tvdb_status_t tvdb__nv_metadata(tvdb_nanovdb_file_t *f,tvdb_nanovdb_grid_
     uint32_t tiles=tvdb__nv_u32(p+root+24);
     if (constants->root_size>g->size-root ||
         (uint64_t)tiles*constants->root_tile_size>g->size-root-constants->root_size) return TVDB_ERROR_INVALID_DATA;
-    if(type==PNANOVDB_GRID_TYPE_FLOAT || type==PNANOVDB_GRID_TYPE_DOUBLE) {
-        uint32_t remaining[3];for(int k=0;k<3;k++)remaining[k]=tvdb__nv_u32(p+704+4*k);
+    /* Every grid type is walked by tvdb_nanovdb_is_voxel_active, so every
+     * type's child pointers must be validated. */
+    {
+        uint32_t remaining[3];
+        for(int k=0;k<3;k++) {
+            uint64_t bytes=k==2?constants->upper_size:k==1?constants->lower_size:constants->leaf_size;
+            uint64_t cap=bytes?g->size/bytes:0;
+            remaining[k]=tvdb__nv_u32(p+704+4*k);
+            if(remaining[k]>cap)remaining[k]=(uint32_t)cap;
+        }
         for(uint32_t k=0;k<tiles;k++) {
             uint64_t delta=tvdb__nv_u64(p+root+constants->root_size+(uint64_t)k*constants->root_tile_size+8),child;
             if(delta && (!tvdb__nv_child_address(root,delta,g->size,&child) ||
@@ -241,7 +251,6 @@ tvdb_status_t tvdb_nanovdb_file_open(tvdb_nanovdb_file_t *f,const char *path,
 void tvdb_nanovdb_file_close(tvdb_nanovdb_file_t *f) {
     if(!f)return;
     tvdb__nv_release_grids(f);
-    if(f->buffer)tvdb__nv_free(f,f->buffer,f->file_size);
     if(f->buffer)tvdb__nv_free(f,f->buffer,(size_t)f->file_size);
 #if !defined(TVDB_NO_MMAP) && !defined(_WIN32)
     if(f->mmap_data)munmap((void *)f->mmap_data,(size_t)f->file_size);

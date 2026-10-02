@@ -976,19 +976,22 @@ static int tvdb__nnvdb_decompress_blosc(void *dst, size_t dst_size,
 #ifdef TVDB_HAVE_BLOSC
     /* Real BLOSC1 decompression. NanoVDB writes one chunk per grid (each
        up to 1GB uncompressed), and each chunk is a full Blosc1 frame. */
+    /* A frame that decodes to fewer bytes would leave the tail of dst
+       uninitialized; require the exact payload size. */
+    if (dst_size > (size_t)INT32_MAX) return 0;
     int rc = blosc_decompress_ctx(src, dst, dst_size, /*numinternalthreads=*/1);
-    return rc > 0 ? 1 : 0;
+    return rc >= 0 && (size_t)rc == dst_size ? 1 : 0;
 #else
     /* Fallback path retained only for backwards compatibility with the
        earlier "fake LZ4 with 12-byte prefix" framing produced by older
        tinyvdb writes. Real BLOSC-encoded NanoVDB files (e.g. produced by
        libnanovdb's nanovdb_convert --blosc) require building with
        TINYVDB_USE_SYSTEM_BLOSC=ON. */
-    (void)src_size;
-    if (src_size < 12) return 0;
+    if (src_size < 12 || src_size - 12 > (size_t)INT32_MAX ||
+        dst_size > (size_t)INT32_MAX) return 0;
     int rc = LZ4_decompress_safe((const char *)src + 12, (char *)dst,
                                  (int)(src_size - 12), (int)dst_size);
-    return rc >= 0 ? 1 : 0;
+    return rc >= 0 && (size_t)rc == dst_size ? 1 : 0;
 #endif
 }
 
@@ -1302,6 +1305,10 @@ tvdb_status_t tvdb_nanovdb_world_to_index(const tvdb_nanovdb_grid_t *grid,
 int tvdb_nanovdb_is_voxel_active(const tvdb_nanovdb_grid_t *grid,
                                  int x, int y, int z) {
     if (!grid || !grid->data) return 0;
+    /* The type indexes PNanoVDB's constant table; grids from the reader have
+       had every child pointer validated for their type. */
+    if (grid->grid_type == 0 || grid->grid_type >= PNANOVDB_GRID_TYPE_END)
+        return 0;
     /* Quick bbox reject: voxels outside the active bbox are guaranteed
        inactive. PNanoVDB would return false at higher levels too, but the
        bbox check avoids descending the tree for the common all-outside
@@ -1755,9 +1762,20 @@ tvdb_status_t tvdb_nanovdb_write_to_memory(const tvdb_nanovdb_file_t *file,
             ok = tvdb__nnvdb_compress_zip(&compressed, &compressed_size,
                                           grid->data, grid->size);
         }
-        /* Only keep the compressed form when it actually helps; otherwise emit
-         * the raw bytes so the reader's `codec == NONE` fast path stays valid. */
-        if (ok && compressed && compressed_size > 0 && compressed_size < grid->size) {
+        /* The codec is recorded once in the file header, so every grid must be
+         * emitted in that codec even when compression does not shrink it (as
+         * NanoVDB itself does); raw bytes under a ZIP/BLOSC header would be
+         * unreadable. */
+        if (!ok || !compressed || compressed_size == 0) {
+            if (compressed) free(compressed);
+            for (size_t k = 0; k < n_staged; k++) free(staged[k]);
+            free(staged); free(staged_size); free(staged_is_compressed);
+            free(buffer);
+            tvdb__nnvdb_set_error(err, TVDB_ERROR_OUT_OF_MEMORY,
+                                   "Grid compression failed");
+            return TVDB_ERROR_OUT_OF_MEMORY;
+        }
+        {
             staged[i] = (uint8_t *)compressed;
             /* A compressed grid's on-wire footprint is the 8-byte frame-length
              * prefix plus the frame. Both the metadata field@8 and the bytes we
@@ -1766,8 +1784,6 @@ tvdb_status_t tvdb_nanovdb_write_to_memory(const tvdb_nanovdb_file_t *file,
              * the end of the region. */
             staged_size[i] = compressed_size + 8;
             staged_is_compressed[i] = 1;
-        } else {
-            if (compressed) free(compressed);
         }
     }
 
