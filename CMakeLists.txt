@@ -30,6 +30,10 @@ find_package(Sanitizers QUIET)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
+# MSVC gates <stdatomic.h> behind an opt-in flag (VS 2022 17.5+).
+if(MSVC)
+  add_compile_options($<$<COMPILE_LANGUAGE:C>:/experimental:c11atomics>)
+endif()
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

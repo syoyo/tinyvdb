@@ -21,9 +21,10 @@ static int failures;
     } while (0)
 static void check_sweep(tvdb_thread_pool_t *one, tvdb_thread_pool_t *many, int sphere, int narrow) {
     tvdb_error_t err = {0};
-    tvdb_grid_t a = {0}, b = {0};
+    tvdb_grid_t a = {0}, b = {0}, ref = {0};
     CHECK(sdf_fixture_cube(&a, 24, sphere, narrow));
     CHECK(sdf_fixture_cube(&b, 24, sphere, narrow));
+    CHECK(sdf_fixture_cube(&ref, 24, sphere, narrow));
     tvdb_sdf_tree_t *wa = NULL, *wb = NULL;
     OK(tvdb_sdf_tree_create(&a, one, NULL, &wa, &err));
     OK(tvdb_sdf_tree_create(&b, many, NULL, &wb, &err));
@@ -43,10 +44,13 @@ static void check_sweep(tvdb_thread_pool_t *one, tvdb_thread_pool_t *many, int s
     CHECK(!ra.unreached_voxels);
     CHECK(ra.iterations == rb.iterations);
     CHECK(ra.max_change == rb.max_change);
-    tvdb_sparse_grid sa = {0}, sb = {0};
+    tvdb_sparse_grid sa = {0}, sb = {0}, sref = {0};
     CHECK(tvdb_grid_to_sparse(&a, &sa));
     CHECK(tvdb_grid_to_sparse(&b, &sb));
+    CHECK(tvdb_grid_to_sparse(&ref, &sref));
     CHECK(sa.count == sb.count);
+    CHECK(sa.count == sref.count);
+    CHECK(!memcmp(sa.coords, sref.coords, sa.count * sizeof(tvdb_vec3i)));
     CHECK(!memcmp(sa.values, sb.values, sa.count * sizeof(float)));
     float worst = 0;
     for (size_t i = 0; i < sa.count; ++i) {
@@ -61,8 +65,10 @@ static void check_sweep(tvdb_thread_pool_t *one, tvdb_thread_pool_t *many, int s
         if (error > worst)
             worst = error;
         CHECK((sa.values[i] >= 0) == (exact >= 0));
-        if (fabsf(exact) <= 1.5f)
-            CHECK(sa.values[i] == exact);
+        /* Seeded boundary voxels are fixed; compare with the unswept input
+         * rather than recomputing it, since FMA contraction may differ. */
+        if (fabsf(sref.values[i]) <= 1.5f)
+            CHECK(sa.values[i] == sref.values[i]);
     }
     CHECK(worst < (sphere ? 3.0f : 1e-6f));
     printf("tree sweep sphere=%d narrow=%d active=%zu iter=%d max_error=%g\n", sphere, narrow,
@@ -73,10 +79,12 @@ static void check_sweep(tvdb_thread_pool_t *one, tvdb_thread_pool_t *many, int s
     tvdb_dense_grid_free(&dense);
     tvdb_sparse_grid_free(&sa);
     tvdb_sparse_grid_free(&sb);
+    tvdb_sparse_grid_free(&sref);
     tvdb_sdf_tree_destroy(wa);
     tvdb_sdf_tree_destroy(wb);
     tvdb_grid_destroy_owned(&a);
     tvdb_grid_destroy_owned(&b);
+    tvdb_grid_destroy_owned(&ref);
 }
 static float reference_neighbor(const float *values, int n, int x, int y, int z) {
     if (x < 0 || x >= n || y < 0 || y >= n || z < 0 || z >= n)
