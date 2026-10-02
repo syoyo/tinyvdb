@@ -1,0 +1,109 @@
+#version 450
+layout(local_size_x=128) in;
+layout(std430,binding=0) readonly buffer Coordinates { int coords[]; };
+layout(std430,binding=1) readonly buffer Values { float values[]; };
+layout(std430,binding=2) readonly buffer Map { uint slots[]; };
+layout(std430,binding=3) buffer OutCoordinates { int oc[]; };
+layout(std430,binding=4) buffer OutValues { float ov[]; };
+layout(std430,binding=5) readonly buffer Weights { float weights[]; };
+layout(std430,binding=6) buffer Flags { uint flags[]; };
+layout(std140,binding=7) uniform Params {
+    ivec4 cfg; // op, input count, output/candidate count, map capacity
+    ivec4 dim; // kernel extents, stride
+    vec4 args; // pad/background
+    ivec4 mode; // 0 same, 1 strided, 2 transpose, 3 dilate, 4 erode
+} u;
+bool add_ok(int a,int b,out int v) {
+    if((b>0 && a>2147483647-b)||(b<0 && a<(-2147483647-1)-b))return false;
+    v=a+b;return true;
+}
+bool mul_ok(int a,int b,out int v) {
+    if(a>2147483647/b || a<(-2147483647-1)/b)return false;
+    v=a*b;return true;
+}
+int lookup(int x,int y,int z) {
+    uint at=(uint(x)*73856093u ^ uint(y)*19349663u ^ uint(z)*83492791u)&(uint(u.cfg.w)-1u);
+    for(uint p=0u;p<uint(u.cfg.w);++p){uint v=slots[at];if(v==0u)return -1;
+        uint j=v-1u;if(coords[3u*j]==x && coords[3u*j+1u]==y && coords[3u*j+2u]==z){uint first=j;for(uint q=slots[uint(u.cfg.w)+j];q!=0u;q=slots[uint(u.cfg.w)+q-1u])first=min(first,q-1u);return int(first);}
+        at=(at+1u)&(uint(u.cfg.w)-1u);}
+    return -1;
+}
+float transpose_value(int x,int y,int z) {
+    uint at=(uint(x)*73856093u ^ uint(y)*19349663u ^ uint(z)*83492791u)&(uint(u.cfg.w)-1u);
+    for(uint p=0u;p<uint(u.cfg.w);++p){uint v=slots[at];if(v==0u)return 0.0;
+        uint j=v-1u;if(coords[3u*j]==x && coords[3u*j+1u]==y && coords[3u*j+2u]==z){
+            float sum=0.0;for(uint q=v;q!=0u;q=slots[uint(u.cfg.w)+q-1u])sum+=values[q-1u];return sum;}
+        at=(at+1u)&(uint(u.cfg.w)-1u);}
+    return 0.0;
+}
+bool keep(uint i,int x,int y,int z) {
+    if(lookup(x,y,z)!=int(i))return false;
+    if(u.mode.x==4)for(int k=0;k<6;++k){int a=x,b=y,c=z,t=0;
+        int d=(k%2==0)?-1:1;
+        if(k/2==0){if(!add_ok(a,d,t))return false;a=t;}
+        if(k/2==1){if(!add_ok(b,d,t))return false;b=t;}
+        if(k/2==2){if(!add_ok(c,d,t))return false;c=t;}
+        if(lookup(a,b,c)<0)return false;}
+    return true;
+}
+void main() {
+    uint i=(gl_GlobalInvocationID.x+gl_GlobalInvocationID.y*gl_NumWorkGroups.x*gl_WorkGroupSize.x);
+    if(u.cfg.x==4){if(i<=uint(u.cfg.z))flags[i]=0u;return;}
+    if(i>=uint(u.cfg.z))return;
+    if(u.cfg.x==5 || u.cfg.x==6){
+        bool selected=abs(values[i]-u.args.x)>u.args.y;
+        if(u.cfg.x==5){flags[i]=selected?1u:0u;return;}
+        if(selected){uint j=flags[i];oc[3u*j]=int(i%uint(u.dim.x));oc[3u*j+1u]=int((i/uint(u.dim.x))%uint(u.dim.y));oc[3u*j+2u]=int(i/uint(u.dim.x*u.dim.y));ov[j]=values[i];}return;
+    }
+    if(u.cfg.x==7){int x=int(i%uint(u.dim.x)),y=int((i/uint(u.dim.x))%uint(u.dim.y)),z=int(i/uint(u.dim.x*u.dim.y));
+        int j=lookup(x,y,z);ov[i]=j<0?u.args.x:values[j];return;}
+    if(u.cfg.x==8){
+        float x=floor((weights[3u*i]-u.args.x)/u.args.w),y=floor((weights[3u*i+1u]-u.args.y)/u.args.w),z=floor((weights[3u*i+2u]-u.args.z)/u.args.w);
+        if(isnan(x)||isnan(y)||isnan(z)||x< -2147483648.0||x>=2147483648.0||y< -2147483648.0||y>=2147483648.0||z< -2147483648.0||z>=2147483648.0){atomicOr(flags[uint(u.cfg.z)],1u);return;}
+        oc[3u*i]=int(x);oc[3u*i+1u]=int(y);oc[3u*i+2u]=int(z);ov[i]=1.0;return;
+    }
+    int kind=u.mode.x;
+    if(u.cfg.x==0){
+        uint copies=kind==2?uint(u.dim.x*u.dim.y*u.dim.z):kind==3?7u:1u;
+        uint src=i/copies,tap=i%copies;
+        int x=coords[3u*src],y=coords[3u*src+1u],z=coords[3u*src+2u];bool good=true;int t;
+        if(kind==1){int s=u.dim.w; x=x/s-(x%s<0?1:0);y=y/s-(y%s<0?1:0);z=z/s-(z%s<0?1:0);}
+        if(kind==2){int dx=int(tap%uint(u.dim.x))-u.dim.x/2;
+          int dy=int((tap/uint(u.dim.x))%uint(u.dim.y))-u.dim.y/2;
+          int dz=int(tap/uint(u.dim.x*u.dim.y))-u.dim.z/2;
+          good=mul_ok(x,u.dim.w,t);if(good)good=add_ok(t,dx,x);
+          good=good && mul_ok(y,u.dim.w,t);if(good)good=add_ok(t,dy,y);
+          good=good && mul_ok(z,u.dim.w,t);if(good)good=add_ok(t,dz,z);
+        }
+        if(kind==3 && tap>0u){int d=(tap%2u==1u)?1:-1;
+          if(tap<=2u)good=add_ok(x,d,x);else if(tap<=4u)good=add_ok(y,d,y);else good=add_ok(z,d,z);}
+        if(!good && kind==3){x=coords[3u*src];y=coords[3u*src+1u];z=coords[3u*src+2u];}
+        else if(!good)atomicOr(flags[uint(u.cfg.z)],1u);
+        oc[3u*i]=x;oc[3u*i+1u]=y;oc[3u*i+2u]=z;return;
+    }
+    if(u.cfg.x==1 || u.cfg.x==2){int x=coords[3u*i],y=coords[3u*i+1u],z=coords[3u*i+2u];bool selected=keep(i,x,y,z);
+        if(u.cfg.x==1){flags[i]=selected?1u:0u;return;}
+        if(selected){uint j=flags[i];oc[3u*j]=x;oc[3u*j+1u]=y;oc[3u*j+2u]=z;}return;
+    }
+    int x=oc[3u*i],y=oc[3u*i+1u],z=oc[3u*i+2u];
+    if(kind==3 || kind==4){int j=lookup(x,y,z);float v=j<0?u.args.x:values[j];
+        for(int k=0;k<6;++k){int a=x,b=y,c=z,t=0;int d=(k%2==0)?-1:1;bool good=true;
+          if(k/2==0){good=add_ok(a,d,t);a=t;}if(k/2==1){good=add_ok(b,d,t);b=t;}if(k/2==2){good=add_ok(c,d,t);c=t;}
+          int q=good?lookup(a,b,c):-1;if(q>=0){float f=values[q];v=kind==4?(f>v?f:v):(f<v?f:v);}}
+        ov[i]=v;return;
+    }
+    float sum=0.0;
+    for(int kz=0;kz<u.dim.z;++kz)for(int ky=0;ky<u.dim.y;++ky)for(int kx=0;kx<u.dim.x;++kx){
+        int a=x,b=y,c=z,t=0;bool good=true;
+        int dx=kx-u.dim.x/2,dy=ky-u.dim.y/2,dz=kz-u.dim.z/2;
+        if(kind==2){good=add_ok(x,-dx,a) && add_ok(y,-dy,b) && add_ok(z,-dz,c);
+          if(!good || a%u.dim.w!=0 || b%u.dim.w!=0 || c%u.dim.w!=0)continue;
+          a/=u.dim.w;b/=u.dim.w;c/=u.dim.w;
+        }else {if(kind==1){good=mul_ok(x,u.dim.w,a)&&mul_ok(y,u.dim.w,b)&&mul_ok(z,u.dim.w,c);}
+          good=good && add_ok(a,dx,t);a=t;good=good && add_ok(b,dy,t);b=t;good=good && add_ok(c,dz,t);c=t;}
+        int j=good?lookup(a,b,c):-1;
+        float v=kind==2?(good?transpose_value(a,b,c):0.0):(j<0?u.args.x:values[j]);
+        sum+=weights[(kz*u.dim.y+ky)*u.dim.x+kx]*v;
+    }
+    ov[i]=sum;
+}

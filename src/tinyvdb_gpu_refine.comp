@@ -22,7 +22,7 @@ float fetch(int x, int y, int z) {
 // Upsample by integer factor via trilinear resample at output voxel centers
 // (matches tvdb_refine_grid).
 void main() {
-  uint gid = gl_GlobalInvocationID.x;
+  uint gid = (gl_GlobalInvocationID.x+gl_GlobalInvocationID.y*gl_NumWorkGroups.x*gl_WorkGroupSize.x);
   uint total = uint(u.out_dim.x * u.out_dim.y * u.out_dim.z);
   if (gid >= total) return;
   int oz = int(gid) / (u.out_dim.x * u.out_dim.y);

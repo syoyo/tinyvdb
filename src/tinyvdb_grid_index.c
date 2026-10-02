@@ -7,6 +7,13 @@
 #include <math.h>
 #include <stdlib.h>
 
+/* Every loop below is a per-point gather against a hash that is built once and
+ * then only read: each iteration writes exactly one output element that no other
+ * iteration touches, so a parallel for needs no synchronization. These were all
+ * serial; the hash build is the only serial part and it is O(active).
+ * The induction variables are long long because OpenMP before 5.0 does not
+ * admit an unsigned induction variable in a canonical loop, and MSVC rejects it. */
+
 #define GI_BIAS (1 << 20)          // 2^20; coords in [-2^20, 2^20-1]
 #define GI_MASK21 ((1u << 21) - 1)
 
@@ -35,18 +42,29 @@ void tvdb_world_to_ijk(const float* points, size_t n,
                        const float voxel_size[3], const float origin[3],
                        int32_t* out_ijk) {
   if (!out_ijk || !voxel_size || !origin || (n && !points) || n > SIZE_MAX / (3 * sizeof(int32_t))) return;
-  for (size_t i = 0; i < n; ++i)
+  #pragma omp parallel for schedule(static)
+  for (long long ii = 0; ii < (long long)n; ++ii) {
+    size_t i = (size_t)ii;
     for (int a = 0; a < 3; ++a)
       if (!gi_world_component(points[3*i+a], voxel_size[a], origin[a], &out_ijk[3*i+a]))
         out_ijk[3*i+a] = 0;
+  }
 }
 
 void tvdb_ijk_to_world(const int32_t* ijk, size_t n,
                        const float voxel_size[3], const float origin[3],
                        float* out_points) {
-  for (size_t i = 0; i < n; ++i)
+  /* This had no argument checks at all, so every one of the five pointers was
+     dereferenced unconditionally and a huge n walked off both buffers.
+     tvdb_world_to_ijk above already guards the same shape of call. */
+  if (!out_points || !voxel_size || !origin || (n && !ijk)) return;
+  if (n > SIZE_MAX / (3 * sizeof(float))) return;
+  #pragma omp parallel for schedule(static)
+  for (long long ii = 0; ii < (long long)n; ++ii) {
+    size_t i = (size_t)ii;
     for (int a = 0; a < 3; ++a)
       out_points[3*i+a] = origin[a] + ((float)ijk[3*i+a] + 0.5f) * voxel_size[a];
+  }
 }
 
 // ---- Morton (Z-order) -------------------------------------------------------
@@ -142,8 +160,11 @@ bool tvdb_coords_in_set(const int32_t* active, size_t na,
   if ((nq && (!query || !out)) || nq > SIZE_MAX / (3 * sizeof(int32_t))) return false;
   gi_hash h;
   if (!gi_hash_build(&h, active, na)) return false;
-  for (size_t i = 0; i < nq; ++i)
+  #pragma omp parallel for schedule(static)
+  for (long long ii = 0; ii < (long long)nq; ++ii) {
+    size_t i = (size_t)ii;
     out[i] = gi_hash_get(&h, query[3*i], query[3*i+1], query[3*i+2]) >= 0 ? 1 : 0;
+  }
   gi_hash_free(&h);
   return true;
 }
@@ -154,7 +175,9 @@ bool tvdb_points_in_set(const float* points, size_t np,
   if ((np && !out) || !gi_world_valid(points, np, voxel_size, origin)) return false;
   gi_hash h;
   if (!gi_hash_build(&h, active, na)) return false;
-  for (size_t i = 0; i < np; ++i) {
+  #pragma omp parallel for schedule(static)
+  for (long long ii = 0; ii < (long long)np; ++ii) {
+    size_t i = (size_t)ii;
     int32_t ijk[3];
     for (int a = 0; a < 3; ++a)
       gi_world_component(points[3*i+a], voxel_size[a], origin[a], &ijk[a]);
@@ -169,8 +192,11 @@ bool tvdb_ijk_to_index(const int32_t* active, size_t na,
   if ((nq && (!query || !out)) || nq > SIZE_MAX / (3 * sizeof(int32_t))) return false;
   gi_hash h;
   if (!gi_hash_build(&h, active, na)) return false;
-  for (size_t i = 0; i < nq; ++i)
+  #pragma omp parallel for schedule(static)
+  for (long long ii = 0; ii < (long long)nq; ++ii) {
+    size_t i = (size_t)ii;
     out[i] = gi_hash_get(&h, query[3*i], query[3*i+1], query[3*i+2]);
+  }
   gi_hash_free(&h);
   return true;
 }
@@ -192,7 +218,9 @@ bool tvdb_neighbor_counts(const int32_t* active, size_t na,
     for (int t = 0; t < 6; ++t) { off[t][0]=o6[t][0]; off[t][1]=o6[t][1]; off[t][2]=o6[t][2]; }
     noff = 6;
   }
-  for (size_t i = 0; i < na; ++i) {
+  #pragma omp parallel for schedule(static)
+  for (long long ii = 0; ii < (long long)na; ++ii) {
+    size_t i = (size_t)ii;
     int32_t x = active[3*i], y = active[3*i+1], z = active[3*i+2];
     int32_t c = 0;
     for (int t = 0; t < noff; ++t) {

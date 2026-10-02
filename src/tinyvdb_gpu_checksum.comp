@@ -4,21 +4,31 @@ layout(std430, set = 0, binding = 0) readonly buffer InBuffer { uint data[]; }; 
 layout(std430, set = 0, binding = 1) buffer PartialBuffer { uint partials[]; };
 layout(std140, set = 0, binding = 2) uniform Params {
   uint count;
-  uint nthreads;
+  uint ngroups;
 } u;
+shared uint sdata[256];
 
 // Order-independent additive checksum: sum of a per-element mix of (value bits,
-// index). Commutative add makes it safe to fold a grid-stride slice per thread
-// and sum the partials on the host (wrapping uint32).
+// index). Commutative add makes it safe to fold a grid-stride slice per workgroup
+// and sum the partials on the host (wrapping uint32). This used to run as a single
+// wavefront of `nthreads` threads, leaving the rest of the device idle; each
+// workgroup now reduces its slice in shared memory and emits one partial.
 void main() {
-  uint t = gl_GlobalInvocationID.x;
-  if (t >= u.nthreads) return;
+  uint lid = gl_LocalInvocationID.x;
+  uint wg = gl_WorkGroupID.x;
+  uint stride = u.ngroups * 256u;
   uint s = 0u;
-  for (uint i = t; i < u.count; i += u.nthreads) {
+  for (uint i = wg * 256u + lid; i < u.count; i += stride) {
     uint h = data[i] ^ (i * 2654435761u);
     h *= 2654435761u;
     h ^= h >> 15;
     s += h;
   }
-  partials[t] = s;
+  sdata[lid] = s;
+  barrier();
+  for (uint t = 128u; t > 0u; t >>= 1u) {
+    if (lid < t) sdata[lid] += sdata[lid + t];
+    barrier();
+  }
+  if (lid == 0u) partials[wg] = sdata[0];
 }

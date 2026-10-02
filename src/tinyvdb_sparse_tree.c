@@ -1,4 +1,5 @@
 #include "tinyvdb_sparse_tree.h"
+#include "tinyvdb_checked.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,6 +65,52 @@ static inline int tvdb__ctz32(uint32_t x) {
 }
 #endif
 
+/* Iterate the set bits of a nodemask in ascending bit order.
+ *
+ * A leaf mask covers 8^3 = 512 voxel slots and is typically well under 5%
+ * active, so scanning every slot and testing a bit per slot does ~25x the work of
+ * visiting only the set bits. Ascending bit order is exactly the order a linear
+ * slot scan produces, which matters: the dilate scatter writes into per-leaf
+ * blocks whose layout is the prefix sum over leaves of their active counts, so
+ * changing the emission order would change the output byte for byte.
+ *
+ * The same word-at-a-time trick visit_subtree already uses (see the measured 151x
+ * overhead noted there), lifted here so every mask scan in the file shares it. */
+typedef struct {
+    uint64_t word;   /* remaining set bits of the current 64-bit chunk */
+    size_t   base;   /* byte offset the chunk was assembled from */
+    size_t   next;   /* byte offset of the following chunk */
+} tvdb__mask_iter;
+
+static inline void tvdb__mask_iter_init(tvdb__mask_iter *it, const uint8_t *bits,
+                                        size_t nbytes) {
+    it->word = 0; it->base = 0; it->next = 0;
+    if (!bits || !nbytes) return;
+    uint64_t w = 0;
+    size_t take = nbytes < 8 ? nbytes : 8;
+    for (size_t b = 0; b < take; ++b) w |= (uint64_t)bits[b] << (8 * b);
+    it->word = w; it->base = 0; it->next = take;
+}
+
+/* Returns false when the mask is exhausted. *out_bit receives an absolute bit
+   index, i.e. the same value a `for (lin = 0; lin < n; ++lin) if (is_on(lin))`
+   scan would have been sitting on. */
+static inline bool tvdb__mask_iter_next(tvdb__mask_iter *it, const uint8_t *bits,
+                                        size_t nbytes, size_t *out_bit) {
+    while (it->word == 0) {
+        if (it->next >= nbytes) return false;
+        size_t take = nbytes - it->next;
+        if (take > 8) take = 8;
+        uint64_t w = 0;
+        for (size_t b = 0; b < take; ++b) w |= (uint64_t)bits[it->next + b] << (8 * b);
+        it->word = w; it->base = it->next; it->next += take;
+    }
+    int bit = tvdb__ctz64(it->word);
+    it->word &= it->word - 1;              /* clear the lowest set bit */
+    *out_bit = it->base * 8 + (size_t)bit;
+    return true;
+}
+
 // Ensure the DFS work-stack can hold one more entry; grows by doubling.
 // Returns false on OOM. The stack is a *work* stack (holds all pending nodes
 // across the tree's breadth), so it must grow with the fan-out of internal
@@ -112,12 +159,21 @@ static void visit_subtree(const tvdb_tree_t *tree, size_t root_idx,
             // E.g. for Tree_float_5_4_3: L1 child covers 2^(4+3)=128 voxels,
             // L2 child covers 2^3=8 voxels (each leaf is 8 voxels per axis).
             int child_dim = 1;
-            int my_level = -1;
-            for (int lv = 0; lv < tree->layout.num_levels; ++lv) {
-                if (tree->layout.levels[lv].log2dim == parent_log2dim &&
-                    tree->layout.levels[lv].node_type == TVDB_NODE_INTERNAL) {
-                    my_level = lv;
-                    break;
+            // The node already records its own level, so the layout lookup is
+            // redundant in the normal case. Validated rather than assumed,
+            // because the scan below is also the definition of what a matching
+            // level is, and this must keep agreeing with it.
+            int my_level = node->level;
+            if (my_level < 0 || my_level >= tree->layout.num_levels ||
+                tree->layout.levels[my_level].log2dim != parent_log2dim ||
+                tree->layout.levels[my_level].node_type != TVDB_NODE_INTERNAL) {
+                my_level = -1;
+                for (int lv = 0; lv < tree->layout.num_levels; ++lv) {
+                    if (tree->layout.levels[lv].log2dim == parent_log2dim &&
+                        tree->layout.levels[lv].node_type == TVDB_NODE_INTERNAL) {
+                        my_level = lv;
+                        break;
+                    }
                 }
             }
             if (my_level >= 0) {
@@ -485,7 +541,16 @@ static uint64_t mix64_(uint64_t k) {
     k ^= k >> 33; return k;
 }
 
-static size_t pow2_(size_t v) { size_t p = 1; while (p < v) p <<= 1; return p; }
+/* Smallest power of two >= v, or 0 if that does not exist. The old form,
+   `while (p < v) p <<= 1`, overflows to 0 once v exceeds SIZE_MAX/2 and then
+   spins forever, because 0 < v stays true. Every caller here feeds it
+   `count * 2 + 16` with a count that came from a sparse structure, so the bound
+   is not enforced by anything upstream. Returns 0 rather than aborting so the
+   callers keep their existing "allocation failed" path. */
+static size_t pow2_(size_t count, size_t factor) {
+    size_t cap;
+    return tvdb_hash_capacity(count, factor, &cap) ? cap : 0;
+}
 
 static int collect_visit(const tvdb_leaf_view_t *leaf, void *user) {
     leaf_collect_t *c = (leaf_collect_t *)user;
@@ -527,6 +592,7 @@ static int leaf_hash_lookup(const leaf_hash_entry_t *tbl, size_t mask,
 // or directly from leaf->data on the first step), writes voxel coord+value
 // pairs into `out`.
 static bool dilate_step(const leaf_collect_t *leaves,
+                        leaf_hash_entry_t *htbl, size_t hmask,
                         const float *current_values, // NULL on first step (use leaf->data)
                         float background, int is_dilate,
                         tvdb_sparse_grid *out, float voxel_size,
@@ -535,20 +601,10 @@ static bool dilate_step(const leaf_collect_t *leaves,
     out->voxel_size = voxel_size;
     out->ox = ox; out->oy = oy; out->oz = oz;
 
-    // Build leaf hash for fast neighbor leaf lookup.
-    size_t cap = pow2_(leaves->count * 2 + 16);
-    leaf_hash_entry_t *htbl = (leaf_hash_entry_t *)calloc(cap, sizeof(leaf_hash_entry_t));
-    if (!htbl) return false;
-    size_t mask = cap - 1;
-    for (size_t i = 0; i < leaves->count; ++i) {
-        uint64_t key = pack_leaf_key(leaves->entries[i].lcoord[0],
-                                     leaves->entries[i].lcoord[1],
-                                     leaves->entries[i].lcoord[2]);
-        size_t h = (size_t)(mix64_(key) & mask);
-        while (htbl[h].idx_plus_one) h = (h + 1) & mask;
-        htbl[h].lkey = key;
-        htbl[h].idx_plus_one = (uint32_t)(i + 1);
-    }
+    /* The leaf hash is built once by the caller and reused for every iteration:
+       the leaf set does not change across iterations, so rebuilding it per call
+       was pure overhead. `mask` below is the caller's `hmask`. */
+    const size_t mask = hmask;
 
     int L = leaves->log2dim;
     int32_t dim = 1 << L;
@@ -572,16 +628,14 @@ static bool dilate_step(const leaf_collect_t *leaves,
      * block at its prefix-sum offset reproduces the output byte for byte. */
     size_t *counts = (size_t *)calloc(leaves->count, sizeof(size_t));
     size_t *offsets = (size_t *)calloc(leaves->count, sizeof(size_t));
-    if (!counts || !offsets) { free(counts); free(offsets); free(htbl); return false; }
+    if (!counts || !offsets) { free(counts); free(offsets); return false; }
 
-    /* phase 1: per-leaf active voxel counts */
+    /* phase 1: per-leaf active voxel counts. A popcount over the 64 mask bytes
+       replaces a scan of all 512 voxel slots, and cannot disagree with it. */
     #pragma omp parallel for schedule(static)
     for (long long li = 0; li < (long long)leaves->count; ++li) {
         const leaf_entry_t *leaf = &leaves->entries[(size_t)li];
-        size_t n = 0;
-        for (int32_t lin = 0; lin < (int32_t)leaf_voxels; ++lin)
-            if (tvdb_nodemask_is_on(leaf->value_mask, lin)) ++n;
-        counts[(size_t)li] = n;
+        counts[(size_t)li] = tvdb_nodemask_count_on(leaf->value_mask);
     }
     /* phase 2: exclusive prefix sum (serial, trivial) */
     {
@@ -591,7 +645,7 @@ static bool dilate_step(const leaf_collect_t *leaves,
             acc += counts[li];
         }
         if (!tvdb_sparse_grid_reserve(out, acc ? acc : 1)) {
-            free(counts); free(offsets); free(htbl); return false;
+            free(counts); free(offsets); return false;
         }
         out->count = acc;
     }
@@ -638,12 +692,23 @@ static bool dilate_step(const leaf_collect_t *leaves,
         int32_t origin_y = (int32_t)((int64_t)leaf->lcoord[1] * dim);
         int32_t origin_z = (int32_t)((int64_t)leaf->lcoord[2] * dim);
 
-        for (int32_t i = 0; i < dim; ++i) {
-            for (int32_t j = 0; j < dim; ++j) {
-                for (int32_t k = 0; k < dim; ++k) {
-                    int32_t lin = (i << (2*L)) | (j << L) | k;
-                    if (!tvdb_nodemask_is_on(leaf->value_mask, lin)) continue;
-                    float c = self_data[lin];
+        /* Ascending bit order over the mask is the same (i,j,k) sequence the
+           nested loop below used to walk, because lin = (i<<2L)|(j<<L)|k orders
+           identically to ascending (i,j,k). The block layout this writes into
+           depends on that order, so it has to stay exact -- but only the active
+           slots are visited instead of all dim^3 of them. */
+        tvdb__mask_iter mit;
+        tvdb__mask_iter_init(&mit, leaf->value_mask->bits.data,
+                             leaf->value_mask->bits.num_bytes);
+        size_t lin_bit = 0;
+        while (tvdb__mask_iter_next(&mit, leaf->value_mask->bits.data,
+                                    leaf->value_mask->bits.num_bytes, &lin_bit)) {
+            {
+                int32_t lin = (int32_t)lin_bit;
+                int32_t k = lin & dim_mask;
+                int32_t j = (lin >> L) & dim_mask;
+                int32_t i = lin >> (2*L);
+                float c = self_data[lin];
                     float nb_vals[6];
                     // -x (i-1)
                     if (i > 0) nb_vals[0] = self_data[((i-1) << (2*L)) | (j << L) | k];
@@ -686,14 +751,12 @@ static bool dilate_step(const leaf_collect_t *leaves,
                     out->coords[slot].z = wz;
                     out->values[slot] = r;
                     ++local;
-                }
             }
         }
         (void)local;
     }
     free(counts);
     free(offsets);
-    free(htbl);
     return true;
 }
 
@@ -723,6 +786,26 @@ static bool grid_dilate_erode_active(const tvdb_grid_t *grid, int iterations,
         if (!buf_a || !buf_b) { free(buf_a); free(buf_b); free(leaves.entries); return false; }
     }
 
+    /* Leaf hash, built once for the whole solve. The leaf set is fixed, so this
+       was rebuilt identically on every iteration inside dilate_step, and the
+       per-output-voxel repack below then used a linear scan over `leaves` to find
+       a leaf the hash already indexes -- O(count * leaves) in total. Both now go
+       through this one table. */
+    size_t hcap = pow2_(leaves.count, 2);
+    if (!hcap) { free(buf_a); free(buf_b); free(leaves.entries); return false; }
+    leaf_hash_entry_t *htbl = (leaf_hash_entry_t *)calloc(hcap, sizeof(leaf_hash_entry_t));
+    if (!htbl) { free(buf_a); free(buf_b); free(leaves.entries); return false; }
+    size_t hmask = hcap - 1;
+    for (size_t i = 0; i < leaves.count; ++i) {
+        uint64_t key = pack_leaf_key(leaves.entries[i].lcoord[0],
+                                     leaves.entries[i].lcoord[1],
+                                     leaves.entries[i].lcoord[2]);
+        size_t h = (size_t)(mix64_(key) & hmask);
+        while (htbl[h].idx_plus_one) h = (h + 1) & hmask;
+        htbl[h].lkey = key;
+        htbl[h].idx_plus_one = (uint32_t)(i + 1);
+    }
+
     tvdb_sparse_grid scratch; tvdb_sparse_grid_init(&scratch);
     out->count = 0;
     out->voxel_size = vs;
@@ -731,9 +814,9 @@ static bool grid_dilate_erode_active(const tvdb_grid_t *grid, int iterations,
     const float *cur_values = NULL;
     for (int it = 0; it < iterations; ++it) {
         tvdb_sparse_grid *target = (it & 1) ? &scratch : out;
-        if (!dilate_step(&leaves, cur_values, background, is_dilate,
+        if (!dilate_step(&leaves, htbl, hmask, cur_values, background, is_dilate,
                          target, vs, go[0], go[1], go[2])) {
-            free(buf_a); free(buf_b); free(leaves.entries);
+            free(htbl); free(buf_a); free(buf_b); free(leaves.entries);
             tvdb_sparse_grid_free(&scratch);
             return false;
         }
@@ -752,16 +835,11 @@ static bool grid_dilate_erode_active(const tvdb_grid_t *grid, int iterations,
                 int32_t wy = target->coords[k].y;
                 int32_t wz = target->coords[k].z;
                 int32_t lx = wx >> L, ly = wy >> L, lz = wz >> L;
-                // Find the leaf in `leaves` matching (lx, ly, lz).
-                // Linear scan is fine for small leaf counts; for large trees,
-                // build a hash once outside the loop.
-                size_t li = (size_t)-1;
-                for (size_t s = 0; s < leaves.count; ++s) {
-                    if (leaves.entries[s].lcoord[0] == lx &&
-                        leaves.entries[s].lcoord[1] == ly &&
-                        leaves.entries[s].lcoord[2] == lz) { li = s; break; }
-                }
-                if (li == (size_t)-1) continue;
+                /* O(1) leaf lookup. This was a linear scan over every leaf,
+                   executed once per output voxel. */
+                int found = leaf_hash_lookup(htbl, hmask, leaves.entries, lx, ly, lz);
+                if (found < 0) continue;
+                size_t li = (size_t)found;
                 int32_t i_ = wx & ((1<<L)-1);
                 int32_t j_ = wy & ((1<<L)-1);
                 int32_t k_ = wz & ((1<<L)-1);
@@ -783,7 +861,7 @@ static bool grid_dilate_erode_active(const tvdb_grid_t *grid, int iterations,
     }
 
     tvdb_sparse_grid_free(&scratch);
-    free(buf_a); free(buf_b);
+    free(htbl); free(buf_a); free(buf_b);
     free(leaves.entries);
     return true;
 }
@@ -1083,11 +1161,13 @@ static bool build_parent_level(tvdb_tree_t *tree, int parent_lv,
 
     // Hash table: (parent_origin) -> index into local `pgroup` array.
     // Key = pack 3x21-bit signed-shifted origins into uint64.
-    size_t htbl_cap = pow2_(n_children * 2 + 16);
+    size_t htbl_cap = pow2_(n_children, 2);
     size_t htbl_mask = htbl_cap - 1;
     typedef struct { uint64_t key; uint32_t group_plus_one; } htbl_entry_t;
     htbl_entry_t *htbl = (htbl_entry_t *)calloc(htbl_cap, sizeof(htbl_entry_t));
-    if (!htbl) return false;
+    /* cap is checked separately: calloc(0, ..) is permitted to return non-NULL,
+       which would sail past the null test and leave htbl_mask = SIZE_MAX. */
+    if (!htbl || !htbl_cap) return false;
 
     typedef struct {
         int32_t origin[3];
@@ -1295,7 +1375,7 @@ bool tvdb_grid_from_sparse_typed_using_template(const tvdb_grid_t *tmpl,
         ce[ii].slot = (slx << (2 * leaf_log2dim)) | (sly << leaf_log2dim) | slz;
         memcpy(ce[ii].val_bytes, vbytes + ii * (size_t)vsize, (size_t)vsize);
     }
-    qsort(ce, count, sizeof(tvdb__coord_entry), tvdb__cmp_coord_entry);
+    if (count > 1) qsort(ce, count, sizeof(tvdb__coord_entry), tvdb__cmp_coord_entry);
 
     // Step 2: walk sorted ce[], emit a leaf node per unique leaf origin.
     grouping_entry_t *leaves = NULL;
@@ -1353,7 +1433,7 @@ bool tvdb_grid_from_sparse_typed_using_template(const tvdb_grid_t *tmpl,
     }
     free(leaves);
     // Re-sort l2_parents by origin to be safe.
-    qsort(l2_parents, n_l2, sizeof(grouping_entry_t), cmp_origin);
+    if (n_l2 > 1) qsort(l2_parents, n_l2, sizeof(grouping_entry_t), cmp_origin);
 
     // Step 4: build L_(N-3) (= level 1 = root's children) from l2_parents.
     grouping_entry_t *l1_parents = NULL; size_t n_l1 = 0;
@@ -1364,7 +1444,7 @@ bool tvdb_grid_from_sparse_typed_using_template(const tvdb_grid_t *tmpl,
         free(l2_parents); tvdb_grid_destroy_owned(out); return false;
     }
     free(l2_parents);
-    qsort(l1_parents, n_l1, sizeof(grouping_entry_t), cmp_origin);
+    if (n_l1 > 1) qsort(l1_parents, n_l1, sizeof(grouping_entry_t), cmp_origin);
 
     // Step 5: build root with l1_parents as children.
     int32_t root_origin[3] = {0, 0, 0};
@@ -1451,10 +1531,10 @@ bool tvdb_grid_extend_from_sparse(const tvdb_grid_t *existing,
         return false;
     }
     // Build a hash table over sg's coords for O(1) override lookup.
-    size_t cap = pow2_(sg->count * 2 + 16);
+    size_t cap = pow2_(sg->count, 2);
     typedef struct { uint64_t key; uint32_t idx_plus_one; } merge_he_t;
     merge_he_t *htbl = (merge_he_t *)calloc(cap, sizeof(merge_he_t));
-    if (!htbl) { tvdb_sparse_grid_free(&old_sg); return false; }
+    if (!htbl || !cap) { tvdb_sparse_grid_free(&old_sg); return false; }
     size_t mask = cap - 1;
     for (size_t i = 0; i < sg->count; ++i) {
         uint64_t key = pack_leaf_key(sg->coords[i].x, sg->coords[i].y, sg->coords[i].z);
@@ -1540,42 +1620,7 @@ bool tvdb_grid_from_sparse_vec3_using_template(const tvdb_grid_t *tmpl,
 }
 
 void tvdb_grid_destroy_owned(tvdb_grid_t *grid) {
-    if (!grid) return;
-    free(grid->descriptor.grid_name);     grid->descriptor.grid_name = NULL;
-    free(grid->descriptor.unique_name);   grid->descriptor.unique_name = NULL;
-    free(grid->descriptor.grid_type);     grid->descriptor.grid_type = NULL;
-    free(grid->descriptor.instance_parent_name); grid->descriptor.instance_parent_name = NULL;
-
-    // Tree: walk nodes, free per type.
-    tvdb_tree_t *tree = &grid->tree;
-    for (size_t i = 0; i < tree->num_nodes; ++i) {
-        tvdb_tree_node_t *n = &tree->nodes[i];
-        switch (n->type) {
-            case TVDB_NODE_ROOT: {
-                tvdb_root_node_t *r = &n->u.root;
-                free(r->tile_origins);
-                free(r->tile_values);
-                free(r->tile_active);
-                free(r->child_origins);
-                free(r->child_indices);
-            } break;
-            case TVDB_NODE_INTERNAL: {
-                tvdb_internal_node_t *in = &n->u.internal;
-                free(in->child_mask.bits.data);
-                free(in->value_mask.bits.data);
-                free(in->values);
-                free(in->child_indices);
-            } break;
-            case TVDB_NODE_LEAF: {
-                tvdb_leaf_node_t *lf = &n->u.leaf;
-                free(lf->value_mask.bits.data);
-                free(lf->data);
-            } break;
-        }
-    }
-    free(tree->nodes);
-    memset(tree, 0, sizeof(*tree));
-    memset(grid, 0, sizeof(*grid));
+    tvdb_grid_destroy(grid, NULL);
 }
 
 size_t tvdb_grid_update_from_sparse(tvdb_grid_t *grid,
@@ -1599,9 +1644,9 @@ size_t tvdb_grid_update_from_sparse(tvdb_grid_t *grid,
     int32_t dim_mask = (1 << L) - 1;
 
     // Build hash table on leaf-coords.
-    size_t cap = pow2_(leaves.count * 2 + 16);
+    size_t cap = pow2_(leaves.count, 2);
     leaf_hash_entry_t *htbl = (leaf_hash_entry_t *)calloc(cap, sizeof(leaf_hash_entry_t));
-    if (!htbl) { free(leaves.entries); return 0; }
+    if (!htbl || !cap) { free(leaves.entries); return 0; }
     size_t mask = cap - 1;
     for (size_t i = 0; i < leaves.count; ++i) {
         uint64_t key = pack_leaf_key(leaves.entries[i].lcoord[0],

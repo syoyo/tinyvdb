@@ -2,6 +2,7 @@
 #include "tinyvdb_checked.h"
 #include "tinyvdb_poisson_internal.h"
 #include <math.h>
+#include <float.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,19 @@ static bool tvdb_gpu_shape_valid(int nx,int ny,int nz,double h,const void* data,
   return tvdb_grid_valid(nx,ny,nz,h,data,width) &&
     tvdb_grid_bytes(nx,ny,nz,width,&bytes) && bytes/width <= INT_MAX;
 }
+
+static tvdb_status_t resident_double_host(tvdb_gpu_context_t*,const tvdb_dense_grid_d*,const tvdb_dense_grid_d*,int,tvdb_dense_grid_d*,tvdb_error_t*);
+static tvdb_status_t resident_reduce_host(tvdb_gpu_context_t*,const tvdb_dense_grid*,int,double,double,void*,tvdb_error_t*);
+static tvdb_status_t resident_measure_host(tvdb_gpu_context_t*,const void*,int,int,int,int,int,double*,tvdb_error_t*);
+static tvdb_status_t resident_active_host(tvdb_gpu_context_t*,const tvdb_dense_grid*,float,float,tvdb_sparse_grid*,tvdb_error_t*);
+static tvdb_status_t resident_stencil_host(tvdb_gpu_context_t*,const tvdb_dense_grid*,int,int,int,float**,tvdb_error_t*);
+static tvdb_status_t resident_morph_host(tvdb_gpu_context_t*,tvdb_dense_grid*,int,int,tvdb_error_t*);
+static tvdb_status_t resident_resample_host(tvdb_gpu_context_t*,const tvdb_dense_grid*,int,int,tvdb_dense_grid*,tvdb_error_t*);
+static tvdb_status_t resident_sparse_host(tvdb_gpu_context_t*,const tvdb_sparse_grid*,const float*,int,int,int,int,int,int,float,tvdb_sparse_grid*,tvdb_error_t*);
+static tvdb_status_t resident_poisson_host(tvdb_gpu_context_t*,const void*,void*,const tvdb_gpu_grid_desc_t*,int,int,double,tvdb_poisson_result_t*,tvdb_error_t*);
+static tvdb_status_t resident_binary_host(tvdb_gpu_context_t*,const tvdb_dense_grid*,const tvdb_dense_grid*,int,int,tvdb_dense_grid*,tvdb_error_t*);
+static tvdb_status_t resident_filter_host(tvdb_gpu_context_t*,tvdb_dense_grid*,int,int,int,tvdb_error_t*);
+static tvdb_status_t resident_advect_host(tvdb_gpu_context_t*,const tvdb_dense_grid*,const tvdb_dense_vec_grid*,float,int,int,tvdb_dense_grid*,tvdb_error_t*);
 
 // Close an exported opaque-fd handle (POSIX only; opaque-fd interop is Linux).
 static void tvdb_close_opaque_fd(uint64_t handle) {
@@ -98,6 +112,11 @@ static void tvdb_close_opaque_fd(uint64_t handle) {
 #include "tinyvdb_gpu_advect_spv.inc"
 #include "tinyvdb_gpu_comp_spv.inc"
 #include "tinyvdb_gpu_marching_cubes_spv.inc"
+#include "tinyvdb_gpu_scan_spv.inc"
+#include "tinyvdb_gpu_resident_reduce_spv.inc"
+#include "tinyvdb_gpu_resident_poisson_spv.inc"
+#include "tinyvdb_gpu_resident_sparse_spv.inc"
+#include "tinyvdb_gpu_resident_map_spv.inc"
 #include "tinyvdb_gpu_sparse_conv_strided_spv.inc"
 #include "tinyvdb_gpu_conv_transpose_scatter_spv.inc"
 #include "tinyvdb_gpu_gaussian_forward_spv.inc"
@@ -234,6 +253,8 @@ typedef struct _nvrtcProgram* nvrtcProgram;
 #define VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER 1
 #define VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER 6
 #define VK_DESCRIPTOR_TYPE_STORAGE_BUFFER 7
+#define VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC 8
+#define VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC 9
 #define VK_FILTER_LINEAR 1
 #define VK_SAMPLER_MIPMAP_MODE_NEAREST 0
 #define VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE 2
@@ -241,6 +262,7 @@ typedef struct _nvrtcProgram* nvrtcProgram;
 #define VK_ACCESS_TRANSFER_WRITE_BIT 0x00001000u
 #define VK_ACCESS_HOST_READ_BIT 0x00002000u
 #define VK_ACCESS_HOST_WRITE_BIT 0x00004000u
+#define VK_ACCESS_UNIFORM_READ_BIT 0x00000008u
 #define VK_ACCESS_SHADER_READ_BIT 0x00000020u
 #define VK_ACCESS_SHADER_WRITE_BIT 0x00000040u
 #define VK_ACCESS_TRANSFER_READ_BIT 0x00000800u
@@ -619,7 +641,7 @@ typedef struct {
   VkPipeline pipeline;
 } tvdb_vk_pipeline_entry;
 
-#define TVDB_VK_PIPELINE_CACHE_MAX 64
+#define TVDB_VK_PIPELINE_CACHE_MAX 128
 
 /* Below this active count the hash map loses to a plain linear scan: the map
  * build and the extra keys/values buffers cost more than a short scan saves.
@@ -669,6 +691,7 @@ struct tvdb_gpu_context {
   tvdb_gpu_deferred deferred[TVDB_GPU_DEFER_MAX];
   unsigned int deferred_count;
   tvdb_gpu_backend_t backend;
+  tvdb_gpu_resident_metrics_t resident_metrics;
   tvdb_vk_table vk;
   VkInstance instance;
   VkPhysicalDevice physical_device;
@@ -711,9 +734,19 @@ struct tvdb_gpu_context {
   CUmodule cu_module;
 };
 struct tvdb_gpu_buffer { tvdb_vk_buffer vk; tvdb_gpu_context_t* ctx; tvdb_gpu_backend_t backend; CUdeviceptr cu; size_t size;
-                         CUexternalMemory ext_mem; int imported; };
-struct tvdb_gpu_dense_grid { tvdb_gpu_buffer_t values; int nx, ny, nz; };
-struct tvdb_gpu_sparse_grid { tvdb_gpu_buffer_t coords; tvdb_gpu_buffer_t values; size_t count; };
+                         CUexternalMemory ext_mem; int imported; int resident; };
+struct tvdb_gpu_dense_grid { tvdb_gpu_context_t* ctx; tvdb_gpu_buffer_t *values, *scratch[3]; tvdb_gpu_grid_desc_t desc; size_t bytes, count; };
+typedef struct {
+  size_t refs, count;
+  uint32_t capacity;
+  tvdb_gpu_buffer_t *coords, *map;
+} tvdb_resident_topology;
+struct tvdb_gpu_sparse_grid {
+  tvdb_gpu_context_t* ctx;
+  tvdb_resident_topology* topology;
+  tvdb_gpu_buffer_t* values;
+  float ox,oy,oz,voxel_size;
+};
 struct tvdb_gpu_vulkan_sparse_image3d {
   tvdb_gpu_context_t* ctx;
   tvdb_vk_image3d image;
@@ -1076,6 +1109,7 @@ typedef struct {
   uint32_t src_access;     /* producer access mask */
   uint32_t dst_stage;      /* consumer stage */
   uint32_t dst_access;     /* consumer access mask */
+  VkDeviceSize src_offset, dst_offset;
 } tvdb_vk_copy;
 
 /* Record `n` copies into a fresh command buffer, submit and wait. Used for the
@@ -1115,13 +1149,13 @@ static tvdb_status_t tvdb_vk_run_copies(tvdb_gpu_context_t* ctx, const tvdb_vk_c
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.buffer = c->src;
-    b.offset = 0;
+    b.offset = c->src_offset;
     b.size = c->size;
     ctx->vk.CmdPipelineBarrier(cmd, c->src_stage, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
                                0, NULL, 1, &b, 0, NULL);
 
     VkBufferCopy bc;
-    bc.srcOffset = 0; bc.dstOffset = 0; bc.size = c->size;
+    bc.srcOffset = c->src_offset; bc.dstOffset = c->dst_offset; bc.size = c->size;
     ctx->vk.CmdCopyBuffer(cmd, c->src, c->dst, 1, &bc);
 
     /* Transfer -> consumer, on the destination buffer. */
@@ -1132,7 +1166,7 @@ static tvdb_status_t tvdb_vk_run_copies(tvdb_gpu_context_t* ctx, const tvdb_vk_c
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.buffer = c->dst;
-    b.offset = 0;
+    b.offset = c->dst_offset;
     b.size = c->size;
     ctx->vk.CmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, c->dst_stage, 0,
                                0, NULL, 1, &b, 0, NULL);
@@ -1183,8 +1217,18 @@ static void tvdb_vk_destroy_buffer(tvdb_gpu_context_t* ctx, tvdb_vk_buffer* buf)
 static tvdb_status_t tvdb_index_map_build(const int32_t* active, size_t na,
                                              int32_t** out_keys, int32_t** out_vals,
                                              uint32_t* out_cap, tvdb_error_t* err) {
+  /* Round up to a power of two in 64-bit, then reject anything that would not
+     survive being truncated to the uint32_t the rest of this table uses. Done in
+     32 bits the shift at 2^31 wraps to 0 and `0 < want` stays true forever, so an
+     active set above 2^30 voxels hung the process instead of returning an error. */
+  size_t want = na * 2u + 2u;
+  if (na > (size_t)(UINT32_MAX / 4u) || want > (size_t)UINT32_MAX) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                       "too many active voxels for the index map (limit 2^30)");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
   uint32_t cap = 16;
-  while ((size_t)cap < na * 2u + 2u) cap <<= 1;   /* keep load factor <= 0.5 */
+  while ((size_t)cap < want) cap <<= 1;   /* keep load factor <= 0.5 */
   int32_t* keys = (int32_t*)calloc((size_t)cap * 3u, sizeof(int32_t));
   int32_t* vals = (int32_t*)calloc(cap, sizeof(int32_t));
   if (!keys || !vals) {
@@ -1998,6 +2042,11 @@ typedef struct {
    * and skip both the pool allocation and UpdateDescriptorSets per iteration.
    * Owned by the caller; not freed by the dispatch. */
   VkDescriptorSet preset_set;
+  /* Dynamic offset applied to the first VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+   * binding in the set, for presets that share one set across many parameter
+   * slices. Must be a multiple of the device's minUniformBufferOffsetAlignment.
+   * Only meaningful together with preset_set. */
+  uint32_t dynamic_offset;
 } tvdb_vk_dispatch_desc;
 
 /* Wait for a deferred submission, if any, and release its fence and command
@@ -2148,60 +2197,51 @@ tvdb_status_t tvdb_vk_flush(tvdb_gpu_context_t* ctx, tvdb_error_t* err) {
   return tvdb_vk_drain_pending(ctx, err);
 }
 
-static tvdb_status_t tvdb_vk_dispatch(tvdb_gpu_context_t* ctx, const tvdb_vk_dispatch_desc* d, tvdb_error_t* err) {
-  if (!d->spv || d->spv_len == 0) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan SPIR-V blobs are unavailable; rebuild with glslangValidator or use generated include");
-    return TVDB_ERROR_UNIMPLEMENTED;
-  }
-  if (d->descriptor_count > TVDB_VK_MAX_DESCRIPTORS) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "descriptor count exceeds TVDB_VK_MAX_DESCRIPTORS");
-    return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-
-  /* A deferred batch must complete before this dispatch touches anything the
-   * previous one may still be reading. */
-  if (!d->defer_wait) {
-    tvdb_status_t ps = tvdb_vk_drain_pending(ctx, err);
-    if (ps != TVDB_OK) return ps;
-  }
-
-  /* Shared, lazily created once per context. */
-  { tvdb_status_t ps = tvdb_vk_ensure_pools(ctx, err); if (ps != TVDB_OK) return ps; }
-
-  /* Look for a cached pipeline matching this shader and descriptor shape. */
+/* Look up, or create and cache, the compute pipeline for a shader and descriptor
+   shape, and hand back the layout its descriptor set must be allocated from.
+   A caller that pre-allocates a descriptor set has to allocate it from *this*
+   layout, not from one it built itself: the set is bound with the pipeline's own
+   pipeline layout, and although Vulkan permits binding a set from an "identically
+   defined" layout, at least one shipping driver crashes on a set whose layout is a
+   different object. So this is the single place that creates the layout, and both
+   the dispatch and the pre-allocating callers (fast sweeping's dynamic-offset
+   preset, mesh_to_sdf's per-slab sets) go through it. */
+static tvdb_status_t tvdb_vk_get_pipeline(tvdb_gpu_context_t* ctx,
+    const uint8_t* spv, uint32_t spv_len, uint32_t count, const uint32_t* types,
+    tvdb_vk_pipeline_entry** out_pe, int* out_cached, tvdb_error_t* err) {
   tvdb_vk_pipeline_entry *pe = NULL;
   int cached = 0;
   for (uint32_t i = 0; i < ctx->pipeline_cache_count; ++i) {
     tvdb_vk_pipeline_entry *e = &ctx->pipeline_cache[i];
-    if (e->spv != d->spv || e->spv_len != d->spv_len) continue;
-    if (e->descriptor_count != d->descriptor_count) continue;
+    if (e->spv != spv || e->spv_len != spv_len) continue;
+    if (e->descriptor_count != count) continue;
     uint32_t k, same = 1;
-    for (k = 0; k < d->descriptor_count; ++k)
-      if (e->descriptor_types[k] != d->descriptor_types[k]) { same = 0; break; }
+    for (k = 0; k < count; ++k)
+      if (e->descriptor_types[k] != types[k]) { same = 0; break; }
     if (same) { pe = e; cached = 1; break; }
   }
   if (!pe && ctx->pipeline_cache_count < TVDB_VK_PIPELINE_CACHE_MAX) {
     pe = &ctx->pipeline_cache[ctx->pipeline_cache_count++];
     cached = 1;
     memset(pe, 0, sizeof(*pe));
-    pe->spv = d->spv;
-    pe->spv_len = d->spv_len;
-    pe->descriptor_count = d->descriptor_count;
-    for (uint32_t k = 0; k < d->descriptor_count; ++k)
-      pe->descriptor_types[k] = d->descriptor_types[k];
+    pe->spv = spv;
+    pe->spv_len = spv_len;
+    pe->descriptor_count = count;
+    for (uint32_t k = 0; k < count; ++k)
+      pe->descriptor_types[k] = types[k];
 
     VkDescriptorSetLayoutBinding bindings[TVDB_VK_MAX_DESCRIPTORS];
     memset(bindings, 0, sizeof(bindings));
-    for (uint32_t i = 0; i < d->descriptor_count; ++i) {
+    for (uint32_t i = 0; i < count; ++i) {
       bindings[i].binding = i;
       bindings[i].descriptorCount = 1;
-      bindings[i].descriptorType = d->descriptor_types[i];
+      bindings[i].descriptorType = types[i];
       bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     }
     VkDescriptorSetLayoutCreateInfo dlci;
     memset(&dlci, 0, sizeof(dlci));
     dlci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dlci.bindingCount = d->descriptor_count;
+    dlci.bindingCount = count;
     dlci.pBindings = bindings;
     if (!tvdb_vk_ok(ctx->vk.CreateDescriptorSetLayout(ctx->device, &dlci, NULL, &pe->set_layout), err, "vkCreateDescriptorSetLayout")) {
       ctx->pipeline_cache_count--;
@@ -2211,8 +2251,8 @@ static tvdb_status_t tvdb_vk_dispatch(tvdb_gpu_context_t* ctx, const tvdb_vk_dis
     VkShaderModuleCreateInfo smci;
     memset(&smci, 0, sizeof(smci));
     smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    smci.codeSize = d->spv_len;
-    smci.pCode = (const uint32_t*)d->spv;
+    smci.codeSize = spv_len;
+    smci.pCode = (const uint32_t*)spv;
     if (!tvdb_vk_ok(ctx->vk.CreateShaderModule(ctx->device, &smci, NULL, &pe->shader), err, "vkCreateShaderModule")) {
       ctx->vk.DestroyDescriptorSetLayout(ctx->device, pe->set_layout, NULL);
       ctx->pipeline_cache_count--;
@@ -2248,34 +2288,42 @@ static tvdb_status_t tvdb_vk_dispatch(tvdb_gpu_context_t* ctx, const tvdb_vk_dis
     }
   }
   if (!pe) {
-    /* Cache full: fall back to building throwaway objects for this call. */
-    tvdb_vk_pipeline_entry tmp;
-    memset(&tmp, 0, sizeof(tmp));
-    pe = &tmp;
-    VkDescriptorSetLayoutBinding bindings[TVDB_VK_MAX_DESCRIPTORS];
-    memset(bindings, 0, sizeof(bindings));
-    for (uint32_t i = 0; i < d->descriptor_count; ++i) {
-      bindings[i].binding = i; bindings[i].descriptorCount = 1;
-      bindings[i].descriptorType = d->descriptor_types[i];
-      bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    }
-    VkDescriptorSetLayoutCreateInfo dlci; memset(&dlci, 0, sizeof(dlci));
-    dlci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dlci.bindingCount = d->descriptor_count; dlci.pBindings = bindings;
-    if (!tvdb_vk_ok(ctx->vk.CreateDescriptorSetLayout(ctx->device, &dlci, NULL, &pe->set_layout), err, "vkCreateDescriptorSetLayout")) return err ? err->status : TVDB_ERROR_IO;
-    VkShaderModuleCreateInfo smci; memset(&smci, 0, sizeof(smci));
-    smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO; smci.codeSize = d->spv_len; smci.pCode = (const uint32_t*)d->spv;
-    if (!tvdb_vk_ok(ctx->vk.CreateShaderModule(ctx->device, &smci, NULL, &pe->shader), err, "vkCreateShaderModule")) return err ? err->status : TVDB_ERROR_IO;
-    VkPipelineLayoutCreateInfo plci; memset(&plci, 0, sizeof(plci));
-    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO; plci.setLayoutCount = 1; plci.pSetLayouts = &pe->set_layout;
-    if (!tvdb_vk_ok(ctx->vk.CreatePipelineLayout(ctx->device, &plci, NULL, &pe->pipeline_layout), err, "vkCreatePipelineLayout")) return err ? err->status : TVDB_ERROR_IO;
-    VkComputePipelineCreateInfo cpci; memset(&cpci, 0, sizeof(cpci));
-    cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    cpci.stage.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = pe->shader; cpci.stage.pName = "main";
-    cpci.layout = pe->pipeline_layout;
-    if (!tvdb_vk_ok(ctx->vk.CreateComputePipelines(ctx->device, VK_NULL_HANDLE, 1, &cpci, NULL, &pe->pipeline), err, "vkCreateComputePipelines")) return err ? err->status : TVDB_ERROR_IO;
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "GPU pipeline cache capacity exceeded");
+    return TVDB_ERROR_OUT_OF_MEMORY;
   }
+  *out_pe = pe;
+  if (out_cached) *out_cached = cached;
+  return TVDB_OK;
+}
+
+static tvdb_status_t tvdb_vk_dispatch(tvdb_gpu_context_t* ctx, const tvdb_vk_dispatch_desc* d, tvdb_error_t* err) {
+  if (!d->spv || d->spv_len == 0) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan SPIR-V blobs are unavailable; rebuild with glslangValidator or use generated include");
+    return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  if (d->descriptor_count > TVDB_VK_MAX_DESCRIPTORS) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "descriptor count exceeds TVDB_VK_MAX_DESCRIPTORS");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+
+  /* A deferred batch must complete before this dispatch touches anything the
+   * previous one may still be reading. */
+  if (!d->defer_wait) {
+    tvdb_status_t ps = tvdb_vk_drain_pending(ctx, err);
+    if (ps != TVDB_OK) return ps;
+  }
+
+  /* Shared, lazily created once per context. */
+  { tvdb_status_t ps = tvdb_vk_ensure_pools(ctx, err); if (ps != TVDB_OK) return ps; }
+
+  /* Look for (or build) the cached pipeline for this shader and descriptor shape. */
+  tvdb_vk_pipeline_entry *pe = NULL;
+  int cached = 0;
+  { tvdb_status_t ps = tvdb_vk_get_pipeline(ctx, d->spv, d->spv_len,
+                                            d->descriptor_count, d->descriptor_types,
+                                            &pe, &cached, err);
+    if (ps != TVDB_OK) return ps; }
+
   VkDescriptorSetLayout layout = pe->set_layout;
 
   VkDescriptorPool pool = ctx->desc_pool;   /* shared; freed with the context */
@@ -2342,7 +2390,23 @@ static tvdb_status_t tvdb_vk_dispatch(tvdb_gpu_context_t* ctx, const tvdb_vk_dis
   begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   if (!tvdb_vk_ok(ctx->vk.BeginCommandBuffer(cmd, &begin), err, "vkBeginCommandBuffer")) goto fail_fence;
   ctx->vk.CmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-  ctx->vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &set, 0, NULL);
+  { /* dynamicOffsetCount must equal the number of dynamic bindings in the set,
+       * including when the offset itself is 0 (plane 0 of a preset sweep) -- a
+       * count of 0 against a set holding a dynamic descriptor is invalid, and
+       * at least one driver faults on it. So derive the count from the declared
+       * descriptor types rather than from the offset's value. */
+    uint32_t ndyn = 0;
+    for (uint32_t i = 0; i < d->descriptor_count; ++i)
+      if (d->descriptor_types[i] == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+          d->descriptor_types[i] == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC) ndyn++;
+    if (ndyn > 1) {
+      tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                         "at most one dynamic descriptor binding is supported");
+      goto fail_cmdpool;
+    }
+    const uint32_t dyn = d->dynamic_offset;
+    ctx->vk.CmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout,
+                                  0, 1, &set, ndyn, ndyn ? &dyn : NULL); }
 
   /* Kernel chains that iterate (mean-curvature flow, the fast-sweeping planes)
    * dispatch repeatedly against the same buffers, so each dispatch has to make
@@ -2431,7 +2495,13 @@ static tvdb_status_t tvdb_vk_dispatch(tvdb_gpu_context_t* ctx, const tvdb_vk_dis
 fail_fence:
   if (fence) ctx->vk.DestroyFence(ctx->device, fence, NULL);
 fail_cmdpool:
-  if (cmd_pool) ctx->vk.DestroyCommandPool(ctx->device, cmd_pool, NULL);
+  /* cmd_pool is ctx->cmd_pool, owned by the context and released in
+   * tvdb_gpu_context_destroy. Destroying it here would leave every later dispatch
+   * allocating from a dead pool and double free it at context teardown, turning
+   * one transient device error into undefined behaviour for the rest of the
+   * context's life. Only free the command buffer this call allocated. */
+  if (ctx->vk.FreeCommandBuffers && cmd != VK_NULL_HANDLE && cmd_pool != VK_NULL_HANDLE)
+    ctx->vk.FreeCommandBuffers(ctx->device, cmd_pool, 1, &cmd);
 fail_pool:
   if (set != VK_NULL_HANDLE && pool && ctx->vk.FreeDescriptorSets)
     ctx->vk.FreeDescriptorSets(ctx->device, pool, 1, &set);
@@ -2468,12 +2538,6 @@ static const char kTvdbCudaSource[] =
 "  #undef TVDB_C_AT\n"
 "  dst[(size_t)iz * ny * nx + (size_t)iy * nx + ix] = v;\n"
 "}\n"
-// fp64 scalar stencils. The CUDA path is gated the same way as Vulkan: fp64 is
-// optional and slow on consumer parts, so the caller is told rather than
-// silently given fp32 answers.
-// One mean-curvature-flow step, matching tvdb_mean_curvature_flow. Jacobi: the CPU\n"
-// reads a snapshot and writes the interior, so iterations are independent and the\n"
-// host ping-pongs two buffers.\n"
 "extern \"C\" __global__ void tvdb_cuda_mean_curvature_flow(const float* src, float* dst,\n"
 "                                                      int nx, int ny, int nz, float h, float dt) {\n"
 "  int ix = blockIdx.x * blockDim.x + threadIdx.x;\n"
@@ -2526,7 +2590,9 @@ static const char kTvdbCudaSource[] =
 "  if (idx >= npts) return;\n"
 "  double px = pts[3*idx], py = pts[3*idx+1], pz = pts[3*idx+2];\n"
 "  double fxv = (px - ox) / vs - 0.5, fyv = (py - oy) / vs - 0.5, fzv = (pz - oz) / vs - 0.5;\n"
-"  fxv=isnan(fxv)?0:(fxv < -1 ? -1 : (fxv >= nx ? nx-1 : fxv));\n  fyv=isnan(fyv)?0:(fyv < -1 ? -1 : (fyv >= ny ? ny-1 : fyv));\n  fzv=isnan(fzv)?0:(fzv < -1 ? -1 : (fzv >= nz ? nz-1 : fzv));\n"
+"  fxv=isnan(fxv)?0:(fxv < -1 ? -1 : (fxv >= nx ? nx-1 : fxv));\n"
+"  fyv=isnan(fyv)?0:(fyv < -1 ? -1 : (fyv >= ny ? ny-1 : fyv));\n"
+"  fzv=isnan(fzv)?0:(fzv < -1 ? -1 : (fzv >= nz ? nz-1 : fzv));\n"
 "  int ix = (int)floor(fxv), iy = (int)floor(fyv), iz = (int)floor(fzv);\n"
 "  double fx = fxv - (double)ix, fy = fyv - (double)iy, fz = fzv - (double)iz;\n"
 "  #define TVDB_SD_F(X, Y, Z) grid[(size_t)(tvdb_c_cl((Z), nz) * ny + tvdb_c_cl((Y), ny)) * nx + tvdb_c_cl((X), nx)]\n"
@@ -2709,7 +2775,9 @@ static const char kTvdbCudaSource[] =
 "  float fx = (p.x - ox) / vs - 0.5f;\n"
 "  float fy = (p.y - oy) / vs - 0.5f;\n"
 "  float fz = (p.z - oz) / vs - 0.5f;\n"
-"  fx=isnan(fx)?0:(fx < -1 ? -1 : (fx >= nx ? nx-1 : fx));\n  fy=isnan(fy)?0:(fy < -1 ? -1 : (fy >= ny ? ny-1 : fy));\n  fz=isnan(fz)?0:(fz < -1 ? -1 : (fz >= nz ? nz-1 : fz));\n"
+"  fx=isnan(fx)?0:(fx < -1 ? -1 : (fx >= nx ? nx-1 : fx));\n"
+"  fy=isnan(fy)?0:(fy < -1 ? -1 : (fy >= ny ? ny-1 : fy));\n"
+"  fz=isnan(fz)?0:(fz < -1 ? -1 : (fz >= nz ? nz-1 : fz));\n"
 "  int ix = (int)floorf(fx); int iy = (int)floorf(fy); int iz = (int)floorf(fz);\n"
 "  float tx = fx - (float)ix; float ty = fy - (float)iy; float tz = fz - (float)iz;\n"
 "  float c000 = tvdb_fetch(grid, nx, ny, nz, ix, iy, iz);\n"
@@ -2742,7 +2810,9 @@ static const char kTvdbCudaSource[] =
 "  float cx = (p.x - ox) / vs - 0.5f;\n"
 "  float cy = (p.y - oy) / vs - 0.5f;\n"
 "  float cz = (p.z - oz) / vs - 0.5f;\n"
-"  cx=isnan(cx)?0:(cx < -1 ? -1 : (cx >= nx ? nx-1 : cx));\n  cy=isnan(cy)?0:(cy < -1 ? -1 : (cy >= ny ? ny-1 : cy));\n  cz=isnan(cz)?0:(cz < -1 ? -1 : (cz >= nz ? nz-1 : cz));\n"
+"  cx=isnan(cx)?0:(cx < -1 ? -1 : (cx >= nx ? nx-1 : cx));\n"
+"  cy=isnan(cy)?0:(cy < -1 ? -1 : (cy >= ny ? ny-1 : cy));\n"
+"  cz=isnan(cz)?0:(cz < -1 ? -1 : (cz >= nz ? nz-1 : cz));\n"
 "  int ix = (int)floorf(cx); int iy = (int)floorf(cy); int iz = (int)floorf(cz);\n"
 "  float tu = cx - (float)ix; float tv = cy - (float)iy; float tw = cz - (float)iz;\n"
 "  float vx[3];\n"
@@ -2783,9 +2853,6 @@ static const char kTvdbCudaSource[] =
 "  }\n"
 "  out_values[i] = acc;\n"
 "}\n"
-/* CUDA twin of tinyvdb_gpu_sparse_conv_map.comp: probe the interleaved
- * (ix,iy,iz,v) map instead of scanning the active set per tap. Same first-match
- * semantics, because v-1 is the first-seen active index. */
 "extern \"C\" __global__ void tvdb_cuda_sparse_conv_map(const int* map4, const tvdb_int4* coords,\n"
 "                                                        const float* values, const float* kernel,\n"
 "                                                        float* out_values, unsigned int count, int kx,\n"
@@ -2856,15 +2923,6 @@ static const char kTvdbCudaSource[] =
 "  }\n"
 "  return -1;\n"
 "}\n"
-/* ---- host-built open-addressing ijk map (CUDA twins of the *_probe shaders) ---
- *
- * The map is identical on both backends: `keys` is 3 x int32 per slot, `values`
- * is int32 holding (first_seen_index + 1) with 0 meaning "empty slot", and the
- * hash is the same three multiply-xor constants, so a map built by
- * tvdb_index_map_build on the host is consumed identically either way. It is
- * built host-side deliberately: construction is then race-free, and inserting in
- * increasing active-index order gives the first-seen semantics the linear scan
- * had, without any device-side atomic. */
 "__device__ __forceinline__ int tvdb_map_probe(const int* keys, const int* values,\n"
 "                                             unsigned int cap, unsigned int mask,\n"
 "                                             long long qx, long long qy, long long qz) {\n"
@@ -3184,25 +3242,42 @@ static const char kTvdbCudaSource[] =
 "  tsdf[gid] = (t_old * w_old + sdf) / w_new;\n"
 "  weights[gid] = w_new;\n"
 "}\n"
+"/* One partial per block, reduced in shared memory: this used to be a single\n"
+" * wavefront of `nthreads` threads, which left the rest of the device idle on a\n"
+" * large grid. A thread with an empty slice starts from the opposite infinities\n"
+" * so it cannot drag min down or max up to 0. */\n"
 "extern \"C\" __global__ void tvdb_cuda_stats(const float* data, float4* partials,\n"
-"                                            unsigned int count, unsigned int nthreads) {\n"
-"  unsigned int t = blockIdx.x * blockDim.x + threadIdx.x;\n"
-"  if (t >= nthreads) return;\n"
-"  float mn = 0.0f, mx = 0.0f, sum = 0.0f, sumsq = 0.0f; bool any = false;\n"
-"  for (unsigned int i = t; i < count; i += nthreads) {\n"
+"                                            unsigned int count, unsigned int ngroups) {\n"
+"  __shared__ float4 sh[256];\n"
+"  unsigned int lid = threadIdx.x;\n"
+"  unsigned int stride = ngroups * 256u;\n"
+"  float mn = 3.402823466e+38f, mx = -3.402823466e+38f, sum = 0.0f, sumsq = 0.0f;\n"
+"  for (unsigned int i = blockIdx.x * 256u + lid; i < count; i += stride) {\n"
 "    float v = data[i];\n"
-"    if (!any) { mn = v; mx = v; any = true; } else { mn = fminf(mn, v); mx = fmaxf(mx, v); }\n"
-"    sum += v; sumsq += v * v;\n"
+"    mn = fminf(mn, v); mx = fmaxf(mx, v); sum += v; sumsq += v * v;\n"
 "  }\n"
-"  float4 p; p.x = mn; p.y = mx; p.z = sum; p.w = sumsq; partials[t] = p;\n"
+"  float4 p; p.x = mn; p.y = mx; p.z = sum; p.w = sumsq; sh[lid] = p;\n"
+"  __syncthreads();\n"
+"  for (unsigned int t = 128u; t > 0u; t >>= 1u) {\n"
+"    if (lid < t) {\n"
+"      float4 a = sh[lid], b = sh[lid + t];\n"
+"      sh[lid] = make_float4(fminf(a.x,b.x), fmaxf(a.y,b.y), a.z+b.z, a.w+b.w);\n"
+"    }\n"
+"    __syncthreads();\n"
+"  }\n"
+"  if (lid == 0u) partials[blockIdx.x] = sh[0];\n"
 "}\n"
+"/* One partial per block (see tvdb_cuda_stats): max_err uses the same\n"
+" * opposite-infinity sentinel so a thread that skipped every voxel outside the\n"
+" * band cannot report a max error of 0. */\n"
 "extern \"C\" __global__ void tvdb_cuda_levelset_check(const float* data, float4* partials,\n"
-"    int nx, int ny, int nz, float inv2vs, float band_world, float tol, unsigned int count, unsigned int nthreads) {\n"
-"  unsigned int t = blockIdx.x * blockDim.x + threadIdx.x;\n"
-"  if (t >= nthreads) return;\n"
+"    int nx, int ny, int nz, float inv2vs, float band_world, float tol, unsigned int count, unsigned int ngroups) {\n"
+"  __shared__ float4 sh[256];\n"
+"  unsigned int lid = threadIdx.x;\n"
+"  unsigned int t = blockIdx.x * 256u + lid;\n"
 "  int inx = nx - 2, iny = ny - 2; unsigned int sl = (unsigned int)(nx * ny);\n"
 "  float sum_mag = 0.0f, max_err = 0.0f, bad = 0.0f, band = 0.0f;\n"
-"  for (unsigned int m = t; m < count; m += nthreads) {\n"
+"  for (unsigned int m = t; m < count; m += ngroups * 256u) {\n"
 "    int ix = (int)(m % (unsigned int)inx) + 1;\n"
 "    unsigned int tmp = m / (unsigned int)inx;\n"
 "    int iy = (int)(tmp % (unsigned int)iny) + 1;\n"
@@ -3215,7 +3290,17 @@ static const char kTvdbCudaSource[] =
 "    float mag = sqrtf(gx*gx + gy*gy + gz*gz); float err = fabsf(mag - 1.0f);\n"
 "    sum_mag += mag; if (err > max_err) max_err = err; if (err > tol) bad += 1.0f; band += 1.0f;\n"
 "  }\n"
-"  float4 p; p.x = sum_mag; p.y = max_err; p.z = bad; p.w = band; partials[t] = p;\n"
+"  float4 p; p.x = sum_mag; p.y = (band > 0.0f) ? max_err : -3.402823466e+38f; p.z = bad; p.w = band;\n"
+"  sh[lid] = p;\n"
+"  __syncthreads();\n"
+"  for (unsigned int s2 = 128u; s2 > 0u; s2 >>= 1u) {\n"
+"    if (lid < s2) {\n"
+"      float4 a = sh[lid], b = sh[lid + s2];\n"
+"      sh[lid] = make_float4(a.x+b.x, fmaxf(a.y,b.y), a.z+b.z, a.w+b.w);\n"
+"    }\n"
+"    __syncthreads();\n"
+"  }\n"
+"  if (lid == 0u) partials[blockIdx.x] = sh[0];\n"
 "}\n"
 "extern \"C\" __global__ void tvdb_cuda_flood(const float* data, const unsigned int* vis, unsigned int* next_vis, unsigned int* changed,\n"
 "                                            int nx, int ny, int nz, float thresh) {\n"
@@ -3361,7 +3446,9 @@ static const char kTvdbCudaSource[] =
 "  if(iz<0)iz=0; if(iz>nz-1)iz=nz-1;\n"
 "  return f[(unsigned int)(iz*ny+iy)*nx+ix]; }\n"
 "__device__ float tvdb_flt_sample(const float* f,float vx,float vy,float vz,int nx,int ny,int nz){\n"
-"  vx=isnan(vx)?0:(vx < -1 ? -1 : (vx >= nx ? nx-1 : vx));\n  vy=isnan(vy)?0:(vy < -1 ? -1 : (vy >= ny ? ny-1 : vy));\n  vz=isnan(vz)?0:(vz < -1 ? -1 : (vz >= nz ? nz-1 : vz));\n"
+"  vx=isnan(vx)?0:(vx < -1 ? -1 : (vx >= nx ? nx-1 : vx));\n"
+"  vy=isnan(vy)?0:(vy < -1 ? -1 : (vy >= ny ? ny-1 : vy));\n"
+"  vz=isnan(vz)?0:(vz < -1 ? -1 : (vz >= nz ? nz-1 : vz));\n"
 "  int ix=(int)floorf(vx),iy=(int)floorf(vy),iz=(int)floorf(vz);\n"
 "  float fx=vx-(float)ix, fy=vy-(float)iy, fz=vz-(float)iz;\n"
 "  float c00=tvdb_flt_at(f,ix,iy,iz,nx,ny,nz)*(1-fx)+tvdb_flt_at(f,ix+1,iy,iz,nx,ny,nz)*fx;\n"
@@ -3376,7 +3463,7 @@ static const char kTvdbCudaSource[] =
 "     float inv_h; float dt; uint nvox;}. inv_h is u[8], dt is u[9]. */\n"
 "  int nx=u[0], ny=u[1], nz=u[2];\n"
 "  unsigned int n=(unsigned int)(nx*ny*nz);\n"
-"  unsigned int i=blockIdx.x*blockDim.x+threadIdx.x;\n"
+"  unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n"
 "  if (i>=n) return;\n"
 "  int op=u[3], axis=u[4], radius=u[5];\n"
 "  float inv_h=0.0f, dt=0.0f; memcpy(&inv_h,&u[8],4); memcpy(&dt,&u[9],4);\n"
@@ -3423,7 +3510,9 @@ static const char kTvdbCudaSource[] =
 "  if (iz < 0) iz = 0; if (iz > nz-1) iz = nz-1;\n"
 "  return v[((unsigned int)(iz*ny+iy)*nx+ix)*3u+(unsigned int)c]; }\n"
 "__device__ float tvdb_adv_sample(const float* f, float vx, float vy, float vz, int nx, int ny, int nz) {\n"
-"  vx=isnan(vx)?0:(vx < -1 ? -1 : (vx >= nx ? nx-1 : vx));\n  vy=isnan(vy)?0:(vy < -1 ? -1 : (vy >= ny ? ny-1 : vy));\n  vz=isnan(vz)?0:(vz < -1 ? -1 : (vz >= nz ? nz-1 : vz));\n"
+"  vx=isnan(vx)?0:(vx < -1 ? -1 : (vx >= nx ? nx-1 : vx));\n"
+"  vy=isnan(vy)?0:(vy < -1 ? -1 : (vy >= ny ? ny-1 : vy));\n"
+"  vz=isnan(vz)?0:(vz < -1 ? -1 : (vz >= nz ? nz-1 : vz));\n"
 "  int ix=(int)floorf(vx), iy=(int)floorf(vy), iz=(int)floorf(vz);\n"
 "  float fx=vx-(float)ix, fy=vy-(float)iy, fz=vz-(float)iz;\n"
 "  float c000=tvdb_adv_at(f,ix,iy,iz,nx,ny,nz),     c100=tvdb_adv_at(f,ix+1,iy,iz,nx,ny,nz);\n"
@@ -3435,7 +3524,9 @@ static const char kTvdbCudaSource[] =
 "  float c0=c00*(1.0f-fy)+c10*fy,   c1=c01*(1.0f-fy)+c11*fy;\n"
 "  return c0*(1.0f-fz)+c1*fz; }\n"
 "__device__ void tvdb_adv_svec(const float* v, float vx, float vy, float vz, float* o, int nx, int ny, int nz) {\n"
-"  vx=isnan(vx)?0:(vx < -1 ? -1 : (vx >= nx ? nx-1 : vx));\n  vy=isnan(vy)?0:(vy < -1 ? -1 : (vy >= ny ? ny-1 : vy));\n  vz=isnan(vz)?0:(vz < -1 ? -1 : (vz >= nz ? nz-1 : vz));\n"
+"  vx=isnan(vx)?0:(vx < -1 ? -1 : (vx >= nx ? nx-1 : vx));\n"
+"  vy=isnan(vy)?0:(vy < -1 ? -1 : (vy >= ny ? ny-1 : vy));\n"
+"  vz=isnan(vz)?0:(vz < -1 ? -1 : (vz >= nz ? nz-1 : vz));\n"
 "  int ix=(int)floorf(vx), iy=(int)floorf(vy), iz=(int)floorf(vz);\n"
 "  float fx=vx-(float)ix, fy=vy-(float)iy, fz=vz-(float)iz;\n"
 "  for (int c=0;c<3;++c) {\n"
@@ -3468,7 +3559,9 @@ static const char kTvdbCudaSource[] =
 "  b[2]=pz+dt*(g[2]+2.0f*g2[2]+2.0f*g3[2]+g4[2])/6.0f; }\n"
 "__device__ void tvdb_adv_mm(const float* f, float bx, float by, float bz,\n"
 "                            float* mn, float* mx, int nx, int ny, int nz) {\n"
-"  bx=isnan(bx)?0:(bx < -1 ? -1 : (bx >= nx ? nx-1 : bx));\n  by=isnan(by)?0:(by < -1 ? -1 : (by >= ny ? ny-1 : by));\n  bz=isnan(bz)?0:(bz < -1 ? -1 : (bz >= nz ? nz-1 : bz));\n"
+"  bx=isnan(bx)?0:(bx < -1 ? -1 : (bx >= nx ? nx-1 : bx));\n"
+"  by=isnan(by)?0:(by < -1 ? -1 : (by >= ny ? ny-1 : by));\n"
+"  bz=isnan(bz)?0:(bz < -1 ? -1 : (bz >= nz ? nz-1 : bz));\n"
 "  int ix=(int)floorf(bx), iy=(int)floorf(by), iz=(int)floorf(bz);\n"
 "  *mn=3.4e38f; *mx=-3.4e38f;\n"
 "  for (int dz=0;dz<2;++dz) for (int dy=0;dy<2;++dy) for (int dx=0;dx<2;++dx) {\n"
@@ -3480,7 +3573,7 @@ static const char kTvdbCudaSource[] =
 "extern \"C\" __global__ void tvdb_cuda_advect(const float* field, const float* vel,\n"
 "    const float* phat, const float* pstar, float* out_v, const int* u) {\n"
 "  int nx = u[0], ny = u[1], nz = u[2];\n"
-"  unsigned int i = blockIdx.x*blockDim.x+threadIdx.x;\n"
+"  unsigned int i = (blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n"
 "  unsigned int n = (unsigned int)(nx*ny*nz);\n"
 "  if (i >= n) return;\n"
 "  int op=u[3], order=u[4], clampf=u[5], ix=(int)(i%(unsigned int)nx);\n"
@@ -3509,7 +3602,7 @@ static const char kTvdbCudaSource[] =
 "     only the four declared bindings, so a fifth kernel parameter would read\n"
 "     whatever followed in the argument list. */\n"
 "  unsigned int n = (unsigned int)(u[0] * u[1] * u[2]);\n"
-"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  unsigned int i = (blockIdx.x+blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;\n"
 "  if (i >= n) return;\n"
 "  float av = a[i], bv = b[i], r;\n"
 "  if (u[3] == 0)      r = (av > bv) ? av : bv;\n"
@@ -3704,15 +3797,22 @@ static const char kTvdbCudaSource[] =
 "  unsigned int slot = atomicAdd(counter, 1u);\n"
 "  if (slot < cap) { outd[4u*slot+0u]=ix; outd[4u*slot+1u]=iy; outd[4u*slot+2u]=iz; outd[4u*slot+3u]=__float_as_int(val); }\n"
 "}\n"
+"/* One partial per block, reduced in shared memory (see tvdb_cuda_stats). */\n"
 "extern \"C\" __global__ void tvdb_cuda_checksum(const unsigned int* data, unsigned int* partials,\n"
-"                                               unsigned int count, unsigned int nthreads) {\n"
-"  unsigned int t = blockIdx.x * blockDim.x + threadIdx.x;\n"
-"  if (t >= nthreads) return;\n"
+"                                               unsigned int count, unsigned int ngroups) {\n"
+"  __shared__ unsigned int sh[256];\n"
+"  unsigned int lid = threadIdx.x;\n"
 "  unsigned int s = 0u;\n"
-"  for (unsigned int i = t; i < count; i += nthreads) {\n"
+"  for (unsigned int i = blockIdx.x * 256u + lid; i < count; i += ngroups * 256u) {\n"
 "    unsigned int h = data[i] ^ (i * 2654435761u); h *= 2654435761u; h ^= h >> 15; s += h;\n"
 "  }\n"
-"  partials[t] = s;\n"
+"  sh[lid] = s;\n"
+"  __syncthreads();\n"
+"  for (unsigned int t = 128u; t > 0u; t >>= 1u) {\n"
+"    if (lid < t) sh[lid] += sh[lid + t];\n"
+"    __syncthreads();\n"
+"  }\n"
+"  if (lid == 0u) partials[blockIdx.x] = sh[0];\n"
 "}\n"
 "__device__ void tvdb_tri_closest(const float* p, const float* a, const float* b, const float* c, float* o) {\n"
 "  float ab[3]={b[0]-a[0],b[1]-a[1],b[2]-a[2]}, ac[3]={c[0]-a[0],c[1]-a[1],c[2]-a[2]}, ap[3]={p[0]-a[0],p[1]-a[1],p[2]-a[2]};\n"
@@ -3760,13 +3860,15 @@ static const char kTvdbCudaSource[] =
 "  out_sdf[(unsigned int)((iz*ny + iy)*nx + ix)]=v;\n"
 "}\n"
 "__device__ void tvdb_mc_interp(float iso, const float* p1, const float* p2, float v1, float v2, float* o) {\n"
-"  if (fabsf(v1 - v2) < 1e-10f) { o[0]=p1[0]; o[1]=p1[1]; o[2]=p1[2]; return; }\n"
-"  float mu=(iso-v1)/(v2-v1); o[0]=p1[0]+mu*(p2[0]-p1[0]); o[1]=p1[1]+mu*(p2[1]-p1[1]); o[2]=p1[2]+mu*(p2[2]-p1[2]);\n"
+"  if(fmaxf(fabsf(iso),fmaxf(fabsf(v1),fabsf(v2)))>1e30f){const float scale=5.421010862427522e-20f;iso*=scale;v1*=scale;v2*=scale;} float numerator=iso-v1,delta=v2-v1;\n"
+"  float mu=fminf(1.0f,fmaxf(0.0f,numerator/delta)); o[0]=p1[0]+mu*(p2[0]-p1[0]); o[1]=p1[1]+mu*(p2[1]-p1[1]); o[2]=p1[2]+mu*(p2[2]-p1[2]);\n"
 "}\n"
-"extern \"C\" __global__ void tvdb_cuda_marching_cubes(const float* grid, const int* tables,\n"
-"    float* out_verts, int* tri_counts, int nx, int ny, int nz, float ox, float oy, float oz, float vs,\n"
-"    float isovalue, unsigned int cell_count) {\n"
-"  unsigned int gid = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"extern \"C\" __global__ void tvdb_cuda_marching_cubes_resident(const float* grid,const int* tables,float* out_verts,int* tri_counts,const int* u) {\n"
+"  int nx=u[0],ny=u[1],nz=u[2];\n"
+"  const float* f=(const float*)u;\n"
+"  float ox=f[4],oy=f[5],oz=f[6],vs=f[7],isovalue=f[8];\n"
+"  unsigned int cell_count=(unsigned int)u[9];\n"
+"  unsigned int gid = (blockIdx.x+blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;\n"
 "  if (gid >= cell_count) return;\n"
 "  const int CN[8][3]={{0,0,0},{1,0,0},{1,1,0},{0,1,0},{0,0,1},{1,0,1},{1,1,1},{0,1,1}};\n"
 "  const int EA[12]={0,1,2,3,4,5,6,7,0,1,2,3}; const int EB[12]={1,2,3,0,5,6,7,4,4,5,6,7};\n"
@@ -3775,7 +3877,8 @@ static const char kTvdbCudaSource[] =
 "  float val[8]; int gc[8][3]; int cube=0;\n"
 "  for (int i=0;i<8;++i){ gc[i][0]=cx+CN[i][0]; gc[i][1]=cy+CN[i][1]; gc[i][2]=cz+CN[i][2];\n"
 "    val[i]=grid[(gc[i][2]*ny+gc[i][1])*nx+gc[i][0]]; if (val[i]<isovalue) cube|=(1<<i); }\n"
-"  int edges=tables[cube]; if (edges==0){ tri_counts[gid]=0; return; }\n"
+"  int edges=tables[cube]; if(u[10]==0) { int count=0; for(int i=0;i<16 && tables[256+cube*16+i]!=-1;i+=3)++count;tri_counts[gid]=count;return; }\n"
+"  if(edges==0)return;\n"
 "  float ev[12][3];\n"
 "  for (int e=0;e<12;++e){ if((edges&(1<<e))==0) continue; int a=EA[e],b=EB[e];\n"
 "    float pa[3]={ox+((float)gc[a][0]+0.5f)*vs, oy+((float)gc[a][1]+0.5f)*vs, oz+((float)gc[a][2]+0.5f)*vs};\n"
@@ -3784,11 +3887,20 @@ static const char kTvdbCudaSource[] =
 "  int tc=0;\n"
 "  for (int i=0;i<16 && tables[256+cube*16+i]!=-1; i+=3){\n"
 "    int e0=tables[256+cube*16+i],e1=tables[256+cube*16+i+1],e2=tables[256+cube*16+i+2];\n"
-"    unsigned int base=(gid*5u+(unsigned int)tc)*9u;\n"
+"    unsigned int base=((unsigned int)tri_counts[gid]+(unsigned int)tc)*9u;\n"
 "    out_verts[base+0]=ev[e0][0];out_verts[base+1]=ev[e0][1];out_verts[base+2]=ev[e0][2];\n"
 "    out_verts[base+3]=ev[e1][0];out_verts[base+4]=ev[e1][1];out_verts[base+5]=ev[e1][2];\n"
 "    out_verts[base+6]=ev[e2][0];out_verts[base+7]=ev[e2][1];out_verts[base+8]=ev[e2][2]; ++tc; }\n"
-"  tri_counts[gid]=tc;\n"
+"\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_scan(unsigned int* data,unsigned int* blocks,const unsigned int* u) {\n"
+" if((blockIdx.x+blockIdx.y*gridDim.x)>=(u[0]+127u)/128u)return;\n"
+"  unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*128u+threadIdx.x,l=threadIdx.x,b=(blockIdx.x+blockIdx.y*gridDim.x);\n"
+"  if(u[1]==1u){if(i<u[0])data[i]+=blocks[b];return;}\n"
+"  __shared__ unsigned int scan[128];scan[l]=i<u[0]?data[i]:0u;__syncthreads();\n"
+"  for(unsigned int s=1;s<128;s<<=1){unsigned int v=l>=s?scan[l-s]:0u;__syncthreads();scan[l]+=v;__syncthreads();}\n"
+"  if(i<u[0])data[i]=l==0?0:scan[l-1];\n"
+"  if(l==127)blocks[b]=scan[l];\n"
 "}\n"
 "__device__ float tvdb_strided_lookup(const tvdb_int4* in_data, unsigned int n_in, long long x, long long y, long long z, float pad) {\n"
 "  for (unsigned int i=0;i<n_in;++i){ tvdb_int4 c=in_data[i]; if(c.x==x&&c.y==y&&c.z==z) return __int_as_float(c.w); }\n"
@@ -3910,20 +4022,15 @@ static const char kTvdbCudaSource[] =
 "  }\n"
 "  out_values[i]=acc;\n"
 "}\n"
-/* surface_area / volume. Same two-pass shape as tinyvdb_gpu_measure.comp: the
- * counts are exact in fp64 regardless of input width, so a sum of 1.0s below
- * 2^53 crossings is the same integer the CPU computed, not an approximation.
- * The fp32 variant deliberately uses `<= 0` and the fp64 one `< 0`, matching
- * the two CPU op pairs, which disagree on exact zeros. */
 "__device__ double tvdb_measure_count(const float* src, int nx, int ny, int nz,\n"
 "                                    unsigned int i, unsigned int n, int op) {\n"
 "  if (op == 1) { if (src[i] < 0.0f) return 1.0; return 0.0; }\n"
 "  unsigned int unx=(unsigned int)nx, uny=(unsigned int)ny;\n"
 "  unsigned int ix=i%unx; unsigned int rem=i/unx; unsigned int iy=rem%uny; unsigned int iz=rem/uny;\n"
 "  float c=src[i]; double a=0.0;\n"
-"  if (ix+1u<unx) { float v=src[i+1u];            if ((c<=0.0f)!=(v<=0.0f)) a+=1.0; }\n"
-"  if (iy+1u<uny) { float v=src[i+unx];           if ((c<=0.0f)!=(v<=0.0f)) a+=1.0; }\n"
-"  if (iz+1u<(unsigned int)nz) { float v=src[i+unx*uny]; if ((c<=0.0f)!=(v<=0.0f)) a+=1.0; }\n"
+"  if (ix+1u<unx) { float v=src[i+1u];            if ((c<0.0f)!=(v<0.0f)) a+=1.0; }\n"
+"  if (iy+1u<uny) { float v=src[i+unx];           if ((c<0.0f)!=(v<0.0f)) a+=1.0; }\n"
+"  if (iz+1u<(unsigned int)nz) { float v=src[i+unx*uny]; if ((c<0.0f)!=(v<0.0f)) a+=1.0; }\n"
 "  return a;\n"
 "}\n"
 "__device__ double tvdb_measure_count_d(const double* src, int nx, int ny, int nz,\n"
@@ -3972,6 +4079,499 @@ static const char kTvdbCudaSource[] =
 "  sdata[lid]=acc; __syncthreads();\n"
 "  for (unsigned int s=128u; s>0u; s>>=1u) { if (lid<s) sdata[lid]+=sdata[lid+s]; __syncthreads(); }\n"
 "  if (lid==0u) out[0]=sdata[0];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_stencil_scalar_scalar_resident(const float* src,float* dst,const int* u) {\n"
+"int nx=u[0],ny=u[1],nz=u[2],op=u[3];float scale;memcpy(&scale,u+4,4);\n"
+"\n"
+"  int ix = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  int iy = blockIdx.y * blockDim.y + threadIdx.y;\n"
+"  int iz = blockIdx.z;\n"
+"  if (ix >= nx || iy >= ny || iz >= nz) return;\n"
+"  #define TVDB_C_AT(X, Y, Z) src[(size_t)(tvdb_c_cl((Z), nz) * ny + tvdb_c_cl((Y), ny)) * nx + tvdb_c_cl((X), nx)]\n"
+"  float v;\n"
+"  if (op == 0) {\n"
+"    float s = TVDB_C_AT(ix-1, iy, iz) + TVDB_C_AT(ix+1, iy, iz)\n"
+"            + TVDB_C_AT(ix, iy-1, iz) + TVDB_C_AT(ix, iy+1, iz)\n"
+"            + TVDB_C_AT(ix, iy, iz-1) + TVDB_C_AT(ix, iy, iz+1);\n"
+"    v = (s - 6.0f * TVDB_C_AT(ix, iy, iz)) * scale;\n"
+"  } else if (op == 1) v = (TVDB_C_AT(ix+1, iy, iz) - TVDB_C_AT(ix-1, iy, iz)) * scale;\n"
+"  else if (op == 2) v = (TVDB_C_AT(ix, iy+1, iz) - TVDB_C_AT(ix, iy-1, iz)) * scale;\n"
+"  else v = (TVDB_C_AT(ix, iy, iz+1) - TVDB_C_AT(ix, iy, iz-1)) * scale;\n"
+"  #undef TVDB_C_AT\n"
+"  dst[(size_t)iz * ny * nx + (size_t)iy * nx + ix] = v;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_stencil_scalar_d_resident(const double* src,double* dst,const int* u) {\n"
+"int nx=u[0],ny=u[1],nz=u[2],op=u[3];double scale;memcpy(&scale,u+4,8);\n"
+"\n"
+"  int ix = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  int iy = blockIdx.y * blockDim.y + threadIdx.y;\n"
+"  int iz = blockIdx.z;\n"
+"  if (ix >= nx || iy >= ny || iz >= nz) return;\n"
+"  #define TVDB_CD_AT(X, Y, Z) src[(size_t)(tvdb_c_cl((Z), nz) * ny + tvdb_c_cl((Y), ny)) * nx + tvdb_c_cl((X), nx)]\n"
+"  double v;\n"
+"  if (op == 0) {\n"
+"    double t = TVDB_CD_AT(ix-1, iy, iz) + TVDB_CD_AT(ix+1, iy, iz)\n"
+"            + TVDB_CD_AT(ix, iy-1, iz) + TVDB_CD_AT(ix, iy+1, iz)\n"
+"            + TVDB_CD_AT(ix, iy, iz-1) + TVDB_CD_AT(ix, iy, iz+1);\n"
+"    v = (t - 6.0 * TVDB_CD_AT(ix, iy, iz)) * scale;\n"
+"  } else if (op == 1) v = (TVDB_CD_AT(ix+1, iy, iz) - TVDB_CD_AT(ix-1, iy, iz)) * scale;\n"
+"  else if (op == 2) v = (TVDB_CD_AT(ix, iy+1, iz) - TVDB_CD_AT(ix, iy-1, iz)) * scale;\n"
+"  else v = (TVDB_CD_AT(ix, iy, iz+1) - TVDB_CD_AT(ix, iy, iz-1)) * scale;\n"
+"  #undef TVDB_CD_AT\n"
+"  dst[(size_t)iz * ny * nx + (size_t)iy * nx + ix] = v;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_stencil_scalar_vec_resident(const float* src,float* dst,const int* u) {\n"
+"int nx=u[0],ny=u[1],nz=u[2],op=u[3];const float* f=(const float*)u;float scale=f[4],ox=f[8],oy=f[9],oz=f[10],vs=f[11];\n"
+"\n"
+"  int ix = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  int iy = blockIdx.y * blockDim.y + threadIdx.y;\n"
+"  int iz = blockIdx.z;\n"
+"  if (ix >= nx || iy >= ny || iz >= nz) return;\n"
+"  #define TVDB_C_AT(X, Y, Z) src[(size_t)(tvdb_c_cl((Z), nz) * ny + tvdb_c_cl((Y), ny)) * nx + tvdb_c_cl((X), nx)]\n"
+"  float gx = (TVDB_C_AT(ix+1, iy, iz) - TVDB_C_AT(ix-1, iy, iz)) * scale;\n"
+"  float gy = (TVDB_C_AT(ix, iy+1, iz) - TVDB_C_AT(ix, iy-1, iz)) * scale;\n"
+"  float gz = (TVDB_C_AT(ix, iy, iz+1) - TVDB_C_AT(ix, iy, iz-1)) * scale;\n"
+"  size_t i = 3u * ((size_t)iz * ny * nx + (size_t)iy * nx + ix);\n"
+"  if (op == 1) {\n"
+"    float d = TVDB_C_AT(ix, iy, iz);\n"
+"    float px = ox + ((float)ix + 0.5f) * vs;\n"
+"    float py = oy + ((float)iy + 0.5f) * vs;\n"
+"    float pz = oz + ((float)iz + 0.5f) * vs;\n"
+"    dst[i+0] = px - d*gx; dst[i+1] = py - d*gy; dst[i+2] = pz - d*gz;\n"
+"    #undef TVDB_C_AT\n"
+"    return;\n"
+"  }\n"
+"  #undef TVDB_C_AT\n"
+"  dst[i+0] = gx; dst[i+1] = gy; dst[i+2] = gz;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_stencil_vec_scalar_resident(const float* src,float* dst,const int* u) {\n"
+"int nx=u[0],ny=u[1],nz=u[2],op=u[3];float scale;memcpy(&scale,u+4,4);\n"
+"\n"
+"  int ix = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  int iy = blockIdx.y * blockDim.y + threadIdx.y;\n"
+"  int iz = blockIdx.z;\n"
+"  if (ix >= nx || iy >= ny || iz >= nz) return;\n"
+"  (void)op;\n"
+"  #define TVDB_C_AT(X, Y, Z, C) src[3u * (((size_t)tvdb_c_cl((Z), nz) * ny + tvdb_c_cl((Y), ny)) * nx + tvdb_c_cl((X), nx)) + (C)]\n"
+"  float dvx = (TVDB_C_AT(ix+1, iy, iz, 0) - TVDB_C_AT(ix-1, iy, iz, 0)) * scale;\n"
+"  float dvy = (TVDB_C_AT(ix, iy+1, iz, 1) - TVDB_C_AT(ix, iy-1, iz, 1)) * scale;\n"
+"  float dvz = (TVDB_C_AT(ix, iy, iz+1, 2) - TVDB_C_AT(ix, iy, iz-1, 2)) * scale;\n"
+"  size_t oi = (size_t)iz * ny * nx + (size_t)iy * nx + ix;\n"
+"  if (op == 1) {\n"
+"    float x = TVDB_C_AT(ix, iy, iz, 0), y = TVDB_C_AT(ix, iy, iz, 1), z = TVDB_C_AT(ix, iy, iz, 2);\n"
+"    dst[oi] = sqrtf(x*x + y*y + z*z);\n"
+"    #undef TVDB_C_AT\n"
+"    return;\n"
+"  }\n"
+"  #undef TVDB_C_AT\n"
+"  dst[oi] = dvx + dvy + dvz;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_stencil_vec_vec_resident(const float* src,float* dst,const int* u) {\n"
+"int nx=u[0],ny=u[1],nz=u[2],op=u[3];float scale;memcpy(&scale,u+4,4);\n"
+"\n"
+"  int ix = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  int iy = blockIdx.y * blockDim.y + threadIdx.y;\n"
+"  int iz = blockIdx.z;\n"
+"  if (ix >= nx || iy >= ny || iz >= nz) return;\n"
+"  (void)op;\n"
+"  #define TVDB_C_AT(X, Y, Z, C) src[3u * (((size_t)tvdb_c_cl((Z), nz) * ny + tvdb_c_cl((Y), ny)) * nx + tvdb_c_cl((X), nx)) + (C)]\n"
+"  float dvz_dy = (TVDB_C_AT(ix, iy+1, iz, 2) - TVDB_C_AT(ix, iy-1, iz, 2)) * scale;\n"
+"  float dvy_dz = (TVDB_C_AT(ix, iy, iz+1, 1) - TVDB_C_AT(ix, iy, iz-1, 1)) * scale;\n"
+"  float dvx_dz = (TVDB_C_AT(ix, iy, iz+1, 0) - TVDB_C_AT(ix, iy, iz-1, 0)) * scale;\n"
+"  float dvz_dx = (TVDB_C_AT(ix+1, iy, iz, 2) - TVDB_C_AT(ix-1, iy, iz, 2)) * scale;\n"
+"  float dvy_dx = (TVDB_C_AT(ix+1, iy, iz, 1) - TVDB_C_AT(ix-1, iy, iz, 1)) * scale;\n"
+"  float dvx_dy = (TVDB_C_AT(ix, iy+1, iz, 0) - TVDB_C_AT(ix, iy-1, iz, 0)) * scale;\n"
+"  size_t i = 3u * ((size_t)iz * ny * nx + (size_t)iy * nx + ix);\n"
+"  if (op == 1) {\n"
+"    float x = TVDB_C_AT(ix, iy, iz, 0), y = TVDB_C_AT(ix, iy, iz, 1), z = TVDB_C_AT(ix, iy, iz, 2);\n"
+"    float m = sqrtf(x*x + y*y + z*z);\n"
+"    #undef TVDB_C_AT\n"
+"    if (m > 0.0f) { dst[i+0] = x/m; dst[i+1] = y/m; dst[i+2] = z/m; }\n"
+"    else         { dst[i+0] = 0.0f; dst[i+1] = 0.0f; dst[i+2] = 0.0f; }\n"
+"    return;\n"
+"  }\n"
+"  #undef TVDB_C_AT\n"
+"  dst[i+0] = dvz_dy - dvy_dz;\n"
+"  dst[i+1] = dvx_dz - dvz_dx;\n"
+"  dst[i+2] = dvy_dx - dvx_dy;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_csg_resident(const float* a,const float* b,float* out_values,const int* u) {\n"
+"unsigned int count=(unsigned int)u[0];int op=u[1];\n"
+"\n"
+"  unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  if (i >= count) return;\n"
+"  float va = a[i];\n"
+"  float vb = b[i];\n"
+"  out_values[i] = op == 0 ? fminf(va, vb) : (op == 1 ? fmaxf(va, vb) : fmaxf(va, -vb));\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_csg_d_resident(const double* a,const double* b,double* dst,const int* u) {\n"
+"int nx=u[0],ny=u[1],nz=u[2],op=u[3];\n"
+"\n"
+"  int ix = blockIdx.x * blockDim.x + threadIdx.x;\n"
+"  int iy = blockIdx.y * blockDim.y + threadIdx.y;\n"
+"  int iz = blockIdx.z;\n"
+"  if (ix >= nx || iy >= ny || iz >= nz) return;\n"
+"  size_t i = ((size_t)iz * ny + iy) * nx + ix;\n"
+"  double va = a[i], vb = b[i];\n"
+"  /* Comparison form, not fmin/fmax: the CPU twin is `va < vb ? va : vb`, and\n"
+"   * the two disagree on signed zero, which a zero-crossing field reaches. */\n"
+"  dst[i] = op == 0 ? (va < vb ? va : vb)\n"
+"                  : (op == 1 ? (va > vb ? va : vb) : (va > -vb ? va : -vb));\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_morph_resident(const float* in_data,float* out_data,const int* u) {\n"
+"int nx=u[0],ny=u[1],nz=u[2],is_dilate=u[4];\n"
+"\n"
+"  unsigned int gid = (blockIdx.x+blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = (unsigned int)(nx * ny * nz);\n"
+"  if (gid >= total) return;\n"
+"  int iz = (int)(gid / (unsigned int)(nx * ny));\n"
+"  int rem = (int)(gid - (unsigned int)(iz * nx * ny));\n"
+"  int iy = rem / nx; int ix = rem - iy * nx;\n"
+"  float r = in_data[gid];\n"
+"  float xm = tvdb_fetch(in_data, nx, ny, nz, ix - 1, iy, iz);\n"
+"  float xp = tvdb_fetch(in_data, nx, ny, nz, ix + 1, iy, iz);\n"
+"  float ym = tvdb_fetch(in_data, nx, ny, nz, ix, iy - 1, iz);\n"
+"  float yp = tvdb_fetch(in_data, nx, ny, nz, ix, iy + 1, iz);\n"
+"  float zm = tvdb_fetch(in_data, nx, ny, nz, ix, iy, iz - 1);\n"
+"  float zp = tvdb_fetch(in_data, nx, ny, nz, ix, iy, iz + 1);\n"
+"  if (is_dilate != 0) {\n"
+"    r = fminf(r, fminf(fminf(xm, xp), fminf(fminf(ym, yp), fminf(zm, zp))));\n"
+"  } else {\n"
+"    r = fmaxf(r, fmaxf(fmaxf(xm, xp), fmaxf(fmaxf(ym, yp), fmaxf(zm, zp))));\n"
+"  }\n"
+"  out_data[gid] = r;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_coarsen_resident(const float* in_data,float* out_data,const int* u) {\n"
+"int inx=u[0],iny=u[1],inz=u[2],onx=u[4],ony=u[5],onz=u[6],factor=u[8];\n"
+"\n"
+"  unsigned int gid = (blockIdx.x+blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = (unsigned int)(onx * ony * onz);\n"
+"  if (gid >= total) return;\n"
+"  int oz = (int)(gid / (unsigned int)(onx * ony));\n"
+"  int rem = (int)(gid - (unsigned int)(oz * onx * ony));\n"
+"  int oy = rem / onx; int ox = rem - oy * onx;\n"
+"  float sum = 0.0f; int count = 0;\n"
+"  for (int dz = 0; dz < factor; ++dz) { int sz = oz * factor + dz; if (sz >= inz) break;\n"
+"    for (int dy = 0; dy < factor; ++dy) { int sy = oy * factor + dy; if (sy >= iny) break;\n"
+"      for (int dx = 0; dx < factor; ++dx) { int sx = ox * factor + dx; if (sx >= inx) break;\n"
+"        sum += in_data[(sz * iny + sy) * inx + sx]; ++count; } } }\n"
+"  out_data[gid] = count > 0 ? sum / (float)count : 0.0f;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_refine_resident(const float* in_data,float* out_data,const int* u) {\n"
+"int inx=u[0],iny=u[1],inz=u[2],onx=u[4],ony=u[5],onz=u[6];const float* f=(const float*)u;float iox=f[8],ioy=f[9],ioz=f[10],oox=f[12],ooy=f[13],ooz=f[14],ivs=f[16],ovs=f[17];\n"
+"\n"
+"  unsigned int gid = (blockIdx.x+blockIdx.y*gridDim.x) * blockDim.x + threadIdx.x;\n"
+"  unsigned int total = (unsigned int)(onx * ony * onz);\n"
+"  if (gid >= total) return;\n"
+"  int oz = (int)(gid / (unsigned int)(onx * ony));\n"
+"  int rem = (int)(gid - (unsigned int)(oz * onx * ony));\n"
+"  int oy = rem / onx; int ox = rem - oy * onx;\n"
+"  float wx = oox + ((float)ox + 0.5f) * ovs;\n"
+"  float wy = ooy + ((float)oy + 0.5f) * ovs;\n"
+"  float wz = ooz + ((float)oz + 0.5f) * ovs;\n"
+"  float fx = (wx - iox) / ivs - 0.5f;\n"
+"  float fy = (wy - ioy) / ivs - 0.5f;\n"
+"  float fz = (wz - ioz) / ivs - 0.5f;\n"
+"  int ix = (int)floorf(fx), iy = (int)floorf(fy), iz = (int)floorf(fz);\n"
+"  float tx = fx - (float)ix, ty = fy - (float)iy, tz = fz - (float)iz;\n"
+"  float c000 = tvdb_fetch(in_data, inx, iny, inz, ix, iy, iz);\n"
+"  float c100 = tvdb_fetch(in_data, inx, iny, inz, ix+1, iy, iz);\n"
+"  float c010 = tvdb_fetch(in_data, inx, iny, inz, ix, iy+1, iz);\n"
+"  float c110 = tvdb_fetch(in_data, inx, iny, inz, ix+1, iy+1, iz);\n"
+"  float c001 = tvdb_fetch(in_data, inx, iny, inz, ix, iy, iz+1);\n"
+"  float c101 = tvdb_fetch(in_data, inx, iny, inz, ix+1, iy, iz+1);\n"
+"  float c011 = tvdb_fetch(in_data, inx, iny, inz, ix, iy+1, iz+1);\n"
+"  float c111 = tvdb_fetch(in_data, inx, iny, inz, ix+1, iy+1, iz+1);\n"
+"  float c00 = c000 + (c100 - c000) * tx; float c10 = c010 + (c110 - c010) * tx;\n"
+"  float c01 = c001 + (c101 - c001) * tx; float c11 = c011 + (c111 - c011) * tx;\n"
+"  float c0 = c00 + (c10 - c00) * ty; float c1 = c01 + (c11 - c01) * ty;\n"
+"  out_data[gid] = c0 + (c1 - c0) * tz;\n"
+"}\n"
+"typedef unsigned int uint;\n"
+"__device__ double tvdb_rp_read_rhs(uint i,const unsigned int* rhs,const int* u){return u[9]!=0?__longlong_as_double(((unsigned long long)rhs[2u*i+1u]<<32)|rhs[2u*i]):double(__uint_as_float(rhs[i]));}\n"
+"__device__ double tvdb_rp_read_x(uint i,const unsigned int* initial,const int* u){return u[9]!=0?__longlong_as_double(((unsigned long long)initial[2u*i+1u]<<32)|initial[2u*i]):double(__uint_as_float(initial[i]));}\n"
+"__device__ double tvdb_rp_rounded(double v,const int* u){return u[8]!=0?v:double(float(v));}\n"
+"__device__ bool tvdb_rp_work_double(int slot,const int* u){return slot==8 || u[9]!=0 || (u[8]!=0 && slot<6);}\n"
+"__device__ uint tvdb_rp_work_index(int slot,uint i,const int* u){\n"
+"    uint base=uint(slot);\n"
+"    if(u[9]!=0)base*=2u;\n"
+"    else if(u[8]!=0)base=slot<6?base*2u:base+6u;\n"
+"    return base*uint(u[3])+i*(tvdb_rp_work_double(slot,u)?2u:1u);\n"
+"}\n"
+"__device__ double tvdb_rp_load_work(int slot,uint i,const unsigned int* work,const int* u){\n"
+"    uint at=tvdb_rp_work_index(slot,i,u);\n"
+"    return tvdb_rp_work_double(slot,u)?((const double*)work)[at/2u]:double(((const float*)work)[at]);\n"
+"}\n"
+"__device__ void tvdb_rp_store_work(int slot,uint i,double v,unsigned int* work,const int* u){\n"
+"    uint at=tvdb_rp_work_index(slot,i,u);\n"
+"    if(tvdb_rp_work_double(slot,u))((double*)work)[at/2u]=v;\n"
+"    else ((float*)work)[at]=float(v);\n"
+"}\n"
+"__device__ double tvdb_rp_positive(uint i,int slot,const unsigned int* work,const int* u){\n"
+"    uint nx=uint(u[0]),ny=uint(u[1]),plane=nx*ny;\n"
+"    uint x=i%nx,y=(i/nx)%ny,z=i/plane;\n"
+"    double c=tvdb_rp_load_work(slot,i,work,u),v=0.0;\n"
+"    if(x>0u)v+=c-tvdb_rp_load_work(slot,i-1u,work,u);if(x+1u<nx)v+=c-tvdb_rp_load_work(slot,i+1u,work,u);\n"
+"    if(y>0u)v+=c-tvdb_rp_load_work(slot,i-nx,work,u);if(y+1u<ny)v+=c-tvdb_rp_load_work(slot,i+nx,work,u);\n"
+"    if(z>0u)v+=c-tvdb_rp_load_work(slot,i-plane,work,u);if(z+1u<uint(u[2]))v+=c-tvdb_rp_load_work(slot,i+plane,work,u);\n"
+"    return v/((const double*)(u+12))[0];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_resident_poisson(const unsigned int* rhs,const unsigned int* initial,unsigned int* work,const double* ri,double* ro,unsigned int* output_data,const int* u){\n"
+" __shared__ double sums[512];\n"
+"    uint i=((blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x),n=uint(u[3]),lane=threadIdx.x;\n"
+"    int op=u[4];\n"
+"    if(op>=90){\n"
+"        if((blockIdx.x+blockIdx.y*gridDim.x)>=(uint(op==100?u[10]:u[3])+127u)/128u)return;\n"
+"        double a=0.0,b=0.0,c=0.0,d=0.0;\n"
+"        if(op==100){if(i<uint(u[10])){a=ri[4u*i];b=ri[4u*i+1u];c=ri[4u*i+2u];d=ri[4u*i+3u];}}\n"
+"        else if(i<n){\n"
+"            if(op==91){a=tvdb_rp_read_rhs(i,rhs,u);b=fabs(a);c=tvdb_rp_read_x(i,initial,u);d=(isnan(a)||isinf(a)||isnan(c)||isinf(c))?1.0:0.0;}\n"
+"            else {double v=tvdb_rp_load_work(u[5],i,work,u),w=tvdb_rp_load_work(u[6],i,work,u);a=v*w;b=v;c=fabs(v);d=(isnan(v)||isinf(v)||isnan(w)||isinf(w))?1.0:0.0;}\n"
+"        }\n"
+"        sums[lane]=a;sums[128u+lane]=b;sums[256u+lane]=c;sums[384u+lane]=d;__syncthreads();\n"
+"        for(uint step=64u;step>0u;step/=2u){if(lane<step)for(uint k=0u;k<4u;++k)sums[128u*k+lane]+=sums[128u*k+lane+step];__syncthreads();}\n"
+"        if(lane==0u)for(uint k=0u;k<4u;++k)ro[4u*(blockIdx.x+blockIdx.y*gridDim.x)+k]=sums[128u*k];return;\n"
+"    }\n"
+"    if(i>=n)return;\n"
+"    int a=u[5],b=u[6],dst=u[7];\n"
+"    if(op==0){tvdb_rp_store_work(0,i,tvdb_rp_rounded(tvdb_rp_read_x(i,initial,u)-((const double*)(u+12))[3],u),work,u);tvdb_rp_store_work(1,i,tvdb_rp_rounded(-tvdb_rp_read_rhs(i,rhs,u)+((const double*)(u+12))[1],u),work,u);tvdb_rp_store_work(6,i,tvdb_rp_read_x(i,initial,u),work,u);}\n"
+"    if(op==1)tvdb_rp_store_work(dst,i,tvdb_rp_rounded(tvdb_rp_positive(i,a,work,u),u),work,u);\n"
+"    if(op==2){double v=(u[11]!=0?-tvdb_rp_read_rhs(i,rhs,u)+((const double*)(u+12))[3]:tvdb_rp_load_work(1,i,work,u))-tvdb_rp_positive(i,a,work,u);tvdb_rp_store_work(dst,i,u[11]!=0?v:tvdb_rp_rounded(v,u),work,u);}\n"
+"    if(op==3)tvdb_rp_store_work(dst,i,tvdb_rp_rounded(((const double*)(u+12))[1]*tvdb_rp_load_work(a,i,work,u)+((const double*)(u+12))[2]*tvdb_rp_load_work(b,i,work,u),u),work,u);\n"
+"    if(op==4){uint nx=uint(u[0]),ny=uint(u[1]),x=i%nx,y=(i/nx)%ny,z=i/(nx*ny);\n"
+"        int degree=int(x>0u)+int(x+1u<nx)+int(y>0u)+int(y+1u<ny)+int(z>0u)+int(z+1u<uint(u[2]));\n"
+"        tvdb_rp_store_work(dst,i,degree>0?tvdb_rp_rounded(tvdb_rp_load_work(a,i,work,u)*((const double*)(u+12))[0]/double(degree),u):0.0,work,u);}\n"
+"    if(op==5)tvdb_rp_store_work(dst,i,tvdb_rp_rounded(tvdb_rp_load_work(a,i,work,u)-((const double*)(u+12))[1],u),work,u);\n"
+"    if(op==6){double v=tvdb_rp_load_work(a,i,work,u)+((const double*)(u+12))[3];tvdb_rp_store_work(dst,i,u[9]!=0?v:double(float(v)),work,u);}\n"
+"    if(op==7){double v=tvdb_rp_load_work(a,i,work,u);if(u[9]!=0){unsigned long long bits=__double_as_longlong(v);output_data[2u*i]=(unsigned int)bits;output_data[2u*i+1u]=(unsigned int)(bits>>32);}else output_data[i]=__float_as_uint(float(v));}\n"
+"    if(op==8)tvdb_rp_store_work(dst,i,tvdb_rp_load_work(a,i,work,u),work,u);\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_resident_map(const int* coords,unsigned int* slots,const unsigned int* u) {\n"
+"    unsigned int i=((blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x);\n"
+"    if(u[2]==0u){if(i<u[1])slots[i]=0u;return;}\n"
+"    if(i>=u[0])return;\n"
+"    int x=coords[3u*i],y=coords[3u*i+1u],z=coords[3u*i+2u];\n"
+"    unsigned int at=(((unsigned int)(x))*73856093u ^ ((unsigned int)(y))*19349663u ^ ((unsigned int)(z))*83492791u)&(u[1]-1u);\n"
+"    for(unsigned int p=0u;p<u[1];++p) {\n"
+"        unsigned int old=atomicCAS(&slots[at],0u,i+1u);\n"
+"        if(old==0u){slots[u[1]+i]=0u;return;}\n"
+"        unsigned int j=old-1u;\n"
+"        if(coords[3u*j]==x && coords[3u*j+1u]==y && coords[3u*j+2u]==z){slots[u[1]+i]=atomicExch(&slots[at],i+1u);return;}\n"
+"        at=(at+1u)&(u[1]-1u);\n"
+"    }\n"
+"}\n"
+"__device__ bool tvdb_rs_add_ok(int a,int b,int& v) {\n"
+"    if((b>0 && a>2147483647-b)||(b<0 && a<(-2147483647-1)-b))return false;\n"
+"    v=a+b;return true;\n"
+"}\n"
+"__device__ bool tvdb_rs_mul_ok(int a,int b,int& v) {\n"
+"    if(a>2147483647/b || a<(-2147483647-1)/b)return false;\n"
+"    v=a*b;return true;\n"
+"}\n"
+"__device__ int tvdb_rs_lookup(int x,int y,int z,const int* coords,const unsigned int* slots,const int* u) {\n"
+"    unsigned int at=(((unsigned int)(x))*73856093u ^ ((unsigned int)(y))*19349663u ^ ((unsigned int)(z))*83492791u)&(((unsigned int)(u[3]))-1u);\n"
+"    for(unsigned int p=0u;p<((unsigned int)(u[3]));++p){unsigned int v=slots[at];if(v==0u)return -1;\n"
+"        unsigned int j=v-1u;if(coords[3u*j]==x && coords[3u*j+1u]==y && coords[3u*j+2u]==z){unsigned int first=j;for(unsigned int q=slots[((unsigned int)(u[3]))+j];q!=0u;q=slots[((unsigned int)(u[3]))+q-1u])first=min(first,q-1u);return int(first);}\n"
+"        at=(at+1u)&(((unsigned int)(u[3]))-1u);}\n"
+"    return -1;\n"
+"}\n"
+"__device__ float tvdb_rs_transpose_value(int x,int y,int z,const int* coords,const float* values,const unsigned int* slots,const int* u) {\n"
+"    unsigned int at=(((unsigned int)(x))*73856093u ^ ((unsigned int)(y))*19349663u ^ ((unsigned int)(z))*83492791u)&(((unsigned int)(u[3]))-1u);\n"
+"    for(unsigned int p=0u;p<((unsigned int)(u[3]));++p){unsigned int v=slots[at];if(v==0u)return 0.0;\n"
+"        unsigned int j=v-1u;if(coords[3u*j]==x && coords[3u*j+1u]==y && coords[3u*j+2u]==z){\n"
+"            float sum=0.0;for(unsigned int q=v;q!=0u;q=slots[((unsigned int)(u[3]))+q-1u])sum+=values[q-1u];return sum;}\n"
+"        at=(at+1u)&(((unsigned int)(u[3]))-1u);}\n"
+"    return 0.0;\n"
+"}\n"
+"__device__ bool tvdb_rs_keep(unsigned int i,int x,int y,int z,const int* coords,const unsigned int* slots,const int* u) {\n"
+"    if(tvdb_rs_lookup(x,y,z,coords,slots,u)!=int(i))return false;\n"
+"    if(u[12]==4)for(int k=0;k<6;++k){int a=x,b=y,c=z,t=0;\n"
+"        int d=(k%2==0)?-1:1;\n"
+"        if(k/2==0){if(!tvdb_rs_add_ok(a,d,t))return false;a=t;}\n"
+"        if(k/2==1){if(!tvdb_rs_add_ok(b,d,t))return false;b=t;}\n"
+"        if(k/2==2){if(!tvdb_rs_add_ok(c,d,t))return false;c=t;}\n"
+"        if(tvdb_rs_lookup(a,b,c,coords,slots,u)<0)return false;}\n"
+"    return true;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_resident_sparse(const int* coords,const float* values,const unsigned int* slots,int* oc,float* ov,const float* weights,unsigned int* flags,const int* u) {\n"
+"    unsigned int i=((blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x);\n"
+"    if(u[0]==4){if(i<=((unsigned int)(u[2])))flags[i]=0u;return;}\n"
+"    if(i>=((unsigned int)(u[2])))return;\n"
+"    if(u[0]==5 || u[0]==6){\n"
+"        bool selected=fabsf(values[i]-((const float*)u)[8])>((const float*)u)[9];\n"
+"        if(u[0]==5){flags[i]=selected?1u:0u;return;}\n"
+"        if(selected){unsigned int j=flags[i];oc[3u*j]=int(i%((unsigned int)(u[4])));oc[3u*j+1u]=int((i/((unsigned int)(u[4])))%((unsigned int)(u[5])));oc[3u*j+2u]=int(i/((unsigned int)(u[4]*u[5])));ov[j]=values[i];}return;\n"
+"    }\n"
+"    if(u[0]==7){int x=int(i%((unsigned int)(u[4]))),y=int((i/((unsigned int)(u[4])))%((unsigned int)(u[5]))),z=int(i/((unsigned int)(u[4]*u[5])));\n"
+"        int j=tvdb_rs_lookup(x,y,z,coords,slots,u);ov[i]=j<0?((const float*)u)[8]:values[j];return;}\n"
+"    if(u[0]==8){\n"
+"        float x=floorf((weights[3u*i]-((const float*)u)[8])/((const float*)u)[11]),y=floorf((weights[3u*i+1u]-((const float*)u)[9])/((const float*)u)[11]),z=floorf((weights[3u*i+2u]-((const float*)u)[10])/((const float*)u)[11]);\n"
+"        if(isnan(x)||isnan(y)||isnan(z)||x< -2147483648.0||x>=2147483648.0||y< -2147483648.0||y>=2147483648.0||z< -2147483648.0||z>=2147483648.0){atomicOr(&flags[((unsigned int)(u[2]))],1u);return;}\n"
+"        oc[3u*i]=int(x);oc[3u*i+1u]=int(y);oc[3u*i+2u]=int(z);ov[i]=1.0;return;\n"
+"    }\n"
+"    int kind=u[12];\n"
+"    if(u[0]==0){\n"
+"        unsigned int copies=kind==2?((unsigned int)(u[4]*u[5]*u[6])):kind==3?7u:1u;\n"
+"        unsigned int src=i/copies,tap=i%copies;\n"
+"        int x=coords[3u*src],y=coords[3u*src+1u],z=coords[3u*src+2u];bool good=true;int t;\n"
+"        if(kind==1){int s=u[7]; x=x/s-(x%s<0?1:0);y=y/s-(y%s<0?1:0);z=z/s-(z%s<0?1:0);}\n"
+"        if(kind==2){int dx=int(tap%((unsigned int)(u[4])))-u[4]/2;\n"
+"          int dy=int((tap/((unsigned int)(u[4])))%((unsigned int)(u[5])))-u[5]/2;\n"
+"          int dz=int(tap/((unsigned int)(u[4]*u[5])))-u[6]/2;\n"
+"          good=tvdb_rs_mul_ok(x,u[7],t);if(good)good=tvdb_rs_add_ok(t,dx,x);\n"
+"          good=good && tvdb_rs_mul_ok(y,u[7],t);if(good)good=tvdb_rs_add_ok(t,dy,y);\n"
+"          good=good && tvdb_rs_mul_ok(z,u[7],t);if(good)good=tvdb_rs_add_ok(t,dz,z);\n"
+"        }\n"
+"        if(kind==3 && tap>0u){int d=(tap%2u==1u)?1:-1;\n"
+"          if(tap<=2u)good=tvdb_rs_add_ok(x,d,x);else if(tap<=4u)good=tvdb_rs_add_ok(y,d,y);else good=tvdb_rs_add_ok(z,d,z);}\n"
+"        if(!good && kind==3){x=coords[3u*src];y=coords[3u*src+1u];z=coords[3u*src+2u];}\n"
+"        else if(!good)atomicOr(&flags[((unsigned int)(u[2]))],1u);\n"
+"        oc[3u*i]=x;oc[3u*i+1u]=y;oc[3u*i+2u]=z;return;\n"
+"    }\n"
+"    if(u[0]==1 || u[0]==2){int x=coords[3u*i],y=coords[3u*i+1u],z=coords[3u*i+2u];bool selected=tvdb_rs_keep(i,x,y,z,coords,slots,u);\n"
+"        if(u[0]==1){flags[i]=selected?1u:0u;return;}\n"
+"        if(selected){unsigned int j=flags[i];oc[3u*j]=x;oc[3u*j+1u]=y;oc[3u*j+2u]=z;}return;\n"
+"    }\n"
+"    int x=oc[3u*i],y=oc[3u*i+1u],z=oc[3u*i+2u];\n"
+"    if(kind==3 || kind==4){int j=tvdb_rs_lookup(x,y,z,coords,slots,u);float v=j<0?((const float*)u)[8]:values[j];\n"
+"        for(int k=0;k<6;++k){int a=x,b=y,c=z,t=0;int d=(k%2==0)?-1:1;bool good=true;\n"
+"          if(k/2==0){good=tvdb_rs_add_ok(a,d,t);a=t;}if(k/2==1){good=tvdb_rs_add_ok(b,d,t);b=t;}if(k/2==2){good=tvdb_rs_add_ok(c,d,t);c=t;}\n"
+"          int q=good?tvdb_rs_lookup(a,b,c,coords,slots,u):-1;if(q>=0){float f=values[q];v=kind==4?(f>v?f:v):(f<v?f:v);}}\n"
+"        ov[i]=v;return;\n"
+"    }\n"
+"    float sum=0.0;\n"
+"    for(int kz=0;kz<u[6];++kz)for(int ky=0;ky<u[5];++ky)for(int kx=0;kx<u[4];++kx){\n"
+"        int a=x,b=y,c=z,t=0;bool good=true;\n"
+"        int dx=kx-u[4]/2,dy=ky-u[5]/2,dz=kz-u[6]/2;\n"
+"        if(kind==2){good=tvdb_rs_add_ok(x,-dx,a) && tvdb_rs_add_ok(y,-dy,b) && tvdb_rs_add_ok(z,-dz,c);\n"
+"          if(!good || a%u[7]!=0 || b%u[7]!=0 || c%u[7]!=0)continue;\n"
+"          a/=u[7];b/=u[7];c/=u[7];\n"
+"        }else {if(kind==1){good=tvdb_rs_mul_ok(x,u[7],a)&&tvdb_rs_mul_ok(y,u[7],b)&&tvdb_rs_mul_ok(z,u[7],c);}\n"
+"          good=good && tvdb_rs_add_ok(a,dx,t);a=t;good=good && tvdb_rs_add_ok(b,dy,t);b=t;good=good && tvdb_rs_add_ok(c,dz,t);c=t;}\n"
+"        int j=good?tvdb_rs_lookup(a,b,c,coords,slots,u):-1;\n"
+"        float v=kind==2?(good?tvdb_rs_transpose_value(a,b,c,coords,values,slots,u):0.0):(j<0?((const float*)u)[8]:values[j]);\n"
+"        sum+=weights[(kz*u[5]+ky)*u[4]+kx]*v;\n"
+"    }\n"
+"    ov[i]=sum;\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_stats_resident(const float* data,float4* partials,const unsigned int* u) {\n"
+"unsigned int count=u[0],ngroups=u[1];\n"
+"\n"
+"  __shared__ float4 sh[256];\n"
+"  unsigned int lid = threadIdx.x;\n"
+"  unsigned int stride = ngroups * 256u;\n"
+"  float mn = 3.402823466e+38f, mx = -3.402823466e+38f, sum = 0.0f, sumsq = 0.0f;\n"
+"  for (unsigned int i = blockIdx.x * 256u + lid; i < count; i += stride) {\n"
+"    float v = data[i];\n"
+"    mn = fminf(mn, v); mx = fmaxf(mx, v); sum += v; sumsq += v * v;\n"
+"  }\n"
+"  float4 p; p.x = mn; p.y = mx; p.z = sum; p.w = sumsq; sh[lid] = p;\n"
+"  __syncthreads();\n"
+"  for (unsigned int t = 128u; t > 0u; t >>= 1u) {\n"
+"    if (lid < t) {\n"
+"      float4 a = sh[lid], b = sh[lid + t];\n"
+"      sh[lid] = make_float4(fminf(a.x,b.x), fmaxf(a.y,b.y), a.z+b.z, a.w+b.w);\n"
+"    }\n"
+"    __syncthreads();\n"
+"  }\n"
+"  if (lid == 0u) partials[blockIdx.x] = sh[0];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_checksum_resident(const unsigned int* data,unsigned int* partials,const unsigned int* u) {\n"
+"unsigned int count=u[0],ngroups=u[1];\n"
+"\n"
+"  __shared__ unsigned int sh[256];\n"
+"  unsigned int lid = threadIdx.x;\n"
+"  unsigned int s = 0u;\n"
+"  for (unsigned int i = blockIdx.x * 256u + lid; i < count; i += ngroups * 256u) {\n"
+"    unsigned int h = data[i] ^ (i * 2654435761u); h *= 2654435761u; h ^= h >> 15; s += h;\n"
+"  }\n"
+"  sh[lid] = s;\n"
+"  __syncthreads();\n"
+"  for (unsigned int t = 128u; t > 0u; t >>= 1u) {\n"
+"    if (lid < t) sh[lid] += sh[lid + t];\n"
+"    __syncthreads();\n"
+"  }\n"
+"  if (lid == 0u) partials[blockIdx.x] = sh[0];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_levelset_check_resident(const float* data,float4* partials,const int* u) {\n"
+"int nx=u[0],ny=u[1],nz=u[2];float inv2vs=((const float*)u)[4],band_world=((const float*)u)[5],tol=((const float*)u)[6];unsigned int count=u[8],ngroups=u[9];\n"
+"\n"
+"  __shared__ float4 sh[256];\n"
+"  unsigned int lid = threadIdx.x;\n"
+"  unsigned int t = blockIdx.x * 256u + lid;\n"
+"  int inx = nx - 2, iny = ny - 2; unsigned int sl = (unsigned int)(nx * ny);\n"
+"  float sum_mag = 0.0f, max_err = 0.0f, bad = 0.0f, band = 0.0f;\n"
+"  for (unsigned int m = t; m < count; m += ngroups * 256u) {\n"
+"    int ix = (int)(m % (unsigned int)inx) + 1;\n"
+"    unsigned int tmp = m / (unsigned int)inx;\n"
+"    int iy = (int)(tmp % (unsigned int)iny) + 1;\n"
+"    int iz = (int)(tmp / (unsigned int)iny) + 1;\n"
+"    unsigned int c = (unsigned int)((iz * ny + iy) * nx + ix);\n"
+"    if (band_world > 0.0f && fabsf(data[c]) > band_world) continue;\n"
+"    float gx = (data[c + 1u] - data[c - 1u]) * inv2vs;\n"
+"    float gy = (data[c + (unsigned int)nx] - data[c - (unsigned int)nx]) * inv2vs;\n"
+"    float gz = (data[c + sl] - data[c - sl]) * inv2vs;\n"
+"    float mag = sqrtf(gx*gx + gy*gy + gz*gz); float err = fabsf(mag - 1.0f);\n"
+"    sum_mag += mag; if (err > max_err) max_err = err; if (err > tol) bad += 1.0f; band += 1.0f;\n"
+"  }\n"
+"  float4 p; p.x = sum_mag; p.y = (band > 0.0f) ? max_err : -3.402823466e+38f; p.z = bad; p.w = band;\n"
+"  sh[lid] = p;\n"
+"  __syncthreads();\n"
+"  for (unsigned int s2 = 128u; s2 > 0u; s2 >>= 1u) {\n"
+"    if (lid < s2) {\n"
+"      float4 a = sh[lid], b = sh[lid + s2];\n"
+"      sh[lid] = make_float4(a.x+b.x, fmaxf(a.y,b.y), a.z+b.z, a.w+b.w);\n"
+"    }\n"
+"    __syncthreads();\n"
+"  }\n"
+"  if (lid == 0u) partials[blockIdx.x] = sh[0];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_measure_resident(const float* src,double* partials,const int* u) {\n"
+"int nx=u[0],ny=u[1],nz=u[2],op=u[3];unsigned int n=u[4],ngroups=u[6];\n"
+"\n"
+"  __shared__ double sdata[256];\n"
+"  if(u[5]){double a=0;for(unsigned int i=threadIdx.x;i<ngroups;i+=256u)a+=partials[i];sdata[threadIdx.x]=a;__syncthreads();\n"
+"    for(unsigned int t=128;t;t/=2){if(threadIdx.x<t)sdata[threadIdx.x]+=sdata[threadIdx.x+t];__syncthreads();}\n"
+"    if(threadIdx.x==0)partials[0]=sdata[0];return;}\n"
+"\n"
+"  unsigned int gid = blockIdx.x*blockDim.x+threadIdx.x;\n"
+"  unsigned int lid = threadIdx.x;\n"
+"  double acc = 0.0;\n"
+"  unsigned int stride = ngroups*blockDim.x;\n"
+"  for (unsigned int i=gid; i<n; i+=stride) acc += tvdb_measure_count(src,nx,ny,nz,i,n,op);\n"
+"  sdata[lid]=acc; __syncthreads();\n"
+"  for (unsigned int s=128u; s>0u; s>>=1u) { if (lid<s) sdata[lid]+=sdata[lid+s]; __syncthreads(); }\n"
+"  if (lid==0u) partials[blockIdx.x]=sdata[0];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_measure_d_resident(const double* src,double* partials,const int* u) {\n"
+"int nx=u[0],ny=u[1],nz=u[2],op=u[3];unsigned int n=u[4],ngroups=u[6];\n"
+"\n"
+"  __shared__ double sdata[256];\n"
+"  if(u[5]){double a=0;for(unsigned int i=threadIdx.x;i<ngroups;i+=256u)a+=partials[i];sdata[threadIdx.x]=a;__syncthreads();\n"
+"    for(unsigned int t=128;t;t/=2){if(threadIdx.x<t)sdata[threadIdx.x]+=sdata[threadIdx.x+t];__syncthreads();}\n"
+"    if(threadIdx.x==0)partials[0]=sdata[0];return;}\n"
+"\n"
+"  unsigned int gid = blockIdx.x*blockDim.x+threadIdx.x;\n"
+"  unsigned int lid = threadIdx.x;\n"
+"  double acc = 0.0;\n"
+"  unsigned int stride = ngroups*blockDim.x;\n"
+"  for (unsigned int i=gid; i<n; i+=stride) acc += tvdb_measure_count_d(src,nx,ny,nz,i,n,op);\n"
+"  sdata[lid]=acc; __syncthreads();\n"
+"  for (unsigned int s=128u; s>0u; s>>=1u) { if (lid<s) sdata[lid]+=sdata[lid+s]; __syncthreads(); }\n"
+"  if (lid==0u) partials[blockIdx.x]=sdata[0];\n"
+"}\n"
+"extern \"C\" __global__ void tvdb_cuda_resident_reduce(const unsigned int* input_data,unsigned int* result,const unsigned int* u){\n"
+" __shared__ float a[256],b[256],c[256],d[256];__shared__ unsigned int sums[256];\n"
+"    uint lane=threadIdx.x;\n"
+"    if(u[1]==2u){uint s=0u;for(uint i=lane;i<u[0];i+=256u)s+=input_data[i];sums[lane]=s;__syncthreads();\n"
+"      for(uint k=128u;k>0u;k/=2u){if(lane<k)sums[lane]+=sums[lane+k];__syncthreads();}if(lane==0u)result[0]=sums[0];return;}\n"
+"    float x=u[1]==0u?3.402823466e+38:0.0,y=-3.402823466e+38,z=0.0,w=0.0;\n"
+"    for(uint i=lane;i<u[0];i+=256u){float v=__uint_as_float(input_data[4u*i]);\n"
+"      x=u[1]==0u?fminf(x,v):x+v;y=fmaxf(y,__uint_as_float(input_data[4u*i+1u]));\n"
+"      z+=__uint_as_float(input_data[4u*i+2u]);w+=__uint_as_float(input_data[4u*i+3u]);}\n"
+"    a[lane]=x;b[lane]=y;c[lane]=z;d[lane]=w;__syncthreads();\n"
+"    for(uint k=128u;k>0u;k/=2u){if(lane<k){a[lane]=u[1]==0u?fminf(a[lane],a[lane+k]):a[lane]+a[lane+k];b[lane]=fmaxf(b[lane],b[lane+k]);c[lane]+=c[lane+k];d[lane]+=d[lane+k];}__syncthreads();}\n"
+"    if(lane==0u){result[0]=__float_as_uint(a[0]);result[1]=__float_as_uint(b[0]);result[2]=__float_as_uint(c[0]);result[3]=__float_as_uint(d[0]);}\n"
 "}\n"
 
 ;
@@ -5270,6 +5870,14 @@ done_pnts: tvdb_vk_destroy_buffer(ctx, &bpnts);
 static void tvdb_vk_destroy_sparse_image3d_dispatch(tvdb_gpu_vulkan_sparse_image3d_t* image) {
   if (!image || !image->ctx) return;
   tvdb_gpu_context_t* ctx = image->ctx;
+  /* submit/destroy is a legal sequence, so an outstanding submit may still be
+   * reading the buffers and holding the command buffer. Wait before releasing
+   * any of it -- the same rule the deferred-dispatch path already follows at
+   * tvdb_vk_drain_pending. */
+  if (image->sample_in_flight && image->sample_fence && ctx->vk.WaitForFences) {
+    ctx->vk.WaitForFences(ctx->device, 1, &image->sample_fence, VK_TRUE, UINT64_MAX);
+    image->sample_in_flight = 0;
+  }
   tvdb_vk_destroy_buffer(ctx, &image->sample_params);
   tvdb_vk_destroy_buffer(ctx, &image->sample_output);
   tvdb_vk_destroy_buffer(ctx, &image->sample_points);
@@ -5513,6 +6121,12 @@ static tvdb_status_t tvdb_vk_sparse_image3d_submit_sample(tvdb_gpu_vulkan_sparse
 static void tvdb_vk_destroy_sample_batch_dispatch(tvdb_gpu_vulkan_sample_batch_t* batch) {
   if (!batch || !batch->ctx) return;
   tvdb_gpu_context_t* ctx = batch->ctx;
+  /* Same rule as the single-image path: a submit without a matching wait must not
+   * have its fence, command pool or buffers destroyed underneath it. */
+  if (batch->in_flight && batch->fence && ctx->vk.WaitForFences) {
+    ctx->vk.WaitForFences(ctx->device, 1, &batch->fence, VK_TRUE, UINT64_MAX);
+    batch->in_flight = 0;
+  }
   if (batch->fence) ctx->vk.DestroyFence(ctx->device, batch->fence, NULL);
   if (batch->command_pool) ctx->vk.DestroyCommandPool(ctx->device, batch->command_pool, NULL);
   if (batch->descriptor_pool) ctx->vk.DestroyDescriptorPool(ctx->device, batch->descriptor_pool, NULL);
@@ -5979,6 +6593,12 @@ static tvdb_status_t tvdb_vk_sparse_conv_dense(tvdb_gpu_context_t* ctx, const tv
     ds.descriptor_types[0]=ds.descriptor_types[1]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     ds.descriptor_types[2]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     ds.group_x = (uint32_t)((in->count + 127u) / 128u);
+    /* Deferred: the scatter writes bidx and the conv reads it, so the two are
+     * dependent. Submitting the first one without waiting cost a full blocking
+     * fence here and another for the second. Queueing it and draining once at the
+     * end is the pattern erode/dilate and the transpose conv already use, and
+     * the uniform contents are constant across both dispatches. */
+    ds.defer_wait = TVDB_VK_DEFERRED_SUBMIT;
     st = tvdb_vk_dispatch(ctx, &ds, err);
   }
   if (st == TVDB_OK) {
@@ -5991,6 +6611,7 @@ static tvdb_status_t tvdb_vk_sparse_conv_dense(tvdb_gpu_context_t* ctx, const tv
     dc.group_x = (uint32_t)((in->count + 127u) / 128u);
     st = tvdb_vk_dispatch(ctx, &dc, err);
   }
+  if (st == TVDB_OK) st = tvdb_vk_flush(ctx, err);
   if (st == TVDB_OK) { memcpy(out->values, bo.mapped, in->count * sizeof(float)); out->count = in->count; }
   tvdb_vk_destroy_buffer(ctx, &buc);
 dd_us: tvdb_vk_destroy_buffer(ctx, &bus);
@@ -6741,10 +7362,16 @@ static tvdb_status_t tvdb_cuda_morph_impl(tvdb_gpu_context_t* ctx, tvdb_dense_gr
   int nx = grid->nx, ny = grid->ny, nz = grid->nz;
   unsigned int block = 128, grid_blocks = ((unsigned int)n + block - 1u) / block;
   CUdeviceptr src = da, dst = db;
+  /* No per-iteration synchronize. Every launch goes on the NULL stream, which is
+   * implicitly ordered, so iteration N+1 cannot start before N finishes and the
+   * sync was a full-device stall that bought nothing. The single
+   * cuMemcpyDtoH below is itself synchronous with respect to that stream, so the
+   * result is still read after the last iteration completed. This mirrors what
+   * the Vulkan path above does with one flush, and what the CUDA mean-curvature
+   * flow already does. */
   for (int it = 0; it < iterations; ++it) {
     void* args[] = {&src, &dst, &nx, &ny, &nz, &is_dilate};
     if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid_blocks, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
-    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
     CUdeviceptr tmp = src; src = dst; dst = tmp;
   }
   if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(grid->data, src, n * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto done; }
@@ -6769,11 +7396,26 @@ static tvdb_status_t tvdb_gpu_morph(tvdb_gpu_context_t* ctx, tvdb_dense_grid* gr
 
 tvdb_status_t tvdb_gpu_dilate(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
                               int iterations, tvdb_error_t* err) {
-  return tvdb_gpu_morph(ctx, grid, iterations, 1, err);
+  return resident_morph_host(ctx,grid,iterations,0,err);
 }
 tvdb_status_t tvdb_gpu_erode(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
                              int iterations, tvdb_error_t* err) {
-  return tvdb_gpu_morph(ctx, grid, iterations, 0, err);
+  return resident_morph_host(ctx,grid,iterations,1,err);
+}
+
+/* Morphological opening and closing, mirroring tvdb_open / tvdb_close exactly:
+ * erode then dilate, and dilate then erode, by `iterations` steps each. These
+ * were the only CPU morphology ops with no GPU entry point, and they are
+ * compositions of two that already exist, so the order and the intermediate
+ * result are the same as running the two calls by hand. */
+tvdb_status_t tvdb_gpu_open(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                            int iterations, tvdb_error_t* err) {
+  return resident_morph_host(ctx,grid,iterations,2,err);
+}
+
+tvdb_status_t tvdb_gpu_close(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                             int iterations, tvdb_error_t* err) {
+  return resident_morph_host(ctx,grid,iterations,3,err);
 }
 
 static tvdb_status_t tvdb_vk_prune(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
@@ -6991,7 +7633,7 @@ static tvdb_status_t tvdb_gpu_stencil_scalar_scalar_impl(tvdb_gpu_context_t* ctx
     tvdb_status_t cs = tvdb_cuda_stencil2d(ctx, "tvdb_cuda_stencil_scalar_scalar",
         in->data, n, 1, out->data, n, 1, in->nx, in->ny, in->nz, op, scale, in->ox, in->oy, in->oz, in->voxel_size, err);
     if (cs == TVDB_OK) return TVDB_OK;
-    fprintf(stderr, "FALLBACK scalar_scalar: %s\n", err?err->message:"?");
+    /* No stderr: this is a library. The fallback is documented in tinyvdb_gpu.h. */
     free(out->data); out->data = NULL;          /* let the CPU reference own it */
     if ((tvdb_gpu_init_out_grid(out, in->nx, in->ny, in->nz, in->voxel_size, in->ox, in->oy, in->oz, err)) != TVDB_OK)
       return TVDB_ERROR_OUT_OF_MEMORY;
@@ -7395,7 +8037,7 @@ static tvdb_status_t tvdb_gpu_gradient_impl(tvdb_gpu_context_t* ctx,
     tvdb_status_t cs = tvdb_cuda_stencil2d(ctx, "tvdb_cuda_stencil_scalar_vec",
         in->data, n, 1, out->data, n * 3u, 3, in->nx, in->ny, in->nz, 0, 1.0f / (2.0f * h), in->ox, in->oy, in->oz, in->voxel_size, err);
     if (cs == TVDB_OK) return TVDB_OK;
-    fprintf(stderr, "FALLBACK vec_out: %s\n", err?err->message:"?");
+    /* No stderr: this is a library. The fallback is documented in tinyvdb_gpu.h. */
     free(out->data); out->data = NULL;
     if ((tvdb_init_out_vec(out, in->nx, in->ny, in->nz, in->voxel_size, in->ox, in->oy, in->oz, err)) != TVDB_OK)
       return TVDB_ERROR_OUT_OF_MEMORY;
@@ -7538,7 +8180,7 @@ static tvdb_status_t tvdb_mcf_vk(tvdb_gpu_context_t* ctx, const float* src, floa
   }
   if (!on_device && err) memset(err, 0, sizeof(*err));
   if (on_device) {
-    tvdb_vk_copy pre[1];
+    tvdb_vk_copy pre[1] = {{0}};
     pre[0].src = ha.buffer; pre[0].dst = da.buffer; pre[0].size = bytes;
     pre[0].src_stage = VK_PIPELINE_STAGE_HOST_BIT; pre[0].src_access = VK_ACCESS_HOST_WRITE_BIT;
     pre[0].dst_stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT; pre[0].dst_access = VK_ACCESS_SHADER_READ_BIT;
@@ -7584,7 +8226,7 @@ static tvdb_status_t tvdb_mcf_vk(tvdb_gpu_context_t* ctx, const float* src, floa
   if (on_device) {
     /* Stage the result back to the host-visible side, then read it. */
     const tvdb_vk_buffer* result = (iterations & 1) ? &db : &da;
-    tvdb_vk_copy post[1];
+    tvdb_vk_copy post[1] = {{0}};
     post[0].src = result->buffer; post[0].dst = ((iterations & 1) ? hb : ha).buffer; post[0].size = bytes;
     post[0].src_stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT; post[0].src_access = VK_ACCESS_SHADER_WRITE_BIT;
     post[0].dst_stage = VK_PIPELINE_STAGE_HOST_BIT; post[0].dst_access = VK_ACCESS_HOST_READ_BIT;
@@ -7736,6 +8378,11 @@ static tvdb_status_t tvdb_fast_sweeping_vk(tvdb_gpu_context_t* ctx, tvdb_dense_g
   _Static_assert(offsetof(tvdb_fsd_uniform, nvox) == 56, "std140: fp64 nvox follows huge");
   _Static_assert(sizeof(tvdb_fsd_uniform) == 64, "fp64 fast-sweeping uniform must be 64 bytes");
   enum { TVDB_FS_STRIDE = 256 };
+  /* The sentinel the parameter block tells the shader to seed |phi| with, mirrored
+   * here so the write-back can recognise a voxel no sweep reached. Keep in step
+   * with pd.huge / par.huge below. */
+  const double HUGE_D_TVDB = 1e30;
+  const float  HUGE_VAL_F_TVDB = 1e30f;
   const uint8_t* fs_spv = is_d ? kTvdbGpuFastSweepingPlaneDSpv : kTvdbGpuFastSweepingPlaneSpv;
   const size_t fs_spv_len = is_d ? kTvdbGpuFastSweepingPlaneDSpv_len : kTvdbGpuFastSweepingPlaneSpv_len;
 
@@ -7787,12 +8434,13 @@ static tvdb_status_t tvdb_fast_sweeping_vk(tvdb_gpu_context_t* ctx, tvdb_dense_g
   tvdb_vk_buffer bphi, bfrz, bchg, bpar;
   memset(&bphi, 0, sizeof(bphi)); memset(&bfrz, 0, sizeof(bfrz));
   memset(&bchg, 0, sizeof(bchg)); memset(&bpar, 0, sizeof(bpar));
-  VkDescriptorSet* sets = NULL;
+  VkDescriptorSet sets = VK_NULL_HANDLE;
   int nsets = 0;
   tvdb_status_t st;
   if ((st = tvdb_vk_create_buffer(ctx, n * esz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bphi, err)) != TVDB_OK) goto done;
   if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bfrz, err)) != TVDB_OK) goto done_phi;
   if ((st = tvdb_vk_create_buffer(ctx, 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bchg, err)) != TVDB_OK) goto done_frz;
+
   if ((st = tvdb_vk_create_buffer(ctx, (size_t)total_planes * TVDB_FS_STRIDE, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bpar, err)) != TVDB_OK) goto done_chg;
   memcpy(bphi.mapped, absphi, n * esz);
   /* The shader declares FrozenBuf as `uint frozen[]`, so std430 makes each
@@ -7802,77 +8450,90 @@ static tvdb_status_t tvdb_fast_sweeping_vk(tvdb_gpu_context_t* ctx, tvdb_dense_g
   memcpy(bfrz.mapped, frozen32, n * sizeof(uint32_t));
   ((float*)bchg.mapped)[0] = 0.0f;
 
-  /* One pre-built descriptor set per plane, each bound to its own 256-byte slice
-   * of the parameter buffer. Built once for the whole solve. */
+  /* One descriptor set for the whole solve, bound to the parameter buffer as a
+   * dynamic uniform; each plane selects its own 256-byte slice with the bind
+   * dynamic offset. A set per plane (the previous shape) needed total_planes =
+   * 8*(3N-2) sets -- 176 for an 8^3 grid, 944 at 40^3 -- drawn from the shared
+   * pool whose maxSets is 1024, so every grid above 43 per axis failed with
+   * VK_ERROR_OUT_OF_POOL_MEMORY. The test suite's largest case sat at 92% of the
+   * limit, which is why it passed. One set removes the ceiling entirely and drops
+   * 2 driver calls per plane per solve. */
   {
     const uint32_t types[4] = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                               VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER };
-    VkDescriptorSetLayout layout = VK_NULL_HANDLE;
-    int borrowed = 0;
-    if ((st = tvdb_vk_make_layout(ctx, fs_spv, fs_spv_len,
-                                  4, types, &layout, &borrowed, err)) != TVDB_OK) goto done_sets;
-    sets = (VkDescriptorSet*)calloc((size_t)total_planes, sizeof(VkDescriptorSet));
-    if (!sets) { st = TVDB_ERROR_OUT_OF_MEMORY; if (err) tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); goto done_sets_layout; }
-    int p = 0;
-    for (int d = 0; d < 8; ++d) {
-      int dx = kDirs[d][0], dy = kDirs[d][1], dz = kDirs[d][2];
-      int lo = (dx > 0 ? 0 : -(nx - 1)) + (dy > 0 ? 0 : -(ny - 1)) + (dz > 0 ? 0 : -(nz - 1));
-      int hi = (dx > 0 ? nx - 1 : 0) + (dy > 0 ? ny - 1 : 0) + (dz > 0 ? nz - 1 : 0);
-      for (int lvl = lo; lvl <= hi; ++lvl, ++p) {
-        /* Both uniform shapes are filled field by field; only the width of h and
-           huge differs, and the surrounding ints are at the same offsets. */
-        if (is_d) {
-          tvdb_fsd_uniform pd;
-          memset(&pd, 0, sizeof(pd));
-          pd.dim[0] = nx; pd.dim[1] = ny; pd.dim[2] = nz;
-          pd.dir[0] = dx; pd.dir[1] = dy; pd.dir[2] = dz;
-          pd.level = lvl; pd.h = (double)h; pd.huge = 1e30; pd.nvox = (uint32_t)n;
-          memcpy((char*)bpar.mapped + (size_t)p * TVDB_FS_STRIDE, &pd, sizeof(pd));
-        } else {
-          tvdb_fs_uniform par;
-          memset(&par, 0, sizeof(par));
-          par.dim[0] = nx; par.dim[1] = ny; par.dim[2] = nz;
-          par.dir[0] = dx; par.dir[1] = dy; par.dir[2] = dz;
-          par.level = lvl; par.h = h; par.huge = HUGE_VAL_F; par.nvox = (uint32_t)n;
-          memcpy((char*)bpar.mapped + (size_t)p * TVDB_FS_STRIDE, &par, sizeof(par));
+                               VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC };
+    /* Take the layout from the pipeline cache rather than making one here: the set
+     * is bound with that pipeline's pipeline layout, and a set allocated from a
+     * different (even identically defined) layout object crashes on some drivers. */
+    tvdb_vk_pipeline_entry *pe = NULL;
+    if ((st = tvdb_vk_get_pipeline(ctx, fs_spv, fs_spv_len, 4, types, &pe, NULL, err)) != TVDB_OK) goto done_sets;
+    VkDescriptorSetLayout layout = pe->set_layout;
+    /* Fill every plane's slice up front, then bind them all with one set. */
+    {
+      int p = 0;
+      for (int d = 0; d < 8; ++d) {
+        int dx = kDirs[d][0], dy = kDirs[d][1], dz = kDirs[d][2];
+        int lo = (dx > 0 ? 0 : -(nx - 1)) + (dy > 0 ? 0 : -(ny - 1)) + (dz > 0 ? 0 : -(nz - 1));
+        int hi = (dx > 0 ? nx - 1 : 0) + (dy > 0 ? ny - 1 : 0) + (dz > 0 ? nz - 1 : 0);
+        for (int lvl = lo; lvl <= hi; ++lvl, ++p) {
+          /* Both uniform shapes are filled field by field; only the width of h and
+             huge differs, and the surrounding ints are at the same offsets. */
+          if (is_d) {
+            tvdb_fsd_uniform pd;
+            memset(&pd, 0, sizeof(pd));
+            pd.dim[0] = nx; pd.dim[1] = ny; pd.dim[2] = nz;
+            pd.dir[0] = dx; pd.dir[1] = dy; pd.dir[2] = dz;
+            pd.level = lvl; pd.h = (double)h; pd.huge = 1e30; pd.nvox = (uint32_t)n;
+            memcpy((char*)bpar.mapped + (size_t)p * TVDB_FS_STRIDE, &pd, sizeof(pd));
+          } else {
+            tvdb_fs_uniform par;
+            memset(&par, 0, sizeof(par));
+            par.dim[0] = nx; par.dim[1] = ny; par.dim[2] = nz;
+            par.dir[0] = dx; par.dir[1] = dy; par.dir[2] = dz;
+            par.level = lvl; par.h = h; par.huge = HUGE_VAL_F; par.nvox = (uint32_t)n;
+            memcpy((char*)bpar.mapped + (size_t)p * TVDB_FS_STRIDE, &par, sizeof(par));
+          }
         }
-        /* The set must point at this plane's slice, so it cannot come from the
-         * shared helper (which assumes offset 0). */
-        VkDescriptorSetAllocateInfo dsai;
-        memset(&dsai, 0, sizeof(dsai));
-        dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        dsai.descriptorPool = ctx->desc_pool;
-        dsai.descriptorSetCount = 1;
-        dsai.pSetLayouts = &layout;
-        if (!tvdb_vk_ok(ctx->vk.AllocateDescriptorSets(ctx->device, &dsai, &sets[p]), err, "vkAllocateDescriptorSets")) {
-          st = err ? err->status : TVDB_ERROR_IO; goto done_sets_layout;
-        }
-        VkDescriptorBufferInfo infos[4];
-        VkWriteDescriptorSet wr[4];
-        memset(infos, 0, sizeof(infos)); memset(wr, 0, sizeof(wr));
-        for (int i = 0; i < 3; ++i) {
-          infos[i].buffer = (i == 0 ? bphi.buffer : (i == 1 ? bchg.buffer : bfrz.buffer));
-          infos[i].offset = 0;
-          infos[i].range = (i == 0 ? n * esz : (i == 1 ? 4u : n * sizeof(uint32_t)));
-        }
-        infos[3].buffer = bpar.buffer;
-        infos[3].offset = (VkDeviceSize)p * TVDB_FS_STRIDE;
-        infos[3].range = is_d ? sizeof(tvdb_fsd_uniform) : sizeof(tvdb_fs_uniform);
-        for (int i = 0; i < 4; ++i) {
-          wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-          wr[i].dstSet = sets[p];
-          wr[i].dstBinding = (uint32_t)i;
-          wr[i].descriptorCount = 1;
-          wr[i].descriptorType = types[i];
-          wr[i].pBufferInfo = &infos[i];
-        }
-        ctx->vk.UpdateDescriptorSets(ctx->device, 4, wr, 0, NULL);
       }
+      /* The pipeline layout the cache hands back must be built from the same
+       * descriptor types, so the layout has to be created with DYNAMIC above. */
+      VkDescriptorSetAllocateInfo dsai;
+      memset(&dsai, 0, sizeof(dsai));
+      dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+      dsai.descriptorPool = ctx->desc_pool;
+      dsai.descriptorSetCount = 1;
+      dsai.pSetLayouts = &layout;
+      if (!tvdb_vk_ok(ctx->vk.AllocateDescriptorSets(ctx->device, &dsai, &sets), err, "vkAllocateDescriptorSets")) {
+        st = err ? err->status : TVDB_ERROR_IO; goto done_sets_layout;
+      }
+      nsets = 1;
+      VkDescriptorBufferInfo infos[4];
+      VkWriteDescriptorSet wr[4];
+      memset(infos, 0, sizeof(infos)); memset(wr, 0, sizeof(wr));
+      for (int i = 0; i < 3; ++i) {
+        infos[i].buffer = (i == 0 ? bphi.buffer : (i == 1 ? bchg.buffer : bfrz.buffer));
+        infos[i].offset = 0;
+        infos[i].offset = 0;
+        infos[i].range = (i == 0 ? n * esz : (i == 1 ? 4u : n * sizeof(uint32_t)));
+      }
+      /* Dynamic binding: the descriptor covers exactly one slice at offset 0 and
+       * the dispatch's dynamic offset selects the slice. The range must be the
+       * slice, not the whole buffer -- a dynamic offset is added to the
+       * descriptor's offset, so a whole-buffer range plus an offset runs past the
+       * end of the allocation for every plane but the first. */
+      infos[3].buffer = bpar.buffer;
+      infos[3].offset = 0;
+      infos[3].range = TVDB_FS_STRIDE;
+      for (int i = 0; i < 4; ++i) {
+        wr[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        wr[i].dstSet = sets;
+        wr[i].dstBinding = (uint32_t)i;
+        wr[i].descriptorCount = 1;
+        wr[i].descriptorType = types[i];
+        wr[i].pBufferInfo = &infos[i];
+      }
+      ctx->vk.UpdateDescriptorSets(ctx->device, 4, wr, 0, NULL);
     }
-    nsets = total_planes;
-    if (layout && !borrowed && ctx->vk.DestroyDescriptorSetLayout)
-      ctx->vk.DestroyDescriptorSetLayout(ctx->device, layout, NULL);
-    layout = VK_NULL_HANDLE;
+    /* The layout belongs to the pipeline cache and is released with the context. */
   }
 
   {
@@ -7885,10 +8546,11 @@ static tvdb_status_t tvdb_fast_sweeping_vk(tvdb_gpu_context_t* ctx, tvdb_dense_g
         dd.spv = fs_spv; dd.spv_len = fs_spv_len; dd.descriptor_count = 4;
         dd.buffers[0] = &bphi; dd.buffers[1] = &bchg; dd.buffers[2] = &bfrz; dd.buffers[3] = &bpar;
         dd.descriptor_types[0] = dd.descriptor_types[1] = dd.descriptor_types[2] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        dd.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        dd.descriptor_types[3] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
         dd.group_x = (uint32_t)((n + 63u) / 64u);
         dd.defer_wait = TVDB_VK_DEFERRED_SUBMIT;
-        dd.preset_set = sets[p];
+        dd.preset_set = sets;
+        dd.dynamic_offset = (uint32_t)p * TVDB_FS_STRIDE;
         if ((st = tvdb_vk_dispatch(ctx, &dd, err)) != TVDB_OK) goto done_sets;
       }
       if ((st = tvdb_vk_flush(ctx, err)) != TVDB_OK) goto done_sets;
@@ -7902,22 +8564,33 @@ static tvdb_status_t tvdb_fast_sweeping_vk(tvdb_gpu_context_t* ctx, tvdb_dense_g
     /* Write back signed values. Frozen voxels are skipped entirely rather than
      * overwritten: the device buffer only ever holds |phi|, so copying it over
      * a frozen voxel would replace its original signed value with the positive
-     * magnitude. */
+     * magnitude.
+     *
+     * A voxel no sweep ever reached is skipped for the same reason the CPU sweep
+     * skips it: its |phi| is still the 1e30 sentinel the buffer was seeded with,
+     * and writing that back would replace the caller's value with ~1e30 while
+     * reporting success. That is exactly the band=0 case -- nothing is frozen, so
+     * nothing can propagate -- which is what test_gpu_fast_sweeping's
+     * band-zero-unsolved case pins down. */
     for (size_t i = 0; i < n; ++i) {
       if (frozen[i]) continue;
-      if (is_d) { double a = ((const double*)bphi.mapped)[i]; grid->data[i] = (float)(sign_pos[i] ? a : -a); }
-      else      { float  a = ((const float*)bphi.mapped)[i];  grid->data[i] = sign_pos[i] ? a : -a; }
+      if (is_d) { double a = ((const double*)bphi.mapped)[i];
+                  if (a >= HUGE_D_TVDB * 0.5) continue;
+                  grid->data[i] = (float)(sign_pos[i] ? a : -a); }
+      else      { float  a = ((const float*)bphi.mapped)[i];
+                  if (a >= HUGE_VAL_F_TVDB * 0.5f) continue;
+                  grid->data[i] = sign_pos[i] ? a : -a; }
     }
     *out_iters = iter;
     st = TVDB_OK;
   }
 done_sets_layout:
   if (nsets && sets && ctx->vk.FreeDescriptorSets)
-    for (int p = 0; p < nsets; ++p) if (sets[p]) ctx->vk.FreeDescriptorSets(ctx->device, ctx->desc_pool, 1, &sets[p]);
+    ctx->vk.FreeDescriptorSets(ctx->device, ctx->desc_pool, 1, &sets);
 done_sets:
-  free(sets);
   tvdb_vk_destroy_buffer(ctx, &bpar);
-done_chg: tvdb_vk_destroy_buffer(ctx, &bchg);
+done_chg:
+  tvdb_vk_destroy_buffer(ctx, &bchg);
 done_frz: tvdb_vk_destroy_buffer(ctx, &bfrz);
 done_phi: tvdb_vk_destroy_buffer(ctx, &bphi);
 done:
@@ -8603,7 +9276,7 @@ static tvdb_status_t tvdb_gpu_divergence_impl(tvdb_gpu_context_t* ctx,
     tvdb_status_t cs = tvdb_cuda_stencil2d(ctx, "tvdb_cuda_stencil_vec_scalar",
         in->data, n * 3u, 3, out->data, n, 1, in->nx, in->ny, in->nz, 0, 1.0f / (2.0f * h), in->ox, in->oy, in->oz, in->voxel_size, err);
     if (cs == TVDB_OK) return TVDB_OK;
-    fprintf(stderr, "FALLBACK scalar_out: %s\n", err?err->message:"?");
+    /* No stderr: this is a library. The fallback is documented in tinyvdb_gpu.h. */
     free(out->data); out->data = NULL;
     if ((tvdb_gpu_init_out_grid(out, in->nx, in->ny, in->nz, in->voxel_size, in->ox, in->oy, in->oz, err)) != TVDB_OK)
       return TVDB_ERROR_OUT_OF_MEMORY;
@@ -8631,7 +9304,7 @@ static tvdb_status_t tvdb_gpu_curl_impl(tvdb_gpu_context_t* ctx,
     tvdb_status_t cs = tvdb_cuda_stencil2d(ctx, "tvdb_cuda_stencil_vec_vec",
         in->data, n * 3u, 3, out->data, n * 3u, 3, in->nx, in->ny, in->nz, 0, 1.0f / (2.0f * h), in->ox, in->oy, in->oz, in->voxel_size, err);
     if (cs == TVDB_OK) return TVDB_OK;
-    fprintf(stderr, "FALLBACK vec_out: %s\n", err?err->message:"?");
+    /* No stderr: this is a library. The fallback is documented in tinyvdb_gpu.h. */
     free(out->data); out->data = NULL;
     if ((tvdb_init_out_vec(out, in->nx, in->ny, in->nz, in->voxel_size, in->ox, in->oy, in->oz, err)) != TVDB_OK)
       return TVDB_ERROR_OUT_OF_MEMORY;
@@ -8645,126 +9318,12 @@ static tvdb_status_t tvdb_gpu_curl_impl(tvdb_gpu_context_t* ctx,
 
 tvdb_status_t tvdb_gpu_coarsen(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* in,
                                int factor, tvdb_dense_grid* out, tvdb_error_t* err) {
-  if (!ctx || !in || !out || in==out || !tvdb_gpu_shape_valid(in->nx,in->ny,in->nz,in->voxel_size,in->data,sizeof(float)) || factor <= 0) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid coarsen arguments");
-    return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-  int onx = in->nx/factor+(in->nx%factor!=0);
-  int ony = in->ny/factor+(in->ny%factor!=0);
-  int onz = in->nz/factor+(in->nz%factor!=0);
-  tvdb_status_t st = tvdb_gpu_init_out_grid(out, onx, ony, onz, in->voxel_size * (float)factor,
-                                            in->ox, in->oy, in->oz, err);
-  if (st != TVDB_OK) return st;
-  size_t nin = (size_t)in->nx * (size_t)in->ny * (size_t)in->nz;
-  size_t nout = (size_t)onx * (size_t)ony * (size_t)onz;
-
-  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
-    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr di = 0, dou = 0;
-    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) return st;
-    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_coarsen"))) return err ? err->status : TVDB_ERROR_IO;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &di, in->data, nin * sizeof(float), err)) != TVDB_OK) goto cdone;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dou, NULL, nout * sizeof(float), err)) != TVDB_OK) goto cdone;
-    int inx = in->nx, iny = in->ny, inz = in->nz;
-    void* args[] = {&di, &dou, &inx, &iny, &inz, &onx, &ony, &onz, &factor};
-    unsigned int block = 128, grid = ((unsigned int)nout + block - 1u) / block;
-    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto cdone; }
-    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto cdone; }
-    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out->data, dou, nout * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto cdone; }
-    st = TVDB_OK;
-cdone:
-    if (dou) ctx->cuda.cuMemFree(dou);
-    if (di) ctx->cuda.cuMemFree(di);
-    return st;
-  }
-
-  tvdb_vk_buffer bi, bo, bp;
-  if ((st = tvdb_vk_create_buffer(ctx, nin * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bi, err)) != TVDB_OK) return st;
-  if ((st = tvdb_vk_create_buffer(ctx, nout * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto done_i;
-  if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto done_o;
-  memcpy(bi.mapped, in->data, nin * sizeof(float));
-  struct { int32_t in_dim[4]; int32_t out_dim[4]; int32_t factor; int32_t pad[3]; } par;
-  memset(&par, 0, sizeof(par));
-  par.in_dim[0] = in->nx; par.in_dim[1] = in->ny; par.in_dim[2] = in->nz;
-  par.out_dim[0] = onx; par.out_dim[1] = ony; par.out_dim[2] = onz; par.factor = factor;
-  memcpy(bp.mapped, &par, sizeof(par));
-  tvdb_vk_dispatch_desc d;
-  memset(&d, 0, sizeof(d));
-  d.spv = kTvdbGpuCoarsenSpv; d.spv_len = kTvdbGpuCoarsenSpv_len; d.descriptor_count = 3;
-  d.buffers[0] = &bi; d.buffers[1] = &bo; d.buffers[2] = &bp;
-  d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  d.group_x = (uint32_t)((nout + 127u) / 128u);
-  st = tvdb_vk_dispatch(ctx, &d, err);
-  if (st == TVDB_OK) memcpy(out->data, bo.mapped, nout * sizeof(float));
-  tvdb_vk_destroy_buffer(ctx, &bp);
-done_o: tvdb_vk_destroy_buffer(ctx, &bo);
-done_i: tvdb_vk_destroy_buffer(ctx, &bi);
-  return st;
+  return resident_resample_host(ctx,in,factor,0,out,err);
 }
 
 tvdb_status_t tvdb_gpu_refine(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* in,
                               int factor, tvdb_dense_grid* out, tvdb_error_t* err) {
-  if (!ctx || !in || !out || in==out || !tvdb_gpu_shape_valid(in->nx,in->ny,in->nz,in->voxel_size,in->data,sizeof(float)) || factor <= 0) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid refine arguments");
-    return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-  if(in->nx>INT_MAX/factor || in->ny>INT_MAX/factor || in->nz>INT_MAX/factor) {
-    tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"refined dimensions overflow"); return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-  int onx = in->nx * factor, ony = in->ny * factor, onz = in->nz * factor;
-  float ovs = in->voxel_size / (float)factor;
-  tvdb_status_t st = tvdb_gpu_init_out_grid(out, onx, ony, onz, ovs, in->ox, in->oy, in->oz, err);
-  if (st != TVDB_OK) return st;
-  size_t nin = (size_t)in->nx * (size_t)in->ny * (size_t)in->nz;
-  size_t nout = (size_t)onx * (size_t)ony * (size_t)onz;
-
-  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
-    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr di = 0, dou = 0;
-    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) return st;
-    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_refine"))) return err ? err->status : TVDB_ERROR_IO;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &di, in->data, nin * sizeof(float), err)) != TVDB_OK) goto rdone;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dou, NULL, nout * sizeof(float), err)) != TVDB_OK) goto rdone;
-    int inx = in->nx, iny = in->ny, inz = in->nz;
-    float iox = in->ox, ioy = in->oy, ioz = in->oz, ivs = in->voxel_size;
-    float oox = out->ox, ooy = out->oy, ooz = out->oz;
-    void* args[] = {&di, &dou, &inx, &iny, &inz, &onx, &ony, &onz, &iox, &ioy, &ioz, &ivs, &oox, &ooy, &ooz, &ovs};
-    unsigned int block = 128, grid = ((unsigned int)nout + block - 1u) / block;
-    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto rdone; }
-    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto rdone; }
-    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(out->data, dou, nout * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto rdone; }
-    st = TVDB_OK;
-rdone:
-    if (dou) ctx->cuda.cuMemFree(dou);
-    if (di) ctx->cuda.cuMemFree(di);
-    return st;
-  }
-
-  tvdb_vk_buffer bi, bo, bp;
-  if ((st = tvdb_vk_create_buffer(ctx, nin * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bi, err)) != TVDB_OK) return st;
-  if ((st = tvdb_vk_create_buffer(ctx, nout * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bo, err)) != TVDB_OK) goto rdone_i;
-  if ((st = tvdb_vk_create_buffer(ctx, 80, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bp, err)) != TVDB_OK) goto rdone_o;
-  memcpy(bi.mapped, in->data, nin * sizeof(float));
-  struct { int32_t in_dim[4]; int32_t out_dim[4]; float in_origin[4]; float out_origin[4]; float in_vs; float out_vs; float pad[2]; } par;
-  memset(&par, 0, sizeof(par));
-  par.in_dim[0] = in->nx; par.in_dim[1] = in->ny; par.in_dim[2] = in->nz;
-  par.out_dim[0] = onx; par.out_dim[1] = ony; par.out_dim[2] = onz;
-  par.in_origin[0] = in->ox; par.in_origin[1] = in->oy; par.in_origin[2] = in->oz;
-  par.out_origin[0] = out->ox; par.out_origin[1] = out->oy; par.out_origin[2] = out->oz;
-  par.in_vs = in->voxel_size; par.out_vs = ovs;
-  memcpy(bp.mapped, &par, sizeof(par));
-  tvdb_vk_dispatch_desc d;
-  memset(&d, 0, sizeof(d));
-  d.spv = kTvdbGpuRefineSpv; d.spv_len = kTvdbGpuRefineSpv_len; d.descriptor_count = 3;
-  d.buffers[0] = &bi; d.buffers[1] = &bo; d.buffers[2] = &bp;
-  d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  d.group_x = (uint32_t)((nout + 127u) / 128u);
-  st = tvdb_vk_dispatch(ctx, &d, err);
-  if (st == TVDB_OK) memcpy(out->data, bo.mapped, nout * sizeof(float));
-  tvdb_vk_destroy_buffer(ctx, &bp);
-rdone_o: tvdb_vk_destroy_buffer(ctx, &bo);
-rdone_i: tvdb_vk_destroy_buffer(ctx, &bi);
-  return st;
+  return resident_resample_host(ctx,in,factor,1,out,err);
 }
 
 // ---- volume render ----------------------------------------------------------
@@ -9170,6 +9729,23 @@ td_t: tvdb_vk_destroy_buffer(ctx, &bt);
 
 // Combine the per-thread (min,max,sum,sumsq) partials in double, matching
 // tvdb_grid_statistics' min/max/mean/stddev/sum/count semantics.
+/* Number of workgroups for a two-stage reduction over `count` elements.
+ *
+ * These reductions used to run as a single wavefront of min(count,256) threads,
+ * i.e. one workgroup, which left the whole rest of the device idle on anything
+ * larger than a few thousand voxels. `ngroups` is capped so the host-side fold of
+ * the partials stays cheap, and is also <= ceil(count/256) so every workgroup is
+ * guaranteed at least one element -- which is what lets the shaders use
+ * opposite-infinity sentinels for the min/max accumulators instead of having to
+ * mask empty slices afterwards. */
+#define TVDB_GPU_REDUCE_GROUPS 1024u
+static uint32_t tvdb_gpu_reduce_groups(size_t count) {
+  size_t want = (count + 255u) / 256u;
+  if (want > TVDB_GPU_REDUCE_GROUPS) want = TVDB_GPU_REDUCE_GROUPS;
+  if (want < 1u) want = 1u;
+  return (uint32_t)want;
+}
+
 static void tvdb_finalize_stats(const float* partials, uint32_t nthreads, size_t n,
                                 tvdb_grid_stats_t* out) {
   double mn = partials[0], mx = partials[1], sum = 0.0, sumsq = 0.0;
@@ -9188,65 +9764,7 @@ static void tvdb_finalize_stats(const float* partials, uint32_t nthreads, size_t
 
 tvdb_status_t tvdb_gpu_grid_statistics(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
                                        tvdb_grid_stats_t* out, tvdb_error_t* err) {
-  if (!out) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "null stats out"); return TVDB_ERROR_INVALID_ARGUMENT; }
-  memset(out, 0, sizeof(*out));
-  if (!ctx || !grid || !grid->data) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid grid_statistics arguments");
-    return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-  size_t n = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
-  if (n == 0) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "empty grid"); return TVDB_ERROR_INVALID_ARGUMENT; }
-  uint32_t nthreads = n < 256 ? (uint32_t)n : 256u;
-  float* partials = (float*)malloc((size_t)nthreads * 4u * sizeof(float));
-  if (!partials) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
-
-  tvdb_status_t st;
-  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
-    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dd = 0, dp = 0;
-    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto cu_ret;
-    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_stats"))) { st = err ? err->status : TVDB_ERROR_IO; goto cu_ret; }
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, grid->data, n * sizeof(float), err)) != TVDB_OK) goto cu_free;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, NULL, (size_t)nthreads * 4u * sizeof(float), err)) != TVDB_OK) goto cu_free;
-    unsigned int uc = (unsigned int)n, unt = nthreads;
-    void* args[] = {&dd, &dp, &uc, &unt};
-    unsigned int block = 256, gridb = (nthreads + block - 1u) / block;
-    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, gridb, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto cu_free; }
-    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto cu_free; }
-    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(partials, dp, (size_t)nthreads * 4u * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto cu_free; }
-    st = TVDB_OK;
-cu_free:
-    if (dp) ctx->cuda.cuMemFree(dp);
-    if (dd) ctx->cuda.cuMemFree(dd);
-cu_ret:
-    if (st == TVDB_OK) tvdb_finalize_stats(partials, nthreads, n, out);
-    free(partials);
-    return st;
-  }
-
-  tvdb_vk_buffer bi, bp, bu;
-  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bi, err)) != TVDB_OK) { free(partials); return st; }
-  if ((st = tvdb_vk_create_buffer(ctx, (size_t)nthreads * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bp, err)) != TVDB_OK) goto vk_i;
-  if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto vk_p;
-  memcpy(bi.mapped, grid->data, n * sizeof(float));
-  struct { uint32_t count, nthreads, pad[2]; } par = {(uint32_t)n, nthreads, {0, 0}};
-  memcpy(bu.mapped, &par, sizeof(par));
-  tvdb_vk_dispatch_desc d;
-  memset(&d, 0, sizeof(d));
-  d.spv = kTvdbGpuStatsSpv; d.spv_len = kTvdbGpuStatsSpv_len; d.descriptor_count = 3;
-  d.buffers[0] = &bi; d.buffers[1] = &bp; d.buffers[2] = &bu;
-  d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  d.group_x = (nthreads + 255u) / 256u;
-  st = tvdb_vk_dispatch(ctx, &d, err);
-  if (st == TVDB_OK) {
-    memcpy(partials, bp.mapped, (size_t)nthreads * 4u * sizeof(float));
-    tvdb_finalize_stats(partials, nthreads, n, out);
-  }
-  tvdb_vk_destroy_buffer(ctx, &bu);
-vk_p: tvdb_vk_destroy_buffer(ctx, &bp);
-vk_i: tvdb_vk_destroy_buffer(ctx, &bi);
-  free(partials);
-  return st;
+  return resident_reduce_host(ctx,grid,0,0,0,out,err);
 }
 
 // ---- diagnostics validators -------------------------------------------------
@@ -9284,73 +9802,7 @@ static void tvdb_finalize_ls_check(const float* partials, uint32_t nthreads, siz
 tvdb_status_t tvdb_gpu_check_level_set(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
                                        double band_world, double tol,
                                        tvdb_level_set_check_t* out, tvdb_error_t* err) {
-  if (!out) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "null check out"); return TVDB_ERROR_INVALID_ARGUMENT; }
-  out->mean_grad_mag = 0.0; out->max_grad_error = 0.0; out->bad_fraction = 0.0; out->band_count = 0;
-  if (!ctx || !grid || !grid->data || grid->nx < 3 || grid->ny < 3 || grid->nz < 3) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid check_level_set arguments");
-    return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-  size_t n = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
-  size_t interior = (size_t)(grid->nx - 2) * (size_t)(grid->ny - 2) * (size_t)(grid->nz - 2);
-  uint32_t nthreads = interior < 256 ? (uint32_t)interior : 256u;
-  if (nthreads == 0) return TVDB_OK;
-  float inv2vs = (float)(1.0 / (2.0 * (double)grid->voxel_size));
-  float bw = (float)band_world, ftol = (float)tol;
-  float* partials = (float*)malloc((size_t)nthreads * 4u * sizeof(float));
-  if (!partials) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  tvdb_status_t st;
-
-  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
-    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dd = 0, dp = 0;
-    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto lcu_ret;
-    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_levelset_check"))) { st = err ? err->status : TVDB_ERROR_IO; goto lcu_ret; }
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, grid->data, n * sizeof(float), err)) != TVDB_OK) goto lcu_free;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, NULL, (size_t)nthreads * 4u * sizeof(float), err)) != TVDB_OK) goto lcu_free;
-    int nx = grid->nx, ny = grid->ny, nz = grid->nz;
-    unsigned int uc = (unsigned int)interior, unt = nthreads;
-    void* args[] = {&dd, &dp, &nx, &ny, &nz, &inv2vs, &bw, &ftol, &uc, &unt};
-    unsigned int block = 256, gridb = (nthreads + block - 1u) / block;
-    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel", ctx->cuda.cuLaunchKernel(fn, gridb, 1, 1, block, 1, 1, 0, NULL, args, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto lcu_free; }
-    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto lcu_free; }
-    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH", ctx->cuda.cuMemcpyDtoH(partials, dp, (size_t)nthreads * 4u * sizeof(float)))) { st = err ? err->status : TVDB_ERROR_IO; goto lcu_free; }
-    st = TVDB_OK;
-lcu_free:
-    if (dp) ctx->cuda.cuMemFree(dp);
-    if (dd) ctx->cuda.cuMemFree(dd);
-lcu_ret:
-    if (st == TVDB_OK) tvdb_finalize_ls_check(partials, nthreads, interior, out);
-    free(partials);
-    return st;
-  }
-
-  tvdb_vk_buffer bi, bp, bu;
-  if ((st = tvdb_vk_create_buffer(ctx, n * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bi, err)) != TVDB_OK) { free(partials); return st; }
-  if ((st = tvdb_vk_create_buffer(ctx, (size_t)nthreads * 4u * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bp, err)) != TVDB_OK) goto lvk_i;
-  if ((st = tvdb_vk_create_buffer(ctx, 64, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto lvk_p;
-  memcpy(bi.mapped, grid->data, n * sizeof(float));
-  struct { int32_t dim[4]; float cfg[4]; uint32_t count; uint32_t nthreads; uint32_t pad[2]; } par;
-  memset(&par, 0, sizeof(par));
-  par.dim[0] = grid->nx; par.dim[1] = grid->ny; par.dim[2] = grid->nz;
-  par.cfg[0] = inv2vs; par.cfg[1] = bw; par.cfg[2] = ftol;
-  par.count = (uint32_t)interior; par.nthreads = nthreads;
-  memcpy(bu.mapped, &par, sizeof(par));
-  tvdb_vk_dispatch_desc d;
-  memset(&d, 0, sizeof(d));
-  d.spv = kTvdbGpuLevelsetCheckSpv; d.spv_len = kTvdbGpuLevelsetCheckSpv_len; d.descriptor_count = 3;
-  d.buffers[0] = &bi; d.buffers[1] = &bp; d.buffers[2] = &bu;
-  d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  d.group_x = (nthreads + 255u) / 256u;
-  st = tvdb_vk_dispatch(ctx, &d, err);
-  if (st == TVDB_OK) {
-    memcpy(partials, bp.mapped, (size_t)nthreads * 4u * sizeof(float));
-    tvdb_finalize_ls_check(partials, nthreads, interior, out);
-  }
-  tvdb_vk_destroy_buffer(ctx, &bu);
-lvk_p: tvdb_vk_destroy_buffer(ctx, &bp);
-lvk_i: tvdb_vk_destroy_buffer(ctx, &bi);
-  free(partials);
-  return st;
+  return resident_reduce_host(ctx,grid,1,band_world,tol,out,err);
 }
 
 // ---- signed flood fill ------------------------------------------------------
@@ -10600,139 +11052,12 @@ static tvdb_status_t tvdb_gpu_dilate_sparse_impl(tvdb_gpu_context_t* ctx, const 
 tvdb_status_t tvdb_gpu_active_grid_coords(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* dense,
                                           float background, float tolerance,
                                           tvdb_sparse_grid* out, tvdb_error_t* err) {
-  if (!ctx || !dense || !dense->data || !out) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid active_grid_coords arguments");
-    return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-  out->count = 0; out->voxel_size = dense->voxel_size; out->ox = dense->ox; out->oy = dense->oy; out->oz = dense->oz;
-  size_t n = (size_t)dense->nx * (size_t)dense->ny * (size_t)dense->nz;
-  if (n == 0) return TVDB_OK;
-  int32_t* outd = (int32_t*)malloc(n * 4u * sizeof(int32_t));
-  if (!outd) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  uint32_t m = 0;
-  tvdb_status_t st;
-  int nx = dense->nx, ny = dense->ny, nz = dense->nz;
-
-  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
-    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dd = 0, dcnt = 0, dout = 0;
-    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) { free(outd); return st; }
-    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_active_coords"))) { free(outd); return err?err->status:TVDB_ERROR_IO; }
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, dense->data, n*sizeof(float), err)) != TVDB_OK) goto acu;
-    { uint32_t zero = 0; if ((st = tvdb_cuda_alloc_copy_in(ctx, &dcnt, &zero, sizeof(uint32_t), err)) != TVDB_OK) goto acu; }
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, n*4u*sizeof(int32_t), err)) != TVDB_OK) goto acu;
-    unsigned int uc=(unsigned int)n, ucap=(unsigned int)n, block=128;
-    void* args[] = {&dd,&dcnt,&dout,&nx,&ny,&nz,&background,&tolerance,&ucap};
-    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,(uc+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto acu; }
-    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto acu; }
-    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(&m, dcnt, sizeof(uint32_t)))) { st=err?err->status:TVDB_ERROR_IO; goto acu; }
-    if (m > n) m = (uint32_t)n;
-    if (m && !tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(outd, dout, (size_t)m*4u*sizeof(int32_t)))) { st=err?err->status:TVDB_ERROR_IO; goto acu; }
-    st = TVDB_OK;
-acu:
-    if (dout) ctx->cuda.cuMemFree(dout);
-    if (dcnt) ctx->cuda.cuMemFree(dcnt);
-    if (dd) ctx->cuda.cuMemFree(dd);
-    goto afinish;
-  }
-  {
-    tvdb_vk_buffer bd, bcnt, bout, bu;
-    if ((st = tvdb_vk_create_buffer(ctx, n*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bd, err)) != TVDB_OK) { free(outd); return st; }
-    if ((st = tvdb_vk_create_buffer(ctx, sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bcnt, err)) != TVDB_OK) goto avk_d;
-    if ((st = tvdb_vk_create_buffer(ctx, n*4u*sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bout, err)) != TVDB_OK) goto avk_cnt;
-    if ((st = tvdb_vk_create_buffer(ctx, 32, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto avk_out;
-    memcpy(bd.mapped, dense->data, n*sizeof(float));
-    *(uint32_t*)bcnt.mapped = 0u;
-    struct { int32_t dim[4]; float background; float tolerance; uint32_t cap; uint32_t pad; } par;
-    memset(&par, 0, sizeof(par));
-    par.dim[0]=nx; par.dim[1]=ny; par.dim[2]=nz; par.background=background; par.tolerance=tolerance; par.cap=(uint32_t)n;
-    memcpy(bu.mapped, &par, sizeof(par));
-    tvdb_vk_dispatch_desc d;
-    memset(&d, 0, sizeof(d));
-    d.spv = kTvdbGpuActiveCoordsSpv; d.spv_len = kTvdbGpuActiveCoordsSpv_len; d.descriptor_count = 4;
-    d.buffers[0]=&bd; d.buffers[1]=&bcnt; d.buffers[2]=&bout; d.buffers[3]=&bu;
-    d.descriptor_types[0]=d.descriptor_types[1]=d.descriptor_types[2]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    d.descriptor_types[3]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    d.group_x = (uint32_t)((n + 127u) / 128u);
-    st = tvdb_vk_dispatch(ctx, &d, err);
-    if (st == TVDB_OK) { m = *(uint32_t*)bcnt.mapped; if (m > n) m = (uint32_t)n; memcpy(outd, bout.mapped, (size_t)m*4u*sizeof(int32_t)); }
-    tvdb_vk_destroy_buffer(ctx, &bu);
-avk_out: tvdb_vk_destroy_buffer(ctx, &bout);
-avk_cnt: tvdb_vk_destroy_buffer(ctx, &bcnt);
-avk_d: tvdb_vk_destroy_buffer(ctx, &bd);
-  }
-afinish:
-  if (st == TVDB_OK) {
-    if (!tvdb_sparse_grid_reserve(out, m ? m : 1)) { st = TVDB_ERROR_OUT_OF_MEMORY; tvdb_gpu_set_error(err, st, "OOM"); }
-    else {
-      for (uint32_t i = 0; i < m; ++i) {
-        out->coords[i].x = outd[4*i+0]; out->coords[i].y = outd[4*i+1]; out->coords[i].z = outd[4*i+2];
-        int32_t bits = outd[4*i+3]; memcpy(&out->values[i], &bits, sizeof(float));
-      }
-      out->count = m;
-    }
-  }
-  free(outd);
-  return st;
+  return resident_active_host(ctx,dense,background,tolerance,out,err);
 }
 
 tvdb_status_t tvdb_gpu_grid_checksum(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
                                      uint32_t* out_checksum, tvdb_error_t* err) {
-  if (!out_checksum) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "null checksum out"); return TVDB_ERROR_INVALID_ARGUMENT; }
-  *out_checksum = 0;
-  if (!ctx || !grid || !grid->data) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid grid_checksum arguments");
-    return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-  size_t n = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
-  if (n == 0) return TVDB_OK;
-  uint32_t nthreads = n < 256 ? (uint32_t)n : 256u;
-  uint32_t* partials = (uint32_t*)malloc((size_t)nthreads * sizeof(uint32_t));
-  if (!partials) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  tvdb_status_t st;
-
-  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
-    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dd = 0, dp = 0;
-    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) { free(partials); return st; }
-    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_checksum"))) { free(partials); return err?err->status:TVDB_ERROR_IO; }
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dd, grid->data, n*sizeof(float), err)) != TVDB_OK) goto kcu;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dp, NULL, (size_t)nthreads*sizeof(uint32_t), err)) != TVDB_OK) goto kcu;
-    unsigned int uc=(unsigned int)n, unt=nthreads, block=256;
-    void* args[] = {&dd,&dp,&uc,&unt};
-    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,(nthreads+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto kcu; }
-    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto kcu; }
-    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(partials, dp, (size_t)nthreads*sizeof(uint32_t)))) { st=err?err->status:TVDB_ERROR_IO; goto kcu; }
-    st = TVDB_OK;
-kcu:
-    if (dp) ctx->cuda.cuMemFree(dp);
-    if (dd) ctx->cuda.cuMemFree(dd);
-    if (st == TVDB_OK) { uint32_t s = 0; for (uint32_t i = 0; i < nthreads; ++i) s += partials[i]; *out_checksum = s; }
-    free(partials);
-    return st;
-  }
-
-  tvdb_vk_buffer bd, bp, bu;
-  if ((st = tvdb_vk_create_buffer(ctx, n*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bd, err)) != TVDB_OK) { free(partials); return st; }
-  if ((st = tvdb_vk_create_buffer(ctx, (size_t)nthreads*sizeof(uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bp, err)) != TVDB_OK) goto kvk_d;
-  if ((st = tvdb_vk_create_buffer(ctx, 16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto kvk_p;
-  memcpy(bd.mapped, grid->data, n*sizeof(float));
-  { struct { uint32_t count, nthreads, pad[2]; } par = {(uint32_t)n, nthreads, {0,0}}; memcpy(bu.mapped, &par, sizeof(par)); }
-  tvdb_vk_dispatch_desc d;
-  memset(&d, 0, sizeof(d));
-  d.spv = kTvdbGpuChecksumSpv; d.spv_len = kTvdbGpuChecksumSpv_len; d.descriptor_count = 3;
-  d.buffers[0]=&bd; d.buffers[1]=&bp; d.buffers[2]=&bu;
-  d.descriptor_types[0]=d.descriptor_types[1]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  d.descriptor_types[2]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  d.group_x = (nthreads + 255u) / 256u;
-  st = tvdb_vk_dispatch(ctx, &d, err);
-  if (st == TVDB_OK) {
-    memcpy(partials, bp.mapped, (size_t)nthreads*sizeof(uint32_t));
-    uint32_t s = 0; for (uint32_t i = 0; i < nthreads; ++i) s += partials[i]; *out_checksum = s;
-  }
-  tvdb_vk_destroy_buffer(ctx, &bu);
-kvk_p: tvdb_vk_destroy_buffer(ctx, &bp);
-kvk_d: tvdb_vk_destroy_buffer(ctx, &bd);
-  free(partials);
-  return st;
+  return resident_reduce_host(ctx,grid,2,0,0,out_checksum,err);
 }
 
 // Min-pool one source grid into a device output buffer (CAS atomic-min).
@@ -11085,93 +11410,7 @@ done:
 static tvdb_status_t tvdb_gpu_measure_count(tvdb_gpu_context_t* ctx,
     const void* src, int is_d, int nx, int ny, int nz, int op,
     double* out_count, tvdb_error_t* err) {
-  size_t n = (size_t)nx * (size_t)ny * (size_t)nz;
-  if (n == 0) { *out_count = 0.0; return TVDB_OK; }
-  uint32_t ngroups = (uint32_t)((n + 255u) / 256u);
-  if (ngroups > TVDB_MEASURE_MAX_GROUPS) ngroups = TVDB_MEASURE_MAX_GROUPS;
-  if (ngroups < 1u) ngroups = 1u;
-
-  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
-    CUmodule module = NULL; CUfunction fcount = NULL, fsum = NULL;
-    CUdeviceptr dsrc = 0, dpart = 0, dout = 0;
-    tvdb_status_t st = tvdb_cuda_get_module(ctx, &module, err);
-    if (st != TVDB_OK) return st;
-    const char* kname = is_d ? "tvdb_cuda_measure_d" : "tvdb_cuda_measure";
-    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction",
-          ctx->cuda.cuModuleGetFunction(&fcount, module, kname)))
-      return err ? err->status : TVDB_ERROR_IO;
-    if (!tvdb_cuda_ok(ctx, err, "cuModuleGetFunction",
-          ctx->cuda.cuModuleGetFunction(&fsum, module, "tvdb_cuda_measure_sum")))
-      return err ? err->status : TVDB_ERROR_IO;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dsrc, src, n * (is_d ? sizeof(double) : sizeof(float)), err)) != TVDB_OK) return st;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dpart, NULL, TVDB_MEASURE_PARTIAL_BYTES, err)) != TVDB_OK) goto cuda_done;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dout, NULL, sizeof(double), err)) != TVDB_OK) goto cuda_done;
-    unsigned int un = (unsigned int)n;
-    void* dargs[] = {&dsrc, &dpart, &nx, &ny, &nz, &un, &ngroups, &op};
-    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel",
-          ctx->cuda.cuLaunchKernel(fcount, ngroups, 1, 1, 256u, 1u, 1u, 0, NULL, dargs, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto cuda_done; }
-    void* sargs[] = {&dpart, &dout, &ngroups};
-    if (!tvdb_cuda_ok(ctx, err, "cuLaunchKernel",
-          ctx->cuda.cuLaunchKernel(fsum, 1, 1, 1, 256u, 1u, 1u, 0, NULL, sargs, NULL))) { st = err ? err->status : TVDB_ERROR_IO; goto cuda_done; }
-    if (!tvdb_cuda_ok(ctx, err, "cuCtxSynchronize", ctx->cuda.cuCtxSynchronize())) { st = err ? err->status : TVDB_ERROR_IO; goto cuda_done; }
-    if (!tvdb_cuda_ok(ctx, err, "cuMemcpyDtoH",
-          ctx->cuda.cuMemcpyDtoH(out_count, dout, sizeof(double)))) { st = err ? err->status : TVDB_ERROR_IO; goto cuda_done; }
-    st = TVDB_OK;
-cuda_done:
-    if (dout) ctx->cuda.cuMemFree(dout);
-    if (dpart) ctx->cuda.cuMemFree(dpart);
-    if (dsrc) ctx->cuda.cuMemFree(dsrc);
-    return st;
-  }
-
-  /* The public gate is tvdb_gpu_supports_fp64, which the caller already consulted.
-   * This internal flag only says whether the *Vulkan* device can run fp64
-   * shaders; NVRTC compiles double for CUDA regardless, so testing it here would
-   * reject the CUDA path that already works. */
-  if (is_d && !ctx->supports_shader_float64) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "device lacks shaderFloat64");
-    return TVDB_ERROR_UNIMPLEMENTED;
-  }
-  const uint8_t* spv = is_d ? kTvdbGpuMeasureDSpv : kTvdbGpuMeasureSpv;
-  size_t spv_len = is_d ? kTvdbGpuMeasureDSpv_len : kTvdbGpuMeasureSpv_len;
-  tvdb_vk_buffer bin, bpart, bup;
-  memset(&bin, 0, sizeof(bin)); memset(&bpart, 0, sizeof(bpart)); memset(&bup, 0, sizeof(bup));
-  tvdb_status_t st;
-  size_t esz = is_d ? sizeof(double) : sizeof(float);
-  if ((st = tvdb_vk_create_buffer(ctx, n * esz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bin, err)) != TVDB_OK) goto done;
-  if ((st = tvdb_vk_create_buffer(ctx, TVDB_MEASURE_PARTIAL_BYTES, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bpart, err)) != TVDB_OK) goto done_p;
-  if ((st = tvdb_vk_create_buffer(ctx, 32, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bup, err)) != TVDB_OK) goto done_part;
-  memcpy(bin.mapped, src, n * esz);
-  {
-    /* std140: ivec4 dim at 0..15 then four 4-byte scalars at 16, 20, 24, 28. */
-    typedef struct { int32_t dim[4]; uint32_t nvox, mode, ngroups, pad; } measure_uniform;
-    _Static_assert(sizeof(measure_uniform) == 32, "measure uniform must match the std140 block");
-    for (uint32_t mode = 0; mode < 2u; ++mode) {
-      measure_uniform par;
-      memset(&par, 0, sizeof(par));
-      par.dim[0] = nx; par.dim[1] = ny; par.dim[2] = nz; par.dim[3] = op;
-      par.nvox = (uint32_t)n; par.mode = mode; par.ngroups = ngroups;
-      memcpy(bup.mapped, &par, sizeof(par));
-      tvdb_vk_dispatch_desc d;
-      memset(&d, 0, sizeof(d));
-      d.spv = spv; d.spv_len = spv_len; d.descriptor_count = 3;
-      d.buffers[0] = &bin; d.buffers[1] = &bpart; d.buffers[2] = &bup;
-      d.descriptor_types[0] = d.descriptor_types[1] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      d.descriptor_types[2] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-      d.group_x = (mode == 0u) ? ngroups : 1u;
-      st = tvdb_vk_dispatch(ctx, &d, err);
-      if (st != TVDB_OK) break;
-    }
-    if (st == TVDB_OK) st = tvdb_vk_flush(ctx, err);
-    if (st == TVDB_OK) memcpy(out_count, bpart.mapped, sizeof(double));
-  }
-  tvdb_vk_destroy_buffer(ctx, &bup);
-done_part:
-  tvdb_vk_destroy_buffer(ctx, &bpart);
-done_p:
-  tvdb_vk_destroy_buffer(ctx, &bin);
-done:
-  return st;
+  return resident_measure_host(ctx,src,is_d,nx,ny,nz,op,out_count,err);
 }
 
 tvdb_status_t tvdb_gpu_surface_area(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
@@ -11268,8 +11507,13 @@ static tvdb_status_t tvdb_gpu_poisson_apply(void* context,const void* src,void* 
     if(!w->initialized) {
       CUmodule module;
       if((st=tvdb_cuda_get_module(ctx,&module,err))!=TVDB_OK) return st;
+      /* The fp64 kernel is named tvdb_cuda_stencil_scalar_d in the PTX source. This
+       * asked for "tvdb_cuda_stencil_d", which is the name of a host wrapper in
+       * this file, not a kernel, so every fp64 Poisson solve on CUDA failed at
+       * module load with CUDA_ERROR_NOT_FOUND. The fp32 spelling below was
+       * already correct, which is why only the _d and _dd paths were broken. */
       if(!tvdb_cuda_ok(ctx,err,"Poisson kernel",ctx->cuda.cuModuleGetFunction(&w->kernel,module,
-          fp64?"tvdb_cuda_stencil_d":"tvdb_cuda_stencil_scalar_scalar"))) return TVDB_ERROR_IO;
+          fp64?"tvdb_cuda_stencil_scalar_d":"tvdb_cuda_stencil_scalar_scalar"))) return TVDB_ERROR_IO;
       if((st=tvdb_cuda_alloc_copy_in(ctx,&w->din,NULL,bytes,err))!=TVDB_OK) return st;
       if((st=tvdb_cuda_alloc_copy_in(ctx,&w->dout,NULL,bytes,err))!=TVDB_OK) return st;
       w->initialized=true;
@@ -11337,27 +11581,7 @@ static tvdb_status_t tvdb_gpu_comp(tvdb_gpu_context_t* ctx, int op,
     tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "comp SPIR-V unavailable; rebuild with glslangValidator");
     return TVDB_ERROR_UNIMPLEMENTED;
   }
-  /* One spec covers both backends: spec.spv drives Vulkan and spec.cuda_kernel
-     drives CUDA through tvdb_gpu_dispatch, so there is one binding layout and
-     one launch shape rather than two hand-written paths that can drift. */
-  struct { int32_t dim[4]; uint32_t pad[4]; } params;
-  memset(&params, 0, sizeof(params));
-  params.dim[0] = nx; params.dim[1] = ny; params.dim[2] = nz; params.dim[3] = op;
-  tvdb_gpu_binding_t bindings[4];
-  bindings[0].kind = TVDB_GPU_BIND_STORAGE_IN;  bindings[0].host_data = (void*)a->data; bindings[0].size_bytes = n * sizeof(float);
-  bindings[1].kind = TVDB_GPU_BIND_STORAGE_IN;  bindings[1].host_data = (void*)b->data; bindings[1].size_bytes = n * sizeof(float);
-  bindings[2].kind = TVDB_GPU_BIND_STORAGE_OUT; bindings[2].host_data = result->data;   bindings[2].size_bytes = n * sizeof(float);
-  bindings[3].kind = TVDB_GPU_BIND_UNIFORM;     bindings[3].host_data = (void*)&params; bindings[3].size_bytes = 32;
-  tvdb_gpu_dispatch_spec_t spec;
-  memset(&spec, 0, sizeof(spec));
-  spec.spv = kTvdbGpuCompSpv; spec.spv_len = kTvdbGpuCompSpv_len;
-  spec.cuda_kernel = "tvdb_cuda_comp";
-  spec.bindings = bindings; spec.num_bindings = 4;
-  /* group_count_x is sized for the shader's 64-thread local size. The CUDA path
-     in tvdb_gpu_dispatch hardcodes 128 threads per block, so it launches twice
-     as many blocks and the kernel's own bounds check discards the surplus. */
-  spec.group_count_x = (uint32_t)((n + 63u) / 64u);
-  return tvdb_gpu_dispatch(ctx, &spec, err);
+  return resident_binary_host(ctx,a,b,op,0,result,err);
 }
 
 tvdb_status_t tvdb_gpu_comp_max(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* a,
@@ -11593,78 +11817,16 @@ static tvdb_status_t tvdb_gpu_separable(tvdb_gpu_context_t* ctx, tvdb_dense_grid
   return st;
 }
 
-tvdb_status_t tvdb_gpu_mean_filter(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
-                                   int width, int iterations, tvdb_error_t* err) {
-  if(!ctx || !grid || !tvdb_gpu_shape_valid(grid->nx,grid->ny,grid->nz,grid->voxel_size,grid->data,sizeof(float))) {
-    tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid filter grid"); return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-  if(iterations<=0) return TVDB_OK;
-  if (width <= 0) return TVDB_OK;    /* CPU returns before allocating */
-  if (width > (INT_MAX-1)/2) { tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"filter width overflow"); return TVDB_ERROR_INVALID_ARGUMENT; }
-  const int len = 2 * width + 1;
-  const float w = 1.0f / (float)len;
-  float* k = (float*)malloc((size_t)len * sizeof(float));
-  if (!k) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  for (int i = 0; i < len; ++i) k[i] = w;
-  tvdb_status_t st = tvdb_gpu_separable(ctx, grid, k, width, iterations, err);
-  free(k);
-  return st;
+tvdb_status_t tvdb_gpu_mean_filter(tvdb_gpu_context_t* ctx,tvdb_dense_grid* grid,int width, int iterations,tvdb_error_t* err) {
+  return resident_filter_host(ctx,grid,0,width,iterations,err);
 }
 
-tvdb_status_t tvdb_gpu_gaussian_filter(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
-                                       int width, int iterations, tvdb_error_t* err) {
-  if(!ctx || !grid || !tvdb_gpu_shape_valid(grid->nx,grid->ny,grid->nz,grid->voxel_size,grid->data,sizeof(float))) {
-    tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid filter grid"); return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-  if(iterations<=0) return TVDB_OK;
-  if (width <= 0) return TVDB_OK;
-  if (width > (INT_MAX-1)/2) { tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"filter width overflow"); return TVDB_ERROR_INVALID_ARGUMENT; }
-  const int len = 2 * width + 1;
-  const float sigma = (float)width * 0.5f;
-  const float two_s2 = 2.0f * sigma * sigma;
-  float* k = (float*)malloc((size_t)len * sizeof(float));
-  if (!k) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  /* The CPU accumulates the sum in float, so this is float too rather than a
-     double sum narrowed at the end. */
-  float sum = 0.0f;
-  for (int i = -width; i <= width; ++i) {
-    float v = expf(-((float)i * (float)i) / two_s2);
-    k[i + width] = v;
-    sum += v;
-  }
-  for (int i = 0; i < len; ++i) k[i] /= sum;
-  tvdb_status_t st = tvdb_gpu_separable(ctx, grid, k, width, iterations, err);
-  free(k);
-  return st;
+tvdb_status_t tvdb_gpu_gaussian_filter(tvdb_gpu_context_t* ctx,tvdb_dense_grid* grid,int width, int iterations,tvdb_error_t* err) {
+  return resident_filter_host(ctx,grid,1,width,iterations,err);
 }
 
-tvdb_status_t tvdb_gpu_laplacian_filter(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
-                                        int iterations, tvdb_error_t* err) {
-  if (!ctx || !grid) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "filter: null grid"); return TVDB_ERROR_INVALID_ARGUMENT; }
-  if (!grid->data || iterations <= 0) return TVDB_OK;
-  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
-  const size_t n = (size_t)nx * (size_t)ny * (size_t)nz;
-  if (n == 0) return TVDB_OK;
-  float* cur = (float*)malloc(n * sizeof(float));
-  float* tmp = (float*)malloc(n * sizeof(float));
-  if (!cur || !tmp) { free(cur); free(tmp);
-    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  memcpy(cur, grid->data, n * sizeof(float));
-  tvdb_error_t local; memset(&local, 0, sizeof local);
-  tvdb_status_t st = TVDB_OK;
-  /* Jacobi, not in place: the CPU writes a scratch buffer and copies back after
-     the sweep, so every voxel reads the same generation. Doing it in place would
-     be Gauss-Seidel and a different (order-dependent) result. */
-  for (int it = 0; it < iterations && st == TVDB_OK; ++it) {
-    st = tvdb_gpu_filter_step(ctx, 1, 0, 0, cur, NULL, NULL, tmp, nx, ny, nz,
-                              0.0f, 0.0f, n, &local);
-    if (st == TVDB_OK) { float* t = cur; cur = tmp; tmp = t; }
-  }
-  if (st == TVDB_OK) memcpy(grid->data, cur, n * sizeof(float));
-  free(cur); free(tmp);
-  if (err && st == TVDB_OK) memset(err, 0, sizeof *err);
-  else if (err) *err = local;
-  return st;
+tvdb_status_t tvdb_gpu_laplacian_filter(tvdb_gpu_context_t* ctx,tvdb_dense_grid* grid,int iterations,tvdb_error_t* err) {
+  return resident_filter_host(ctx,grid,2,0,iterations,err);
 }
 
 /* Windowed median (parallels tvdb_median_filter). Jacobi: the CPU copies the grid
@@ -11677,35 +11839,8 @@ tvdb_status_t tvdb_gpu_laplacian_filter(tvdb_gpu_context_t* ctx, tvdb_dense_grid
  * a silently smaller window is a different filter. */
 #define TVDB_GPU_MEDIAN_MAX_RADIUS 2
 
-tvdb_status_t tvdb_gpu_median_filter(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
-                                     int radius, int iterations, tvdb_error_t* err) {
-  if (!ctx || !grid) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "median: null grid"); return TVDB_ERROR_INVALID_ARGUMENT; }
-  if (!grid->data || radius < 1 || iterations < 1) return TVDB_OK;   /* CPU returns */
-  if (radius > TVDB_GPU_MEDIAN_MAX_RADIUS) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED,
-                       "median_filter radius above 2 is not implemented on the GPU");
-    return TVDB_ERROR_UNIMPLEMENTED;
-  }
-  const int nx = grid->nx, ny = grid->ny, nz = grid->nz;
-  const size_t n = (size_t)nx * (size_t)ny * (size_t)nz;
-  if (n == 0) return TVDB_OK;
-  float* a = (float*)malloc(n * sizeof(float));
-  float* b2 = (float*)malloc(n * sizeof(float));
-  if (!a || !b2) { free(a); free(b2);
-    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  memcpy(a, grid->data, n * sizeof(float));
-  tvdb_error_t local; memset(&local, 0, sizeof local);
-  tvdb_status_t st = TVDB_OK;
-  for (int it = 0; it < iterations && st == TVDB_OK; ++it) {
-    st = tvdb_gpu_filter_step(ctx, 3, 0, radius, a, NULL, NULL, b2, nx, ny, nz,
-                              0.0f, 0.0f, n, &local);
-    if (st == TVDB_OK) { float* t = a; a = b2; b2 = t; }
-  }
-  if (st == TVDB_OK) memcpy(grid->data, a, n * sizeof(float));
-  free(a); free(b2);
-  if (err && st == TVDB_OK) memset(err, 0, sizeof *err);
-  else if (err) *err = local;
-  return st;
+tvdb_status_t tvdb_gpu_median_filter(tvdb_gpu_context_t* ctx,tvdb_dense_grid* grid,int width, int iterations,tvdb_error_t* err) {
+  return resident_filter_host(ctx,grid,3,width,iterations,err);
 }
 
 static tvdb_status_t tvdb_gpu_advect_semi_lagrangian_impl(tvdb_gpu_context_t* ctx,
@@ -11944,102 +12079,30 @@ mvd_v: tvdb_vk_destroy_buffer(ctx, &bv);
 
 // ---- marching cubes (GPU) ---------------------------------------------------
 
-static void tvdb_mc_gather(const int32_t* tri_counts, const float* cell_verts, size_t cells,
-                           float* out, size_t* total) {
-  size_t w = 0;
-  for (size_t c = 0; c < cells; ++c) {
-    int tc = tri_counts[c];
-    for (int t = 0; t < tc && t < 5; ++t) {
-      const float* src = &cell_verts[(c * 5 + (size_t)t) * 9];
-      for (int k = 0; k < 9; ++k) out[w++] = src[k];
+tvdb_status_t tvdb_gpu_marching_cubes(tvdb_gpu_context_t* ctx,const tvdb_dense_grid* grid,
+    float isovalue,float** out_verts,size_t* out_tri_count,tvdb_error_t* err) {
+  if(out_verts)*out_verts=NULL;
+  if(out_tri_count)*out_tri_count=0;
+  if(!ctx || !grid || !grid->data || !out_verts || !out_tri_count ||
+     grid->nx<2 || grid->ny<2 || grid->nz<2) {
+    tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid marching_cubes arguments");return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_gpu_grid_desc_t d={grid->nx,grid->ny,grid->nz,1,TVDB_GPU_F32,
+    grid->ox,grid->oy,grid->oz,grid->voxel_size};
+  tvdb_gpu_dense_grid_t* resident=NULL;tvdb_gpu_buffer_t* mesh=NULL;size_t count=0;
+  tvdb_status_t st=tvdb_gpu_dense_grid_create(ctx,&d,&resident,err);
+  if(st!=TVDB_OK)return st;
+  st=tvdb_gpu_dense_grid_upload(resident,grid->data,resident->bytes,err);
+  if(st==TVDB_OK)st=tvdb_gpu_marching_cubes_resident(ctx,resident,isovalue,&mesh,&count,err);
+  if(st==TVDB_OK) {
+    float* vertices=malloc((count?count:1)*9*sizeof(float));
+    if(!vertices){st=TVDB_ERROR_OUT_OF_MEMORY;tvdb_gpu_set_error(err,st,"mesh allocation failed");}
+    else {
+      if(count)st=tvdb_gpu_buffer_download(mesh,vertices,count*9*sizeof(float),err);
+      if(st==TVDB_OK){*out_verts=vertices;*out_tri_count=count;}else free(vertices);
     }
   }
-  *total = w / 9;
-}
-
-tvdb_status_t tvdb_gpu_marching_cubes(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
-                                      float isovalue, float** out_verts, size_t* out_tri_count,
-                                      tvdb_error_t* err) {
-  if (out_verts) *out_verts = NULL;
-  if (out_tri_count) *out_tri_count = 0;
-  if (!ctx || !grid || !grid->data || !out_verts || !out_tri_count || grid->nx < 2 || grid->ny < 2 || grid->nz < 2) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid marching_cubes arguments");
-    return TVDB_ERROR_INVALID_ARGUMENT;
-  }
-  int nx = grid->nx, ny = grid->ny, nz = grid->nz;
-  size_t nvox = (size_t)nx*(size_t)ny*(size_t)nz;
-  size_t cells = (size_t)(nx-1)*(size_t)(ny-1)*(size_t)(nz-1);
-  int* tab = (int*)malloc((256 + 256*16) * sizeof(int));
-  float* cellv = (float*)malloc(cells * 5u * 9u * sizeof(float));
-  int32_t* tcounts = (int32_t*)malloc(cells * sizeof(int32_t));
-  if (!tab || !cellv || !tcounts) { free(tab); free(cellv); free(tcounts); tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  memcpy(tab, tvdb_mc_edge_table(), 256 * sizeof(int));
-  memcpy(tab + 256, tvdb_mc_tri_table_flat(), 256*16 * sizeof(int));
-  tvdb_status_t st;
-
-  if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
-    CUmodule module = NULL; CUfunction fn = NULL; CUdeviceptr dg=0, dt=0, dv=0, dc=0;
-    if ((st = tvdb_cuda_get_module(ctx, &module, err)) != TVDB_OK) goto mc_dev;
-    if (!tvdb_cuda_ok(ctx, err, "f", ctx->cuda.cuModuleGetFunction(&fn, module, "tvdb_cuda_marching_cubes"))) { st=err?err->status:TVDB_ERROR_IO; goto mc_dev; }
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dg, grid->data, nvox*sizeof(float), err)) != TVDB_OK) goto mc_dev;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dt, tab, (256+256*16)*sizeof(int), err)) != TVDB_OK) goto mc_dev;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dv, NULL, cells*5u*9u*sizeof(float), err)) != TVDB_OK) goto mc_dev;
-    if ((st = tvdb_cuda_alloc_copy_in(ctx, &dc, NULL, cells*sizeof(int32_t), err)) != TVDB_OK) goto mc_dev;
-    float ox=grid->ox, oy=grid->oy, oz=grid->oz, vs=grid->voxel_size;
-    unsigned int ucells=(unsigned int)cells, block=64;
-    void* args[] = {&dg,&dt,&dv,&dc,&nx,&ny,&nz,&ox,&oy,&oz,&vs,&isovalue,&ucells};
-    if (!tvdb_cuda_ok(ctx, err, "k", ctx->cuda.cuLaunchKernel(fn,(ucells+block-1u)/block,1,1,block,1,1,0,NULL,args,NULL))) { st=err?err->status:TVDB_ERROR_IO; goto mc_dev; }
-    if (!tvdb_cuda_ok(ctx, err, "s", ctx->cuda.cuCtxSynchronize())) { st=err?err->status:TVDB_ERROR_IO; goto mc_dev; }
-    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(tcounts, dc, cells*sizeof(int32_t)))) { st=err?err->status:TVDB_ERROR_IO; goto mc_dev; }
-    if (!tvdb_cuda_ok(ctx, err, "c", ctx->cuda.cuMemcpyDtoH(cellv, dv, cells*5u*9u*sizeof(float)))) { st=err?err->status:TVDB_ERROR_IO; goto mc_dev; }
-    st = TVDB_OK;
-mc_dev:
-    if (dc) ctx->cuda.cuMemFree(dc);
-    if (dv) ctx->cuda.cuMemFree(dv);
-    if (dt) ctx->cuda.cuMemFree(dt);
-    if (dg) ctx->cuda.cuMemFree(dg);
-    goto mc_finish;
-  }
-  {
-    tvdb_vk_buffer bg, bt, bv, bc, bu;
-    if ((st = tvdb_vk_create_buffer(ctx, nvox*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bg, err)) != TVDB_OK) { free(tab); free(cellv); free(tcounts); return st; }
-    if ((st = tvdb_vk_create_buffer(ctx, (256+256*16)*sizeof(int), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bt, err)) != TVDB_OK) goto mvk_g;
-    if ((st = tvdb_vk_create_buffer(ctx, cells*5u*9u*sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bv, err)) != TVDB_OK) goto mvk_t;
-    if ((st = tvdb_vk_create_buffer(ctx, cells*sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bc, err)) != TVDB_OK) goto mvk_v;
-    if ((st = tvdb_vk_create_buffer(ctx, 48, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bu, err)) != TVDB_OK) goto mvk_c;
-    memcpy(bg.mapped, grid->data, nvox*sizeof(float));
-    memcpy(bt.mapped, tab, (256+256*16)*sizeof(int));
-    struct { int32_t dim[4]; float grid_o[4]; float isovalue; uint32_t cell_count; uint32_t pad[2]; } par;
-    memset(&par, 0, sizeof(par));
-    par.dim[0]=nx; par.dim[1]=ny; par.dim[2]=nz;
-    par.grid_o[0]=grid->ox; par.grid_o[1]=grid->oy; par.grid_o[2]=grid->oz; par.grid_o[3]=grid->voxel_size;
-    par.isovalue=isovalue; par.cell_count=(uint32_t)cells;
-    memcpy(bu.mapped, &par, sizeof(par));
-    tvdb_vk_dispatch_desc d;
-    memset(&d, 0, sizeof(d));
-    d.spv = kTvdbGpuMarchingCubesSpv; d.spv_len = kTvdbGpuMarchingCubesSpv_len; d.descriptor_count = 5;
-    d.buffers[0]=&bg; d.buffers[1]=&bt; d.buffers[2]=&bv; d.buffers[3]=&bc; d.buffers[4]=&bu;
-    for (int i = 0; i < 4; ++i) d.descriptor_types[i] = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    d.descriptor_types[4] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    d.group_x = (uint32_t)((cells + 63u) / 64u);
-    st = tvdb_vk_dispatch(ctx, &d, err);
-    if (st == TVDB_OK) { memcpy(tcounts, bc.mapped, cells*sizeof(int32_t)); memcpy(cellv, bv.mapped, cells*5u*9u*sizeof(float)); }
-    tvdb_vk_destroy_buffer(ctx, &bu);
-mvk_c: tvdb_vk_destroy_buffer(ctx, &bc);
-mvk_v: tvdb_vk_destroy_buffer(ctx, &bv);
-mvk_t: tvdb_vk_destroy_buffer(ctx, &bt);
-mvk_g: tvdb_vk_destroy_buffer(ctx, &bg);
-  }
-mc_finish:
-  if (st == TVDB_OK) {
-    size_t total_tris = 0;
-    for (size_t c = 0; c < cells; ++c) { int tc = tcounts[c]; total_tris += (tc < 0 ? 0 : (tc > 5 ? 5 : tc)); }
-    float* out = (float*)malloc((total_tris ? total_tris : 1) * 9u * sizeof(float));
-    if (!out) { st = TVDB_ERROR_OUT_OF_MEMORY; tvdb_gpu_set_error(err, st, "OOM"); }
-    else { size_t total = 0; tvdb_mc_gather(tcounts, cellv, cells, out, &total); *out_verts = out; *out_tri_count = total; }
-  }
-  free(tab); free(cellv); free(tcounts);
-  return st;
+  tvdb_gpu_buffer_destroy(mesh);tvdb_gpu_dense_grid_destroy(resident);return st;
 }
 
 // ---- strided sparse convolution (output-grid building) ----------------------
@@ -12477,6 +12540,7 @@ tvdb_status_t tvdb_gpu_buffer_create(tvdb_gpu_context_t* ctx, size_t size_bytes,
 
 void tvdb_gpu_buffer_destroy(tvdb_gpu_buffer_t* buf) {
   if (!buf) return;
+  if (buf->resident) buf->ctx->resident_metrics.live_bytes -= buf->size;
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) {
     if (buf->imported) {
       // The mapped device pointer is owned by the external-memory object; do not
@@ -12493,6 +12557,7 @@ void tvdb_gpu_buffer_destroy(tvdb_gpu_buffer_t* buf) {
 
 tvdb_status_t tvdb_gpu_buffer_upload(tvdb_gpu_buffer_t* buf, const void* src, size_t size, tvdb_error_t* err) {
   if (!buf || !src || size > buf->size) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_upload arguments"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  if (buf->resident) buf->ctx->resident_metrics.upload_bytes += size;
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) {
     if (!tvdb_cuda_ok(buf->ctx, err, "cuMemcpyHtoD", buf->ctx->cuda.cuMemcpyHtoD(buf->cu, src, size))) return err ? err->status : TVDB_ERROR_IO;
   } else if (buf->vk.mapped) {
@@ -12503,13 +12568,11 @@ tvdb_status_t tvdb_gpu_buffer_upload(tvdb_gpu_buffer_t* buf, const void* src, si
     tvdb_status_t st = tvdb_vk_create_buffer(buf->ctx, size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, err);
     if (st != TVDB_OK) return st;
     memcpy(staging.mapped, src, size);
-    VkCommandBuffer cmd; VkCommandPool pool; VkFence fence;
-    st = tvdb_vk_submit_one_time(buf->ctx, &cmd, &pool, &fence, err);
-    if (st == TVDB_OK) {
-      VkBufferCopy region; region.srcOffset = 0; region.dstOffset = 0; region.size = size;
-      buf->ctx->vk.CmdCopyBuffer(cmd, staging.buffer, buf->vk.buffer, 1, &region);
-      st = tvdb_vk_end_submit_wait(buf->ctx, cmd, pool, fence, err);
-    }
+    tvdb_vk_copy copy = {0};
+    copy.src=staging.buffer; copy.dst=buf->vk.buffer; copy.size=size;
+    copy.src_stage=VK_PIPELINE_STAGE_HOST_BIT; copy.src_access=VK_ACCESS_HOST_WRITE_BIT;
+    copy.dst_stage=VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT; copy.dst_access=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_SHADER_WRITE_BIT;
+    st=tvdb_vk_run_copies(buf->ctx,&copy,1,err);
     tvdb_vk_destroy_buffer(buf->ctx, &staging);
     if (st != TVDB_OK) return st;
   }
@@ -12518,6 +12581,7 @@ tvdb_status_t tvdb_gpu_buffer_upload(tvdb_gpu_buffer_t* buf, const void* src, si
 
 tvdb_status_t tvdb_gpu_buffer_download(tvdb_gpu_buffer_t* buf, void* dst, size_t size, tvdb_error_t* err) {
   if (!buf || !dst || size > buf->size) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_download arguments"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  if (buf->resident) buf->ctx->resident_metrics.download_bytes += size;
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) {
     if (!tvdb_cuda_ok(buf->ctx, err, "cuMemcpyDtoH", buf->ctx->cuda.cuMemcpyDtoH(dst, buf->cu, size))) return err ? err->status : TVDB_ERROR_IO;
   } else if (buf->vk.mapped) {
@@ -12527,13 +12591,12 @@ tvdb_status_t tvdb_gpu_buffer_download(tvdb_gpu_buffer_t* buf, void* dst, size_t
     tvdb_vk_buffer staging;
     tvdb_status_t st = tvdb_vk_create_buffer(buf->ctx, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, &staging, err);
     if (st != TVDB_OK) return st;
-    VkCommandBuffer cmd; VkCommandPool pool; VkFence fence;
-    st = tvdb_vk_submit_one_time(buf->ctx, &cmd, &pool, &fence, err);
-    if (st == TVDB_OK) {
-      VkBufferCopy region; region.srcOffset = 0; region.dstOffset = 0; region.size = size;
-      buf->ctx->vk.CmdCopyBuffer(cmd, buf->vk.buffer, staging.buffer, 1, &region);
-      st = tvdb_vk_end_submit_wait(buf->ctx, cmd, pool, fence, err);
-    }
+    tvdb_vk_copy copy = {0};
+    copy.src=buf->vk.buffer; copy.dst=staging.buffer; copy.size=size;
+    copy.src_stage=VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_TRANSFER_BIT;
+    copy.src_access=VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_WRITE_BIT;
+    copy.dst_stage=VK_PIPELINE_STAGE_HOST_BIT; copy.dst_access=VK_ACCESS_HOST_READ_BIT;
+    st=tvdb_vk_run_copies(buf->ctx,&copy,1,err);
     if (st == TVDB_OK) memcpy(dst, staging.mapped, size);
     tvdb_vk_destroy_buffer(buf->ctx, &staging);
     if (st != TVDB_OK) return st;
@@ -13174,7 +13237,7 @@ tvdb_status_t tvdb_gpu_sparse_conv3d(tvdb_gpu_context_t* ctx,const tvdb_sparse_g
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"kernel size overflow"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
-  tvdb_status_t st=tvdb_gpu_sparse_conv3d_impl(ctx,in,kernel,kx,ky,kz,pad_value,&tmp,err);
+  tvdb_status_t st=resident_sparse_host(ctx,in,kernel,kx,ky,kz,1,0,1,pad_value,&tmp,err);
   if(st==TVDB_OK) { tvdb_sparse_grid_free(out); *out=tmp; } else tvdb_sparse_grid_free(&tmp);
   return st;
 }
@@ -13189,7 +13252,7 @@ tvdb_status_t tvdb_gpu_sparse_conv3d_strided(tvdb_gpu_context_t* ctx,const tvdb_
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"kernel size overflow"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
-  tvdb_status_t st=tvdb_gpu_sparse_conv3d_strided_impl(ctx,in,kernel,kx,ky,kz,stride,pad_value,&tmp,err);
+  tvdb_status_t st=resident_sparse_host(ctx,in,kernel,kx,ky,kz,stride,1,1,pad_value,&tmp,err);
   if(st==TVDB_OK) { tvdb_sparse_grid_free(out); *out=tmp; } else tvdb_sparse_grid_free(&tmp);
   return st;
 }
@@ -13204,7 +13267,12 @@ tvdb_status_t tvdb_gpu_sparse_conv3d_transpose(tvdb_gpu_context_t* ctx,const tvd
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"kernel size overflow"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
-  tvdb_status_t st=tvdb_gpu_sparse_conv3d_transpose_impl(ctx,in,kernel,kx,ky,kz,stride,&tmp,err);
+  tvdb_error_t local_error={0};
+  tvdb_status_t st=resident_sparse_host(ctx,in,kernel,kx,ky,kz,stride,2,1,0,&tmp,&local_error);
+  /* Keep the legacy clipping contract at signed-coordinate boundaries. */
+  if(st==TVDB_ERROR_INVALID_ARGUMENT && !strcmp(local_error.message,"sparse output coordinate overflow"))
+    st=tvdb_gpu_sparse_conv3d_transpose_impl(ctx,in,kernel,kx,ky,kz,stride,&tmp,&local_error);
+  if(err)*err=local_error;
   if(st==TVDB_OK) { tvdb_sparse_grid_free(out); *out=tmp; } else tvdb_sparse_grid_free(&tmp);
   return st;
 }
@@ -13215,7 +13283,7 @@ tvdb_status_t tvdb_gpu_dilate_sparse(tvdb_gpu_context_t* ctx,const tvdb_sparse_g
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid sparse input/output"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
-  tvdb_status_t st=tvdb_gpu_dilate_sparse_impl(ctx,in,background,iterations,&tmp,err);
+  tvdb_status_t st=resident_sparse_host(ctx,in,NULL,1,1,1,1,3,iterations,background,&tmp,err);
   if(st==TVDB_OK) { tvdb_sparse_grid_free(out); *out=tmp; } else tvdb_sparse_grid_free(&tmp);
   return st;
 }
@@ -13226,7 +13294,7 @@ tvdb_status_t tvdb_gpu_erode_sparse(tvdb_gpu_context_t* ctx,const tvdb_sparse_gr
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid sparse input/output"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
-  tvdb_status_t st=tvdb_gpu_erode_sparse_impl(ctx,in,iterations,&tmp,err);
+  tvdb_status_t st=resident_sparse_host(ctx,in,NULL,1,1,1,1,4,iterations,0,&tmp,err);
   if(st==TVDB_OK) { tvdb_sparse_grid_free(out); *out=tmp; } else tvdb_sparse_grid_free(&tmp);
   return st;
 }
@@ -13238,7 +13306,10 @@ tvdb_status_t tvdb_gpu_stencil_scalar_scalar(tvdb_gpu_context_t* ctx,const tvdb_
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid stencil grid"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_dense_grid tmp={0};
-  tvdb_status_t st=tvdb_gpu_stencil_scalar_scalar_impl(ctx,in, op,&tmp,err);
+  tvdb_dense_grid view={0};view.nx=in->nx;view.ny=in->ny;view.nz=in->nz;
+  view.ox=in->ox;view.oy=in->oy;view.oz=in->oz;view.voxel_size=in->voxel_size;view.data=in->data;
+  tmp.nx=in->nx;tmp.ny=in->ny;tmp.nz=in->nz;tmp.ox=in->ox;tmp.oy=in->oy;tmp.oz=in->oz;tmp.voxel_size=in->voxel_size;
+  tvdb_status_t st=resident_stencil_host(ctx,&view,1,1,op,&tmp.data,err);
   if(st!=TVDB_OK) { free(tmp.data); return st; }
   if ((const void*)in==(const void*)out) {
     memcpy(out->data,tmp.data,bytes); free(tmp.data);
@@ -13253,7 +13324,7 @@ tvdb_status_t tvdb_gpu_stencil_scalar_d(tvdb_gpu_context_t* ctx,const tvdb_dense
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid stencil grid"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_dense_grid_d tmp={0};
-  tvdb_status_t st=tvdb_gpu_stencil_scalar_d_impl(ctx,in, op,&tmp,err);
+  tvdb_status_t st=resident_double_host(ctx,in,NULL,op,&tmp,err);
   if(st!=TVDB_OK) { free(tmp.data); return st; }
   if ((const void*)in==(const void*)out) {
     memcpy(out->data,tmp.data,bytes); free(tmp.data);
@@ -13268,7 +13339,10 @@ tvdb_status_t tvdb_gpu_gradient(tvdb_gpu_context_t* ctx,const tvdb_dense_grid* i
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid stencil grid"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_dense_vec_grid tmp={0};
-  tvdb_status_t st=tvdb_gpu_gradient_impl(ctx,in,&tmp,err);
+  tvdb_dense_grid view={0};view.nx=in->nx;view.ny=in->ny;view.nz=in->nz;
+  view.ox=in->ox;view.oy=in->oy;view.oz=in->oz;view.voxel_size=in->voxel_size;view.data=in->data;
+  tmp.nx=in->nx;tmp.ny=in->ny;tmp.nz=in->nz;tmp.ox=in->ox;tmp.oy=in->oy;tmp.oz=in->oz;tmp.voxel_size=in->voxel_size;
+  tvdb_status_t st=resident_stencil_host(ctx,&view,1,3,0,&tmp.data,err);
   if(st!=TVDB_OK) { free(tmp.data); return st; }
   if ((const void*)in==(const void*)out) {
     memcpy(out->data,tmp.data,bytes); free(tmp.data);
@@ -13283,7 +13357,10 @@ tvdb_status_t tvdb_gpu_divergence(tvdb_gpu_context_t* ctx,const tvdb_dense_vec_g
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid stencil grid"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_dense_grid tmp={0};
-  tvdb_status_t st=tvdb_gpu_divergence_impl(ctx,in,&tmp,err);
+  tvdb_dense_grid view={0};view.nx=in->nx;view.ny=in->ny;view.nz=in->nz;
+  view.ox=in->ox;view.oy=in->oy;view.oz=in->oz;view.voxel_size=in->voxel_size;view.data=in->data;
+  tmp.nx=in->nx;tmp.ny=in->ny;tmp.nz=in->nz;tmp.ox=in->ox;tmp.oy=in->oy;tmp.oz=in->oz;tmp.voxel_size=in->voxel_size;
+  tvdb_status_t st=resident_stencil_host(ctx,&view,3,1,0,&tmp.data,err);
   if(st!=TVDB_OK) { free(tmp.data); return st; }
   if ((const void*)in==(const void*)out) {
     memcpy(out->data,tmp.data,bytes); free(tmp.data);
@@ -13298,7 +13375,10 @@ tvdb_status_t tvdb_gpu_curl(tvdb_gpu_context_t* ctx,const tvdb_dense_vec_grid* i
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid stencil grid"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_dense_vec_grid tmp={0};
-  tvdb_status_t st=tvdb_gpu_curl_impl(ctx,in,&tmp,err);
+  tvdb_dense_grid view={0};view.nx=in->nx;view.ny=in->ny;view.nz=in->nz;
+  view.ox=in->ox;view.oy=in->oy;view.oz=in->oz;view.voxel_size=in->voxel_size;view.data=in->data;
+  tmp.nx=in->nx;tmp.ny=in->ny;tmp.nz=in->nz;tmp.ox=in->ox;tmp.oy=in->oy;tmp.oz=in->oz;tmp.voxel_size=in->voxel_size;
+  tvdb_status_t st=resident_stencil_host(ctx,&view,3,3,0,&tmp.data,err);
   if(st!=TVDB_OK) { free(tmp.data); return st; }
   if ((const void*)in==(const void*)out) {
     memcpy(out->data,tmp.data,bytes); free(tmp.data);
@@ -13313,7 +13393,10 @@ tvdb_status_t tvdb_gpu_normalize_vec(tvdb_gpu_context_t* ctx,const tvdb_dense_ve
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid stencil grid"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_dense_vec_grid tmp={0};
-  tvdb_status_t st=tvdb_gpu_normalize_vec_impl(ctx,in,&tmp,err);
+  tvdb_dense_grid view={0};view.nx=in->nx;view.ny=in->ny;view.nz=in->nz;
+  view.ox=in->ox;view.oy=in->oy;view.oz=in->oz;view.voxel_size=in->voxel_size;view.data=in->data;
+  tmp.nx=in->nx;tmp.ny=in->ny;tmp.nz=in->nz;tmp.ox=in->ox;tmp.oy=in->oy;tmp.oz=in->oz;tmp.voxel_size=in->voxel_size;
+  tvdb_status_t st=resident_stencil_host(ctx,&view,3,3,1,&tmp.data,err);
   if(st!=TVDB_OK) { free(tmp.data); return st; }
   if ((const void*)in==(const void*)out) {
     memcpy(out->data,tmp.data,bytes); free(tmp.data);
@@ -13328,7 +13411,10 @@ tvdb_status_t tvdb_gpu_magnitude(tvdb_gpu_context_t* ctx,const tvdb_dense_vec_gr
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid stencil grid"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_dense_grid tmp={0};
-  tvdb_status_t st=tvdb_gpu_magnitude_impl(ctx,in,&tmp,err);
+  tvdb_dense_grid view={0};view.nx=in->nx;view.ny=in->ny;view.nz=in->nz;
+  view.ox=in->ox;view.oy=in->oy;view.oz=in->oz;view.voxel_size=in->voxel_size;view.data=in->data;
+  tmp.nx=in->nx;tmp.ny=in->ny;tmp.nz=in->nz;tmp.ox=in->ox;tmp.oy=in->oy;tmp.oz=in->oz;tmp.voxel_size=in->voxel_size;
+  tvdb_status_t st=resident_stencil_host(ctx,&view,3,1,1,&tmp.data,err);
   if(st!=TVDB_OK) { free(tmp.data); return st; }
   if ((const void*)in==(const void*)out) {
     memcpy(out->data,tmp.data,bytes); free(tmp.data);
@@ -13343,7 +13429,10 @@ tvdb_status_t tvdb_gpu_cpt(tvdb_gpu_context_t* ctx,const tvdb_dense_grid* in,tvd
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid stencil grid"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_dense_vec_grid tmp={0};
-  tvdb_status_t st=tvdb_gpu_cpt_impl(ctx,in,&tmp,err);
+  tvdb_dense_grid view={0};view.nx=in->nx;view.ny=in->ny;view.nz=in->nz;
+  view.ox=in->ox;view.oy=in->oy;view.oz=in->oz;view.voxel_size=in->voxel_size;view.data=in->data;
+  tmp.nx=in->nx;tmp.ny=in->ny;tmp.nz=in->nz;tmp.ox=in->ox;tmp.oy=in->oy;tmp.oz=in->oz;tmp.voxel_size=in->voxel_size;
+  tvdb_status_t st=resident_stencil_host(ctx,&view,1,3,1,&tmp.data,err);
   if(st!=TVDB_OK) { free(tmp.data); return st; }
   if ((const void*)in==(const void*)out) {
     memcpy(out->data,tmp.data,bytes); free(tmp.data);
@@ -13361,6 +13450,10 @@ tvdb_status_t tvdb_gpu_solve_poisson_ex(tvdb_gpu_context_t* ctx,const tvdb_dense
   if(false && !tvdb_gpu_supports_fp64(ctx)) { tvdb_gpu_set_error(err,TVDB_ERROR_UNIMPLEMENTED,"device lacks fp64"); return TVDB_ERROR_UNIMPLEMENTED; }
   if(ctx->backend==TVDB_GPU_BACKEND_VULKAN && !tvdb_gpu_spirv_available()) {
     tvdb_gpu_set_error(err,TVDB_ERROR_UNIMPLEMENTED,"Poisson SPIR-V unavailable"); return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  if(tvdb_gpu_supports_fp64(ctx)) {
+    tvdb_gpu_grid_desc_t d={rhs->nx,rhs->ny,rhs->nz,1,TVDB_GPU_F32,rhs->ox,rhs->oy,rhs->oz,rhs->voxel_size};
+    return resident_poisson_host(ctx,rhs->data,x->data,&d,0,max_iters,tolerance,result,err);
   }
   tvdb_gpu_poisson_workspace workspace; memset(&workspace,0,sizeof(workspace)); workspace.ctx=ctx;
   tvdb_status_t st=tvdb_poisson_solve_core(rhs->data,x->data,rhs->nx,rhs->ny,rhs->nz,rhs->voxel_size,
@@ -13384,6 +13477,10 @@ tvdb_status_t tvdb_gpu_solve_poisson_d_ex(tvdb_gpu_context_t* ctx,const tvdb_den
   if(ctx->backend==TVDB_GPU_BACKEND_VULKAN && !tvdb_gpu_spirv_available()) {
     tvdb_gpu_set_error(err,TVDB_ERROR_UNIMPLEMENTED,"Poisson SPIR-V unavailable"); return TVDB_ERROR_UNIMPLEMENTED;
   }
+  if(tvdb_gpu_supports_fp64(ctx)) {
+    tvdb_gpu_grid_desc_t d={rhs->nx,rhs->ny,rhs->nz,1,TVDB_GPU_F32,rhs->ox,rhs->oy,rhs->oz,rhs->voxel_size};
+    return resident_poisson_host(ctx,rhs->data,x->data,&d,1,max_iters,tolerance,result,err);
+  }
   tvdb_gpu_poisson_workspace workspace; memset(&workspace,0,sizeof(workspace)); workspace.ctx=ctx;
   tvdb_status_t st=tvdb_poisson_solve_core(rhs->data,x->data,rhs->nx,rhs->ny,rhs->nz,rhs->voxel_size,
     false,true,max_iters,tolerance,false,result,err,tvdb_gpu_poisson_apply,&workspace);
@@ -13405,6 +13502,10 @@ tvdb_status_t tvdb_gpu_solve_poisson_dd_ex(tvdb_gpu_context_t* ctx,const tvdb_de
   if(true && !tvdb_gpu_supports_fp64(ctx)) { tvdb_gpu_set_error(err,TVDB_ERROR_UNIMPLEMENTED,"device lacks fp64"); return TVDB_ERROR_UNIMPLEMENTED; }
   if(ctx->backend==TVDB_GPU_BACKEND_VULKAN && !tvdb_gpu_spirv_available()) {
     tvdb_gpu_set_error(err,TVDB_ERROR_UNIMPLEMENTED,"Poisson SPIR-V unavailable"); return TVDB_ERROR_UNIMPLEMENTED;
+  }
+  if(tvdb_gpu_supports_fp64(ctx)) {
+    tvdb_gpu_grid_desc_t d={rhs->nx,rhs->ny,rhs->nz,1,TVDB_GPU_F64,rhs->ox,rhs->oy,rhs->oz,rhs->voxel_size};
+    return resident_poisson_host(ctx,rhs->data,x->data,&d,2,max_iters,tolerance,result,err);
   }
   tvdb_gpu_poisson_workspace workspace; memset(&workspace,0,sizeof(workspace)); workspace.ctx=ctx;
   tvdb_status_t st=tvdb_poisson_solve_core(rhs->data,x->data,rhs->nx,rhs->ny,rhs->nz,rhs->voxel_size,
@@ -13431,7 +13532,7 @@ tvdb_status_t tvdb_gpu_advect(tvdb_gpu_context_t* ctx,const tvdb_dense_grid* fie
   }
   tvdb_dense_grid tmp=*out; tmp.data=(float*)malloc(bytes);
   if(!tmp.data) { tvdb_gpu_set_error(err,TVDB_ERROR_OUT_OF_MEMORY,"advection scratch"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  tvdb_status_t st=tvdb_gpu_advect_impl(ctx,field,velocity,dt,scheme,clamp,&tmp,err);
+  tvdb_status_t st=resident_advect_host(ctx,field,velocity,dt,scheme,clamp,&tmp,err);
   if(st==TVDB_OK) memcpy(out->data,tmp.data,bytes);
   free(tmp.data); return st;
 }
@@ -13447,7 +13548,7 @@ tvdb_status_t tvdb_gpu_csg_dense(tvdb_gpu_context_t* ctx,const tvdb_dense_grid* 
   size_t bytes; tvdb_grid_bytes(a->nx,a->ny,a->nz,sizeof(float),&bytes);
   tvdb_dense_grid tmp=*out; tmp.data=malloc(bytes);
   if(!tmp.data) { tvdb_gpu_set_error(err,TVDB_ERROR_OUT_OF_MEMORY,"CSG scratch allocation failed"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  tvdb_status_t st=tvdb_gpu_csg_dense_impl(ctx,a,b,op,&tmp,err);
+  tvdb_status_t st=resident_binary_host(ctx,a,b,op,1,&tmp,err);
   if(st!=TVDB_OK) { free(tmp.data); return st; }
   memcpy(out->data,tmp.data,bytes); free(tmp.data);
   return TVDB_OK;
@@ -13462,7 +13563,7 @@ tvdb_status_t tvdb_gpu_csg_dense_d(tvdb_gpu_context_t* ctx,const tvdb_dense_grid
     tvdb_gpu_set_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid CSG grids"); return TVDB_ERROR_INVALID_ARGUMENT;
   }
   tvdb_dense_grid_d tmp={0};
-  tvdb_status_t st=tvdb_gpu_csg_dense_d_impl(ctx,a,b,op,&tmp,err);
+  tvdb_status_t st=resident_double_host(ctx,a,b,op,&tmp,err);
   if(st!=TVDB_OK) { free(tmp.data); return st; }
   if(out==a || out==b) { size_t bytes; tvdb_grid_bytes(a->nx,a->ny,a->nz,sizeof(double),&bytes); memcpy(out->data,tmp.data,bytes); free(tmp.data); }
   else *out=tmp;
@@ -13516,7 +13617,9 @@ tvdb_status_t tvdb_gpu_advect_semi_lagrangian(tvdb_gpu_context_t* ctx,const tvdb
   }
   tvdb_dense_grid tmp=*out; tmp.data=(float*)malloc(bytes);
   if(!tmp.data) { tvdb_gpu_set_error(err,TVDB_ERROR_OUT_OF_MEMORY,"advection scratch"); return TVDB_ERROR_OUT_OF_MEMORY; }
-  tvdb_status_t st=tvdb_gpu_advect_semi_lagrangian_impl(ctx,field,velocity,dt,&tmp,err);
+  tvdb_status_t st=resident_advect_host(ctx,field,velocity,dt,-1,0,&tmp,err);
   if(st==TVDB_OK) memcpy(out->data,tmp.data,bytes);
   free(tmp.data); return st;
 }
+
+#include "tinyvdb_gpu_resident.inl"

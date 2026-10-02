@@ -21,6 +21,8 @@ C and C++).
 | `tinyvdb_sample.h` / `tinyvdb_tsdf.h` | Trilinear sampling/splatting; depth-frame TSDF fusion (single-frame and in-place multi-frame) |
 | `tinyvdb_topology.h` / `tinyvdb_ray.h` | Coarsen / refine / prune / clip / merge / pool; Amanatides–Woo DDA, ray-cast SDF, segments-along-ray, batched marching cubes |
 | `tinyvdb_sparse.h` / `tinyvdb_sparse_tree.h` | Flat sparse-grid representation (hash-based CSG/morphology, sparse 3D conv); operations on a loaded `tvdb_grid_t` (leaf iter, dilate/erode active or topology, tree-aware CSG, from-scratch rebuilders) |
+| `tinyvdb_sdf_tree.h` | In-place hierarchical SDF fast sweeping, filtering, morphology and offsets with compact active-voxel workspaces |
+| `tinyvdb_thread.h` | Reusable synchronous task pool: C11, GCD, pthread or serial backend |
 | `tinyvdb_autograd.h` | Per-op CPU VJPs (sample, splat, CSG, sparse_conv3d) — framework-free |
 | `tinyvdb_simd.h` | Optional SSE4.2/AVX2/F16C primitives gated on `TINYVDB_SIMD` |
 | `tinyvdb_gpu.h` | Optional runtime-loaded GPU backend: Vulkan and CUDA kernels for analytic sphere/box/torus SDF generation, dense CSG, dense trilinear batch sampling, and same-topology sparse conv3d |
@@ -33,6 +35,9 @@ on invalid input; checked GPU APIs report `INVALID_ARGUMENT`. Shape-preserving
 stencils, advection, and sparse operations support same-handle in-place output
 through scratch storage. Pointwise CPU operations keep their allocation-free
 in-place path. Topology constructors require distinct input/output handles.
+`test_threads` and `test_hardening` cover the in-place forms of the stencils,
+advection schemes, composite and morphological ops, topology constructors and the
+sparse ops; the sampled, batch and mesh-entry points are not covered for aliasing.
 
 Sparse outputs must be initialized owning containers, including empty outputs.
 Failures preserve the prior output. Coordinate comparisons use all three int32
@@ -46,15 +51,130 @@ All precisions use the edge-clamped Laplacian and preserve the initial solution
 mean. A nonzero RHS mean beyond `64 * input_epsilon * sum(abs(rhs)) / count` is
 rejected; rounding-sized means are removed. Relative tolerance applies to float
 storage (including double internal arithmetic), and absolute tolerance to double
-storage. Residuals are recomputed every 32 iterations and before accepting
-convergence, then measured again after narrowing to the returned storage precision.
+storage. CPU solvers refresh residuals every 32 iterations and before accepting
+convergence. Convergence uses a true residual in the returned storage precision.
 Budget exhaustion returns a finite iterate with an honest convergence flag;
 invalid input, allocation failure, or numerical breakdown leaves the solution
 unchanged. Legacy APIs return zero on failure; use `_ex` for an unambiguous status.
 
-GPU Poisson uses a device Laplacian with persistent buffers and host projection,
-PCG updates, and double reductions. It transfers vectors and synchronizes each
-iteration; this correctness repair makes no performance claim.
+On fp64-capable devices, GPU Poisson retains vectors, projection, PCG updates,
+and double reductions on the device. Host decisions read reduced scalars and
+dependent kernels share submissions. The float host API on devices without
+fp64 retains its vector-transfer implementation.
+
+### Hierarchical SDF processing
+
+`tinyvdb_sdf_tree.h` operates directly on float `tvdb_grid_t` leaves. It provides
+fast sweeping, mean/Gaussian/Laplacian filtering, seven-point min/max morphology,
+and world-distance offsets. Operations preserve active masks, inactive values,
+leaf buffers and tiles; failures leave grid values unchanged. Isotropic spacing
+is required, including rotated uniform affine transforms without shear.
+
+Create one workspace per grid and reuse it across operations:
+
+```c
+#include "tinyvdb_sdf_tree.h"
+
+/* grid is an existing owning float grid; check each returned status. */
+tvdb_sdf_tree_t *sdf = NULL;
+tvdb_error_t error = {0};
+tvdb_status_t status = tvdb_sdf_tree_create(&grid, NULL, NULL, &sdf, &error);
+if (status == TVDB_OK) {
+    tvdb_sdf_sweep_result_t result;
+    status = tvdb_sdf_tree_fast_sweep(sdf, 1.5f * voxel_size, 8, 1e-5f,
+                                      &result, &error);
+    if (status == TVDB_OK)
+        status = tvdb_sdf_tree_filter(sdf, TVDB_SDF_FILTER_GAUSSIAN, 2, &error);
+    tvdb_sdf_tree_destroy(sdf);
+}
+```
+
+Sweeping uses the active leaf voxels as its domain. Values with
+`abs(phi) <= frozen_band` are frozen seeds; unseeded disconnected components keep
+their original values and are reported as unreached. Eight directional sweeps
+use leaf wavefronts, with a barrier between occupied planes. Filters read stored
+inactive leaf values and signed internal/root tiles as fixed boundary data.
+Offsets and morphology keep the existing band topology.
+
+Scratch storage starts at `4 * active_voxels` bytes. Sweeping adds two packed
+flag bits per active voxel; filters lazily allocate a second float buffer.
+Per-leaf masks, neighbor caches and sweep order metadata are additional. No
+bounding-box volume or intermediate coordinate array is allocated.
+`tvdb_sdf_tree_info` reports retained metadata and scratch bytes, excluding the
+grid, pool/OS resources and temporary constructor/sort allocations. The workspace
+accepts a custom allocator. Keep topology, transforms, tiles and leaf allocations
+fixed while it is alive; leaf values may change between calls. Serialize operations
+on each grid/workspace.
+
+Configure task scheduling with `-DTINYVDB_THREAD_BACKEND=AUTO` (the default):
+C11 threads where available, GCD on macOS/iOS, pthreads if C11 is unavailable,
+and a serial fallback when no supported runtime is found. Explicit choices are
+`C11`, `GCD`, `PTHREAD`, and `NONE`; unavailable explicit backends fail configuration.
+GCD uses the synchronous C `dispatch_apply_f` interface and needs no Blocks or
+Objective-C code. Native Apple tests are registered in CI.
+
+A NULL pool creates an owned pool with the detected CPU count capped at eight and
+at the leaf count. Pass a reusable `tvdb_thread_pool_t` to choose a worker count
+or share scheduling resources across workspaces. C11/pthread workers persist
+between passes and the calling thread participates. OpenMP remains optional for
+other existing kernels; hierarchical SDF processing uses this task module even
+with `TINYVDB_OPENMP=OFF`.
+
+### Mesh and volume conversion
+
+`tinyvdb_mesh_conversion.h` adds checked dense mesh/SDF conversion and a reusable
+`tvdb_mesh_sdf_t` closest-triangle workspace. Keep the borrowed mesh geometry,
+counts and arrays fixed while the workspace is alive. Reuse its BVH and normals
+for different voxel spacings or band widths; generation into distinct outputs
+may share a task pool. Mesh voxelization uses the same C11/GCD/pthread/serial
+module as hierarchical SDF processing, including with OpenMP disabled. A NULL
+pool chooses up to eight workers and runs small inputs serially.
+
+```c
+#include "tinyvdb_mesh_conversion.h"
+
+tvdb_status_t convert_mesh(const tvdb_triangle_mesh *input, float spacing,
+                          float band, tvdb_triangle_mesh *surface,
+                          tvdb_error_t *error) {
+    tvdb_mesh_sdf_t *workspace = NULL;
+    tvdb_dense_grid volume = {0, 0, 0, 0, 0, 0, 0, NULL};
+    tvdb_status_t status = tvdb_mesh_sdf_create(input, &workspace, error);
+    if (status == TVDB_OK)
+        status = tvdb_mesh_sdf_generate(workspace, spacing, band, NULL,
+                                       &volume, NULL, error);
+    /* Retain workspace between generations to reuse its acceleration. */
+    if (status == TVDB_OK)
+        status = tvdb_sdf_to_mesh_ex(&volume, 0.0f, TVDB_MESH_WINDING_OUTWARD,
+                                    NULL, surface, NULL, error);
+    tvdb_dense_grid_free(&volume);
+    tvdb_mesh_sdf_destroy(workspace);
+    return status;
+}
+```
+
+The example appends to an initialized owning `surface`. Checked mesh-to-SDF
+generation replaces an initialized owning grid and releases its old heap data
+on success. `tvdb_mesh_to_sdf_ex` provides the one-shot equivalent. Failures
+preserve existing outputs and restore arena offsets. Arena allocations are
+checked for input/output overlap before the allocator zeroes them. Temporary
+acceleration and marching-cubes caches use the heap, leaving only output storage
+in the arena; replaced arena output remains retained until reset.
+
+Indexed marching cubes counts in parallel, sizes output exactly, and emits in
+stable raster/edge order with shared-edge deduplication. Its edge scratch chooses
+the smaller of a two-plane rolling cache (about `20 * nx * ny` bytes) and a
+surface-sized hash, plus one count record per z plane. Interpolation handles tiny
+field magnitudes and overflowing float differences on CPU, Vulkan and CUDA.
+
+`TVDB_MESH_WINDING_OUTWARD` points outward for negative-inside SDFs. Legacy
+`tvdb_sdf_to_mesh` keeps its original table winding toward the negative phase;
+`tvdb_make_manifold` now produces outward faces and keeps its intermediate grid
+off the output arena. Conversion still uses classic marching cubes, including
+ambiguous cases and degenerate triangles at exact-isovalue samples. Mesh-to-SDF
+sign comes from the closest face normal; sharp corners, open surfaces and
+inconsistent face orientation can cause sign artifacts. Degenerate faces have
+zero normals and contribute unsigned distances. The `_vdb` sign-method argument
+remains advisory. Neither API promises a watertight manifold reconstruction.
 
 ## Features
 
@@ -154,6 +274,55 @@ iteration; this correctness repair makes no performance claim.
   sparse voxels, reuses sampler dispatch resources across queries, and supports
   device-resident query batches with batch-owned async submit/poll/wait.
 
+The resident API in [`src/tinyvdb_gpu_resident.h`](src/tinyvdb_gpu_resident.h)
+(included by `tinyvdb_gpu.h`) keeps volume data on the device across operations.
+Create a dense handle with its shape, channels, precision, and geometry; upload
+once, chain operations, and download explicitly. Dense composition, CSG,
+filters, scalar/vector stencils, advection, morphology, resampling, reductions,
+measurement, marching cubes, and Poisson have resident entrypoints. Sparse
+handles support convolution, morphology, dense conversion, and point
+voxelization. Topology-preserving sparse results share immutable coordinate
+maps; topology-changing operations build and compact their maps on the device.
+
+Typed processing operations preserve the previous output on failure and allow the aliasing
+specified in their declarations. Calls are synchronous; serialize calls on a
+context and destroy its handles before destroying the context. The raw
+`tvdb_gpu_dispatch_resident` API accepts existing buffers and copied uniform
+parameters, including a batch of dependent dispatches. Its outputs may be
+partially written if a dispatch fails. Transfer/allocation counters report
+logical resident-buffer bytes, not driver allocation sizes or total VRAM use.
+
+Marching cubes classifies cells, scans triangle counts, then allocates and emits
+only the compact triangle soup in CPU cell/table order. It reads back a single
+four-byte triangle count before allocation. The former 180-byte-per-cell vertex
+temporary is gone; offsets require four bytes per cell, plus the scan hierarchy
+and actual output. Procedural tests cover all 256 cases, empty surfaces, exact
+zeros, sparse surfaces, noisy fields, and multiple scan levels.
+
+Resident Poisson supports float arithmetic, double arithmetic with float
+storage at the API boundary, and double input/output. All three require device
+fp64 for reductions. It retains solver vectors on the device and reads only
+reduced scalars, preserving Neumann compatibility, the warm-start mean, and
+residual reporting in the returned precision. Iteration counts can differ from
+CPU reduction order. Solver workspace uses 40, 64, or 72 bytes per voxel for
+the three modes, respectively; true residuals and reductions remain doubles.
+Dependent kernels share a submission until a scalar readback is needed.
+The float host API retains its existing path on devices without fp64.
+
+Sparse resident convolution supports full signed coordinates and first-input
+lookup semantics; transpose sums contributions from duplicate input points.
+Transpose rejects candidate-coordinate overflow transactionally. The host
+transpose API uses the resident path for representable candidates and retains
+its existing clipped-boundary fallback for overflowing candidates. Resident point
+voxelization currently uses isotropic spacing. Missing generated SPIR-V returns
+`TVDB_ERROR_UNIMPLEMENTED` on Vulkan; CUDA remains usable through NVRTC.
+
+Grid contents can be released with `tvdb_grid_destroy(grid, allocator)`, which
+also releases metadata and point-data payloads. Use the allocator that owns the
+descriptor strings and payload (`NULL` for the default allocator); tree and
+metadata allocations retain their own allocators. `tvdb_grid_destroy_owned`
+remains the convenience wrapper for grids built with the default allocator.
+
 ### Gaussian-splat rasterizer (`tinyvdb_nanovdb.h`)
 
 * [x] CPU forward (`tvdb_gaussian_rasterize_forward`): per-tile
@@ -196,8 +365,11 @@ the test suite (build with `-DTINYVDB_BUILD_TESTS=ON` and run `ctest`):
   sparse-image benchmark; the planner treats this as a hard ceiling and uses a
   conservative fraction of it to avoid exhausting shared 8 GiB GPUs.
 
-The test suite has 19 ctest targets when optional GPU tests are enabled — see
-`tasks.md` for the full table.
+The test suite registers 24 ctest targets, or 48 when the optional GPU tests are
+enabled — see `tasks.md` for the full table. `test_threads` runs every parallel op
+at one thread and again at the widest team and requires bit-identical results, so
+a kernel whose output came to depend on how the work was split fails rather than
+passing on whichever thread count the host happened to default to.
 
 ## Supported VDB versions
 
@@ -375,7 +547,8 @@ $ make
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `TINYVDB_BUILD_TESTS` | `OFF` | Build the 15-target ctest suite |
+| `TINYVDB_BUILD_TESTS` | `OFF` | Build the test suite (24 CPU tests, or 48 with GPU tests enabled) |
+| `TINYVDB_BUILD_BENCH` | `OFF` | Build `bench_tinyvdb`, the measurement harness behind `doc/bench-baseline.md` |
 | `TINYVDB_BUILD_EXAMPLES` | `ON` | Build `vdbdump`, `nanovdbdump`, etc. |
 | `TINYVDB_BUILD_VDBRENDER` | `ON` | Build the vdbrender volume path tracer |
 | `TINYVDB_BUILD_PYTHON` | `OFF` | Build Python extension |
@@ -385,6 +558,16 @@ $ make
 | `TINYVDB_USE_SYSTEM_BLOSC` | `OFF` | Link system libblosc — required to read NanoVDB BLOSC files produced by libnanovdb |
 | `TINYVDB_OPENMP` | `OFF` | Enable OpenMP parallelism in dense ops, Poisson CG, sparse conv, sample batches, TSDF fusion |
 | `TINYVDB_SIMD` | `ON` | Enable SSE4.2/AVX2/F16C (x86-64 only; scalar fallback otherwise) |
+| `TINYVDB_BUILD_GPU` | `ON` | Build the runtime-loaded Vulkan/CUDA backend (no SDK needed at build time) |
+| `TINYVDB_BUILD_TVDBVIEW` | `ON` | Build the `tvdbview` viewer |
+| `TINYVDB_USE_CCACHE` | `ON` | Use ccache when available |
+
+`TINYVDB_BUILD_GPU` generates SPIR-V with `glslangValidator` when it is on `PATH`
+and falls back to a build with no shaders otherwise; point
+`TINYVDB_GLSLANG_VALIDATOR` at the binary to override the search. Without shaders a
+context still creates and every GPU op returns `UNIMPLEMENTED`, so a caller can
+tell "not built for this" from "genuinely unsupported" via
+`tvdb_gpu_spirv_available()`.
 
 ## vdbdump example
 

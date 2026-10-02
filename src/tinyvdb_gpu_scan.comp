@@ -1,0 +1,17 @@
+#version 450
+layout(local_size_x=128) in;
+layout(std430,binding=0) buffer Data { uint data[]; };
+layout(std430,binding=1) buffer Blocks { uint blocks[]; };
+layout(std140,binding=2) uniform Params { uint count; uint op; } u;
+shared uint scan[128];
+void main() {
+    if((gl_WorkGroupID.x+gl_WorkGroupID.y*gl_NumWorkGroups.x)>=(u.count+127u)/128u)return;
+    uint i=(gl_GlobalInvocationID.x+gl_GlobalInvocationID.y*gl_NumWorkGroups.x*gl_WorkGroupSize.x), l=gl_LocalInvocationID.x, b=(gl_WorkGroupID.x+gl_WorkGroupID.y*gl_NumWorkGroups.x);
+    if(u.op==1) { if(i<u.count) data[i]+=blocks[b]; return; }
+    scan[l]=i<u.count?data[i]:0u;barrier();
+    for(uint s=1u;s<128u;s<<=1u) {
+        uint v=l>=s?scan[l-s]:0u;barrier();scan[l]+=v;barrier();
+    }
+    if(i<u.count)data[i]=l==0u?0u:scan[l-1u];
+    if(l==127u)blocks[b]=scan[l];
+}

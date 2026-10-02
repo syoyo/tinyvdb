@@ -1352,14 +1352,8 @@ int tvdb_py_replace_grid_from_sparse(tvdb_file_t *file, size_t grid_idx,
     }
     tvdb_sparse_grid_free(&sg);
 
-    // Free the template-grid's old contents and overwrite with the new grid.
-    // We use tvdb_grid_destroy_owned which only works if the grid was built by
-    // us; for loader-allocated grids we rely on tvdb_file_close to clean up.
-    // Here we trust that the file's allocator is the system default (malloc-
-    // backed) — true when tvdb_file_open was called with NULL allocator.
-    // Manually reset the destination's allocator pointers to ours so the
-    // file_close path is consistent.
-    tvdb_grid_destroy_owned(tmpl);
+    // Release all loader-owned metadata and payloads with the file allocator.
+    tvdb_grid_destroy(tmpl, &file->alloc);
     *tmpl = built;
     return 0;
 }
@@ -1667,7 +1661,7 @@ int tvdb_py_extend_grid_from_sparse(tvdb_file_t *file, size_t grid_idx,
         snprintf(s_error_msg, sizeof(s_error_msg), "grid_extend_from_sparse failed");
         return -1;
     }
-    tvdb_grid_destroy_owned(tmpl);
+    tvdb_grid_destroy(tmpl, &file->alloc);
     *tmpl = built;
     return 0;
 }

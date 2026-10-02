@@ -142,3 +142,18 @@ static const uint8_t kTvdbGpuCsgDSpv[] = {0};
 static const uint32_t kTvdbGpuCsgDSpv_len = 0;
 static const uint8_t kTvdbGpuSampleDSpv[] = {0};
 static const uint32_t kTvdbGpuSampleDSpv_len = 0;
+
+static const uint8_t kTvdbGpuScanSpv[] = {0};
+static const uint32_t kTvdbGpuScanSpv_len = 0;
+
+static const uint8_t kTvdbGpuResidentMapSpv[] = {0};
+static const uint32_t kTvdbGpuResidentMapSpv_len = 0;
+
+static const uint8_t kTvdbGpuResidentSparseSpv[] = {0};
+static const uint32_t kTvdbGpuResidentSparseSpv_len = 0;
+
+static const uint8_t kTvdbGpuResidentPoissonSpv[]={0};
+static const uint32_t kTvdbGpuResidentPoissonSpv_len=0;
+
+static const uint8_t kTvdbGpuResidentReduceSpv[]={0};
+static const uint32_t kTvdbGpuResidentReduceSpv_len=0;

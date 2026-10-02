@@ -101,22 +101,26 @@ bool tvdb_sparse_to_dense(const tvdb_sparse_grid* sparse,
       sparse->count > INT_MAX || !isfinite(background) ||
       (sparse->count && (!sparse->coords || !sparse->values)) ||
       !tvdb_grid_bytes(out->nx,out->ny,out->nz,sizeof(float),&bytes)) return false;
-  float* values=malloc(bytes);
-  if(!values) return false;
   size_t n = bytes / sizeof(float);
-  for (size_t i = 0; i < n; ++i) values[i] = background;
-
-  // Map sparse -> dense; assumes sparse.coords are in the same voxel-index
-  // frame as the dense grid (caller is responsible for any origin offsets).
+  /* No full-size temporary. The grid used to be built in a scratch buffer and
+     memcpy'd in, to keep the failure contract that `out` is untouched when this
+     returns false. Nothing below can fail -- an out-of-range coordinate is skipped,
+     not an error -- and the only allocation is gone, so the contract holds without
+     a second 4N-byte buffer. Duplicate coordinates keep the previous
+     first-in-input-wins order because the scatter below is unchanged. */
+  #pragma omp parallel for schedule(static)
+  for (long long ii = 0; ii < (long long)n; ++ii)
+    out->data[ii] = background;
+  /* Map sparse -> dense; assumes sparse.coords are in the same voxel-index
+     frame as the dense grid (caller is responsible for any origin offsets). */
   for (size_t k = sparse->count; k-- > 0;) {
     int x = sparse->coords[k].x;
     int y = sparse->coords[k].y;
     int z = sparse->coords[k].z;
     if (x < 0 || y < 0 || z < 0) continue;
     if (x >= out->nx || y >= out->ny || z >= out->nz) continue;
-    values[(((size_t)z * out->ny + y) * out->nx + x)] = sparse->values[k];
+    out->data[(((size_t)z * out->ny + y) * out->nx + x)] = sparse->values[k];
   }
-  memcpy(out->data,values,bytes); free(values);
   return true;
 }
 
@@ -129,14 +133,25 @@ typedef struct {
   uint32_t idx_plus_one;  // 0 = empty
 } tvdb_hash_entry;
 
+
 static uint64_t tvdb_pack_ijk(int x, int y, int z) {
   // Treat as 21-bit signed-shifted unsigned. Sufficient for grids up to
-  // ±1M voxels per axis.
+  // +-1M voxels per axis; see the note above the function on what happens
+  // beyond that.
   uint64_t ux = (uint64_t)((int64_t)x + (1LL << 20)) & ((1ULL << 21) - 1);
   uint64_t uy = (uint64_t)((int64_t)y + (1LL << 20)) & ((1ULL << 21) - 1);
   uint64_t uz = (uint64_t)((int64_t)z + (1LL << 20)) & ((1ULL << 21) - 1);
   return (ux << 42) | (uy << 21) | uz;
 }
+
+/* Note on the 21-bit packing below: coordinates outside +-2^20 share a packed key.
+   That is a hash-quality issue, not a correctness one -- every probe in the
+   library (tvdb_hash_get, leaf_hash_lookup, tvdb_index_map_probe and the GLSL and
+   CUDA tvdb_map_probe) compares all three full int32 coordinates, so two voxels
+   with the same packed key land in different buckets of the same chain and are
+   still told apart. The tests pin this: test_hardening drives coords at 2^21 and
+   INT32_MAX and expects them resolved correctly. Widening the key would only
+   matter if some future path trusted the packed key alone. */
 
 static uint64_t tvdb_mix64(uint64_t k) {
   k ^= k >> 33; k *= 0xff51afd7ed558ccdULL;
@@ -148,12 +163,26 @@ static bool tvdb_coord_equal(tvdb_vec3i coord, int x, int y, int z) {
   return coord.x == x && coord.y == y && coord.z == z;
 }
 
-static bool tvdb_hash_build(const tvdb_sparse_grid* g, tvdb_hash_entry** table_out, size_t* mask_out) {
+/* `first_out`, when non-NULL, receives a bit per input entry: set when that entry
+ * is the first occurrence of its coordinate, which is exactly the test the build
+ * loop already makes. Callers that walk the input and must skip duplicates were
+ * re-probing the table once per entry to rediscover this, which is a random
+ * access per voxel for information the builder already had. K bits costs
+ * count/8 bytes against the 32 bytes/entry the table itself occupies.
+ * The bitmap is calloc'd here and must be freed by the caller. */
+static bool tvdb_hash_build(const tvdb_sparse_grid* g, tvdb_hash_entry** table_out, size_t* mask_out,
+                            uint8_t** first_out) {
   size_t cap;
   if (g->count > INT_MAX || (g->count && (!g->coords || !g->values)) ||
       !tvdb_hash_capacity(g->count, 2, &cap)) return false;
   tvdb_hash_entry* tbl = (tvdb_hash_entry*)calloc(cap, sizeof(tvdb_hash_entry));
   if (!tbl) return false;
+  uint8_t* first = NULL;
+  if (first_out) {
+    *first_out = NULL;
+    first = (uint8_t*)calloc((g->count + 7u) / 8u, 1u);
+    if (!first) { free(tbl); return false; }
+  }
   size_t mask = cap - 1;
   for (size_t i = 0; i < g->count; ++i) {
     uint64_t key = tvdb_pack_ijk(g->coords[i].x, g->coords[i].y, g->coords[i].z);
@@ -174,8 +203,10 @@ static bool tvdb_hash_build(const tvdb_sparse_grid* g, tvdb_hash_entry** table_o
     if (tbl[h].idx_plus_one) continue;
     tbl[h].key = key;
     tbl[h].idx_plus_one = (uint32_t)(i + 1);
+    if (first) first[i >> 3] |= (uint8_t)(1u << (i & 7u));
   }
   *table_out = tbl; *mask_out = mask;
+  if (first_out) *first_out = first;
   return true;
 }
 
@@ -213,8 +244,8 @@ static bool tvdb_csg_sparse_impl(const tvdb_sparse_grid* a, const tvdb_sparse_gr
 
   tvdb_hash_entry *ha = NULL, *hb = NULL;
   size_t ma = 0, mb = 0;
-  if (!tvdb_hash_build(a, &ha, &ma)) return false;
-  if (!tvdb_hash_build(b, &hb, &mb)) { free(ha); return false; }
+  if (!tvdb_hash_build(a, &ha, &ma, NULL)) return false;
+  if (!tvdb_hash_build(b, &hb, &mb, NULL)) { free(ha); return false; }
 
   // Walk a, looking up b
   for (size_t i = 0; i < a->count; ++i) {
@@ -270,22 +301,33 @@ static bool tvdb_dilate_sparse_step(const tvdb_sparse_grid* in,
   out->voxel_size = in->voxel_size;
   out->ox = in->ox; out->oy = in->oy; out->oz = in->oz;
 
-  tvdb_hash_entry* hin = NULL; size_t mask = 0;
-  if (!tvdb_hash_build(in, &hin, &mask)) return false;
+  tvdb_hash_entry* hin = NULL; size_t mask = 0; uint8_t* first = NULL;
+  if (!tvdb_hash_build(in, &hin, &mask, &first)) return false;
 
   // For each input voxel, emit (self) plus each missing 6-neighbor.
   // The output value at each voxel = min over (self/contributing neighbors).
   // Use a temporary growing hash for the output.
+  //
+  // The output holds at most 7 voxels per input voxel, so sizing the table at 8x
+  // the input count always leaves slack and the fixed-capacity probe loop cannot
+  // fill. That bound is also why the factor is not tightened: a 7x-growth table at
+  // a 0.5 load factor would need 14x and double the memory for a table that stays
+  // mostly empty. The insert asserts the bound anyway, so a future connectivity
+  // change fails loudly instead of spinning forever on a full table.
   size_t guess;
-  if (in->count > INT_MAX / 7 || !tvdb_hash_capacity(in->count, 8, &guess)) { free(hin); return false; }
+  if (in->count > INT_MAX / 7 || !tvdb_hash_capacity(in->count, 8, &guess)) { free(first); free(hin); return false; }
   tvdb_hash_entry* hout = (tvdb_hash_entry*)calloc(guess, sizeof(tvdb_hash_entry));
-  if (!hout) { free(hin); return false; }
+  if (!hout) { free(first); free(hin); return false; }
   size_t hout_mask = guess - 1;
 
   static const int N[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
   for (size_t i = 0; i < in->count; ++i) {
     int x = in->coords[i].x, y = in->coords[i].y, z = in->coords[i].z;
-    if(tvdb_hash_get(hin,mask,in->coords,x,y,z)!=(int)i) continue;
+    /* Skip a duplicate coordinate: the first occurrence owns the emission, so the
+     * output cannot depend on which copy we happen to be looking at. The builder
+     * already recorded which entries those are, so this is a bit test rather than
+     * a hash probe per input voxel. */
+    if (!(first[i >> 3] & (uint8_t)(1u << (i & 7u)))) continue;
     float v_self = in->values[i];
 
     // self
@@ -297,7 +339,9 @@ static bool tvdb_dilate_sparse_step(const tvdb_sparse_grid* in,
         h = (h + 1) & hout_mask;
       }
       if (hout[h].idx_plus_one == 0) {
-        if (!tvdb_sparse_push(out, x, y, z, v_self)) { free(hin); free(hout); return false; }
+        /* Defensive: the 7x sizing bound above should make this unreachable. */
+        if (out->count * 10u >= guess * 7u) { free(first); free(hin); free(hout); return false; }
+        if (!tvdb_sparse_push(out, x, y, z, v_self)) { free(first); free(hin); free(hout); return false; }
         hout[h].key = key; hout[h].idx_plus_one = (uint32_t)out->count;
       } else {
         size_t idx = hout[h].idx_plus_one - 1;
@@ -320,10 +364,11 @@ static bool tvdb_dilate_sparse_step(const tvdb_sparse_grid* in,
       }
       if (hout[h].idx_plus_one == 0) {
         // neighbor not yet in output
+        if (out->count * 10u >= guess * 7u) { free(first); free(hin); free(hout); return false; }
         int j = tvdb_hash_get(hin, mask, in->coords, nx, ny, nz);
         float v_existing = (j >= 0) ? in->values[j] : background;
         float v = v_self < v_existing ? v_self : v_existing;
-        if (!tvdb_sparse_push(out, nx, ny, nz, v)) { free(hin); free(hout); return false; }
+        if (!tvdb_sparse_push(out, nx, ny, nz, v)) { free(first); free(hin); free(hout); return false; }
         hout[h].key = key; hout[h].idx_plus_one = (uint32_t)out->count;
       } else {
         size_t idx = hout[h].idx_plus_one - 1;
@@ -331,6 +376,7 @@ static bool tvdb_dilate_sparse_step(const tvdb_sparse_grid* in,
       }
     }
   }
+  free(first);
   free(hin);
   free(hout);
   return true;
@@ -369,13 +415,13 @@ static bool tvdb_erode_sparse_step(const tvdb_sparse_grid* in,
   out->voxel_size = in->voxel_size;
   out->ox = in->ox; out->oy = in->oy; out->oz = in->oz;
 
-  tvdb_hash_entry* hin = NULL; size_t mask = 0;
-  if (!tvdb_hash_build(in, &hin, &mask)) return false;
+  tvdb_hash_entry* hin = NULL; size_t mask = 0; uint8_t* first = NULL;
+  if (!tvdb_hash_build(in, &hin, &mask, &first)) return false;
 
   static const int N[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
   for (size_t i = 0; i < in->count; ++i) {
     int x = in->coords[i].x, y = in->coords[i].y, z = in->coords[i].z;
-    if(tvdb_hash_get(hin,mask,in->coords,x,y,z)!=(int)i) continue;
+    if (!(first[i >> 3] & (uint8_t)(1u << (i & 7u)))) continue;
     float v_self = in->values[i];
     float r = v_self;
     bool keep = true;
@@ -388,9 +434,10 @@ static bool tvdb_erode_sparse_step(const tvdb_sparse_grid* in,
       if (v > r) r = v;
     }
     if (keep) {
-      if (!tvdb_sparse_push(out, x, y, z, r)) { free(hin); return false; }
+      if (!tvdb_sparse_push(out, x, y, z, r)) { free(first); free(hin); return false; }
     }
   }
+  free(first);
   free(hin);
   return true;
 }
@@ -441,7 +488,7 @@ static bool tvdb_sparse_conv3d_impl(const tvdb_sparse_grid* in,
 
   // Hash input coords for O(1) neighbor lookup.
   tvdb_hash_entry* tbl = NULL; size_t mask = 0;
-  if (!tvdb_hash_build(in, &tbl, &mask)) return false;
+  if (!tvdb_hash_build(in, &tbl, &mask, NULL)) return false;
 
   #pragma omp parallel for schedule(static)
   for (long long i = 0; i < (long long)in->count; ++i) {
@@ -504,7 +551,7 @@ static bool tvdb_sparse_conv3d_mc_impl(const tvdb_sparse_grid* in,
   const size_t spatial_stride = (size_t)c_out * (size_t)c_in;
 
   tvdb_hash_entry* tbl = NULL; size_t mask = 0;
-  if (!tvdb_hash_build(in, &tbl, &mask)) {
+  if (!tvdb_hash_build(in, &tbl, &mask, NULL)) {
     free(*out_values_mc); *out_values_mc = NULL;
     return false;
   }

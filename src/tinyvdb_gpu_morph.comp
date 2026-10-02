@@ -17,7 +17,7 @@ float fetch(int x, int y, int z) {
 }
 
 void main() {
-  uint gid = gl_GlobalInvocationID.x;
+  uint gid = (gl_GlobalInvocationID.x+gl_GlobalInvocationID.y*gl_NumWorkGroups.x*gl_WorkGroupSize.x);
   uint total = uint(u.dim.x * u.dim.y * u.dim.z);
   if (gid >= total) return;
   int iz = int(gid) / (u.dim.x * u.dim.y);

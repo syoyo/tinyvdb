@@ -1,0 +1,79 @@
+#version 450
+#extension GL_ARB_gpu_shader_fp64 : require
+layout(local_size_x=128) in;
+layout(std430,binding=0) readonly buffer RHS { uint rhs[]; };
+layout(std430,binding=1) readonly buffer Initial { uint initial[]; };
+// Two typed views of one allocation; each slot has a fixed storage precision.
+layout(std430,binding=2) buffer FloatWorkspace { float float_work[]; };
+layout(std430,binding=2) buffer DoubleWorkspace { double double_work[]; };
+layout(std430,binding=3) readonly buffer ReductionIn { double ri[]; };
+layout(std430,binding=4) buffer ReductionOut { double ro[]; };
+layout(std430,binding=5) buffer Output { uint output_data[]; };
+layout(std140,binding=6) uniform Params {
+    ivec4 dim; // nx ny nz n
+    ivec4 cfg; // op a b destination
+    ivec4 mode; // work double, input double, reduction count, true residual
+    dvec2 coeff; // h squared, alpha
+    dvec2 other; // beta, mean
+} u;
+shared double sums[512];
+double read_rhs(uint i){return u.mode.y!=0?packDouble2x32(uvec2(rhs[2u*i],rhs[2u*i+1u])):double(uintBitsToFloat(rhs[i]));}
+double read_x(uint i){return u.mode.y!=0?packDouble2x32(uvec2(initial[2u*i],initial[2u*i+1u])):double(uintBitsToFloat(initial[i]));}
+double rounded(double v){return u.mode.x!=0?v:double(float(v));}
+// Slots 0..5: PCG vectors, 6..7: returned-precision iterates, 8: true residual.
+// Word-addressing keeps the fp64 residual and reductions without padding all
+// float vectors to doubles: 40/64/72 bytes per voxel for modes 0/1/2.
+bool work_double(int slot){return slot==8 || u.mode.y!=0 || (u.mode.x!=0 && slot<6);}
+uint work_index(int slot,uint i){
+    uint base=uint(slot);
+    if(u.mode.y!=0)base*=2u;
+    else if(u.mode.x!=0)base=slot<6?base*2u:base+6u;
+    return base*uint(u.dim.w)+i*(work_double(slot)?2u:1u);
+}
+double load_work(int slot,uint i){
+    uint at=work_index(slot,i);
+    return work_double(slot)?double_work[at/2u]:double(float_work[at]);
+}
+void store_work(int slot,uint i,double v){
+    uint at=work_index(slot,i);
+    if(work_double(slot))double_work[at/2u]=v;
+    else float_work[at]=float(v);
+}
+double positive(uint i,int slot){
+    uint nx=uint(u.dim.x),ny=uint(u.dim.y),plane=nx*ny;
+    uint x=i%nx,y=(i/nx)%ny,z=i/plane;
+    double c=load_work(slot,i),v=0.0;
+    if(x>0u)v+=c-load_work(slot,i-1u);if(x+1u<nx)v+=c-load_work(slot,i+1u);
+    if(y>0u)v+=c-load_work(slot,i-nx);if(y+1u<ny)v+=c-load_work(slot,i+nx);
+    if(z>0u)v+=c-load_work(slot,i-plane);if(z+1u<uint(u.dim.z))v+=c-load_work(slot,i+plane);
+    return v/u.coeff.x;
+}
+void main(){
+    uint i=(gl_GlobalInvocationID.x+gl_GlobalInvocationID.y*gl_NumWorkGroups.x*gl_WorkGroupSize.x),n=uint(u.dim.w),lane=gl_LocalInvocationID.x;
+    int op=u.cfg.x;
+    if(op>=90){
+        if((gl_WorkGroupID.x+gl_WorkGroupID.y*gl_NumWorkGroups.x)>=(uint(op==100?u.mode.z:u.dim.w)+127u)/128u)return;
+        double a=0.0,b=0.0,c=0.0,d=0.0;
+        if(op==100){if(i<uint(u.mode.z)){a=ri[4u*i];b=ri[4u*i+1u];c=ri[4u*i+2u];d=ri[4u*i+3u];}}
+        else if(i<n){
+            if(op==91){a=read_rhs(i);b=abs(a);c=read_x(i);d=(isnan(a)||isinf(a)||isnan(c)||isinf(c))?1.0:0.0;}
+            else {double v=load_work(u.cfg.y,i),w=load_work(u.cfg.z,i);a=v*w;b=v;c=abs(v);d=(isnan(v)||isinf(v)||isnan(w)||isinf(w))?1.0:0.0;}
+        }
+        sums[lane]=a;sums[128u+lane]=b;sums[256u+lane]=c;sums[384u+lane]=d;barrier();
+        for(uint step=64u;step>0u;step/=2u){if(lane<step)for(uint k=0u;k<4u;++k)sums[128u*k+lane]+=sums[128u*k+lane+step];barrier();}
+        if(lane==0u)for(uint k=0u;k<4u;++k)ro[4u*(gl_WorkGroupID.x+gl_WorkGroupID.y*gl_NumWorkGroups.x)+k]=sums[128u*k];return;
+    }
+    if(i>=n)return;
+    int a=u.cfg.y,b=u.cfg.z,dst=u.cfg.w;
+    if(op==0){store_work(0,i,rounded(read_x(i)-u.other.y));store_work(1,i,rounded(-read_rhs(i)+u.coeff.y));store_work(6,i,read_x(i));}
+    if(op==1)store_work(dst,i,rounded(positive(i,a)));
+    if(op==2){double v=(u.mode.w!=0?-read_rhs(i)+u.other.y:load_work(1,i))-positive(i,a);store_work(dst,i,u.mode.w!=0?v:rounded(v));}
+    if(op==3)store_work(dst,i,rounded(u.coeff.y*load_work(a,i)+u.other.x*load_work(b,i)));
+    if(op==4){uint nx=uint(u.dim.x),ny=uint(u.dim.y),x=i%nx,y=(i/nx)%ny,z=i/(nx*ny);
+        int degree=int(x>0u)+int(x+1u<nx)+int(y>0u)+int(y+1u<ny)+int(z>0u)+int(z+1u<uint(u.dim.z));
+        store_work(dst,i,degree>0?rounded(load_work(a,i)*u.coeff.x/double(degree)):0.0);}
+    if(op==5)store_work(dst,i,rounded(load_work(a,i)-u.coeff.y));
+    if(op==6){double v=load_work(a,i)+u.other.y;store_work(dst,i,u.mode.y!=0?v:double(float(v)));}
+    if(op==7){double v=load_work(a,i);if(u.mode.y!=0){uvec2 bits=unpackDouble2x32(v);output_data[2u*i]=bits.x;output_data[2u*i+1u]=bits.y;}else output_data[i]=floatBitsToUint(float(v));}
+    if(op==8)store_work(dst,i,load_work(a,i));
+}

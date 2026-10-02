@@ -413,6 +413,11 @@ tvdb_status_t tvdb_file_open_memory(tvdb_file_t *file, const uint8_t *data,
 
 void tvdb_file_close(tvdb_file_t *file);
 
+/* Destroy grid contents without freeing the grid itself. alloc owns descriptor
+   strings and point_data_blob; NULL selects malloc/free. Tree and metadata use
+   their recorded allocators. The grid is cleared and can be destroyed again. */
+void tvdb_grid_destroy(tvdb_grid_t *grid, const tvdb_allocator_t *alloc);
+
 tvdb_status_t tvdb_read_all_grids(tvdb_file_t *file, tvdb_error_t *err);
 
 size_t        tvdb_grid_count(const tvdb_file_t *file);
@@ -1325,22 +1330,21 @@ static void tvdb__metadata_init(tvdb_metadata_t *m, tvdb_allocator_t *a) {
     m->alloc = a;
 }
 
+static void tvdb__meta_entry_destroy(tvdb_meta_entry_t *e, tvdb_allocator_t *a) {
+    if (e->name) tvdb__free(a, e->name, strlen(e->name) + 1);
+    if (e->type_name) tvdb__free(a, e->type_name, strlen(e->type_name) + 1);
+    if (e->value.type == TVDB_VALUE_STRING && e->value.u.s.str)
+        tvdb__free(a, e->value.u.s.str, e->value.u.s.len + 1);
+    if (e->raw_data) tvdb__free(a, e->raw_data, e->raw_data_len);
+    memset(e, 0, sizeof(*e));
+}
+
 static void tvdb__metadata_destroy(tvdb_metadata_t *m) {
     if (!m->alloc) return;
-    for (size_t i = 0; i < m->count; i++) {
-        tvdb_meta_entry_t *e = &m->entries[i];
-        if (e->name)      tvdb__free(m->alloc, e->name, strlen(e->name) + 1);
-        if (e->type_name) tvdb__free(m->alloc, e->type_name,
-                                     strlen(e->type_name) + 1);
-        if (e->value.type == TVDB_VALUE_STRING && e->value.u.s.str)
-            tvdb__free(m->alloc, e->value.u.s.str, e->value.u.s.len + 1);
-        if (e->raw_data)
-            tvdb__free(m->alloc, e->raw_data, e->raw_data_len);
-    }
-    if (m->entries) {
-        tvdb__free(m->alloc, m->entries,
-                   m->capacity * sizeof(tvdb_meta_entry_t));
-    }
+    for (size_t i = 0; i < m->count; ++i)
+        tvdb__meta_entry_destroy(&m->entries[i], m->alloc);
+    if (m->entries)
+        tvdb__free(m->alloc, m->entries, m->capacity * sizeof(tvdb_meta_entry_t));
     memset(m, 0, sizeof(*m));
 }
 
@@ -1359,103 +1363,78 @@ static int tvdb__metadata_push(tvdb_metadata_t *m, tvdb_meta_entry_t *e) {
     return 1;
 }
 
+/* Validate lengths before allocation so truncation and OOM stay distinct. */
+static tvdb_status_t tvdb__meta_string(tvdb__sr_t *sr, tvdb_allocator_t *a,
+                                      char **out, size_t *length) {
+    uint32_t n;
+    if (!tvdb__sr_read_u32(sr, &n) || n > sr->length - sr->pos ||
+        (uint64_t)n + 1 > SIZE_MAX) return TVDB_ERROR_INVALID_DATA;
+    /* Names have no stored allocation length and must be C strings. */
+    if (!length && memchr(sr->data + sr->pos, 0, n)) return TVDB_ERROR_INVALID_DATA;
+    *out = tvdb__strndup(a, (const char *)sr->data + sr->pos, n);
+    if (!*out) return TVDB_ERROR_OUT_OF_MEMORY;
+    sr->pos += n;
+    if (length) *length = n;
+    return TVDB_OK;
+}
+
 static tvdb_status_t tvdb__read_meta(tvdb__sr_t *sr, tvdb_metadata_t *meta,
                                      tvdb_allocator_t *alloc,
                                      tvdb_error_t *err) {
     int32_t count = 0;
-    if (!tvdb__sr_read_i32(sr, &count)) {
-        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
-                        "Failed to read metadata count");
+    if (!tvdb__sr_read_i32(sr, &count) || count < 0 || count > 4096) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA, "Invalid metadata count");
         return TVDB_ERROR_INVALID_DATA;
     }
-    if (count < 0 || count > 4096) {
-        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
-                        "Invalid metadata count");
-        return TVDB_ERROR_INVALID_DATA;
-    }
-
-    for (int32_t i = 0; i < count; i++) {
+    for (int32_t i = 0; i < count; ++i) {
         tvdb_meta_entry_t entry;
         memset(&entry, 0, sizeof(entry));
-
-        entry.name = tvdb__sr_read_string(sr, alloc);
-        entry.type_name = tvdb__sr_read_string(sr, alloc);
-        if (!entry.name || !entry.type_name) {
-            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
-                            "Failed to read metadata entry");
-            return TVDB_ERROR_INVALID_DATA;
-        }
-
+        tvdb_status_t st = tvdb__meta_string(sr, alloc, &entry.name, NULL);
+        if (st != TVDB_OK) goto fail;
+        st = tvdb__meta_string(sr, alloc, &entry.type_name, NULL);
+        if (st != TVDB_OK) goto fail;
         if (strcmp(entry.type_name, "string") == 0) {
-            char *val = tvdb__sr_read_string(sr, alloc);
             entry.value.type = TVDB_VALUE_STRING;
-            entry.value.u.s.str = val;
-            entry.value.u.s.len = val ? strlen(val) : 0;
-        } else if (strcmp(entry.type_name, "bool") == 0) {
-            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
-            uint8_t v = 0;
-            if (sz == 1) tvdb__sr_read_u8(sr, &v);
-            entry.value.type = TVDB_VALUE_BOOL;
-            entry.value.u.b = v ? 1 : 0;
-        } else if (strcmp(entry.type_name, "float") == 0) {
-            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
-            float v = 0.0f;
-            if (sz == sizeof(float)) tvdb__sr_read_f32(sr, &v);
-            entry.value.type = TVDB_VALUE_FLOAT;
-            entry.value.u.f = v;
-        } else if (strcmp(entry.type_name, "double") == 0) {
-            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
-            double v = 0.0;
-            if (sz == sizeof(double)) tvdb__sr_read_f64(sr, &v);
-            entry.value.type = TVDB_VALUE_DOUBLE;
-            entry.value.u.d = v;
-        } else if (strcmp(entry.type_name, "int32") == 0) {
-            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
-            int32_t v = 0;
-            if (sz == sizeof(int32_t)) tvdb__sr_read_i32(sr, &v);
-            entry.value.type = TVDB_VALUE_INT32;
-            entry.value.u.i32 = v;
-        } else if (strcmp(entry.type_name, "int64") == 0) {
-            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
-            int64_t v = 0;
-            if (sz == sizeof(int64_t)) tvdb__sr_read_i64(sr, &v);
-            entry.value.type = TVDB_VALUE_INT64;
-            entry.value.u.i64 = v;
-        } else if (strcmp(entry.type_name, "vec3i") == 0) {
-            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
-            entry.value.type = TVDB_VALUE_VEC3I;
-            if (sz == 3 * sizeof(int32_t)) {
-                tvdb__sr_read_i32(sr, &entry.value.u.vec3i[0]);
-                tvdb__sr_read_i32(sr, &entry.value.u.vec3i[1]);
-                tvdb__sr_read_i32(sr, &entry.value.u.vec3i[2]);
-            }
-        } else if (strcmp(entry.type_name, "vec3d") == 0) {
-            uint32_t sz; tvdb__sr_read_u32(sr, &sz);
-            entry.value.type = TVDB_VALUE_VEC3D;
-            if (sz == 3 * sizeof(double)) {
-                tvdb__sr_read_f64(sr, &entry.value.u.vec3d[0]);
-                tvdb__sr_read_f64(sr, &entry.value.u.vec3d[1]);
-                tvdb__sr_read_f64(sr, &entry.value.u.vec3d[2]);
-            }
+            size_t length = 0;
+            st = tvdb__meta_string(sr, alloc, &entry.value.u.s.str, &length);
+            if (st != TVDB_OK) goto fail;
+            entry.value.u.s.len = length;
         } else {
-            /* Unknown type: read raw bytes */
-            int32_t num_bytes = 0;
-            tvdb__sr_read_i32(sr, &num_bytes);
-            if (num_bytes > 0) {
-                entry.raw_data = (uint8_t *)tvdb__alloc(alloc,
-                                                        (size_t)num_bytes);
-                if (entry.raw_data) {
-                    entry.raw_data_len = (size_t)num_bytes;
-                    tvdb__sr_read(sr, (size_t)num_bytes, entry.raw_data);
-                } else {
-                    tvdb__sr_seek_cur(sr, num_bytes);
-                }
+            int32_t size;
+            st = TVDB_ERROR_INVALID_DATA;
+            if (!tvdb__sr_read_i32(sr, &size) || size < 0 ||
+                (uint64_t)size > sr->length - sr->pos) goto fail;
+            tvdb_value_type_t type = TVDB_VALUE_NULL;
+            if (!strcmp(entry.type_name,"bool")) type = TVDB_VALUE_BOOL;
+            else if (!strcmp(entry.type_name,"float")) type = TVDB_VALUE_FLOAT;
+            else if (!strcmp(entry.type_name,"double")) type = TVDB_VALUE_DOUBLE;
+            else if (!strcmp(entry.type_name,"int32")) type = TVDB_VALUE_INT32;
+            else if (!strcmp(entry.type_name,"int64")) type = TVDB_VALUE_INT64;
+            else if (!strcmp(entry.type_name,"vec3i")) type = TVDB_VALUE_VEC3I;
+            else if (!strcmp(entry.type_name,"vec3d")) type = TVDB_VALUE_VEC3D;
+            if (type != TVDB_VALUE_NULL) {
+                if ((size_t)size != tvdb_value_type_size(type) ||
+                    !tvdb__sr_read_value(sr, type, &entry.value)) goto fail;
+            } else if (size) {
+                entry.raw_data = (uint8_t *)tvdb__alloc(alloc, (size_t)size);
+                if (!entry.raw_data) { st = TVDB_ERROR_OUT_OF_MEMORY; goto fail; }
+                entry.raw_data_len = (size_t)size;
+                if (!tvdb__sr_read(sr, (size_t)size, entry.raw_data)) goto fail;
             }
         }
-
-        if (meta) tvdb__metadata_push(meta, &entry);
+        if (meta) {
+            if (!tvdb__metadata_push(meta, &entry)) {
+                st = TVDB_ERROR_OUT_OF_MEMORY;
+                goto fail;
+            }
+        } else tvdb__meta_entry_destroy(&entry, alloc);
+        continue;
+fail:
+        tvdb__meta_entry_destroy(&entry, alloc);
+        tvdb__set_error(err, st, st == TVDB_ERROR_OUT_OF_MEMORY ?
+                        "Metadata allocation failed" : "Invalid metadata entry");
+        return st;
     }
-
     return TVDB_OK;
 }
 
@@ -2913,6 +2892,12 @@ static void tvdb__grid_destroy(tvdb_grid_t *grid, tvdb_allocator_t *a) {
     if (grid->point_data_blob)
         tvdb__free(a, grid->point_data_blob, grid->point_data_blob_size);
     memset(grid, 0, sizeof(*grid));
+}
+
+void tvdb_grid_destroy(tvdb_grid_t *grid, const tvdb_allocator_t *alloc) {
+    if (!grid) return;
+    tvdb_allocator_t a = alloc ? *alloc : tvdb__default_allocator();
+    tvdb__grid_destroy(grid, &a);
 }
 
 /* ========================================================================== */

@@ -1,26 +1,30 @@
 #version 450
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 layout(std430, set = 0, binding = 0) readonly buffer InBuffer { float data[]; };
-// Per-thread partial: (sum_grad_mag, max_grad_error, bad_count, band_count).
+// Per-workgroup partial: (sum_grad_mag, max_grad_error, bad_count, band_count).
 layout(std430, set = 0, binding = 1) buffer PartialBuffer { vec4 partials[]; };
 layout(std140, set = 0, binding = 2) uniform Params {
   ivec4 dim;        // nx, ny, nz, unused
   vec4 cfg;         // inv2vs, band_world, tol, unused
   uint count;       // interior voxel count = (nx-2)(ny-2)(nz-2)
-  uint nthreads;
+  uint ngroups;
 } u;
+shared vec4 sdata[256];
 
 // Narrow-band |grad| ~ 1 health check (matches tvdb_check_level_set). Each
-// thread grid-strides over interior voxels and folds a partial reduction.
+// workgroup folds a strided slice in shared memory and the host folds the
+// partials. This used to be a single wavefront of `nthreads` threads, so a large
+// grid was scanned by one 256-thread workgroup.
 void main() {
-  uint t = gl_GlobalInvocationID.x;
-  if (t >= u.nthreads) return;
+  uint lid = gl_LocalInvocationID.x;
+  uint wg = gl_WorkGroupID.x;
+  uint stride = u.ngroups * 256u;
   int nx = u.dim.x, ny = u.dim.y, nz = u.dim.z;
   int inx = nx - 2, iny = ny - 2;
   uint sl = uint(nx * ny);
   float inv2vs = u.cfg.x, band_world = u.cfg.y, tol = u.cfg.z;
   float sum_mag = 0.0, max_err = 0.0, bad = 0.0, band = 0.0;
-  for (uint m = t; m < u.count; m += u.nthreads) {
+  for (uint m = wg * 256u + lid; m < u.count; m += stride) {
     int ix = int(m % uint(inx)) + 1;
     uint tmp = m / uint(inx);
     int iy = int(tmp % uint(iny)) + 1;
@@ -37,5 +41,16 @@ void main() {
     if (err > tol) bad += 1.0;
     band += 1.0;
   }
-  partials[t] = vec4(sum_mag, max_err, bad, band);
+  // max_err has the same empty-slice problem min/max had: a thread that skipped
+  // everything (all its voxels outside the band) must not report 0.
+  sdata[lid] = vec4(sum_mag, (band > 0.0) ? max_err : -3.402823466e+38, bad, band);
+  barrier();
+  for (uint s = 128u; s > 0u; s >>= 1u) {
+    if (lid < s) {
+      vec4 a = sdata[lid], b = sdata[lid + s];
+      sdata[lid] = vec4(a.x + b.x, max(a.y, b.y), a.z + b.z, a.w + b.w);
+    }
+    barrier();
+  }
+  if (lid == 0u) partials[wg] = sdata[0];
 }

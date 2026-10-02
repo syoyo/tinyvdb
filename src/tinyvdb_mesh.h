@@ -69,12 +69,19 @@ const tvdb_mesh_bvh_node_t* tvdb_mesh_bvh_nodes(const tvdb_mesh_bvh_t* bvh);
 const int32_t* tvdb_mesh_bvh_prims(const tvdb_mesh_bvh_t* bvh);
 
 // API
+// Constructor: grid need not be initialized; release any previous data first.
+// Failure leaves the handle unchanged. Checked replacement and reusable mesh
+// acceleration are available in tinyvdb_mesh_conversion.h.
 bool tvdb_mesh_to_sdf(const tvdb_triangle_mesh* mesh, float voxel_size, float band_width, tvdb_dense_grid* grid, tvdb_arena_allocator_t* arena);
+// Appends to an initialized owning mesh, with the legacy MC table winding
+// (toward the negative phase). The checked API offers outward winding.
 bool tvdb_sdf_to_mesh(const tvdb_dense_grid* grid, float isovalue, tvdb_triangle_mesh* mesh, tvdb_arena_allocator_t* arena);
 
 // Marching-cubes lookup tables (edge: 256 ints; triangle: flat 256*16 ints).
 const int* tvdb_mc_edge_table(void);
 const int* tvdb_mc_tri_table_flat(void);
+// Appends an outward oriented reconstruction for a negative-inside SDF.
+// Uses classic MC; ambiguous cases do not guarantee a manifold result.
 bool tvdb_make_manifold(const tvdb_triangle_mesh* input, double resolution, double isovalue, tvdb_triangle_mesh* output, tvdb_arena_allocator_t* arena);
 
 typedef enum {

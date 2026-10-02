@@ -59,17 +59,16 @@ void main() {
       // surface-area one on exact zeros, and the CPU distinguishes them.
       if (src[i] < 0.0) acc += 1.0;
     } else {
-      // surface area: zero crossing on each +x/+y/+z edge. <= 0 here, matching
-      // the fp32 CPU op (the fp64 op uses < 0 -- deliberately different, and
-      // tinyvdb_gpu_measure_d.comp preserves that).
+      // Surface area: zero crossing on each +x/+y/+z edge. Strictly
+      // negative is inside, matching both CPU precisions.
       float c = src[i];
       uint ix = i % unx;
       uint rem = i / unx;
       uint iy = rem % uny;
       uint iz = rem / uny;
-      if (ix + 1u < unx) { float v = src[i + 1u];            if ((c <= 0.0) != (v <= 0.0)) acc += 1.0; }
-      if (iy + 1u < uny) { float v = src[i + unx];           if ((c <= 0.0) != (v <= 0.0)) acc += 1.0; }
-      if (iz + 1u < uint(nz)) { float v = src[i + unx * uny]; if ((c <= 0.0) != (v <= 0.0)) acc += 1.0; }
+      if (ix + 1u < unx) { float v = src[i + 1u];            if ((c < 0.0) != (v < 0.0)) acc += 1.0; }
+      if (iy + 1u < uny) { float v = src[i + unx];           if ((c < 0.0) != (v < 0.0)) acc += 1.0; }
+      if (iz + 1u < uint(nz)) { float v = src[i + unx * uny]; if ((c < 0.0) != (v < 0.0)) acc += 1.0; }
     }
   }
   sdata[lid] = acc;

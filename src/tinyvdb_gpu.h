@@ -64,16 +64,16 @@ tvdb_status_t tvdb_gpu_context_create(tvdb_gpu_backend_t backend,
                                       tvdb_error_t* err);
 void tvdb_gpu_context_destroy(tvdb_gpu_context_t* ctx);
 // 1 when this build contains GPU SPIR-V, 0 when the shaders are the all-zero
-// fallback include (built without glslangValidator). In the latter case a context
-// still creates and every op returns TVDB_ERROR_UNIMPLEMENTED, so this is how a
-// caller or a test tells "not built for this" from "genuinely unsupported".
+// fallback include (built without glslangValidator). In the latter case Vulkan
+// contexts still create, but shader operations return TVDB_ERROR_UNIMPLEMENTED.
+// CUDA/NVRTC availability is independent of this query.
 int tvdb_gpu_spirv_available(void);
 
 tvdb_status_t tvdb_gpu_context_info(const tvdb_gpu_context_t* ctx,
                                     tvdb_gpu_context_info_t* out,
                                     tvdb_error_t* err);
 
-// Blocking high-level operations. They upload inputs, dispatch one GPU kernel,
+// Blocking high-level operations. They upload inputs, dispatch GPU work,
 // copy the result back, and return only after device completion.
 tvdb_status_t tvdb_gpu_level_set_sphere(tvdb_gpu_context_t* ctx,
                                         float radius,
@@ -244,6 +244,15 @@ tvdb_status_t tvdb_gpu_dilate(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
 tvdb_status_t tvdb_gpu_erode(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
                              int iterations, tvdb_error_t* err);
 
+// Opening = erode then dilate, closing = dilate then erode (parallels tvdb_open /
+// tvdb_close). Compositions of the two above, so a failure in either step is
+// reported rather than swallowed, and the grid is left as the failing step left
+// it -- same contract as calling the two entry points directly.
+tvdb_status_t tvdb_gpu_open(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                            int iterations, tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_close(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
+                             int iterations, tvdb_error_t* err);
+
 // Snap voxels within `tolerance` of `background` exactly to it (parallels
 // tvdb_prune_grid).
 tvdb_status_t tvdb_gpu_prune(tvdb_gpu_context_t* ctx, tvdb_dense_grid* grid,
@@ -380,18 +389,16 @@ tvdb_status_t tvdb_gpu_voxelize_points_unbounded(tvdb_gpu_context_t* ctx, const 
 
 // Sparse erode (parallels tvdb_erode_sparse): keep an active voxel only if all
 // 6 face neighbors are active, with max-pooled value; `iterations` steps. `out`
-// is filled (set semantics: output coord order is arbitrary). Uses a dense
-// bbox-local occupancy + atomic-counter compaction, so the active set's ijk
-// bbox volume must fit in VRAM.
+// is an initialized owning sparse container, replaced on success. Device maps
+// and scans use memory proportional to the active coordinates, not their bbox.
 tvdb_status_t tvdb_gpu_erode_sparse(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
                                     int iterations, tvdb_sparse_grid* out, tvdb_error_t* err);
 
 // Sparse dilate (parallels tvdb_dilate_sparse): grow the active set by the 6
 // face neighbors, min-pooling each active voxel's value into itself and its
 // neighbors (inactive neighbors fall back to `background`); `iterations` steps.
-// `out` is filled (set semantics). Uses a dense bbox-local occupancy + value
-// grid (CAS atomic-min) + atomic-counter compaction; the dilated set's ijk
-// bbox volume must fit in VRAM.
+// `out` is an initialized owning sparse container, replaced on success. Device
+// candidate generation, maps, and scans avoid a dense bbox allocation.
 tvdb_status_t tvdb_gpu_dilate_sparse(tvdb_gpu_context_t* ctx, const tvdb_sparse_grid* in,
                                      float background, int iterations,
                                      tvdb_sparse_grid* out, tvdb_error_t* err);
@@ -405,14 +412,14 @@ tvdb_status_t tvdb_gpu_merge_grids(tvdb_gpu_context_t* ctx, const tvdb_dense_gri
 
 // Active-coordinate extraction: dense grid -> sparse grid of voxels whose value
 // differs from `background` by more than `tolerance` (parallels
-// tvdb_active_grid_coords / tvdb_dense_to_sparse). `out` is filled; coord order
-// is arbitrary (set semantics). Single-pass atomic-counter compaction.
+// tvdb_active_grid_coords / tvdb_dense_to_sparse). Device scan compaction emits
+// dense scan order. `out` must be initialized and is replaced on success.
 tvdb_status_t tvdb_gpu_active_grid_coords(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* dense,
                                           float background, float tolerance,
                                           tvdb_sparse_grid* out, tvdb_error_t* err);
 
 // Order-independent additive checksum over a dense grid's values (NanoVDB-style
-// validation hash). Parallel grid-stride partial sums folded on the host;
+// validation hash). Parallel partial sums are folded on the device;
 // `*out_checksum` is a 32-bit wrapping sum of a per-element (value,index) mix.
 tvdb_status_t tvdb_gpu_grid_checksum(tvdb_gpu_context_t* ctx, const tvdb_dense_grid* grid,
                                      uint32_t* out_checksum, tvdb_error_t* err);
@@ -526,7 +533,8 @@ tvdb_status_t tvdb_gpu_mesh_to_sdf(tvdb_gpu_context_t* ctx, const tvdb_triangle_
                                    tvdb_dense_grid* out, tvdb_error_t* err);
 
 // Marching cubes on the GPU (parallels tvdb_sdf_to_mesh) producing a triangle
-// soup. One thread per cell; emits each cell's triangles in scan/table order so
+// soup. Device classification and exclusive scan size the compact output;
+// one emit thread per cell writes triangles in scan/table order so
 // the result matches the CPU mesh triangle-for-triangle (positions). `*out_verts`
 // is malloc'd (caller frees): `*out_tri_count` triangles * 9 floats (3 xyz
 // vertices each), non-indexed.
@@ -772,6 +780,15 @@ tvdb_status_t tvdb_gpu_stencil_scalar_scalar(tvdb_gpu_context_t* ctx,
                                              tvdb_error_t* err);
 
 // gradient of a scalar grid into a vec3 grid.
+//
+// On the CUDA backend, tvdb_gpu_gradient, tvdb_gpu_divergence, tvdb_gpu_curl and
+// tvdb_gpu_stencil_scalar_scalar complete on the CPU reference if the device call
+// fails after the output grid has been allocated, and still return TVDB_OK. The
+// fallback is silent by design so a driver hiccup does not turn into a hard
+// failure, but it means TVDB_OK alone does not prove the work ran on the device.
+// The Vulkan backend has no such fallback. (The fp64 entry points below never do
+// this: they return TVDB_ERROR_UNIMPLEMENTED rather than quietly computing in a
+// different precision.)
 tvdb_status_t tvdb_gpu_gradient(tvdb_gpu_context_t* ctx,
                                 const tvdb_dense_grid* in,
                                 tvdb_dense_vec_grid* out,
@@ -791,7 +808,6 @@ tvdb_status_t tvdb_gpu_curl(tvdb_gpu_context_t* ctx,
 
 // ---------------------------------------------------------------------------
 // fp64 scalar stencils.
-//
 // fp64 is an optional device feature and runs at a small fraction of fp32 rate
 // on consumer parts, so these check for it and return TVDB_ERROR_UNIMPLEMENTED
 // when the device cannot do it. They never silently compute in fp32: a caller who
@@ -945,3 +961,5 @@ tvdb_status_t tvdb_gpu_fast_sweeping(tvdb_gpu_context_t* ctx,
                                      int max_iters, float tol,
                                      int* out_iters,
                                      tvdb_error_t* err);
+
+#include "tinyvdb_gpu_resident.h"

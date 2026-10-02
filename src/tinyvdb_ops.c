@@ -143,21 +143,35 @@ void tvdb_close(tvdb_dense_grid* grid, int iterations) {
 static void tvdb_separable_pass(const tvdb_dense_grid* in, tvdb_dense_grid* out,
                                 const float* kernel, int radius, int axis) {
   const int nx = in->nx, ny = in->ny, nz = in->nz;
+  const size_t plane = (size_t)nx * (size_t)ny;
+  const int extent = axis == 0 ? nx : (axis == 1 ? ny : nz);
+
   /* Distinct ping-pong buffers again, and the output is a pure function of the
-     input along `axis`, so each output voxel is independent. */
+     input along `axis`, so each output voxel is independent.
+
+     The filtered axis is fixed for the whole pass, so the index of a tap is a
+     constant plane/row base plus c*stride -- only c varies with the tap offset.
+     The previous form called tvdb_at per tap, which rebuilt a full 3-D index (three
+     multiplies, plus a branch on which axis it was) for each of the 2r+1 taps. */
   #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
     for (int iy = 0; iy < ny; ++iy) {
+      /* Base of the slice this loop iteration walks, per axis. */
+      /* For axis 1 the tap replaces iy, so its base must stop before iy's own
+         offset; the axis-0 base is the row, and doubles as the output index. */
+      const size_t row_x   = ((size_t)iz * ny + iy) * nx;   /* axis 0 + output index */
+      const size_t plane_y = (size_t)iz * plane;           /* axis 1 */
       for (int ix = 0; ix < nx; ++ix) {
         float acc = 0.0f;
         for (int k = -radius; k <= radius; ++k) {
-          int64_t sx = ix, sy = iy, sz = iz;
-          if (axis == 0) sx = (int64_t)ix + k;
-          else if (axis == 1) sy = (int64_t)iy + k;
-          else sz = (int64_t)iz + k;
-          acc += kernel[k + radius] * tvdb_at(in, sx, sy, sz);
+          int c = (axis == 0) ? ix + k : (axis == 1) ? iy + k : iz + k;
+          if (c < 0) c = 0; else if (c >= extent) c = extent - 1;
+          const size_t t = axis == 0 ? row_x + (size_t)c
+                        : axis == 1 ? plane_y + (size_t)c * nx + (size_t)ix
+                                    : (size_t)c * plane + (size_t)iy * nx + (size_t)ix;
+          acc += kernel[k + radius] * in->data[t];
         }
-        out->data[tvdb_idx(out, ix, iy, iz)] = acc;
+        out->data[row_x + (size_t)ix] = acc;
       }
     }
   }
@@ -316,17 +330,22 @@ float tvdb_surface_area(const tvdb_dense_grid* grid) {
     for (int iy = 0; iy < ny; ++iy) {
       for (int ix = 0; ix < nx; ++ix) {
         float c = grid->data[tvdb_idx(grid, ix, iy, iz)];
+        /* A voxel is inside iff it is strictly negative, the same test tvdb_volume
+           uses and the same one the fp64 twin and both measure shaders use. This
+           used to be `<= 0` here only, which counted exact-zero voxels as inside:
+           a grid containing a zero got a different answer from the fp32 and fp64
+           paths, and a different answer from tvdb_volume on the same data. */
         if (ix + 1 < nx) {
           float n = grid->data[tvdb_idx(grid, ix + 1, iy, iz)];
-          if ((c <= 0.0f) != (n <= 0.0f)) crossings += 1.0;
+          if ((c < 0.0f) != (n < 0.0f)) crossings += 1.0;
         }
         if (iy + 1 < ny) {
           float n = grid->data[tvdb_idx(grid, ix, iy + 1, iz)];
-          if ((c <= 0.0f) != (n <= 0.0f)) crossings += 1.0;
+          if ((c < 0.0f) != (n < 0.0f)) crossings += 1.0;
         }
         if (iz + 1 < nz) {
           float n = grid->data[tvdb_idx(grid, ix, iy, iz + 1)];
-          if ((c <= 0.0f) != (n <= 0.0f)) crossings += 1.0;
+          if ((c < 0.0f) != (n < 0.0f)) crossings += 1.0;
         }
       }
     }
@@ -461,7 +480,12 @@ static void tvdb_magnitude_impl(const tvdb_dense_vec_grid* vec, tvdb_dense_grid*
   const size_t nv = (size_t)vec->nx * vec->ny * vec->nz;
   for (size_t i = 0; i < nv; ++i) {
     float x = vec->data[i*3+0], y = vec->data[i*3+1], z = vec->data[i*3+2];
-    out->data[i] = sqrtf(x*x + y*y + z*z);
+    /* Scaled, for the same overflow reason as tvdb_normalize_vec_impl: a finite
+       vector above ~1.8e19 used to produce +inf here. */
+    float s = fmaxf(fabsf(x), fmaxf(fabsf(y), fabsf(z)));
+    out->data[i] = (s > 0.0f)
+      ? s * sqrtf((x/s)*(x/s) + (y/s)*(y/s) + (z/s)*(z/s))
+      : (isnan(x) || isnan(y) || isnan(z)) ? (x + y + z) : 0.0f;
   }
 }
 
@@ -471,12 +495,25 @@ static void tvdb_normalize_vec_impl(const tvdb_dense_vec_grid* vec, tvdb_dense_v
   const size_t nv = (size_t)vec->nx * vec->ny * vec->nz;
   for (size_t i = 0; i < nv; ++i) {
     float x = vec->data[i*3+0], y = vec->data[i*3+1], z = vec->data[i*3+2];
-    float m = sqrtf(x*x + y*y + z*z);
-    if (m > 0.0f) {
-      out->data[i*3+0] = x/m; out->data[i*3+1] = y/m; out->data[i*3+2] = z/m;
-    } else {
-      out->data[i*3+0] = out->data[i*3+1] = out->data[i*3+2] = 0.0f;
+    /* Scale first, then take the root. sqrtf(x*x+y*y+z*z) overflows to +inf for
+       a perfectly finite vector above ~1.8e19, and x/inf then silently writes 0
+       for a large-but-valid input. Scaling by the largest component keeps every
+       intermediate finite, and the result is the same to within a rounding step. */
+    float s = fmaxf(fabsf(x), fmaxf(fabsf(y), fabsf(z)));
+    if (!(s > 0.0f)) {
+      /* Zero vector, or a NaN component: s is NaN and this comparison is false.
+         Zero length has no direction, so 0 is the right answer there, but NaN in
+         has to stay NaN out -- the old `m > 0.0f` test zeroed it instead, so a
+         caller could not tell a zero vector from a poisoned one. */
+      if (isnan(x) || isnan(y) || isnan(z)) {
+        out->data[i*3+0] = x; out->data[i*3+1] = y; out->data[i*3+2] = z;
+      } else {
+        out->data[i*3+0] = out->data[i*3+1] = out->data[i*3+2] = 0.0f;
+      }
+      continue;
     }
+    const float inv = 1.0f / sqrtf((x/s)*(x/s) + (y/s)*(y/s) + (z/s)*(z/s));
+    out->data[i*3+0] = (x/s) * inv; out->data[i*3+1] = (y/s) * inv; out->data[i*3+2] = (z/s) * inv;
   }
 }
 
@@ -830,18 +867,48 @@ static void tvdb_rk_backtrace(const tvdb_dense_vec_grid* vel, float inv_h, float
   *bz = z + dt*(g1z + 2*g2z + 2*g3z + g4z)/6.0f;
 }
 
+// Min/max of the trilinear stencil of `field` at voxel coords (for clamping).
+static void tvdb_stencil_minmax(const tvdb_dense_grid* g, float vx, float vy, float vz,
+                                float* mn, float* mx);
+
 // Single semi-Lagrangian pass: result[x] = field(backtrace(x)).
-static void tvdb_advect_sl(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* vel,
-                           float dt, int order, tvdb_dense_grid* result) {
+//
+// `bounds`, when non-NULL, is a caller-supplied 2*N array that receives the
+// trilinear-stencil min and max of `field` at this voxel's backtrace point,
+// interleaved as (mn, mx). That is exactly what the MacCormack and BFECC clamp
+// steps need, and the backtrace depends only on the velocity, dt, order and
+// position -- never on which field is being advected -- so the first pass of
+// either scheme can produce those bounds for the later clamp step instead of the
+// clamp redoing a full RK2 backtrace per voxel. The backtrace is 2 vector
+// trilinear samples (48 taps); the min/max is 8 taps, and it replaces both the
+// backtrace and the min/max scan that used to follow it.
+//
+// Parallel because every output voxel is a pure gather from read-only inputs.
+// `result` must not alias `field` or `vel`; both public entry points guarantee
+// that by routing an overlapping call through a scratch buffer first.
+static void tvdb_advect_sl_ex(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* vel,
+                              float dt, int order, tvdb_dense_grid* result, float* bounds) {
   const int nx = field->nx, ny = field->ny, nz = field->nz;
   const float inv_h = 1.0f / field->voxel_size;
-  for (int iz = 0; iz < nz; ++iz)
-    for (int iy = 0; iy < ny; ++iy)
+  #pragma omp parallel for collapse(2) schedule(static)
+  for (int iz = 0; iz < nz; ++iz) {
+    for (int iy = 0; iy < ny; ++iy) {
       for (int ix = 0; ix < nx; ++ix) {
+        size_t i = tvdb_idx(result, ix, iy, iz);
         float bx, by, bz;
         tvdb_rk_backtrace(vel, inv_h, dt, order, (float)ix, (float)iy, (float)iz, &bx, &by, &bz);
-        result->data[tvdb_idx(result, ix, iy, iz)] = tvdb_sample_dense_voxel(field, bx, by, bz);
+        if (bounds) {
+          tvdb_stencil_minmax(field, bx, by, bz, &bounds[2 * i], &bounds[2 * i + 1]);
+        }
+        result->data[i] = tvdb_sample_dense_voxel(field, bx, by, bz);
       }
+    }
+  }
+}
+
+static void tvdb_advect_sl(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* vel,
+                           float dt, int order, tvdb_dense_grid* result) {
+  tvdb_advect_sl_ex(field, vel, dt, order, result, NULL);
 }
 
 // Min/max of the trilinear stencil of `field` at voxel coords (for clamping).
@@ -873,52 +940,76 @@ static void tvdb_advect_impl(const tvdb_dense_grid* field, const tvdb_dense_vec_
 
   const int nx = field->nx, ny = field->ny, nz = field->nz;
   const size_t n = (size_t)nx * ny * nz;
-  const float inv_h = 1.0f / field->voxel_size;
+  size_t bnd_bytes = 0;
   tvdb_dense_grid phat, pstar;
   tvdb_dense_grid_init(&phat, nx, ny, nz); phat.voxel_size = field->voxel_size;
   tvdb_dense_grid_init(&pstar, nx, ny, nz); pstar.voxel_size = field->voxel_size;
   if (!phat.data || !pstar.data) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return; }
 
+  /* Clamp bounds, produced by the first pass. Both schemes clamp against the
+     trilinear stencil of `field` at the RK2 backtrace point of each voxel, and
+     the backtrace is independent of the advected field -- `corr` in the BFECC
+     branch carries field->voxel_size, so inv_h and the trace are identical. One
+     buffer therefore serves both, and the clamp loops below become pure
+     elementwise. 2*N floats, and only when clamping was asked for. */
+  float* bounds = NULL;
+  if (clamp) {
+    if (!tvdb_size_mul(n, 2 * sizeof(float), &bnd_bytes)) {
+      tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return;
+    }
+    bounds = (float*)malloc(bnd_bytes);
+    if (!bounds) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return; }
+  }
+
   // Forward then backward advect (RK2 internally), giving a 2nd-order estimate
   // of the round-trip error (field - pstar).
-  tvdb_advect_sl(field, velocity, dt, 2, &phat);    // phat = A(field)
-  tvdb_advect_sl(&phat, velocity, -dt, 2, &pstar);  // pstar = A^-1(phat)
+  tvdb_advect_sl_ex(field, velocity, dt, 2, &phat, bounds);   // phat = A(field)
+  tvdb_advect_sl(&phat, velocity, -dt, 2, &pstar);             // pstar = A^-1(phat)
 
   if (scheme == TVDB_ADVECT_MACCORMACK) {
-    for (int iz = 0; iz < nz; ++iz)
-      for (int iy = 0; iy < ny; ++iy)
+    #pragma omp parallel for collapse(2) schedule(static)
+    for (int iz = 0; iz < nz; ++iz) {
+      for (int iy = 0; iy < ny; ++iy) {
         for (int ix = 0; ix < nx; ++ix) {
           size_t i = tvdb_idx(field, ix, iy, iz);
           float val = phat.data[i] + 0.5f * (field->data[i] - pstar.data[i]);
           if (clamp) {
-            float bx, by, bz, mn, mx;
-            tvdb_rk_backtrace(velocity, inv_h, dt, 2, (float)ix, (float)iy, (float)iz, &bx, &by, &bz);
-            tvdb_stencil_minmax(field, bx, by, bz, &mn, &mx);
+            const float mn = bounds[2 * i], mx = bounds[2 * i + 1];
             if (val < mn) val = mn; else if (val > mx) val = mx;
           }
           result->data[i] = val;
         }
+      }
+    }
   } else {  // BFECC: advect the error-corrected field forward.
     tvdb_dense_grid corr;
     tvdb_dense_grid_init(&corr, nx, ny, nz); corr.voxel_size = field->voxel_size;
-    if (!corr.data) { tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return; }
-    for (size_t i = 0; i < n; ++i)
-      corr.data[i] = field->data[i] + 0.5f * (field->data[i] - pstar.data[i]);
+    if (!corr.data) {
+      free(bounds);
+      tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar); return;
+    }
+    #pragma omp parallel for schedule(static)
+    for (long long i = 0; i < (long long)n; ++i) {
+      size_t k = (size_t)i;
+      corr.data[k] = field->data[k] + 0.5f * (field->data[k] - pstar.data[k]);
+    }
     tvdb_advect_sl(&corr, velocity, dt, 2, result);
     if (clamp) {
-      for (int iz = 0; iz < nz; ++iz)
-        for (int iy = 0; iy < ny; ++iy)
+      #pragma omp parallel for collapse(2) schedule(static)
+      for (int iz = 0; iz < nz; ++iz) {
+        for (int iy = 0; iy < ny; ++iy) {
           for (int ix = 0; ix < nx; ++ix) {
             size_t i = tvdb_idx(field, ix, iy, iz);
-            float bx, by, bz, mn, mx;
-            tvdb_rk_backtrace(velocity, inv_h, dt, 2, (float)ix, (float)iy, (float)iz, &bx, &by, &bz);
-            tvdb_stencil_minmax(field, bx, by, bz, &mn, &mx);
+            const float mn = bounds[2 * i], mx = bounds[2 * i + 1];
             if (result->data[i] < mn) result->data[i] = mn;
             else if (result->data[i] > mx) result->data[i] = mx;
           }
+        }
+      }
     }
     tvdb_dense_grid_free(&corr);
   }
+  free(bounds);
   tvdb_dense_grid_free(&phat); tvdb_dense_grid_free(&pstar);
 }
 
@@ -1038,6 +1129,13 @@ int tvdb_fast_sweeping(tvdb_dense_grid* grid, float frozen_band,
     for (size_t i = 0; i < N; ++i) {
         if (frozen[i]) continue;
         float a = absphi[i];
+        /* A voxel no sweep ever reached still holds the 1e30f sentinel it was
+           initialised with. Writing that back replaced the caller's value with a
+           ~1e30 sentinel and reported success, which is reachable whenever the
+           iteration budget runs out before the wavefront covers the grid (the
+           budget is clamped to >= 1). Leave the input value alone instead: a
+           partially-propagated field is the honest result for a truncated solve. */
+        if (a >= HUGE_VAL_F * 0.5f) continue;
         grid->data[i] = sign_pos[i] ? a : -a;
     }
     free(sign_pos); free(frozen); free(absphi);
@@ -1191,6 +1289,10 @@ void tvdb_csg_difference_d(const tvdb_dense_grid_d* a, const tvdb_dense_grid_d* 
 }
 
 double tvdb_volume_d(const tvdb_dense_grid_d* g) {
+  /* Guarded like the fp32 twin. These two used to dereference `g` on the first
+     line (g->voxel_size) with no null check, so a NULL argument was a segfault
+     where the fp32 path returned 0. */
+  if (!g || !g->data || g->nx <= 0 || g->ny <= 0 || g->nz <= 0) return 0.0;
   // Sum of voxel cells whose value is < 0.
   double cell = g->voxel_size * g->voxel_size * g->voxel_size;
   double vol = 0.0;
@@ -1203,6 +1305,9 @@ double tvdb_volume_d(const tvdb_dense_grid_d* g) {
 }
 
 double tvdb_surface_area_d(const tvdb_dense_grid_d* g) {
+  /* Same guard as tvdb_volume_d: a NULL grid or NULL data used to fault here
+     instead of returning 0, and the fp32 twin returns 0. */
+  if (!g || !g->data || g->nx <= 0 || g->ny <= 0 || g->nz <= 0) return 0.0;
   // Count zero-crossings over 6-neighbor edges; weight by voxel_size^2.
   double face = g->voxel_size * g->voxel_size;
   double area = 0.0;
@@ -1314,6 +1419,9 @@ int tvdb_fast_sweeping_d(tvdb_dense_grid_d* grid, double frozen_band,
   }
   for (size_t i = 0; i < N; ++i) {
     if (frozen[i]) continue;
+    /* Unreached voxels still hold the HUGE_D sentinel; keep the caller's value
+       rather than writing a 1e30 sentinel back. Same rule as the fp32 sweep. */
+    if (absphi[i] >= HUGE_D * 0.5) continue;
     grid->data[i] = sign_pos[i] ? absphi[i] : -absphi[i];
   }
   free(sign_pos); free(frozen); free(absphi);
@@ -1443,7 +1551,9 @@ void tvdb_advect_semi_lagrangian(const tvdb_dense_grid* field, const tvdb_dense_
       tvdb_buffers_overlap(velocity->data,vb,result->data,fb)) {
     tvdb_dense_grid tmp = *result; tmp.data = (float*)malloc(fb);
     if (!tmp.data) return;
-    memcpy(tmp.data,result->data,fb);
+    /* No copy into tmp: tvdb_advect_semi_lagrangian_impl writes every voxel
+       unconditionally, so result's prior contents are never read. The copy was a
+       full 4N-byte read plus write on the in-place path for nothing. */
     tvdb_advect_semi_lagrangian_impl(field,velocity,dt,&tmp);
     memcpy(result->data,tmp.data,fb); free(tmp.data);
   } else tvdb_advect_semi_lagrangian_impl(field,velocity,dt,result);
@@ -1465,7 +1575,7 @@ void tvdb_advect(const tvdb_dense_grid* field, const tvdb_dense_vec_grid* veloci
       tvdb_buffers_overlap(velocity->data,vb,result->data,fb)) {
     tvdb_dense_grid tmp = *result; tmp.data = (float*)malloc(fb);
     if (!tmp.data) return;
-    memcpy(tmp.data,result->data,fb);
+    /* As above: the impl writes every voxel, so the incoming value is not read. */
     tvdb_advect_impl(field,velocity,dt, scheme, clamp,&tmp);
     memcpy(result->data,tmp.data,fb); free(tmp.data);
   } else tvdb_advect_impl(field,velocity,dt, scheme, clamp,result);

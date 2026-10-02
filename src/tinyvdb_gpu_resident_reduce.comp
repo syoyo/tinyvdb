@@ -1,0 +1,18 @@
+#version 450
+layout(local_size_x=256) in;
+layout(std430,binding=0) readonly buffer Input { uint input_data[]; };
+layout(std430,binding=1) buffer Output { uint result[]; };
+layout(std140,binding=2) uniform Params { uint count; uint mode; } u;
+shared float a[256];shared float b[256];shared float c[256];shared float d[256];shared uint sums[256];
+void main(){
+    uint lane=gl_LocalInvocationID.x;
+    if(u.mode==2u){uint s=0u;for(uint i=lane;i<u.count;i+=256u)s+=input_data[i];sums[lane]=s;barrier();
+      for(uint k=128u;k>0u;k/=2u){if(lane<k)sums[lane]+=sums[lane+k];barrier();}if(lane==0u)result[0]=sums[0];return;}
+    float x=u.mode==0u?3.402823466e+38:0.0,y=-3.402823466e+38,z=0.0,w=0.0;
+    for(uint i=lane;i<u.count;i+=256u){float v=uintBitsToFloat(input_data[4u*i]);
+      x=u.mode==0u?min(x,v):x+v;y=max(y,uintBitsToFloat(input_data[4u*i+1u]));
+      z+=uintBitsToFloat(input_data[4u*i+2u]);w+=uintBitsToFloat(input_data[4u*i+3u]);}
+    a[lane]=x;b[lane]=y;c[lane]=z;d[lane]=w;barrier();
+    for(uint k=128u;k>0u;k/=2u){if(lane<k){a[lane]=u.mode==0u?min(a[lane],a[lane+k]):a[lane]+a[lane+k];b[lane]=max(b[lane],b[lane+k]);c[lane]+=c[lane+k];d[lane]+=d[lane+k];}barrier();}
+    if(lane==0u){result[0]=floatBitsToUint(a[0]);result[1]=floatBitsToUint(b[0]);result[2]=floatBitsToUint(c[0]);result[3]=floatBitsToUint(d[0]);}
+}

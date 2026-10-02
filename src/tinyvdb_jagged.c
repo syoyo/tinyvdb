@@ -145,27 +145,59 @@ static bool tvdb_jagged_reduce(const tvdb_jagged_t* jt, float* out, tvdb_reduce_
   if (!out || !tvdb_jagged_valid(jt) ||
       !tvdb_size_mul((size_t)jt->channels, sizeof(float), &width) ||
       !tvdb_batch_bytes(jt->num_lists, width, &bytes)) return false;
-  int c = jt->channels;
-  for (int64_t i = 0; i < jt->num_lists; ++i) {
-    int64_t s = jt->offsets[i + 1] - jt->offsets[i];
-    const float* base = jt->data ? jt->data + (size_t)jt->offsets[i] * (size_t)c : NULL;
-    for (int ch = 0; ch < c; ++ch) {
-      float acc = 0.0f;
-      if (s > 0) {
-        acc = base[ch];
-        for (int64_t e = 1; e < s; ++e) {
-          float v = base[(size_t)e * (size_t)c + ch];
-          switch (op) {
-            case TVDB_RED_SUM: case TVDB_RED_MEAN: acc += v; break;
-            case TVDB_RED_MAX: if (v > acc) acc = v; break;
-            case TVDB_RED_MIN: if (v < acc) acc = v; break;
-          }
-        }
-        if (op == TVDB_RED_MEAN) acc /= (float)s;
-      }
-      out[(size_t)i * (size_t)c + ch] = acc;
+  const int c = jt->channels;
+
+  /* Channel is the inner loop, not the outer one. The original read
+     base[e*c + ch] with ch outside, so every step advanced c floats and touched a
+     new cache line; with ch inside, a row is read once, contiguously, and the
+     per-channel accumulation vectorizes. Each channel still visits e in ascending
+     order, so the sums stay bit-identical to the previous loop -- this is a
+     reordering of the loops, not of the arithmetic. */
+  #define TVDB_JAGGED_ACC(I, STACKBUF)                                                      \
+    do {                                                                                     \
+      const int64_t i_ = (I);                                                                 \
+      const int64_t s_ = jt->offsets[i_ + 1] - jt->offsets[i_];                               \
+      const float* base_ = jt->data ? jt->data + (size_t)jt->offsets[i_] * (size_t)c : NULL;   \
+      float* acc_ = (STACKBUF);                                                                \
+      for (int ch = 0; ch < c; ++ch) acc_[ch] = 0.0f;                                          \
+      if (s_ > 0 && base_) {                                                                   \
+        for (int ch = 0; ch < c; ++ch) acc_[ch] = base_[ch];                                    \
+        for (int64_t e = 1; e < s_; ++e) {                                                      \
+          const float* row_ = base_ + (size_t)e * (size_t)c;                                      \
+          for (int ch = 0; ch < c; ++ch) {                                                        \
+            const float v_ = row_[ch];                                                            \
+            switch (op) {                                                                        \
+              case TVDB_RED_SUM: case TVDB_RED_MEAN: acc_[ch] += v_; break;                       \
+              case TVDB_RED_MAX: if (v_ > acc_[ch]) acc_[ch] = v_; break;                          \
+              case TVDB_RED_MIN: if (v_ < acc_[ch]) acc_[ch] = v_; break;                          \
+            }                                                                                     \
+          }                                                                                        \
+        }                                                                                          \
+        if (op == TVDB_RED_MEAN)                                                                  \
+          for (int ch = 0; ch < c; ++ch) acc_[ch] /= (float)s_;                                  \
+      }                                                                                            \
+      for (int ch = 0; ch < c; ++ch)                                                              \
+        out[(size_t)i_ * (size_t)c + ch] = acc_[ch];                                                \
+    } while (0)
+
+  /* Each list writes only its own c outputs and reads a read-only view, so the
+     outer loop parallelizes once the accumulator is per-thread rather than
+     shared. Channel counts are small in practice, so the accumulator lives on the
+     stack; a wider one falls back to a serial heap buffer. */
+  enum { TVDB_JAGGED_STACK_CHANNELS = 64 };
+  if (c <= TVDB_JAGGED_STACK_CHANNELS) {
+    #pragma omp parallel for schedule(static)
+    for (long long ii = 0; ii < (long long)jt->num_lists; ++ii) {
+      float accbuf[TVDB_JAGGED_STACK_CHANNELS];
+      TVDB_JAGGED_ACC((int64_t)ii, accbuf);
     }
+  } else {
+    float* accheap = (float*)malloc((size_t)c * sizeof(float));
+    if (!accheap) return false;
+    for (int64_t i = 0; i < jt->num_lists; ++i) TVDB_JAGGED_ACC(i, accheap);
+    free(accheap);
   }
+  #undef TVDB_JAGGED_ACC
   return true;
 }
 

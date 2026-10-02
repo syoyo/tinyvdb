@@ -161,7 +161,158 @@ static void test_ops_contract(void) {
     CHECK(!tvdb_sparse_conv3d(&a,&identity,1,1,1,0,&borrowed)); CHECK(a.values[0]==-1);
     tvdb_sparse_grid_free(&a); tvdb_sparse_grid_free(&b); tvdb_sparse_grid_free(&o);
 }
+/* Defects that were latent rather than loud: a NULL argument that faulted on one
+     precision and returned 0 on the other, a wrapped voxel count that read and
+     wrote out of bounds, a sentinel written back as if it were a result, a NaN
+     quietly turned into a zero, and a sign convention that disagreed between the
+     fp32 and fp64 paths. Each of these is a small guard; the point of collecting
+     them is that none of them had a test. */
+static void test_measure_and_guards(void) {
+    /* tvdb_volume_d / tvdb_surface_area_d dereferenced their argument on the
+       first line. Their fp32 twins return 0 for NULL, and the test suite only
+       ever exercised the twins. */
+    CHECK(tvdb_volume_d(NULL) == 0.0);
+    CHECK(tvdb_surface_area_d(NULL) == 0.0);
+    { tvdb_dense_grid_d gd; memset(&gd, 0, sizeof gd); gd.nx = gd.ny = gd.nz = 4;
+      CHECK(tvdb_volume_d(&gd) == 0.0);
+      CHECK(tvdb_surface_area_d(&gd) == 0.0);
+      gd.voxel_size = 0.5;
+      CHECK(tvdb_volume_d(&gd) == 0.0 && tvdb_surface_area_d(&gd) == 0.0); }
+
+    /* A voxel is inside iff strictly negative. tvdb_surface_area used `<= 0`
+       while tvdb_volume and both fp64 twins used `< 0`, so a grid containing an
+       exact zero got two different answers, and surface_area disagreed with
+       volume on identical data. Both must agree with volume now. */
+    { tvdb_dense_grid g; tvdb_dense_grid_init(&g, 2, 1, 1);
+      g.data[0] = -1.0f; g.data[1] = 0.0f;      /* one edge crosses, through the zero */
+      float area = tvdb_surface_area(&g);
+      float vol  = tvdb_volume(&g);
+      tvdb_dense_grid_d gd; memset(&gd, 0, sizeof gd);
+      gd.nx = 2; gd.ny = gd.nz = 1; gd.voxel_size = 1.0;
+      gd.data = (double*)malloc(2 * sizeof(double));
+      gd.data[0] = -1.0; gd.data[1] = 0.0;
+      CHECK(area == tvdb_surface_area_d(&gd));
+      CHECK(vol  == (float)tvdb_volume_d(&gd));
+      /* One face of area h^2 = 1, and one inside voxel of volume 1. The zero is
+         not inside, so it does not add a second crossing. */
+      CHECK(area == 1.0f);
+      CHECK(vol == 1.0f);
+      free(gd.data);
+      tvdb_dense_grid_free(&g); }
+
+    /* tvdb_prune_grid computed (size_t)nx*ny*nz behind only `g && g->data`, so a
+       negative extent wrapped to a huge count and the loop ran off the buffer in
+       both directions. */
+    { tvdb_dense_grid g; memset(&g, 0, sizeof g);
+      g.nx = -1; g.ny = 4; g.nz = 4; g.voxel_size = 1.0f;
+      g.data = (float*)malloc(16 * sizeof(float));
+      for (int i = 0; i < 16; ++i) g.data[i] = 0.0f;
+      tvdb_prune_grid(&g, 0.0f, 0.5f);          /* must not touch anything */
+      for (int i = 0; i < 16; ++i) CHECK(g.data[i] == 0.0f);
+      free(g.data);
+      tvdb_prune_grid(NULL, 0.0f, 0.5f); }
+
+    /* tvdb_ijk_to_world had no argument checks at all: five unconditional
+       dereferences and no overflow guard on n. */
+    { float vs[3] = {1,1,1}, org[3] = {0,0,0}; int32_t ijk[3] = {4,5,6};
+      float out[3] = {-1,-1,-1};
+      tvdb_ijk_to_world(NULL, 1, vs, org, out);
+      CHECK(out[0] == -1.0f && out[1] == -1.0f && out[2] == -1.0f);
+      tvdb_ijk_to_world(ijk, 1, vs, NULL, out);
+      CHECK(out[0] == -1.0f);
+      tvdb_ijk_to_world(ijk, 1, vs, org, NULL);
+      tvdb_ijk_to_world(ijk, SIZE_MAX, vs, org, out);
+      CHECK(out[0] == -1.0f);
+      /* And it still works for the ordinary case. */
+      tvdb_ijk_to_world(ijk, 1, vs, org, out);
+      CHECK(out[0] == 4.5f && out[1] == 5.5f && out[2] == 6.5f);
+      /* Round trip with the guarded sibling. */
+      int32_t back[3] = {-1,-1,-1};
+      tvdb_world_to_ijk(out, 1, vs, org, back);
+      CHECK(back[0] == 4 && back[1] == 5 && back[2] == 6); }
+}
+
+static void test_nonfinite_vectors(void) {
+    tvdb_dense_vec_grid v, w;
+    tvdb_dense_vec_grid_init(&v, 2, 1, 1);
+    tvdb_dense_vec_grid_init(&w, 2, 1, 1);
+    /* A NaN component must survive normalization. The old `m > 0.0f` test was
+       false for a NaN magnitude, so the branch took the zero path and a poisoned
+       vector came back as all zeros -- indistinguishable from a real zero. */
+    v.data[0] = NAN; v.data[1] = 1.0f; v.data[2] = 0.0f;
+    tvdb_normalize_vec(&v, &w);
+    CHECK(isnan(w.data[0]));
+    /* A zero-length vector has no direction and normalizes to zero. */
+    v.data[0] = 0.0f; v.data[1] = 0.0f; v.data[2] = 0.0f;
+    tvdb_normalize_vec(&v, &w);
+    CHECK(w.data[0] == 0.0f && w.data[1] == 0.0f && w.data[2] == 0.0f);
+    /* sqrtf(x*x+y*y+z*z) overflowed to +inf above ~1.8e19, and x/inf then wrote
+       0 for a large-but-finite vector. Normalized components must stay ~1. */
+    v.data[0] = 3.0e19f; v.data[1] = 4.0e19f; v.data[2] = 0.0f;
+    tvdb_normalize_vec(&v, &w);
+    CHECK(isfinite(w.data[0]) && isfinite(w.data[1]));
+    CHECK(fabsf(w.data[0] - 0.6f) < 1e-5f && fabsf(w.data[1] - 0.8f) < 1e-5f);
+    CHECK(fabsf(w.data[2]) < 1e-6f);
+    /* The magnitude must be finite too, and close to 5e19. */
+    tvdb_dense_grid m; tvdb_dense_grid_init(&m, 2, 1, 1);
+    v.data[0] = 3.0e19f; v.data[1] = 4.0e19f; v.data[2] = 0.0f;
+    tvdb_magnitude(&v, &m);
+    CHECK(isfinite(m.data[0]));
+    CHECK(fabsf(m.data[0] - 5.0e19f) / 5.0e19f < 1e-5f);
+    tvdb_dense_grid_free(&m);
+    tvdb_dense_vec_grid_free(&v); tvdb_dense_vec_grid_free(&w);
+}
+
+/* Fast sweeping initialises every non-frozen voxel to a 1e30 sentinel and
+   propagates outward from the frozen band. When nothing is inside the band there
+   is nothing to propagate from, so every voxel keeps the sentinel -- and the
+   write-back used to copy it into the caller's grid while returning success. The
+   GPU path already leaves such a field untouched, so this also aligns the CPU
+   with it. (A truncated budget is NOT a trigger: one sweep direction orders voxels
+   so a corner seed reaches the whole grid in a single pass, which is why the first
+   version of this test passed even against the broken code.) */
+static void test_sweeping_no_seed(void) {
+    const int n = 8;
+    const size_t nv = (size_t)n * n * n;
+    tvdb_dense_grid g; tvdb_dense_grid_init(&g, n, n, n); g.voxel_size = 1.0f;
+    /* A uniform positive field: |1.0| > band, so nothing is frozen. */
+    for (size_t i = 0; i < nv; ++i) g.data[i] = 1.0f;
+    float *before = (float*)malloc(nv * sizeof(float));
+    memcpy(before, g.data, nv * sizeof(float));
+    tvdb_fast_sweeping(&g, 0.2f, 5, 0.0f);
+    /* No sentinel, no nonfinite value: the field is untouched. */
+    for (size_t i = 0; i < nv; ++i) {
+        CHECK(isfinite(g.data[i]));
+        CHECK(fabsf(g.data[i]) < 1e6f);
+        CHECK(memcmp(&g.data[i], &before[i], sizeof(float)) == 0);
+    }
+    tvdb_dense_grid_free(&g);
+    free(before);
+    /* fp64 twin, same case. */
+    tvdb_dense_grid_d gd; memset(&gd, 0, sizeof gd);
+    gd.nx = gd.ny = gd.nz = n; gd.voxel_size = 1.0;
+    gd.data = (double*)malloc(nv * sizeof(double));
+    for (size_t i = 0; i < nv; ++i) gd.data[i] = 1.0;
+    tvdb_fast_sweeping_d(&gd, 0.2, 5, 0.0);
+    for (size_t i = 0; i < nv; ++i) {
+        CHECK(isfinite(gd.data[i]));
+        CHECK(fabs(gd.data[i]) < 1e6);
+        CHECK(gd.data[i] == 1.0);
+    }
+    free(gd.data);
+    /* And a real seed still solves, so the guard is not simply disabling the op. */
+    tvdb_dense_grid_init(&g, n, n, n); g.voxel_size = 1.0f;
+    for (size_t i = 0; i < nv; ++i) g.data[i] = 1.0f;
+    g.data[0] = -0.1f;
+    tvdb_fast_sweeping(&g, 0.2f, 50, 1e-6f);
+    CHECK(g.data[0] == -0.1f);
+    CHECK(fabsf(g.data[1]) > 0.0f && fabsf(g.data[1]) < 1e6f);
+    CHECK(fabsf(g.data[1] - 1.0f) > 1e-3f);   /* it actually moved */
+    tvdb_dense_grid_free(&g);
+}
+
 int main(void) {
     test_coordinates(); test_sparse(); test_median(); test_alloc_sizes(); test_ops_contract();
+    test_measure_and_guards(); test_nonfinite_vectors(); test_sweeping_no_seed();
     return failures != 0;
 }

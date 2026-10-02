@@ -10,7 +10,7 @@ layout(std140, set = 0, binding = 2) uniform Params {
 
 // Downsample by integer factor via block averaging (matches tvdb_coarsen_grid).
 void main() {
-  uint gid = gl_GlobalInvocationID.x;
+  uint gid = (gl_GlobalInvocationID.x+gl_GlobalInvocationID.y*gl_NumWorkGroups.x*gl_WorkGroupSize.x);
   uint total = uint(u.out_dim.x * u.out_dim.y * u.out_dim.z);
   if (gid >= total) return;
   int oz = int(gid) / (u.out_dim.x * u.out_dim.y);

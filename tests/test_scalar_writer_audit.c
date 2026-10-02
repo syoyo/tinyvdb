@@ -106,7 +106,7 @@ static int run_round_trip(const char *type_name, tvdb_value_type_t value_type,
 
     // Replace the file's first grid with our built grid (matches the
     // approach in tvdb_py_replace_grid_from_sparse).
-    tvdb_grid_destroy_owned(tmpl);
+    tvdb_grid_destroy(tmpl, &f.alloc);
     *tmpl = built;
 
     if (tvdb_file_save(&f, out_path, TVDB_COMPRESS_NONE, 0, 0, &err) != TVDB_OK) {

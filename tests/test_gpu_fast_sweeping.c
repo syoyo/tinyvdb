@@ -248,6 +248,80 @@ int main(int argc, char** argv) {
     }
   }
 
+  /* Descriptor-pool ceiling regression. fast_sweeping used to allocate one
+     descriptor set per wavefront plane from the shared pool (maxSets 1024), and
+     total_planes = 8*(3N-2), so every grid above N=43 failed with
+     VK_ERROR_OUT_OF_POOL_MEMORY. The cases above top out at 40^3 = 944 planes,
+     92% of the limit, which is why it went unnoticed. One dynamic-offset set
+     replaces all of them, so 64^3 (1520 planes) must now work -- and it has to
+     produce the same answer as the CPU reference, not merely not fail. */
+  {
+    const int N = 64;
+    const size_t n64 = (size_t)N * N * N;
+    static const struct { int N; float band; int iters; const char* note; } big[] = {
+      { 48, 0.40f, 3, "pool-ceiling-48" },
+      { 64, 0.30f, 3, "pool-ceiling-64" },
+    };
+    for (unsigned b = 0; b < sizeof(big) / sizeof(big[0]); ++b) {
+      const int M = big[b].N;
+      const size_t nm = (size_t)M * M * M;
+      tvdb_dense_grid cpu, gpu;
+      memset(&cpu, 0, sizeof cpu); memset(&gpu, 0, sizeof gpu);
+      cpu.nx = gpu.nx = cpu.ny = gpu.ny = cpu.nz = gpu.nz = M;
+      cpu.voxel_size = gpu.voxel_size = 1.0f;
+      cpu.data = (float*)malloc(nm * sizeof(float));
+      gpu.data = (float*)malloc(nm * sizeof(float));
+      /* A single seed in one corner, inside the frozen band, against a uniform
+         positive far field: the wavefront has to traverse the whole grid in every
+         direction, so a plane that never runs, or runs out of order, shows up as
+         a large disagreement rather than a small one. (A seed outside the band
+         would freeze nothing and the whole case would pass trivially.) */
+      for (size_t i = 0; i < nm; ++i) cpu.data[i] = 1.0f;
+      cpu.data[0] = -0.2f;
+      /* Sanity: the seed must actually be inside this case's band, or the case
+         measures nothing. */
+      if (!(cpu.data[0] < 0.0f && -cpu.data[0] <= big[b].band)) {
+        printf("  FAIL %-32s seed outside band %.2f\n", big[b].note, big[b].band);
+        ++g_failures;
+      }
+      memcpy(gpu.data, cpu.data, nm * sizeof(float));
+      int it_cpu = tvdb_fast_sweeping(&cpu, big[b].band, big[b].iters, 0.0f);
+      int it_gpu = -1;
+      tvdb_error_t pe; memset(&pe, 0, sizeof pe);
+      tvdb_status_t rs = tvdb_gpu_fast_sweeping(ctx, &gpu, big[b].band, big[b].iters, 0.0f, &it_gpu, &pe);
+      if (rs != TVDB_OK) {
+        printf("  FAIL %-32s %d^3 (%ld planes): %s\n", big[b].note, M,
+               8L * (3L * M - 2L), pe.message);
+        ++g_failures;
+      } else {
+        double maxabs = 0.0, scale = 0.0;
+        for (size_t i = 0; i < nm; ++i) {
+          double d = (double)cpu.data[i] - (double)gpu.data[i];
+          if (d < 0) d = -d;
+          if (d > maxabs) maxabs = d;
+          if (fabs(cpu.data[i]) > scale) scale = fabs(cpu.data[i]);
+        }
+        /* The same sqrt-tolerance derivation the cases above use, so a wrong
+           plane order (an O(scale) disagreement) still cannot pass: the chain is
+           ~scale/h updates and GLSL sqrtf may differ by 2 ULP per step, with the
+           tolerance guarded at 1e-3 relative. */
+        double steps = scale / (double)cpu.voxel_size;
+        double tol = 1e-6 * scale * (steps > 1.0 ? steps : 1.0);
+        double guard = 1e-3 * scale;
+        if (maxabs > tol || maxabs > guard || it_gpu != it_cpu) {
+          printf("  FAIL %-32s %d^3 maxabs %.3e (tol %.3e guard %.3e) it=%d/%d\n",
+                 big[b].note, M, maxabs, tol, guard, it_gpu, it_cpu);
+          ++g_failures;
+        } else {
+          printf("  ok   %-32s %d^3 (%ld planes) it=%d/%d maxabs %.3e\n",
+                 big[b].note, M, 8L * (3L * M - 2L), it_gpu, it_cpu, maxabs);
+        }
+      }
+      free(cpu.data); free(gpu.data);
+    }
+    (void)n64;
+  }
+
   EXPECT(g_failures == 0);
   tvdb_gpu_context_destroy(ctx);
   printf("fast sweeping parity: %s\n", g_failures ? "FAIL" : "OK");

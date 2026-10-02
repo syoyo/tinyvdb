@@ -6,6 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The reshape and pool loops below are `collapse(2)` over (iz, iy): each output
+ * voxel is a pure function of its own input window, and partitioning by z-plane
+ * keeps every thread's writes contiguous, so there is nothing to synchronize.
+ * They were serial even though every comparable kernel in tinyvdb_ops.c is
+ * parallel. schedule(static) keeps the result independent of the thread count.
+ * tvdb_merge_grids is the exception -- see the note on MERGE_FROM. */
+
 static void* tvdb_alloc_or_arena(size_t bytes, tvdb_arena_allocator_t* arena) {
   if (arena) return tvdb_arena_alloc(arena, bytes);
   return malloc(bytes);
@@ -39,6 +46,7 @@ bool tvdb_coarsen_grid(const tvdb_dense_grid* in,
                         in->ox, in->oy, in->oz, arena);
   if (!out->data) return false;
 
+  #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
     for (int iy = 0; iy < ny; ++iy) {
       for (int ix = 0; ix < nx; ++ix) {
@@ -114,9 +122,13 @@ bool tvdb_resample_grid(const tvdb_dense_grid* in,
   tvdb_init_grid_buffer(out, nx, ny, nz, voxel_size, in->ox, in->oy, in->oz, arena);
   if (!out->data) return false;
 
+  #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
-    float wz = out->oz + ((float)iz + 0.5f) * voxel_size;
     for (int iy = 0; iy < ny; ++iy) {
+      /* Inside the collapsed pair, not between the loops: collapse(2) needs the
+         loops perfectly nested, and hoisting these two lines out of the body is
+         what broke that. */
+      float wz = out->oz + ((float)iz + 0.5f) * voxel_size;
       float wy = out->oy + ((float)iy + 0.5f) * voxel_size;
       for (int ix = 0; ix < nx; ++ix) {
         float wx = out->ox + ((float)ix + 0.5f) * voxel_size;
@@ -147,9 +159,10 @@ bool tvdb_refine_grid(const tvdb_dense_grid* in,
                         in->ox, in->oy, in->oz, arena);
   if (!out->data) return false;
 
+  #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
-    float wz = out->oz + ((float)iz + 0.5f) * new_vs;
     for (int iy = 0; iy < ny; ++iy) {
+      float wz = out->oz + ((float)iz + 0.5f) * new_vs;
       float wy = out->oy + ((float)iy + 0.5f) * new_vs;
       for (int ix = 0; ix < nx; ++ix) {
         float wx = out->ox + ((float)ix + 0.5f) * new_vs;
@@ -161,9 +174,16 @@ bool tvdb_refine_grid(const tvdb_dense_grid* in,
 }
 
 void tvdb_prune_grid(tvdb_dense_grid* g, float background, float tolerance) {
-  if (!g || !g->data) return;
-  size_t n = (size_t)g->nx * (size_t)g->ny * (size_t)g->nz;
-  for (size_t i = 0; i < n; ++i) {
+  /* The voxel count used to be computed behind only `g && g->data`, so a
+     negative extent made (size_t)nx*ny*nz wrap to a huge value and the loop both
+     read and wrote out of bounds. Every sibling in this file goes through
+     tvdb_grid_valid; do the same. */
+  if (!g || !g->data || g->nx <= 0 || g->ny <= 0 || g->nz <= 0) return;
+  size_t n;
+  if (!tvdb_grid_bytes(g->nx, g->ny, g->nz, sizeof(float), &n)) return;
+  n /= sizeof(float);
+  #pragma omp parallel for schedule(static)
+  for (long long i = 0; i < (long long)n; ++i) {
     if (fabsf(g->data[i] - background) <= tolerance) g->data[i] = background;
   }
 }
@@ -201,6 +221,7 @@ bool tvdb_clip_grid(const tvdb_dense_grid* in,
                         in->oz + (float)z0 * vs,
                         arena);
   if (!out->data) return false;
+  #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
     for (int iy = 0; iy < ny; ++iy) {
       for (int ix = 0; ix < nx; ++ix) {
@@ -251,9 +272,13 @@ bool tvdb_merge_grids(const tvdb_dense_grid* a,
   if (!out->data) return false;
   // fill with background
   size_t total = (size_t)nx * (size_t)ny * (size_t)nz;
-  for (size_t i = 0; i < total; ++i) out->data[i] = background;
+  #pragma omp parallel for schedule(static)
+  for (long long i = 0; i < (long long)total; ++i) out->data[i] = background;
 
   // Helper to splat one input into out using min for SDF union semantics.
+  // Deliberately serial: every voxel is a read-modify-write min on out->data,
+  // and the two splats can land on the same output voxel, so parallelising
+  // it would drop updates. Only the background fill above is independent.
   #define MERGE_FROM(SRC) do {                                                  \
     int sx0 = (int)roundf(((SRC)->ox - ox) / vs);                               \
     int sy0 = (int)roundf(((SRC)->oy - oy) / vs);                               \
@@ -288,6 +313,7 @@ static void tvdb_pool_impl(const tvdb_dense_grid* in,
                         in->ox, in->oy, in->oz, arena);
   if (!out->data) return;
 
+  #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
     for (int iy = 0; iy < ny; ++iy) {
       for (int ix = 0; ix < nx; ++ix) {

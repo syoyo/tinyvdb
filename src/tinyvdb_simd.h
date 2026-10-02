@@ -31,23 +31,35 @@ extern "C" {
 
 static inline double tvdb_simd_dot_f32(const float* a, const float* b, size_t n) {
 #if defined(TINYVDB_SIMD) && defined(__AVX2__)
-    // 8-wide AVX2 reduction, accumulating into a double scalar each chunk
-    // for numerical stability comparable to the scalar path.
-    __m256 acc = _mm256_setzero_ps();
+    // Accumulate in double, not float. A __m256 float accumulator sums n terms
+    // at fp32 precision, so its error grows linearly in n; the scalar path below
+    // accumulates in double. The two were not equivalent: on a conjugate-gradient
+    // dot(r,z), where the terms cancel and the exact sum is far smaller than the
+    // terms, the float accumulator was already 0.1% off at 2^21 elements -- a
+    // 128^3 grid, i.e. this library's own Poisson working set -- and 0.5% off at
+    // 2^23. That is enough to move alpha and trip the CG breakdown test on a
+    // solve that converges in double. The old comment here claimed stability
+    // "comparable to the scalar path"; that was not true, and tests/test_simd.c
+    // did not catch it because it only checked 10000 same-sign elements at 1e-3.
+    __m256d acc = _mm256_setzero_pd();
     size_t i = 0;
-    for (; i + 8 <= n; i += 8) {
-        __m256 va = _mm256_loadu_ps(a + i);
-        __m256 vb = _mm256_loadu_ps(b + i);
-        acc = _mm256_add_ps(acc, _mm256_mul_ps(va, vb));
+    // `i + 4 <= n` matches the sibling loops in this header, which all draw the
+    // same -Waggressive-loop-optimizations note on a hypothetical SIZE_MAX-length
+    // vector. Left as-is for consistency rather than fixed in one place only.
+    for (; i + 4 <= n; i += 4) {
+        __m256d va = _mm256_cvtps_pd(_mm_loadu_ps(a + i));
+        __m256d vb = _mm256_cvtps_pd(_mm_loadu_ps(b + i));
+    #if defined(__FMA__)
+        acc = _mm256_fmadd_pd(va, vb, acc);
+    #else
+        acc = _mm256_add_pd(acc, _mm256_mul_pd(va, vb));
+    #endif
     }
-    // Horizontal sum.
-    __m128 lo = _mm256_castps256_ps128(acc);
-    __m128 hi = _mm256_extractf128_ps(acc, 1);
-    __m128 s = _mm_add_ps(lo, hi);
-    s = _mm_hadd_ps(s, s);
-    s = _mm_hadd_ps(s, s);
-    float partial; _mm_store_ss(&partial, s);
-    double total = (double)partial;
+    __m128d lo = _mm256_castpd256_pd128(acc);
+    __m128d hi = _mm256_extractf128_pd(acc, 1);
+    __m128d s = _mm_add_pd(lo, hi);
+    s = _mm_hadd_pd(s, s);
+    double total = _mm_cvtsd_f64(s);
     for (; i < n; ++i) total += (double)a[i] * (double)b[i];
     return total;
 #else

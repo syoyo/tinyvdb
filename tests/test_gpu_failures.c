@@ -65,6 +65,84 @@ static int test_composite_backend_selection(void) {
     }
     return 0;
 }
+static int resident_live, resident_launches, resident_fail_launch, resident_pending, resident_early_free;
+static int resident_alloc_calls,resident_fail_alloc,resident_poisson_probe;
+static CUresult resident_alloc(CUdeviceptr* p,size_t n){if(++resident_alloc_calls==resident_fail_alloc)return 2;void* v=malloc(n);if(!v)return 2;*p=(CUdeviceptr)(uintptr_t)v;++resident_live;return 0;}
+static CUresult resident_free(CUdeviceptr p){if(resident_pending)++resident_early_free;free((void*)(uintptr_t)p);--resident_live;return 0;}
+static CUresult resident_upload(CUdeviceptr p,const void* src,size_t n){memcpy((void*)(uintptr_t)p,src,n);return 0;}
+static CUresult resident_download(void* dst,CUdeviceptr p,size_t n){(void)p;memset(dst,0,n);return 0;}
+static CUresult resident_lookup(CUfunction* f,CUmodule m,const char* name){(void)m;(void)name;*f=(CUfunction)(uintptr_t)1;return 0;}
+static CUresult resident_launch(CUfunction f,unsigned int x,unsigned int y,unsigned int z,unsigned int bx,unsigned int by,unsigned int bz,unsigned int sh,void* stream,void** args,void** extra){
+    (void)f;(void)x;(void)y;(void)z;(void)bx;(void)by;(void)bz;(void)sh;(void)stream;(void)extra;
+    if(++resident_launches==resident_fail_launch)return 1;
+    resident_pending=1;
+    /* Deliberately clobber the scratch output before a subsequent launch fails. */
+    CUdeviceptr dst=*(CUdeviceptr*)args[resident_poisson_probe?2:1];*(float*)(uintptr_t)dst=-99;return 0;
+}
+static CUresult resident_sync(void){resident_pending=0;return 0;}
+static int test_poisson_failure(void){
+    /* Failure at workspace/uniform allocation or any launch in the first batch
+     * must retain the input/output handles and release every temporary. */
+    for(int precision=0;precision<3;++precision)for(int allocation=0;allocation<=1;++allocation)
+    for(int step=1;step<=(allocation?7:4);++step){
+        tvdb_gpu_context_t ctx;memset(&ctx,0,sizeof(ctx));ctx.backend=TVDB_GPU_BACKEND_CUDA;ctx.cu_module=(CUmodule)(uintptr_t)1;
+        ctx.cuda.cuMemAlloc=resident_alloc;ctx.cuda.cuMemFree=resident_free;ctx.cuda.cuMemcpyHtoD=resident_upload;ctx.cuda.cuMemcpyDtoH=resident_download;
+        ctx.cuda.cuModuleGetFunction=resident_lookup;ctx.cuda.cuLaunchKernel=resident_launch;ctx.cuda.cuCtxSynchronize=resident_sync;
+        tvdb_gpu_grid_desc_t desc={2,1,1,1,precision==2?TVDB_GPU_F64:TVDB_GPU_F32,0,0,0,1};
+        tvdb_gpu_dense_grid_t *r=NULL,*x=NULL;size_t bytes=precision==2?16:8;
+        float rf[2]={1,-1},xf[2]={42,42};double rd[2]={1,-1},xd[2]={42,42};
+        resident_fail_alloc=0;resident_fail_launch=0;
+        if(tvdb_gpu_dense_grid_create(&ctx,&desc,&r,NULL)!=TVDB_OK || tvdb_gpu_dense_grid_create(&ctx,&desc,&x,NULL)!=TVDB_OK)return 1;
+        if(tvdb_gpu_dense_grid_upload(r,precision==2?(const void*)rd:(const void*)rf,bytes,NULL)!=TVDB_OK ||
+           tvdb_gpu_dense_grid_upload(x,precision==2?(const void*)xd:(const void*)xf,bytes,NULL)!=TVDB_OK)return 1;
+        resident_alloc_calls=resident_launches=0;resident_fail_alloc=allocation?step:0;resident_fail_launch=allocation?0:step;resident_poisson_probe=1;
+        tvdb_gpu_buffer_t* original=x->values;tvdb_poisson_result_t result;
+        if(tvdb_gpu_poisson_resident(&ctx,r,x,precision,2,1e-6,&result,NULL)!=TVDB_ERROR_IO || x->values!=original ||
+           memcmp((void*)(uintptr_t)x->values->cu,precision==2?(const void*)xd:(const void*)xf,bytes) ||
+           memcmp((void*)(uintptr_t)r->values->cu,precision==2?(const void*)rd:(const void*)rf,bytes) ||
+           resident_live!=2 || ctx.resident_metrics.live_bytes!=2*bytes || resident_early_free)return 1;
+        resident_poisson_probe=resident_fail_alloc=resident_fail_launch=0;
+        tvdb_gpu_dense_grid_destroy(r);tvdb_gpu_dense_grid_destroy(x);
+        if(resident_live || resident_pending || ctx.resident_metrics.live_bytes)return 1;
+    }
+    /* The shader uses uint word offsets; reject overflow before allocating. */
+    for(int precision=0;precision<3;++precision){
+        tvdb_gpu_context_t ctx;memset(&ctx,0,sizeof(ctx));ctx.backend=TVDB_GPU_BACKEND_CUDA;
+        tvdb_gpu_dense_grid_t g;memset(&g,0,sizeof(g));g.ctx=&ctx;g.desc.channels=1;g.desc.voxel_size=1;
+        g.desc.type=precision==2?TVDB_GPU_F64:TVDB_GPU_F32;
+        g.count=UINT32_MAX/(precision==0?10u:precision==1?16u:18u)+1u;
+        tvdb_poisson_result_t result;
+        if(tvdb_gpu_poisson_resident(&ctx,&g,&g,precision,1,1e-6,&result,NULL)!=TVDB_ERROR_INVALID_ARGUMENT)return 1;
+    }
+    return 0;
+}
+static int test_resident_failure(void){
+    for(int step=1;step<=3;++step){
+        tvdb_gpu_context_t ctx;memset(&ctx,0,sizeof(ctx));ctx.backend=TVDB_GPU_BACKEND_CUDA;ctx.cu_module=(CUmodule)(uintptr_t)1;
+        ctx.cuda.cuMemAlloc=resident_alloc;ctx.cuda.cuMemFree=resident_free;ctx.cuda.cuMemcpyHtoD=resident_upload;
+        ctx.cuda.cuModuleGetFunction=resident_lookup;ctx.cuda.cuLaunchKernel=resident_launch;ctx.cuda.cuCtxSynchronize=resident_sync;
+        tvdb_gpu_grid_desc_t desc={1,1,1,1,TVDB_GPU_F32,0,0,0,1};tvdb_gpu_dense_grid_t* g=NULL;
+        if(tvdb_gpu_dense_grid_create(&ctx,&desc,&g,NULL)!=TVDB_OK)return 1;
+        float value=42;if(tvdb_gpu_dense_grid_upload(g,&value,4,NULL)!=TVDB_OK)return 1;
+        resident_launches=0;resident_fail_launch=step;tvdb_gpu_buffer_t* original=g->values;
+        if(tvdb_gpu_filter_resident(&ctx,g,0,1,1,NULL)!=TVDB_ERROR_IO || g->values!=original || *(float*)(uintptr_t)original->cu!=42)return 1;
+        tvdb_gpu_dense_grid_destroy(g);
+        if(resident_live || resident_early_free || ctx.resident_metrics.live_bytes)return 1;
+    }
+    tvdb_gpu_context_t ctx;memset(&ctx,0,sizeof(ctx));ctx.backend=TVDB_GPU_BACKEND_VULKAN;
+    tvdb_gpu_buffer_t* overflow=NULL;ctx.resident_metrics.live_bytes=SIZE_MAX;
+    if(tvdb_gpu_buffer_create_device(&ctx,4,&overflow,NULL)!=TVDB_ERROR_INVALID_ARGUMENT || overflow)return 1;
+    ctx.resident_metrics.live_bytes=0;
+    tvdb_resident_topology* topology=NULL;
+    if(resident_topology_alloc(&ctx,(size_t)(1u<<29)+1,&topology,NULL)!=TVDB_ERROR_INVALID_ARGUMENT || topology)return 1;
+    ctx.pipeline_cache_count=TVDB_VK_PIPELINE_CACHE_MAX;
+    uint32_t types[1]={VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};tvdb_vk_pipeline_entry* pe=NULL;
+    static const unsigned char code[4]={1,2,3,4};
+    if(tvdb_vk_get_pipeline(&ctx,code,4,1,types,&pe,NULL,NULL)!=TVDB_ERROR_OUT_OF_MEMORY || pe)return 1;
+    tvdb_gpu_resident_dispatch_t spec;memset(&spec,0,sizeof(spec));
+    if(tvdb_gpu_dispatch_resident(&ctx,&spec,1,NULL)!=TVDB_ERROR_INVALID_ARGUMENT)return 1;
+    return 0;
+}
 int main(void) {
     tvdb_gpu_context_t ctx; memset(&ctx, 0, sizeof(ctx));
     ctx.device = (VkDevice)(uintptr_t)1;
@@ -94,5 +172,5 @@ int main(void) {
     tvdb_gpu_dispatch_spec_t spec; memset(&spec, 0, sizeof(spec));
     spec.bindings = &binding; spec.num_bindings = 1;
     if (tvdb_gpu_dispatch(&ctx, &spec, NULL) != TVDB_ERROR_INVALID_ARGUMENT) return 1;
-    return test_composite_backend_selection();
+    return test_composite_backend_selection() || test_resident_failure() || test_poisson_failure();
 }

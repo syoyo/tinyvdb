@@ -137,3 +137,36 @@ jobs:
       - name: Verify binaries
         run: |
           dir build\Release\*.exe
+
+  # Native SDF task backends, including libdispatch on Apple hardware.
+  sdf-threading:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            backend: C11
+          - os: ubuntu-latest
+            backend: PTHREAD
+          - os: ubuntu-latest
+            backend: NONE
+          - os: macos-latest
+            backend: GCD
+          - os: macos-latest
+            backend: PTHREAD
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure SDF tests
+        run: |
+          cmake -S . -B build-sdf -DCMAKE_BUILD_TYPE=Release \
+            -DTINYVDB_THREAD_BACKEND=${{ matrix.backend }} \
+            -DTINYVDB_BUILD_TESTS=ON -DTINYVDB_BUILD_GPU=OFF \
+            -DTINYVDB_BUILD_EXAMPLES=OFF -DTINYVDB_BUILD_VDBRENDER=OFF \
+            -DTINYVDB_OPENMP=OFF
+      - name: Build SDF tests
+        run: cmake --build build-sdf --parallel 4
+      - name: Run SDF, mesh conversion, and task regressions
+        run: ctest --test-dir build-sdf -R 'test_(sdf_tree|mesh_conversion.*|thread_pool.*)' --output-on-failure

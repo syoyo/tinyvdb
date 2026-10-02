@@ -2131,3 +2131,819 @@ Validation: all 22 CPU tests passed under ASan/UBSan (LeakSanitizer disabled
 for the existing environment limitation) and in the OpenMP build with eight
 threads. `git diff --check` passed. No performance claim is made for these
 additional validation checks.
+
+## Follow-up: op review, hardening and threading (2026-10-02)
+
+A review of the volume ops against three axes -- correctness, threading, memory --
+turned up more in the GPU backend than in the CPU kernels, and one CPU measurement
+that turned out to be far worse than the tables above suggest.
+
+Machine for the numbers below: AMD Threadripper 1950X, 32 threads, AVX2, 122 GB
+RAM. Release build, `TINYVDB_OPENMP=ON`, `TINYVDB_SIMD=ON`. Pinned with
+`taskset -c 0-7`, `OMP_PROC_BIND=true`, `OMP_PLACES=cores`, best of 5 paired runs,
+`--reps 10` unless stated. Measurements are local, not portable speed claims.
+
+### Two defects that were not hypothetical
+
+`tvdb_gpu_fast_sweeping` allocated one descriptor set per wavefront plane from the
+shared pool, and `total_planes = 8*(3N-2)`. The pool's `maxSets` is 1024, so every
+grid above **43 voxels per axis** failed with `VK_ERROR_OUT_OF_POOL_MEMORY`:
+
+| grid | planes | before | after |
+|------|--------|--------|-------|
+| 40^3 (the suite's largest case) | 944 | OK | OK |
+| 44^3 | 1040 | `VK_ERROR_OUT_OF_POOL_MEMORY` | OK |
+| 48^3 | 1136 | `VK_ERROR_OUT_OF_POOL_MEMORY` | OK |
+| 64^3 | 1520 | `VK_ERROR_OUT_OF_POOL_MEMORY` | OK |
+| 80^3 | 1904 | `VK_ERROR_OUT_OF_POOL_MEMORY` | OK |
+
+The suite's largest case was 40^3 = 944 planes, 92% of the limit, which is why
+this survived. The chain is now **one** descriptor set with a dynamic uniform
+offset selecting the plane's 256-byte slice, so there is no ceiling and no
+per-plane `vkAllocateDescriptorSets`/`UpdateDescriptorSets` pair. A new
+`pool-ceiling-48` / `pool-ceiling-64` pair in `test_gpu_fast_sweeping` compares
+against the serial CPU reference; reinstating a pool-sized cap fails them.
+
+Two things had to be true for that to work, and both were found the hard way on
+the device: the set must be allocated from *the same* `VkDescriptorSetLayout`
+handle the pipeline layout was built from (an "identically defined" layout is legal
+but faults on at least one driver, hence `tvdb_vk_get_pipeline`), and
+`dynamicOffsetCount` must equal the number of dynamic bindings even when the offset
+is 0, which is plane 0.
+
+`tvdb_gpu_solve_poisson_d_ex` and `_dd_ex` never worked on CUDA. They requested a
+kernel symbol `tvdb_cuda_stencil_d`, which is the name of a *host wrapper* in
+`tinyvdb_gpu.c`, not a kernel; the real kernel is `tvdb_cuda_stencil_scalar_d`. Every
+fp64 Poisson solve on CUDA returned `CUDA_ERROR_NOT_FOUND` at module load. The fp32
+spelling was already correct, which is why only the `_d` and `_dd` paths were
+broken and only `test_gpu_poisson_cuda` noticed.
+
+### CPU fixes with tests
+
+`test_hardening` gained `test_measure_and_guards`, `test_nonfinite_vectors` and
+`test_sweeping_no_seed`. Each was checked to fail against the code it covers:
+`tvdb_volume_d(NULL)` and `tvdb_surface_area_d(NULL)` segfaulted (the fp32 twins
+return 0); `tvdb_prune_grid` with a negative extent was an ASan heap-buffer-overflow
+in both directions; `tvdb_ijk_to_world` dereferenced all five of its pointer
+arguments unconditionally.
+
+`tvdb_surface_area` counted exact-zero voxels as inside (`<= 0`) while `tvdb_volume`
+and both fp64 twins used `< 0`, so one grid got two different answers. All four and
+both measure shaders now agree on `< 0`. `measure.comp` changed with it, so CPU/GPU
+parity holds.
+
+`tvdb_normalize_vec` turned a NaN component into a zero -- indistinguishable from a
+genuine zero vector -- and `sqrtf(x*x+y*y+z*z)` overflowed to `+inf` above ~1.8e19,
+silently zeroing a large but finite vector. Both are scaled now.
+
+`tvdb_fast_sweeping` copied its 1e30 "unreached" sentinel into the caller's grid
+when nothing was frozen (band=0, or a field with no voxel inside the band) and
+reported success. The GPU path had the same bug; `test_gpu_fast_sweeping`'s
+`band-zero-unsolved` case is what pinned it, and the CPU/GPU disagreement is why
+that test started failing once the CPU side was fixed.
+
+### Threading: three files had no pragmas at all
+
+`tinyvdb_topology.c`, `tinyvdb_grid_index.c` and `tinyvdb_jagged.c` contained zero
+`omp` directives while `tinyvdb_ops.c` had 20 and `tinyvdb_poisson.c` 17. Every
+loop in them is independent -- each output element a pure function of its own input
+window, against a hash that is read-only once built -- so they all take
+`collapse(2) schedule(static)` now. `tvdb_merge_grids` is the deliberate exception:
+its splat is a read-modify-write min from two grids onto the same output voxel, so
+only the background fill is parallel. `tvdb_jagged_reduce` also had the channel loop
+outside the element loop, so every step advanced `c` floats and touched a new cache
+line; channel is now innermost, which leaves the per-channel summation order
+untouched and so keeps the result bit-identical.
+
+`tests/test_threads.c` is new and is the reason any of this is pinned. It runs
+every parallel op at one thread and again at the widest team and requires
+bit-identical results via `memcmp`. Nothing in the suite asserted this before: no
+test called `omp_set_num_threads` and no ctest set `OMP_NUM_THREADS`, so each test
+ran once at whatever the host defaulted to. It was validated by making
+`tvdb_prune_grid` accumulate racy into a `static`, which it reports as
+`prune_grid differs at element 175/12312`. Its leak checking also found two real
+leaks, both since fixed: the marching-cubes edge cache was never released
+(`edge_cache_free` added), and `tvdb_mesh_to_sdf` never freed its per-face normal
+table.
+
+### Measured: CPU
+
+`tree_dilate` (icosahedron, 364k active voxels, 8 threads, medians of five):
+
+| phase | ms | note |
+|-------|----|------|
+| baseline | 2075 | |
+| leaf hash hoisted out of `dilate_step`, set-bit mask iteration | 2044 | the O(count x leaves) repack scan is gone |
+| + first-occurrence bitmap from `tvdb_hash_build` | **1932** | removes a hash probe per input voxel |
+
+The leaf hash was rebuilt identically on every iteration inside `dilate_step` and
+then discarded, and the per-output-voxel repack used a linear scan over leaves to
+find a leaf that hash already indexed. Both now go through one table built once.
+
+`mesh_to_sdf` is the slowest op in the library by more than an order of magnitude,
+and the tables above do not show it because the harness times the whole
+sphere -> mesh -> sphere round trip. Measured directly (98,684 faces from a 128^3
+sphere, output 109^3):
+
+| threads | before | after | |
+|---------|--------|-------|---|
+| 1 | 19.50 s | **16.72 s** | -14% |
+| 8 | 4.42 s | **3.39 s** | -23% |
+
+Three changes, all bit-exact against the original (verified by dumping the rebuilt
+grid and diffing): a per-triangle AABB reject before the closest-point case
+analysis; the two per-face bound arrays interleaved into one, so a face's box is 24
+contiguous bytes instead of two cache lines; and coherent query seeding -- `x` is
+the inner loop, so consecutive voxels are one voxel apart and share a nearest
+triangle, and seeding each search with the previous voxel's winner starts the
+traversal with a nearly tight bound.
+
+That last one is worth recording as a trap. The first version seeded `best_dsq`
+straight from the previous voxel and measured 6.3x, but that number was wrong: the
+seed's distance belongs to the *neighbouring* voxel, and reusing it as this voxel's
+bound over-prunes. The symptom was visible only because `test_levelset` failed --
+and when it did, dumping the grid and diffing against the original located it in
+one step. The seed has to be re-measured at the current position, which is what
+makes it exact, and that version is 14% rather than 6.3x.
+
+Poisson CG (128^3, 200 fixed iterations, so no tolerance early-exit):
+
+| precision | 1 thread | 8 threads |
+|-----------|----------|-----------|
+| fp32 | 8829 -> **7091** ms | 2560 -> **1613** ms |
+| fp64 internal | 8617 -> **7529** ms | 4519 -> **4125** ms |
+| fp64 storage | 8612 -> **7437** ms | 4564 -> **4160** ms |
+
+The candidate residual stencil ran every iteration, a second full 7-point
+application whose only jobs are to report `final_residual_norm` and pick the
+returned iterate. Neither the convergence test (a cheap residual dot) nor the
+restart test reads it, so it now runs every eighth iteration plus on the last one
+and on convergence. The serial per-voxel conversion loop with its early-exit
+`isfinite` became one parallel pass with a reduction flag. fp64 scales much worse
+(1.8x rather than 4.4x) because 128^3 doubles is a 117 MB working set against a
+~32 MB L3 -- memory-bound, not thread-bound.
+
+Separable filters at 128^3, 8 threads: gaussian 59 -> **41 ms** (-31%),
+bit-identical across 6 grid shapes x 4 widths x both filters. The tap loop rebuilt a
+full 3-D index (three multiplies and a branch on which axis it was) for each of the
+`2r+1` taps; the filtered axis is fixed for the whole pass, so the index is a
+constant base plus `c*stride`. The first attempt at this double-counted `iy` on the
+y axis and ASan caught it immediately -- which is the argument for keeping the
+scalar/sanitizer configuration in the matrix.
+
+### Measured: GPU
+
+Reductions that ran on a single workgroup (RTX 5060 Ti, Vulkan):
+
+| grid | op | before | after |
+|------|----|--------|-------|
+| 128^3 | grid_statistics | 19.16 ms | **11.06 ms** |
+| 128^3 | grid_checksum | 18.76 ms | **10.79 ms** |
+| 256^3 | grid_statistics | 116.81 ms | **61.16 ms** |
+| 256^3 | grid_checksum | 117.78 ms | **62.34 ms** |
+
+`stats`, `checksum` and `levelset_check` used `nthreads = min(count,256)` and
+dispatched `(nthreads+255)/256`, i.e. **one** 256-thread workgroup scanning the
+entire grid. They now fold a grid-stride slice in shared memory per workgroup and
+let the host fold `ngroups <= min(ceil(count/256), 1024)` partials, which is the
+shape `measure.comp` already used. min and max needed their own reduction
+operators and an opposite-infinity start for threads with an empty slice -- the
+first attempt copied `measure.comp`'s plain `+=`, which sums a min. `levelset_check`
+had the same empty-slice problem on `max_grad_error`. Checksum values are
+unchanged (0xd2d61700 at 128^3, 0x46df5c00 at 256^3), as are min, max and count;
+the reductions' summation order does change, which is why `sum`/`stddev` are
+compared with a tolerance rather than bit-exactly elsewhere in the suite.
+
+Also: `tvdb_gpu_open`/`tvdb_gpu_close` close the last CPU morphology coverage gap;
+`sparse_conv3d`'s scatter-then-convolve chain now defers its first dispatch instead
+of taking two blocking fences; the CUDA dense morphology loop dropped a
+`cuCtxSynchronize` per iteration, which the NULL stream's ordering already made
+unnecessary.
+
+### A rejected optimization, recorded so it is not retried
+
+Carrying each leaf's bounds inline in the dilate output hash (using the padding in
+the 16-byte entry) to avoid a second random read of `out->coords` per probe. It
+measured 2075 -> 2044 ms, inside the noise, and a first version of it that also
+computed the input lookup unconditionally came out 5% *slower*. The inline-coordinate
+variant was then removed rather than kept on a 2% claim.
+
+Rewriting `tvdb_dilate_sparse_step` around probe/append macros was reverted: it
+emitted 85 voxels where the original emits 81 and an independent reference agrees
+is 81, and the extra four were duplicate appends the original structure cannot
+produce. Only the first-occurrence bitmap, which is a self-contained change to a
+loop condition, was kept.
+
+### Validation
+
+Four configurations, per the procedure in `AGENTS.md`:
+
+| configuration | result |
+|---------------|--------|
+| scalar, SIMD off, OpenMP off, ASan+UBSan | 24/24 CPU tests |
+| SIMD + OpenMP, `OMP_NUM_THREADS=1` | 24/24 |
+| SIMD + OpenMP, `OMP_NUM_THREADS=8` | 24/24 |
+| GPU, generated SPIR-V, Vulkan + CUDA on an RTX 5060 Ti | 48/48 |
+| GPU, `TINYVDB_GLSLANG_VALIDATOR:FILEPATH=` (no shaders) | 48/48, GPU tests skipped |
+
+All 48 GPU tests ran on real hardware here, so the device-coverage gap that
+`AGENTS.md` warns about did not apply to this phase: `test_gpu_backend`,
+`test_gpu_fast_sweeping`, `test_gpu_lifetime` (400 iterations, both backends),
+`test_gpu_measure`, `test_gpu_index_map`, `test_gpu_fp64` and the CUDA variants all
+executed rather than returning 77. The fallback configuration is the one that
+skips. No NVRTC-only or mock-driver result is reported as a device result.
+
+### Two GPU optimizations measured and reverted
+
+Both were written, measured, and removed. They are recorded here because the
+diagnosis they produced is worth keeping and the change is not worth shipping.
+
+`tvdb_gpu_fast_sweeping` launched one thread per voxel of the **grid** for each of
+the `8*(3N-2)` wavefront planes, and the shader returned immediately unless the
+thread's level matched the plane. Replacing that with a direct enumeration of the
+plane -- solve for one axis, enumerate the other two, solve for the largest extent
+so the enumeration is the two smallest -- cut launched threads by a factor of N
+(24.6M -> 0.77M per plane-sweep at 32^3, 6.4G -> 50M at 128^3) and changed the
+wall time by **nothing**: 494.9 vs 501.1 ms at 32^3, 2055.6 vs 2069.6 ms at 128^3.
+
+That null result is the useful part. Per-dispatch cost was flat at **336 us from
+32^3 to 128^3** -- identical to within 3% across a 16x range in voxel count and an
+8x range in threads per dispatch:
+
+| grid | dispatches/solve | ms/solve | us/dispatch |
+|------|------------------|----------|-------------|
+| 32^3 | 1504 | 494.9 | 329.1 |
+| 64^3 | 3040 | 1029.0 | 338.5 |
+| 96^3 | 4576 | 1541.6 | 336.9 |
+| 128^3 | 6112 | 2055.6 | 336.3 |
+
+Runtime is a pure function of dispatch count, so the op is bound by per-dispatch
+submission latency and has nothing to do with thread count or bandwidth. Two
+consequences:
+
+1. The obvious next fix is bandwidth, since `phi` and `frozen` are HOST_VISIBLE and
+   a plane kernel reads a slab of them. Staging both into DEVICE_LOCAL memory for
+   the solve -- the recipe `tvdb_mcf_vk` already uses, same threshold, same
+   one-stage-in/one-stage-out shape -- also changed nothing. Interleaved A/B over
+   five rounds at 128^3: host-visible median 3534.6 ms, device-local median
+   3548.4 ms. The slab a plane touches is O(N^2) of an O(N^3) grid, so the traffic
+   is ~200 KB per plane, and ~1.2 GB per solve at 128^3 is not the constraint.
+2. The actual fix is to record all planes of an iteration into **one** command
+   buffer and submit once, turning 6112 submissions into 2. That is a change to
+   the dispatch plumbing, not to this op, and it is left as the actionable item.
+
+### A caveat on GPU numbers from this host
+
+This machine is shared, and during the measurements above `nvidia-smi` reported
+**100% GPU utilization from another tenant** (5372 MiB resident). Absolute GPU
+timings are therefore not comparable across a session: the same fast-sweeping
+config measured 2056 ms early in the session and 3535 ms later, with no code
+change. Every GPU comparison in this document that carries a claim was
+re-measured back to back or interleaved with its own baseline for that reason --
+the two-stage reduction A/B and the device-local A/B above are both interleaved --
+but the absolute milliseconds should be read as "this host, under this load".
+CPU numbers are unaffected.
+
+### Advection: parallelized, and bit-identical
+
+`tvdb_advect_sl`, the gather behind all six `tvdb_advect` schemes, had no pragma at
+all, so the higher-order schemes did not scale: MacCormack measured 1093 ms at one
+thread and 1303 ms at eight, i.e. slower with more threads. The gather is a pure
+read-only sample from `field` and `velocity` into a distinct `result` (both public
+entry points route an overlapping call through scratch first), so it takes
+`collapse(2)` like every other stencil here. The two error-compensated schemes also
+each redid a full RK2 backtrace per voxel in the clamp step -- 2 vector trilinear
+samples, 48 taps -- for a trace the first pass had already computed. `tvdb_advect_sl`
+now optionally emits the field's trilinear-stencil min/max at the backtrace point
+(2 floats per voxel, only when clamping is requested), and both clamp loops become
+elementwise.
+
+128^3, digests over the whole output grid in brackets, `clamp=1`:
+
+| scheme | 1 thread | 8 threads | speedup at 8t | digest |
+|--------|----------|-----------|---------------|--------|
+| RK1 | 205 -> 183 ms | 180 -> **25.5 ms** | 7.1x | 2cf20299 |
+| RK2 | 425 -> 339 ms | 337 -> **60.4 ms** | 5.6x | 9216f591 |
+| RK3 | 669 -> 635 ms | 604 -> **88.8 ms** | 6.8x | bcf52c53 |
+| RK4 | 711 -> 688 ms | 779 -> **102.3 ms** | 7.6x | 0bcca764 |
+| MacCormack | 1093 -> 821 ms | 1303 -> **138.6 ms** | 9.4x | 813ace85 |
+| BFECC | 1414 -> 1166 ms | 1537 -> **200.9 ms** | 7.6x | 3537600b |
+
+Every digest is unchanged, at one thread and at eight, with `clamp` on and off
+(0d440469 and 266bf886 for the two clamped schemes). That is checked rather than
+asserted: the probe digests the whole output grid, and the digests from the
+unmodified code match.
+
+The single-thread gain (MacCormack 1093 -> 821 ms) is the backtrace fusion alone;
+the parallel gain is on top. The trade is memory: 2*N floats of clamp bounds when
+`clamp` is set, against the 2 grids the scheme already allocates, so the scratch
+for those two schemes goes from 8N to 16N bytes. That is the right side of the
+trade for a 9x speedup, and it is skipped entirely when `clamp` is 0.
+
+### The SIMD dot product was accumulating in fp32, and its test could not tell
+
+`tvdb_simd_dot_f32` is the only dot product the SIMD header offers, and it is
+currently called from nothing -- so the Poisson solver below still uses the
+scalar `poisson_dot_f`. That turned out to be the right call, but not for the
+reason I first assumed.
+
+The AVX2 path accumulated into a `__m256` **float** accumulator, then widened the
+partial sum to `double` at the end. The scalar path accumulates in `double` on
+every term. The comment above it claimed numerical stability "comparable to the
+scalar path"; that was false, and the error is not a small constant factor -- it
+grows linearly in `n`, because an fp32 accumulator's rounding error accumulates
+once per add.
+
+The visible symptom needs the right input shape. A same-sign dot product hides
+the bug: every term is positive, so fp32 rounding stays relative to the running
+total, and the relative error stays near 1e-7 at any `n`. A conjugate-gradient
+`rz = dot(r,z)` has the opposite shape -- the terms cancel, leaving a result far
+smaller than the terms -- and that is exactly the case where an fp32 accumulator
+falls apart:
+
+| n | exact | old AVX2 | rel err |
+|---|-------|----------|---------|
+| 2^20 | -1.048576e+14 | -1.047531e+14 | 9.97e-04 |
+| 2^21 | -2.097152e+14 | -2.099274e+14 | **1.01e-03** |
+| 2^22 | -4.194304e+14 | -4.210336e+14 | **3.82e-03** |
+| 2^23 | -8.388608e+14 | -8.432461e+14 | **5.23e-03** |
+
+`2^21` is 128^3, the grid size in the Poisson benchmark above. So the threshold
+where this stops being a rounding curiosity and becomes a wrong `alpha` is
+squarely inside this library's own working set, and `alpha` feeds straight into
+the `pap > 0` breakdown test. The accumulator now widens to four `__m256d` lanes
+(FMA when available), which is `double` accumulation in the same spirit as the
+scalar path; the same four cases now agree to 0.0e+00, and the same-sign cases to
+~1e-12 (double-accumulation ordering, as expected).
+
+`tests/test_simd.c` did not catch this and still would not have: it builds 10000
+same-sign elements and asserts `diff < 1e-3`, which is four orders of magnitude
+looser than the observed error. It now also checks 2^18/2^21/2^23 sign-cancelling
+vectors at 1e-9.
+
+The reason this is written up as a *not-wired-up* finding: `alpha` and `beta` in
+this solver are `double`, and the scalar CG update is
+`x[i] = (float)((double)x[i] + alpha*p[i])` -- computed in double, rounded once.
+`tvdb_simd_axpy_f32` takes a `float` alpha and rounds per-element, and its FMA
+path rounds differently again. Wiring either primitive into the CG update would
+have changed the iterate, and with it the iteration count and the selected
+iterate, for a vector op that is already memory-bound. The dot product could
+have been used for the *dot* half; the axpy could not. Doing half of a
+floating-point contraction is a reasonable way to make a solver's output depend
+on which build flags it was compiled with, so neither was used.
+
+### Poisson preconditioner: measured, not worth the rounding
+
+`poisson_precondition_f` divides by a per-voxel `degree` (the count of in-range
+6-neighbours, 0..6) on every call, and it is called once per restart, not once per
+iteration -- so it is a small share of the solve. The obvious fix is to
+precompute `h*h/degree` once. It is not worth doing: `degree` is a small integer,
+so the only exact form is still a division by a variable, and every faster
+alternative (a reciprocal table, a multiply) changes the rounding of `z`, which
+changes the iterate and therefore the answer. The estimate is ~1% of the fp32
+128^3/200-iteration runtime, which does not justify making Poisson's output
+flag-dependent. Left alone deliberately.
+
+### Two sparse-tree consistency fixes
+
+`collect_mutable_leaves`'s word-wise `child_mask` scan is documented in the
+sparse-tree backlog; that one is already in. The remaining one was the level
+lookup in `visit_subtree`: an internal node's own level was recovered by scanning
+`layout.levels[]` for a matching `log2dim`, for every internal node visited. The
+node already carries `node->level`, so this is now a direct read, validated
+against the layout and falling back to the scan if the two disagree, which keeps
+the scan as the definition of "matching" rather than assuming the invariant. I
+verified the fast path is actually taken rather than silently falling back: an
+instrumented build over the fast-sweeping and thread-invariance suites reported
+zero fallbacks.
+
+`pow2_` in the same file was `while (p < v) p <<= 1`, which overflows to 0 once
+`v > SIZE_MAX/2` and then spins forever, because `0 < v` never becomes false. All
+four call sites feed it `count * 2 + 16` from a sparse structure that does not
+bound `count`, so nothing upstream prevents that. It now delegates to the
+already-checked `tvdb_hash_capacity` (same smallest-power-of-two >= count*2+16,
+verified identical for small counts) and the three call sites that can receive 0
+check the capacity explicitly rather than relying on `calloc` returning NULL --
+`calloc(0, ..)` is permitted to return a non-null pointer, which would have left
+the mask at `SIZE_MAX`. This one is hardening for consistency with the
+`tvdb_index_map_build` fix above, not a reachable hang: reaching it needs a
+sparse grid of ~2^63 voxels, and at that size the `count * 2` multiply overflows
+first and produces a *too-small* table instead of a hang.
+
+### Resident volume processing and compact GPU marching cubes (2026-10-02)
+
+The new `tinyvdb_gpu_resident.h` API supports persistent dense and sparse buffers,
+transactional processing, and dependent dispatch batches. Host entrypoints for
+composition, CSG, filters, stencils, advection, morphology, resampling,
+statistics/validation/checksum, measurement, active-coordinate extraction,
+sparse convolution, and fp64-capable Poisson now use that implementation.
+Sparse maps are built on the device and shared when topology is unchanged;
+value-only uploads retain the map. Transpose retains a host API fallback for
+its existing clipped-coordinate boundary behavior. Resident Poisson stores all
+vectors on the device and reads reduced scalars; its three arithmetic/storage
+modes preserve the solver contract rather than identical CPU iteration counts.
+
+Marching cubes now classifies into one uint32 count per cell, scans those counts
+on the device, reads one uint32 total, and allocates the exact output. It emits
+in CPU cell/table order. The fixed 180-byte-per-cell vertex temporary and CPU
+compaction pass are removed. This is a newly tested implementation: no input or
+regression record was available for the previously reverted attempt.
+
+`test_gpu_marching_cubes` generates all 256 cell cases plus constant, plane,
+sphere, checkerboard, and deterministic noisy fields. It compares ordered
+triangle positions to CPU output, checks the four-byte pre-output readback,
+and bounds peak logical allocations to exclude the old temporary. The 205³
+case exceeds 65,535 workgroups in both classification and scan. Linear resident
+kernels flatten a second dispatch axis to stay within Vulkan's guaranteed
+workgroup-count limit, with guards for padded reduction workgroups.
+
+The optional `bench_gpu_resident` target generates its own sphere and a chain
+of five composition-plus-mean-filter steps. Example build/run:
+
+```sh
+cmake -S . -B /tmp/tinyvdb-resident-bench -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DTINYVDB_BUILD_BENCH=ON \
+  -DTINYVDB_BUILD_GPU=ON -DTINYVDB_BUILD_EXAMPLES=OFF \
+  -DTINYVDB_BUILD_VDBRENDER=OFF
+cmake --build /tmp/tinyvdb-resident-bench --target bench_gpu_resident
+/tmp/tinyvdb-resident-bench/bench_gpu_resident cuda 128
+/tmp/tinyvdb-resident-bench/bench_gpu_resident vulkan 128
+/tmp/tinyvdb-resident-bench/bench_gpu_resident cuda 256
+```
+
+Observed on NVIDIA GeForce RTX 5060 Ti, NVIDIA driver 615.71.09. Each timing below
+is a single warmed run, not a cross-device performance guarantee. The host
+column uses the migrated compatibility APIs and includes their transfers and
+allocations; it is not a timing of the previous implementation.
+
+| Backend / grid | Triangles | Compact mesh, ms | Resident chain, ms | Host chain, ms |
+|---|---:|---:|---:|---:|
+| CUDA / 128³ | 55,532 | 0.563 | 6.033 | 61.423 |
+| Vulkan / 128³ | 55,532 | 7.154 | 25.235 | 1,011.787 |
+| CUDA / 256³ | 222,524 | 2.423 | 22.015 | 739.304 |
+
+| Grid | Previous fixed vertex temporary, bytes | New peak logical resident buffers, bytes (CUDA) |
+|---|---:|---:|
+| 128³ | 368,708,940 | 18,598,748 |
+| 256³ | 2,984,647,500 | 141,462,684 |
+
+The previous column is the analytical `180 * cell_count` allocation, not an
+instrumented old-process peak. The new peak includes the input grid, offsets,
+tables, compact output, and resident temporary buffers. It excludes allocator
+padding, driver caches, and nonresident staging. Thus the two columns are
+explicitly different quantities; they establish that the large fixed temporary
+has disappeared, not a total-process VRAM ratio.
+
+Each resident chain has zero grid readback and ten compute submissions. The
+128³ host chain uploads 125,829,120 grid bytes and downloads 83,886,080; at 256³
+those numbers are 1,006,632,960 and 671,088,640. Small coefficients/uniforms are
+additional: the CUDA resident chain records 860 uploaded bytes and Vulkan 60,
+because Vulkan's mapped uniform buffers are outside the resident counters.
+Both chains return matching values in the benchmark.
+
+The I/O fix routes owned-grid destruction through complete descriptor,
+metadata, tree, and point-payload cleanup. Metadata parsing now cleans partial
+entries on truncation and allocation failure. Before the fix the scalar-writer
+Valgrind run reported 5,656 lost bytes; the repaired run reported zero live
+allocations and zero errors. `test_io_ownership` also injects each metadata
+allocation failure, truncates at every byte, and checks repeated destruction.
+
+Validation for this change:
+
+- Scalar ASan/UBSan/float-cast-overflow: 25/25, including leak detection. The
+  initial sandbox run failed because LeakSanitizer cannot operate under ptrace;
+  the full suite passed outside that sandbox with sanitizers enabled.
+- SIMD/OpenMP: 25/25 with one thread and 25/25 with eight; configuration logs
+  confirmed both optimized paths.
+- Generated shaders: final full suite 61/61 on hardware Vulkan and CUDA,
+  including registered CUDA filter/advection/composition/measurement variants.
+  Vulkan device zero was confirmed as the RTX 5060 Ti. An explicitly selected llvmpipe ICD also
+  passed all four resident/compaction cases in the restricted environment.
+- Fresh no-generated-shader build: 28 passed and 33 backend skips in the
+  restricted environment. A hardware CUDA/failure/fallback-consistency run
+  passed 17/17 using that same build; CUDA does not depend on generated SPIR-V.
+- Rebuilt Python extensions: 110 passed, one existing disabled NanoVDB
+  roundtrip test skipped.
+- Failure-injected CUDA dispatch verifies scratch-output preservation and waits
+  before freeing in-flight resources. Pipeline-cache exhaustion, Vulkan ABI,
+  shader fallback consistency, and whitespace checks passed.
+
+Resident Poisson requires fp64 reductions even for rounded float
+arithmetic. Its initial implementation used nine double workspace arrays; the
+storage and submission optimization below replaces that layout. Resident point voxelization
+currently accepts isotropic spacing. These are explicit API limits; the new
+functions do not silently materialize a grid on the CPU to work around them.
+
+### Poisson workspace and submission optimization (2026-10-02)
+
+The resident solver now stores its six PCG vectors in their arithmetic
+precision, its two candidate/best vectors in the returned precision, and its
+true residual in double precision. The resulting workspace costs 40/64/72
+bytes per voxel for float/mixed/double modes, compared with 72 for every mode
+before this change. Reductions remain doubles. Vulkan binds two typed views
+of the same allocation; CUDA uses equivalent aligned float/double views.
+Checked word-address bounds reject overflow before allocation.
+The shared binding follows Vulkan's [descriptor aliasing rules](https://docs.vulkan.org/spec/latest/chapters/interfaces.html#interfaces-resources).
+
+Dependent stencil, vector, and reduction kernels are recorded with copied
+uniforms and submitted together at scalar readback boundaries. Output commit
+also flushes the batch before swapping the transactional scratch buffer into
+the output handle. This retains the same host convergence decisions and
+32-byte scalar readbacks while eliminating most per-kernel submissions.
+
+`bench_gpu_poisson` generates a Neumann-compatible RHS from a procedural field,
+warms the solver, and measures a second solve. It independently recomputes the
+returned residual, reports logical resident-buffer peak and transfer counts,
+and hashes the output. Build with the benchmark configuration above:
+
+```sh
+cmake --build /tmp/tinyvdb-resident-bench --target bench_gpu_poisson
+/tmp/tinyvdb-resident-bench/bench_gpu_poisson cuda 64 0 32
+/tmp/tinyvdb-resident-bench/bench_gpu_poisson vulkan 64 0 32
+# Third argument: 0 float, 1 mixed, 2 double. Fourth: iteration budget.
+```
+
+Paired before/after runs on the same RTX 5060 Ti and driver 615.71.09 used a
+64³ grid and 32 iterations. Timings are medians of three warmed measurements
+per version; runs were sequential. The before binary contains the immediately
+preceding resident implementation, including its nine-double-array workspace.
+
+| Backend / mode | Before, ms | After, ms | Before logical peak, bytes | After logical peak, bytes |
+|---|---:|---:|---:|---:|
+| CUDA / float | 34.419 | 35.370 | 22,151,248 | 13,762,960 |
+| CUDA / mixed | 34.310 | 34.063 | 22,151,248 | 20,054,416 |
+| CUDA / double | 34.459 | 31.061 | 25,296,976 | 25,297,296 |
+| Vulkan / float | 1,357.784 | 741.761 | 22,151,168 | 13,762,560 |
+| Vulkan / mixed | 1,342.798 | 754.210 | 22,151,168 | 20,054,016 |
+| Vulkan / double | 1,389.331 | 756.976 | 25,296,896 | 25,296,896 |
+
+All six cases reduced compute submissions from 1,017 to 236. Scalar readback
+remained 7,520 bytes; no volume vectors were downloaded during the solve.
+Float and mixed outputs were byte-identical before/after on both backends.
+The double-mode CUDA comparison had a maximum absolute voxel difference of
+2.89e-15 and RMS difference of 2.03e-16; double-mode Vulkan hashes matched.
+Independent residual checks passed for every run.
+
+These peaks include resident inputs, retained output scratch, solver workspace,
+partial reductions, and CUDA device uniforms. Vulkan mapped uniforms, staging,
+driver caches, and allocation padding are outside these counters. Double CUDA
+peak rises by 320 bytes because uniforms for several kernels coexist in a
+batch. CUDA float/mixed timings are effectively unchanged at this size; the
+memory reduction and Vulkan submission savings are the observed benefits.
+
+Regression coverage bounds logical workspace and submission counts in every
+precision mode, exercises odd vector lengths and partially occupied reduction
+groups, and checks aliased RHS/output, Neumann means, nonfinite RHS rejection,
+finite budgets, and independently computed residuals. Injected CUDA allocation
+and batched-launch failures check output preservation, cleanup, and waiting
+before freeing resources; separate cases reject workspace-index overflow.
+
+Validation after this optimization:
+
+- Generated shaders: 61/61 passed on hardware Vulkan and CUDA (RTX 5060 Ti,
+  driver 615.71.09), including Vulkan ABI and fallback-source consistency.
+- Scalar ASan/UBSan/float-cast-overflow: 25/25 with leak detection enabled.
+  The new injected GPU failure cases also passed under those sanitizers.
+- SIMD/OpenMP: 25/25 with one thread and 25/25 with eight.
+- Fresh explicitly empty-validator fallback: 44 passed, 17 Vulkan shader tests
+  skipped; CUDA device arithmetic and resident Poisson tests executed.
+- Software Vulkan: the complete resident Poisson contract suite passed with
+  the explicitly selected llvmpipe ICD.
+- Whitespace and documentation command/link review passed. Windows was not
+  exercised; no standalone `spirv-val` executable was available.
+
+## Hierarchical SDF workspaces and task backends (2026-10-02)
+
+Added `tinyvdb_sdf_tree.h`: tree-native in-place fast sweeping, separable mean
+and Gaussian filtering, six-neighbor diffusion, seven-point min/max morphology,
+and world-distance offsets. The workspace indexes existing leaves and keeps
+values packed by active-mask rank; it allocates neither a dense bounding box nor
+flat coordinate arrays. Filtering uses signed tiles and stored inactive leaf
+values as fixed boundaries. Sweeping solves only the active leaf domain, preserves
+frozen seeds and signs, and reports disconnected unseeded components without
+replacing their values. Numeric/allocation failures preserve the input.
+
+Fast sweeping uses eight directional block Gauss-Seidel sweeps. Leaf planes are
+sorted in four orders (with reverse traversal for opposite directions). Only
+occupied planes are stored, so distant islands do not add empty wavefront steps.
+Face-neighboring leaves always occupy different planes; synchronization between
+planes makes concurrent writes independent. Packed flags are initialized in
+complete bytes before parallel sweeps, avoiding races where leaf ranges share a
+flag byte. Double arithmetic in the Eikonal update avoids cancellation in the
+quadratic discriminants; retained distances are floats.
+
+The synchronous task module defaults to C11 when available and GCD on Apple.
+Explicit C11, GCD, pthread and serial configurations are supported. C11/pthread
+pools retain workers between calls, participate on the calling thread, serialize
+concurrent submissions and handle same-pool nested calls serially. Partial worker
+creation failures join created workers and release resources. The SDF-owned
+pool caps automatic teams at eight workers and the number of leaves; a borrowed
+pool permits larger teams. This cap avoids excessive barriers on short sparse
+wavefronts: on this host, an explicit 32-worker pool took 29.20 ms to sweep the
+64-cube narrow band, versus 9.57 ms with eight and 17.65 ms with one. Larger teams
+can help filters: the full 64-cube Gaussian workload took 6.24 ms with 32 workers
+versus 10.24 ms with eight. These measurements inform the default, rather than
+assuming every workload scales with the hardware's logical CPU count.
+
+Reproduce with a fresh build:
+
+```sh
+cmake -S . -B /tmp/tinyvdb-sdf-bench -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DTINYVDB_BUILD_BENCH=ON \
+  -DTINYVDB_BUILD_EXAMPLES=OFF -DTINYVDB_BUILD_VDBRENDER=OFF \
+  -DTINYVDB_BUILD_GPU=OFF -DTINYVDB_OPENMP=OFF \
+  -DTINYVDB_THREAD_BACKEND=C11
+cmake --build /tmp/tinyvdb-sdf-bench --target bench_sdf_tree
+/tmp/tinyvdb-sdf-bench/bench_sdf_tree 64
+/tmp/tinyvdb-sdf-bench/bench_sdf_tree 128
+# Optional second argument: worker count; zero selects the SDF-owned default.
+/tmp/tinyvdb-sdf-bench/bench_sdf_tree 64 0
+```
+
+Inputs are procedural spheres (radius `0.28 * N`, unit spacing) with exact seeds
+within distance 1.5. The full domain activates all voxels; the narrow domain
+activates only `abs(phi) <= 4`. Far active values start at signed 100; inactive leaf values and constant tiles
+represent the signed interior/exterior. Timing is
+the fastest of three warmed repetitions after an untimed first run, restoring
+leaf values before each solve/filter. Each sweep converged in two iterations at
+absolute change tolerance `1e-5`; Gaussian timing includes four iterations,
+three axis passes per iteration. The workspace is reused between operations.
+Measurements: AMD Ryzen Threadripper 1950X, 16 cores/32 logical CPUs, GCC 13.3
+Release, C11 tasks, OpenMP disabled. Times are local observations, not universal
+speedup guarantees.
+
+| Domain | Active voxels | Leaves | Sweep, 1 worker (ms) | Sweep, 8 workers (ms) | Gaussian ×4, 1 worker (ms) | Gaussian ×4, 8 workers (ms) |
+|---|---:|---:|---:|---:|---:|---:|
+| 64³ full | 262,144 | 512 | 169.71 | 42.40 | 36.10 | 9.71 |
+| 64³ narrow | 32,680 | 152 | 17.51 | 9.97 | 4.67 | 1.99 |
+| 128³ full | 2,097,152 | 4,096 | 1,388.95 | 237.05 | 289.70 | 61.07 |
+| 128³ narrow | 130,240 | 560 | 68.12 | 22.31 | 19.10 | 5.57 |
+
+The full 128³ case improves by 5.86× for sweeping and 4.74× for filtering from
+one to eight workers. The narrow case improves by 3.05× and 3.43× respectively.
+
+| Domain | Sweep-only scratch (bytes) | Retained metadata after sweep (bytes) | Scratch after filtering too (bytes) | Existing dense sweep scratch for the enclosing box (bytes) |
+|---|---:|---:|---:|---:|
+| 64³ full | 1,114,112 | 102,776 | 2,162,688 | 1,572,864 |
+| 64³ narrow | 138,890 | 30,776 | 269,610 | 1,572,864 |
+| 128³ full | 8,912,896 | 819,576 | 17,301,504 | 12,582,912 |
+| 128³ narrow | 553,520 | 112,376 | 1,074,480 | 12,582,912 |
+
+Sweep-only scratch is `4 * active + ceil(active / 4)` bytes, including both flag
+bits; filters retain another `4 * active` bytes. Metadata includes copied masks,
+rank tables, cached face neighbors and sweep orders. The dense comparison is its
+existing six bytes per bounding-box voxel; its domain differs from the narrow
+active domain, so this is a storage comparison rather than an arithmetic speed
+comparison. Counters exclude grid storage, pools/OS thread resources and temporary
+constructor/sort allocations. Four isolated active voxels with origins separated
+by one billion coordinates remain below 10 KB peak workspace allocation in the
+allocation-tracking regression.
+
+Validation covers all six supported node dimensions (1, 2, 4, 8, 16, 32),
+int32 boundary origins, root/internal signed tiles, inactive/nonfinite boundaries,
+empty grids, malformed hierarchies, isotropic spacing, numeric overflow, every
+constructor/lazy-buffer allocation failure, retry after failure and partial worker
+creation failure. Procedural plane/sphere sweeps agree with analytic expectations
+and the existing dense CPU implementation within `1e-4`; one/eight-worker results
+are bit-identical. Filters match an independent stencil reference. The existing
+sphere VDB also exercises an owned default pool.
+
+Scalar C11 ASan/LeakSanitizer/UBSan/float-cast checks: 28/28 passed, with UBSan set
+to halt on error. SIMD/OpenMP builds: 28/28 passed at one and eight OpenMP threads.
+Explicit pthread and serial builds: 27/27 passed each. Pthread ThreadSanitizer:
+both task and SDF suites passed. Clang 21 ThreadSanitizer crashes in this host's
+C11 thread entry even in an independent standalone `thrd_create` reproducer;
+this does not establish C11 race coverage. Native macOS/iOS execution is unavailable
+locally; CI now registers GCD and pthread SDF tests on macOS. Rebuilt Python
+bindings: 110 passed, one existing skip. Generated GPU and fallback builds are
+also validated, with backend results recorded below.
+
+The empty-grid regression additionally exposed three pre-existing NULL-base
+`qsort` calls in the sparse tree builder. Sorting is now skipped for fewer than
+two entries, keeping empty construction valid under UBSan.
+
+Generated-shader GPU build: 64/64 tests passed on the NVIDIA GeForce RTX 5060 Ti
+with native Vulkan and CUDA arithmetic. The fresh explicitly disabled-glslang
+build contained no generated SPIR-V includes: 47 tests passed and 17 Vulkan
+shader paths skipped, with CUDA arithmetic still exercised. Both builds reran
+the affected SDF suite after finalizing the automatic worker cap and procedural
+signed interior values. C++11 public-header compilation/linking, CI YAML parsing,
+strict C11 warnings for all three available task backends and whitespace checks
+also passed. Apple GCD execution remains an unavailable local check, rather than
+a claimed pass.
+
+## Mesh/volume conversion: task parallelism and bounded edge caches (2026-10-02)
+
+`tinyvdb_mesh_conversion.h` adds checked indexed marching cubes, an explicit
+outward-winding option, and a reusable mesh-to-SDF workspace. The workspace
+retains closest-triangle BVH data and face normals. Grid generation partitions
+rows through the C11/GCD/pthread/serial task module, preserving each row's coherent
+closest-face seed and the lowest-face-index tie break. The default caps workers
+at eight. It no longer requires enabling OpenMP for mesh voxelization.
+
+Marching cubes first counts shared crossing edges and triangles in parallel,
+then emits the indexed mesh in stable raster/edge order. Output is allocated
+exactly once per array, unless existing capacity suffices. Edge storage selects
+the smaller of a rolling two-plane cache and a pre-sized surface hash. Rolling
+storage uses `4 * (2*(nx-1)*ny + 2*nx*(ny-1) + nx*ny)` bytes, plus one count record
+per z plane. The hash key encodes a 64-bit sample index and axis, avoiding the
+old packed pair of 32-bit indices. Empty fields allocate no output or edge cache.
+Emission remains serial; the multithreading gain reported for mesh voxelization
+does not describe the entire marching-cubes algorithm.
+
+Procedural benchmark on an AMD Ryzen Threadripper 1950X (16 cores, 32 logical
+CPUs), Linux/GCC Release `-O3`, OpenMP and SIMD disabled for both mesh
+implementations. The pre-change mesh implementation was rebuilt with the same
+flags and linked into the same harness. Times are the minimum of three measured
+runs after a warmup. Input fields cover `[-1,1]^3`, with a sphere radius of 0.7
+or alternating checkerboard signs. The sphere mesh is oriented outward before
+voxelization with spacing `2/n` and band `3*spacing`.
+
+| Input | Before MC (ms) | After MC (ms) | Before default mesh-to-SDF (ms) | After default mesh-to-SDF (ms) |
+|---|---:|---:|---:|---:|
+| 64³ sphere, 9,408 vertices / 18,812 faces | 6.03 | 3.55 | 878.84 | 142.00 |
+| 128³ sphere, 37,920 vertices / 75,836 faces | 22.71 | 19.64 | 11,277.43 | 1,615.35 |
+| 64³ checkerboard, 774,144 vertices / 1,000,188 faces | 204.39 | 31.68 | — | — |
+
+The sphere outputs contain 132,651 and 884,736 samples respectively. Default
+128³ mesh voxelization improves by 6.98×. Reusing its acceleration gives
+10,865.61 ms with one worker and 1,367.09 ms with eight (7.95×); BVH construction
+takes 18.79 ms and retains 5,655,000 bytes. The one-worker result includes the
+new numeric validation and fallback behavior. Timings depend on host load and
+are observations, not performance guarantees.
+
+Heap allocation instrumentation excludes the input grid, task pool/OS resources,
+and allocator bookkeeping. The before/after fields produce identical counts.
+Peak includes growing output/cache buffers that coexist before old buffers are
+freed; retained bytes are output capacity after conversion.
+
+| Input | Before peak bytes | After peak bytes | Before retained bytes | After retained bytes |
+|---|---:|---:|---:|---:|
+| 128³ sphere | 4,194,304 | 1,693,776 | 2,359,296 | 1,365,072 |
+| 64³ checkerboard | 75,497,472 | 21,374,416 | 25,165,824 | 21,291,984 |
+
+Peak drops by 59.6% and 71.7%, respectively. The checkerboard's new peak is
+dominated by its required output: cache/count scratch is only 82,432 bytes.
+Temporary normals, BVH data and edge caches always use the heap. Successful
+arena conversion retains only its output and alignment padding; remeshing also
+keeps the intermediate SDF off the output arena.
+
+Reproduce the current procedural benchmark without external fixtures:
+
+```sh
+mesh_build=$(mktemp -d "${TMPDIR:-/tmp}/tinyvdb-mesh-bench.XXXXXX")
+cmake -S . -B "$mesh_build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DTINYVDB_BUILD_BENCH=ON -DTINYVDB_BUILD_TESTS=OFF \
+  -DTINYVDB_BUILD_EXAMPLES=OFF -DTINYVDB_BUILD_VDBRENDER=OFF \
+  -DTINYVDB_BUILD_GPU=OFF -DTINYVDB_OPENMP=OFF -DTINYVDB_SIMD=OFF
+cmake --build "$mesh_build" --target bench_mesh_conversion
+"$mesh_build/bench_mesh_conversion" 64 0
+"$mesh_build/bench_mesh_conversion" 128 0
+"$mesh_build/bench_mesh_conversion" 64 1
+```
+
+Regression fixtures cover all 256 MC cases, planes, spheres, checkerboards,
+random fields, exact-isovalue endpoints, a sparse surface using the hash cache,
+append/capacity reuse, grid/mesh overlap and arena overlap before zeroing.
+An independent triangle-soup reference verifies positions, topology and crossing
+edge counts. One/eight-worker results are bit-identical. Box distances agree
+with the analytic reference, and outward remeshing retains negative interior
+values on re-voxelization. Invalid indices, nonfinite values/parameters, world
+coordinate overflow and every conversion-owned allocation failure preserve
+outputs; allocation tracking checks cleanup, peak scratch bounds and arena
+retention.
+
+The original interpolation returned an edge corner for both `±1e-30` and
+`±FLT_MAX`, instead of the midpoint. CPU interpolation now uses double arithmetic;
+Vulkan/CUDA scale large values by an exact power of two before subtraction.
+Dividing by `FLT_MAX` was tested and rejected: the native Vulkan driver's
+subnormal reciprocal flushed to zero. Native GPU regression tests explicitly
+check finite output and include asymmetric large values. A repeated-edge triangle
+previously produced NaN distances; degenerate closest-point predicates now fall
+back to double segment/point distances with zero normals.
+
+The checked mesh-to-SDF API replaces an initialized owning grid on success;
+the legacy constructor still accepts an uninitialized output handle. Checked
+marching cubes appends and offers outward winding for negative-inside fields.
+The legacy MC entry point retains table winding; `tvdb_make_manifold` now requests
+outward faces. Closest-face-normal signs remain approximate at sharp corners
+and for open/inconsistently wound meshes. `_vdb` sign-method selection is still
+advisory. Classic MC ambiguity and exact-isovalue degeneracies remain; this
+change does not establish watertightness or a manifold guarantee.
+
+Validation: scalar C11 ASan/LeakSanitizer/UBSan/float-cast-overflow 30/30;
+SIMD/OpenMP 30/30 at one and eight OpenMP threads; explicit pthread and serial
+backends 29/29 each. Pthread ThreadSanitizer passes the mesh-conversion and shared
+task-pool suites. C11 ThreadSanitizer remains unavailable because of the host
+runtime failure recorded above. Rebuilt Python bindings pass 110 tests with one
+existing skip. The README example compiles as C11 and C++11; CI YAML and
+whitespace checks pass. Native macOS/iOS execution is unavailable locally; the
+macOS GCD/pthread CI matrix now includes both mesh-conversion regressions.
+
+Final generated-shader GPU suite: 66/66 passed on NVIDIA GeForce RTX 5060 Ti,
+driver 615.71.09, with native Vulkan device 0 and CUDA arithmetic. This includes
+marching-cubes finite-value parity, mesh-to-SDF parity, allocation/dispatch failure
+paths and the Vulkan shader ABI check. A fresh build with explicitly empty
+`TINYVDB_GLSLANG_VALIDATOR` contains no generated SPIR-V includes: 49 tests passed
+and 17 Vulkan shader paths skipped, with CUDA still exercised. A successful
+fallback build is not counted as Vulkan arithmetic coverage.

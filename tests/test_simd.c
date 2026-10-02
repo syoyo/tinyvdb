@@ -46,6 +46,35 @@ int main(void) {
            N, simd_d, scal_d, fabs(simd_d - scal_d));
     EXPECT(fabs(simd_d - scal_d) < 1e-3);
 
+    // Large-N sign-cancellation parity. The 10K case above is same-sign and
+    // small-magnitude, so it cannot tell a double accumulator from a float one:
+    // the terms are all positive, so fp32 rounding stays relative to the running
+    // total and the 1e-3 tolerance is 4 orders of magnitude looser than the
+    // observed error either way. A conjugate-gradient dot(r,z) has the opposite
+    // shape -- terms that cancel, leaving a result far smaller than the terms --
+    // and that is where a float accumulator diverges. This is the vector Poisson
+    // hands to it: 128^3 = 2^21 elements, the grid size in our own benchmark.
+    // The old __m256 float accumulator was 1.0e-3 off at 2^21 and 5.2e-3 at 2^23,
+    // both above this bound, and the error grew linearly with N.
+    const size_t NC[3] = {1u << 18, 1u << 21, 1u << 23};
+    for (int k = 0; k < 3; ++k) {
+        const size_t n = NC[k];
+        float* r = (float*)malloc(n * sizeof(float));
+        float* z = (float*)malloc(n * sizeof(float));
+        for (size_t i = 0; i < n; ++i) {
+            r[i] = (float)(1e4 * ((i % 2) ? 1.0 : -1.0));
+            z[i] = (float)(1e4 * ((i % 2) ? -1.0 : 1.0));
+        }
+        r[n / 2] += 1.0f;  // break the exact cancellation, as real iterates do
+        double exact = scalar_dot(r, z, n);
+        double got = tvdb_simd_dot_f32(r, z, n);
+        double rel = fabs(got - exact) / fabs(exact);
+        printf("[simd] cancelling dot N=%zu (2^%d): rel=%.3e\n", n, 18 + 3 * k, rel);
+        EXPECT(rel < 1e-9);
+        free(r);
+        free(z);
+    }
+
     // AXPY parity.
     float* y_simd = (float*)malloc(N * sizeof(float));
     float* y_scal = (float*)malloc(N * sizeof(float));

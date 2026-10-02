@@ -1,0 +1,19 @@
+#version 450
+layout(local_size_x=128) in;
+layout(std430,binding=0) readonly buffer Coordinates { int coords[]; };
+layout(std430,binding=1) buffer Map { uint slots[]; };
+layout(std140,binding=2) uniform Params { uint count; uint cap; uint op; } u;
+void main() {
+    uint i=(gl_GlobalInvocationID.x+gl_GlobalInvocationID.y*gl_NumWorkGroups.x*gl_WorkGroupSize.x);
+    if(u.op==0u){if(i<u.cap)slots[i]=0u;return;}
+    if(i>=u.count)return;
+    int x=coords[3u*i],y=coords[3u*i+1u],z=coords[3u*i+2u];
+    uint at=(uint(x)*73856093u ^ uint(y)*19349663u ^ uint(z)*83492791u)&(u.cap-1u);
+    for(uint p=0u;p<u.cap;++p) {
+        uint old=atomicCompSwap(slots[at],0u,i+1u);
+        if(old==0u){slots[u.cap+i]=0u;return;}
+        uint j=old-1u;
+        if(coords[3u*j]==x && coords[3u*j+1u]==y && coords[3u*j+2u]==z){slots[u.cap+i]=atomicExchange(slots[at],i+1u);return;}
+        at=(at+1u)&(u.cap-1u);
+    }
+}

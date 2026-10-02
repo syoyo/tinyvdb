@@ -28,6 +28,15 @@ static double poisson_positive_at(const void* data,bool fp64,size_t i,
 }
 
 /* Reports use the original projected RHS, without workspace rounding. */
+/* How often the candidate residual stencil runs. It is a diagnostic: it supplies
+ * info->final_residual_norm and picks which iterate is returned, and neither the
+ * convergence test (which uses the cheap residual dot) nor the restart test reads
+ * it. Sampling it every eighth iteration, plus on the last iteration and whenever
+ * the cheap test says the solve has converged, keeps the reported number
+ * meaningful while removing a second full stencil application from most
+ * iterations. */
+#define TVDB_POISSON_CANDIDATE_STRIDE 8
+
 static double poisson_true_norm(const void* rhs,bool rhs_double,const void* x,bool x_double,
  int nx,int ny,int nz,double h,double rhs_mean) {
   double norm=0,inv_h2=1/(h*h);
@@ -124,19 +133,40 @@ static tvdb_status_t poisson_solve_f(const void* rhs,void* output,int nx,int ny,
     #pragma omp parallel for schedule(static)
     for(size_t i=0;i<n;++i) { x[i]=(float)((double)x[i]+alpha*p[i]); r[i]=(float)((double)r[i]-alpha*ap[i]); }
     info->iterations=it+1;
-    /* Track the best iterate in the precision actually returned to the caller. */
-    for(size_t i=0;i<n;++i) {
-      double v=(double)x[i]+x_mean;
-      ap[i]=input_double ? (float)v : (float)(float)v;
-      if(!isfinite((double)ap[i])) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"output precision overflow"); goto done; }
-    }
-    double candidate=poisson_true_norm(rhs,input_double,ap,false,nx,ny,nz,h,rhs_mean);
-    if(!isfinite(candidate)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite output residual"); goto done; }
-    if(candidate<best_norm) { best_norm=candidate; memcpy(best,ap,n*sizeof(float)); }
-
+    /* rr first: it is a plain vector dot, whereas the candidate below is a second
+       full stencil application. Only a dot is needed to decide the restart, so
+       computing it first also lets the candidate be skipped on most iterations. */
     double rr=poisson_dot_f(r,r,n);
     if(!isfinite(rr)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite iterate"); goto done; }
-    bool restart=(info->iterations%32==0 || sqrt(rr)<=target);
+    const bool converged_now=(sqrt(rr)<=target);
+
+    /* Track the best iterate in the precision actually returned to the caller.
+     * The conversion loop was serial and its isfinite check an early exit, so it
+     * became one parallel pass with a reduction flag. The stencil is only a
+     * sampled diagnostic -- it drives info->final_residual_norm and picks the
+     * returned iterate, it does not steer the iteration -- so running it every
+     * eighth iteration plus on the last one and on convergence keeps the reported
+     * number honest for a fraction of the cost. Convergence decisions never used
+     * it; they use rr and the restart residual below. */
+    int bad_precision=0;
+    #pragma omp parallel for reduction(|:bad_precision) schedule(static)
+    for(long long ii=0;ii<(long long)n;++ii) {
+      size_t i=(size_t)ii;
+      double v=(double)x[i]+x_mean;
+      float nv=input_double ? (float)v : (float)(float)v;
+      ap[i]=nv;
+      if(!isfinite((double)nv)) bad_precision=1;
+    }
+    if(bad_precision) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"output precision overflow"); goto done; }
+
+    const bool sample=(it%TVDB_POISSON_CANDIDATE_STRIDE==0) || (it+1==max_iters) || converged_now;
+    if(sample) {
+      double candidate=poisson_true_norm(rhs,input_double,ap,false,nx,ny,nz,h,rhs_mean);
+      if(!isfinite(candidate)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite output residual"); goto done; }
+      if(candidate<best_norm) { best_norm=candidate; memcpy(best,ap,n*sizeof(float)); }
+    }
+
+    bool restart=(info->iterations%32==0 || converged_now);
     if(restart) {
       double actual=poisson_residual_f(b,x,r,nx,ny,nz,h);
       if(!isfinite(actual)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite true residual"); goto done; }
@@ -243,19 +273,32 @@ static tvdb_status_t poisson_solve_d(const void* rhs,void* output,int nx,int ny,
     #pragma omp parallel for schedule(static)
     for(size_t i=0;i<n;++i) { x[i]=(double)((double)x[i]+alpha*p[i]); r[i]=(double)((double)r[i]-alpha*ap[i]); }
     info->iterations=it+1;
-    /* Track the best iterate in the precision actually returned to the caller. */
-    for(size_t i=0;i<n;++i) {
-      double v=(double)x[i]+x_mean;
-      ap[i]=input_double ? (double)v : (double)(float)v;
-      if(!isfinite((double)ap[i])) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"output precision overflow"); goto done; }
-    }
-    double candidate=poisson_true_norm(rhs,input_double,ap,true,nx,ny,nz,h,rhs_mean);
-    if(!isfinite(candidate)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite output residual"); goto done; }
-    if(candidate<best_norm) { best_norm=candidate; memcpy(best,ap,n*sizeof(double)); }
-
+    /* Same restructuring as the fp32 solver above: cheap dot first, then a
+       parallel conversion pass, then the diagnostic stencil only on sampled
+       iterations. */
     double rr=poisson_dot_d(r,r,n);
     if(!isfinite(rr)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite iterate"); goto done; }
-    bool restart=(info->iterations%32==0 || sqrt(rr)<=target);
+    const bool converged_now=(sqrt(rr)<=target);
+
+    int bad_precision=0;
+    #pragma omp parallel for reduction(|:bad_precision) schedule(static)
+    for(long long ii=0;ii<(long long)n;++ii) {
+      size_t i=(size_t)ii;
+      double v=(double)x[i]+x_mean;
+      double nv=input_double ? (double)v : (double)(float)v;
+      ap[i]=nv;
+      if(!isfinite((double)nv)) bad_precision=1;
+    }
+    if(bad_precision) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"output precision overflow"); goto done; }
+
+    const bool sample=(it%TVDB_POISSON_CANDIDATE_STRIDE==0) || (it+1==max_iters) || converged_now;
+    if(sample) {
+      double candidate=poisson_true_norm(rhs,input_double,ap,true,nx,ny,nz,h,rhs_mean);
+      if(!isfinite(candidate)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite output residual"); goto done; }
+      if(candidate<best_norm) { best_norm=candidate; memcpy(best,ap,n*sizeof(double)); }
+    }
+
+    bool restart=(info->iterations%32==0 || converged_now);
     if(restart) {
       double actual=poisson_residual_d(b,x,r,nx,ny,nz,h);
       if(!isfinite(actual)) { st=poisson_error(err,TVDB_ERROR_INVALID_DATA,"nonfinite true residual"); goto done; }

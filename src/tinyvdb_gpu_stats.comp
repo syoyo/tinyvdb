@@ -1,26 +1,48 @@
 #version 450
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 layout(std430, set = 0, binding = 0) readonly buffer InBuffer { float data[]; };
-// One vec4 partial per thread: (min, max, sum, sumsq).
+// One vec4 partial per *workgroup* (not per thread): (min, max, sum, sumsq).
 layout(std430, set = 0, binding = 1) buffer PartialBuffer { vec4 partials[]; };
 layout(std140, set = 0, binding = 2) uniform Params {
   uint count;
-  uint nthreads;
+  uint ngroups;
 } u;
+shared vec4 sdata[256];
 
-// Grid-stride partial reduction: each thread folds a strided slice into a
-// (min,max,sum,sumsq) partial; the host combines the `nthreads` partials.
+// Two-stage reduction. This used to be a single wavefront of `nthreads` threads
+// with no shared-memory stage, so a 256^3 grid was scanned by one 256-thread
+// workgroup and the rest of the device sat idle. Each of the `ngroups` workgroups
+// now folds a strided slice in shared memory and writes one partial; the host
+// folds the partials. The arithmetic and the order of i within a slice are
+// unchanged, so this is a scheduling change only.
 void main() {
-  uint t = gl_GlobalInvocationID.x;
-  if (t >= u.nthreads) return;
-  float mn = 0.0, mx = 0.0, sum = 0.0, sumsq = 0.0;
-  bool any = false;
-  for (uint i = t; i < u.count; i += u.nthreads) {
+  uint lid = gl_LocalInvocationID.x;
+  uint wg = gl_WorkGroupID.x;
+  uint stride = u.ngroups * 256u;
+  // Threads whose slice is empty (count < ngroups*256) must not contribute a 0 to
+  // the min or max, so they start from the opposite infinities instead. Every
+  // workgroup is guaranteed at least one element because the host picks
+  // ngroups <= ceil(count/256), so these sentinels never survive into a partial.
+  vec4 acc = vec4(3.402823466e+38, -3.402823466e+38, 0.0, 0.0);
+  for (uint i = wg * 256u + lid; i < u.count; i += stride) {
     float v = data[i];
-    if (!any) { mn = v; mx = v; any = true; }
-    else { mn = min(mn, v); mx = max(mx, v); }
-    sum += v;
-    sumsq += v * v;
+    acc.x = min(acc.x, v);
+    acc.y = max(acc.y, v);
+    acc.z += v;
+    acc.w += v * v;
   }
-  partials[t] = vec4(mn, mx, sum, sumsq);
+  sdata[lid] = acc;
+  barrier();
+  // min/max need their own operators here; measure.comp's plain `+=` is only
+  // correct because it reduces a single sum.
+  for (uint s = 128u; s > 0u; s >>= 1u) {
+    if (lid < s) {
+      vec4 a = sdata[lid], b = sdata[lid + s];
+      sdata[lid] = vec4(min(a.x, b.x), max(a.y, b.y), a.z + b.z, a.w + b.w);
+    }
+    barrier();
+  }
+  // gl_WorkGroupID.x, not gl_GlobalInvocationID.x: gid is wg*256 + lane, so
+  // indexing by it would stride past the [0, ngroups) range the host reads.
+  if (lid == 0u) partials[wg] = sdata[0];
 }
