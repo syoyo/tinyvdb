@@ -285,7 +285,10 @@ tvdb_status_t tvdb_mesh_sdf_generate(const tvdb_mesh_sdf_t *p, float h, float ba
             goto done;
         pool = owned;
     }
-    mesh_fill_job job = {p, &g, band, ATOMIC_VAR_INIT(0)};
+    /* atomic_init, not ATOMIC_VAR_INIT: the macro is deprecated since C17 and
+     * MSVC's <stdatomic.h> does not define it. */
+    mesh_fill_job job = {p, &g, band};
+    atomic_init(&job.bad, 0);
     st = tvdb_thread_pool_for(pool, 0, (size_t)g.ny * g.nz, 4, mesh_fill_rows, &job, err);
     if (st == TVDB_OK && atomic_load_explicit(&job.bad, memory_order_relaxed))
         st = mesh_error(err, TVDB_ERROR_INVALID_DATA, "mesh distance arithmetic failed");
