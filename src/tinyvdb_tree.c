@@ -210,7 +210,7 @@ tvdb_status_t tvdb_tree_index_create(const tvdb_grid_t* g, int float_only,
                            "invalid root arrays/background");
   size_t count = (size_t)r->num_children + r->num_tiles, bytes;
   if (count < r->num_children ||
-      !tvdb_hash_capacity(count, 2, &p->root_capacity) ||
+      !tvdb_hash_capacity_scaled(count, 4, 3, &p->root_capacity) ||
       !tvdb_size_mul(t->num_nodes, sizeof(*p->origins), &bytes))
     return tvdb_tree_error(err, TVDB_ERROR_INVALID_DATA,
                            "tree index size overflow");

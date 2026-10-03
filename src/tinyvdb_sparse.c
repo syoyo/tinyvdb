@@ -174,7 +174,7 @@ static bool tvdb_hash_build(const tvdb_sparse_grid* g, tvdb_hash_entry** table_o
                             uint8_t** first_out) {
   size_t cap;
   if (g->count > INT_MAX || (g->count && (!g->coords || !g->values)) ||
-      !tvdb_hash_capacity(g->count, 2, &cap)) return false;
+      !tvdb_hash_capacity_scaled(g->count, 4, 3, &cap)) return false;
   tvdb_hash_entry* tbl = (tvdb_hash_entry*)calloc(cap, sizeof(tvdb_hash_entry));
   if (!tbl) return false;
   uint8_t* first = NULL;

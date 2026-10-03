@@ -220,6 +220,27 @@ static tvdb_allocator_t s_owned_alloc = {
     s_libc_malloc, s_libc_realloc, s_libc_free, NULL
 };
 
+/* Carve `size` bytes (16-aligned) from the tree's chunked pool. Returns NULL
+ * on OOM. Chunks are never moved, so pointers carved earlier stay valid. */
+static void *pool_alloc(tvdb_tree_t *tree, size_t size) {
+    size = (size + 15u) & ~(size_t)15u;
+    tvdb_pool_chunk_t *c = tree->pool;
+    if (!c || c->size - c->used < size) {
+        size_t chunk_size = size > 65536 ? size : 65536;
+        tvdb_pool_chunk_t *nc =
+            (tvdb_pool_chunk_t *)malloc(sizeof(tvdb_pool_chunk_t) + chunk_size);
+        if (!nc) return NULL;
+        nc->next = tree->pool;
+        nc->size = chunk_size;
+        nc->used = 0;
+        tree->pool = nc;
+        c = nc;
+    }
+    void *ptr = (char *)c + sizeof(tvdb_pool_chunk_t) + c->used;
+    c->used += size;
+    return ptr;
+}
+
 // Per-coord entry collected from input. `val_bytes` holds up to 24 bytes
 // (matches the largest tvdb_value_type_t = VEC3D); only `vsize` bytes are
 // meaningful per builder invocation.
@@ -430,8 +451,9 @@ static bool build_parent_level(tvdb_tree_t *tree, int parent_lv,
         in->child_indices = (size_t *)malloc(gp->n_child * sizeof(size_t));
         if (!in->child_indices) { free(parents); goto fail; }
         in->values_size = (size_t)parent_bitsize * (size_t)vsize;
-        in->values = (uint8_t *)malloc(in->values_size);
+        in->values = (uint8_t *)pool_alloc(tree, in->values_size);
         if (!in->values) { free(parents); goto fail; }
+        tree->nodes[pidx].pooled = 1;
         for (int k = 0; k < parent_bitsize; ++k) {
             memcpy(in->values + (size_t)k * vsize, bg_bytes, (size_t)vsize);
         }
@@ -593,8 +615,9 @@ bool tvdb_grid_from_sparse_typed_using_template(const tvdb_grid_t *tmpl,
         }
         leaf->num_voxels = (uint32_t)leaf_bitsize;
         leaf->data_size = (size_t)leaf_bitsize * (size_t)vsize;
-        leaf->data = (uint8_t *)malloc(leaf->data_size);
+        leaf->data = (uint8_t *)pool_alloc(&out->tree, leaf->data_size);
         if (!leaf->data) { free(ce); free(leaves); tvdb_grid_destroy_owned(out); return false; }
+        out->tree.nodes[leaf_node_idx].pooled = 1;
         // Fill all voxels with background (inactive default).
         for (int k = 0; k < leaf_bitsize; ++k) {
             memcpy(leaf->data + (size_t)k * (size_t)vsize, bg_bytes, (size_t)vsize);

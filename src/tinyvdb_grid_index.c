@@ -137,7 +137,7 @@ static bool gi_coord_equal(const gi_hash *h, size_t slot, int32_t x, int32_t y, 
 static bool gi_hash_build(gi_hash* h, const int32_t* coords, size_t n) {
   size_t cap;
   if ((n && !coords) || n > INT64_MAX || n > SIZE_MAX / (3 * sizeof(int32_t)) ||
-      !tvdb_hash_capacity(n, 2, &cap)) return false;
+      !tvdb_hash_capacity_scaled(n, 4, 3, &cap)) return false;
   h->coords = coords;
   h->e = (gi_entry*)calloc(cap, sizeof(gi_entry));
   h->mask = cap - 1;
@@ -254,7 +254,7 @@ bool tvdb_voxelize_points(const float* points, size_t n,
   if (n == 0) return true;
   gi_hash h;
   size_t cap, bytes;
-  if (n > INT64_MAX || !tvdb_hash_capacity(n, 2, &cap) ||
+  if (n > INT64_MAX || !tvdb_hash_capacity_scaled(n, 4, 3, &cap) ||
       !tvdb_size_mul(n, 3 * sizeof(int32_t), &bytes)) return false;
   h.e = (gi_entry*)calloc(cap, sizeof(gi_entry)); h.mask = cap - 1;
   if (!h.e) return false;

@@ -156,7 +156,7 @@ static tvdb_status_t sdf_root_index(tvdb_sdf_tree_t *p, tvdb_error_t *err) {
     size_t count = (size_t)r->num_children + r->num_tiles, bytes;
     if (r->num_children >= p->grid->tree.num_nodes || count < (size_t)r->num_children ||
         count > SIZE_MAX / (3 * sizeof(int32_t)) ||
-        !tvdb_hash_capacity(count, 2, &p->root_capacity) ||
+        !tvdb_hash_capacity_scaled(count, 4, 3, &p->root_capacity) ||
         !tvdb_size_mul(p->root_capacity, sizeof(size_t), &bytes))
         return sdf_error(err, TVDB_ERROR_INVALID_DATA, "SDF root index overflow");
     p->root_map = sdf_alloc(p, bytes, 0);
@@ -504,7 +504,7 @@ tvdb_status_t tvdb_sdf_tree_create(tvdb_grid_t *grid, tvdb_thread_pool_t *pool,
         }
     sdf_free(p, p->seen, grid->tree.num_nodes, 0);
     p->seen = NULL;
-    if (!tvdb_hash_capacity(p->nleaves, 2, &p->leaf_capacity) ||
+    if (!tvdb_hash_capacity_scaled(p->nleaves, 4, 3, &p->leaf_capacity) ||
         !tvdb_size_mul(p->leaf_capacity, sizeof(uint32_t), &bytes)) {
         st = sdf_error(err, TVDB_ERROR_INVALID_DATA, "SDF leaf index overflow");
         goto fail;

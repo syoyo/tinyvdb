@@ -17,6 +17,9 @@ typedef struct {
     uint32_t id;
   };
   unsigned char active;
+  /* Corner values from the surface scan; the mesher reuses these instead of
+     re-querying the tree for every cell. */
+  float corners[8];
 } tool_voxel;
 typedef struct {
   tool_voxel* v;
@@ -72,7 +75,7 @@ static tvdb_status_t tool_insert(tool_map* m, const int32_t c[3],
   }
   if (!m->hash_capacity || m->count >= m->hash_capacity / 2) {
     size_t n, bytes;
-    if (!tvdb_hash_capacity(m->count + 1, 2, &n) ||
+    if (!tvdb_hash_capacity_scaled(m->count + 1, 4, 3, &n) ||
         !tvdb_size_mul(n, sizeof(size_t), &bytes))
       goto overflow;
     size_t* slots = calloc(1, bytes);
@@ -227,20 +230,68 @@ static tvdb_status_t tool_build(const tvdb_grid_t* source, const tool_map* m,
   if (!tvdb_grid_from_sparse_using_template(
           &tmpl, &sg, source->descriptor.grid_name, bg, &generated))
     goto oom;
-  /* Clear masks for explicitly retained inactive samples without losing values.
-   */
-  for (size_t i = 0; i < generated.tree.num_nodes; ++i) {
-    tvdb_tree_node_t* n = generated.tree.nodes + i;
-    if (n->type != TVDB_NODE_LEAF) continue;
-    for (size_t s = 0; s < 512; ++s) {
-      int32_t c[3] = {n->origin[0] + (int32_t)(s >> 6),
-                      n->origin[1] + (int32_t)((s >> 3) & 7),
-                      n->origin[2] + (int32_t)(s & 7)};
-      size_t j = tool_find(m, c);
-      if (j == SIZE_MAX || !m->v[j].active)
-        n->u.leaf.value_mask.bits.data[s / 8] &=
-            (unsigned char)~(1u << (s % 8));
+  {
+    const int nlevels = generated.tree.layout.num_levels;
+    int64_t level_span[TVDB_MAX_TREE_DEPTH];  // voxels/axis covered by a node at level l
+    for (int l = 0; l < nlevels; ++l) {
+      int64_t sh = 0;
+      for (int k = l; k < nlevels; ++k)
+        sh += generated.tree.layout.levels[k].log2dim;
+      level_span[l] = (int64_t)1 << sh;
     }
+    #define TVDB_MASK_ON(m_, bit_)                                      \
+      ((int)(((m_).bits.data[(bit_) / 8] >> ((bit_) % 8)) & 1u))
+    for (size_t j = 0; j < m->count; ++j) {
+      if (m->v[j].active) continue;
+      size_t node = 0;
+      for (;;) {
+        tvdb_tree_node_t* n = generated.tree.nodes + node;
+        const int L = generated.tree.layout.levels[n->level].log2dim;
+        if (n->type == TVDB_NODE_LEAF) {
+          size_t s = 0;
+          for (int a = 0; a < 3; ++a)
+            s = (s << L) | (size_t)(m->v[j].c[a] - n->origin[a]);
+          if (s < (size_t)1 << (3 * L))
+            n->u.leaf.value_mask.bits.data[s / 8] &=
+                (unsigned char)~(1u << (s % 8));
+          break;
+        }
+        const int64_t cspan = level_span[n->level + 1];
+        size_t s = 0;
+        int hit = 1;
+        for (int a = 0; a < 3; ++a) {
+          int64_t d = (int64_t)m->v[j].c[a] - n->origin[a];
+          if (d < 0 || d >= ((int64_t)1 << L) * cspan) hit = 0;
+          s = (s << L) | (size_t)(d / cspan);
+        }
+        if (n->type == TVDB_NODE_ROOT) {
+          tvdb_root_node_t* r = &n->u.root;
+          int matched = 0;
+          for (size_t c = 0; c < r->num_children; ++c) {
+            int chit = 1;
+            int32_t o[3];
+            memcpy(o, (const int32_t (*)[3])r->child_origins + c, sizeof o);
+            for (int a = 0; a < 3; ++a)
+              if (m->v[j].c[a] < o[a] ||
+                  m->v[j].c[a] >= o[a] + (int32_t)cspan)
+                chit = 0;
+            if (chit) { node = r->child_indices[c]; matched = 1; break; }
+          }
+          if (!matched) break;
+          continue;
+        }
+        if (!hit) break;
+        const tvdb_internal_node_t* in = &n->u.internal;
+        if (!TVDB_MASK_ON(in->child_mask, s)) {
+          /* Value stored at this internal node: clear our bit there. */
+          in->value_mask.bits.data[s / 8] &= (unsigned char)~(1u << (s % 8));
+          break;
+        }
+        node = in->child_indices[tvdb_tree_mask_rank(&in->child_mask, s)];
+      }
+    }
+    #undef tvdb_level_span
+    #undef TVDB_MASK_ON
   }
   st = tvdb_tree_copy_attributes(source, &attrs, err);
   if (st != TVDB_OK) goto done;
@@ -461,7 +512,8 @@ static int tool_cube(const tvdb_tree_index* p, const int64_t c[3], float iso,
 static tvdb_status_t tool_cell(tool_surface* s, const int64_t c[3]) {
   tvdb_status_t st = tool_scan(s->cells);
   if (st != TVDB_OK) return st;
-  int cube = tool_cube(s->p, c, s->iso, NULL);
+  float corners[8];
+  int cube = tool_cube(s->p, c, s->iso, corners);
   if (cube == 0 || cube == 255) return TVDB_OK;
   int32_t q[3];
   for (int a = 0; a < 3; ++a) {
@@ -472,7 +524,10 @@ static tvdb_status_t tool_cell(tool_surface* s, const int64_t c[3]) {
   }
   size_t i;
   st = tool_insert(s->cells, q, &i);
-  if (st == TVDB_OK) s->cells->v[i].active = (unsigned char)cube;
+  if (st == TVDB_OK) {
+    s->cells->v[i].active = (unsigned char)cube;
+    memcpy(s->cells->v[i].corners, corners, sizeof corners);
+  }
   return st;
 }
 static tvdb_status_t tool_surface_region(const int32_t c[3], int64_t span,
@@ -678,7 +733,8 @@ static tvdb_status_t tool_mesh(const tvdb_tree_index* p, const tool_map* cells,
   for (size_t i = 0; i < cells->count; ++i) {
     int64_t c[3] = {cells->v[i].c[0], cells->v[i].c[1], cells->v[i].c[2]};
     float values[8];
-    int cube = tool_cube(p, c, iso, values);
+    memcpy(values, cells->v[i].corners, sizeof values);
+    int cube = cells->v[i].active;
     uint32_t vertex[12] = {0};
     for (int e = 0; e < 12; ++e)
       if (edge_table[cube] & (1 << e)) {

@@ -35,6 +35,25 @@ static inline bool tvdb_hash_capacity(size_t count, size_t factor, size_t *out) 
     return true;
 }
 
+/* Same as tvdb_hash_capacity but with a rational load factor num/den (e.g.
+ * 4/3 for ~0.75 load). Open addressing stays correct at any load below 1; a
+ * higher load shrinks the table and improves probe cache locality. */
+static inline bool tvdb_hash_capacity_scaled(size_t count, size_t num, size_t den,
+                                             size_t *out) {
+    size_t need;
+    if (den == 0 || !tvdb_size_mul(count, num, &need)) return false;
+    need /= den;
+    if (need > SIZE_MAX - 16) return false;
+    need += 16;
+    size_t cap = 16;
+    while (cap < need) {
+        if (cap > SIZE_MAX / 2) return false;
+        cap *= 2;
+    }
+    *out = cap;
+    return true;
+}
+
 static inline bool tvdb_coord_offset(int x, int y, int z, int dx, int dy, int dz,
                                      int *ox, int *oy, int *oz) {
     int64_t a = (int64_t)x + dx, b = (int64_t)y + dy, c = (int64_t)z + dz;

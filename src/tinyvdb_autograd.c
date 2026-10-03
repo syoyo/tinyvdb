@@ -240,7 +240,7 @@ static inline uint64_t sc_mix_(uint64_t x) {
 
 static int sc_hash_build(const tvdb_sparse_grid* g, sc_he_t** out_tbl, size_t* out_mask) {
   size_t cap;
-  if (g->count > (size_t)INT_MAX - 1 || !tvdb_hash_capacity(g->count, 2, &cap)) return 0;
+  if (g->count > (size_t)INT_MAX - 1 || !tvdb_hash_capacity_scaled(g->count, 4, 3, &cap)) return 0;
   sc_he_t* tbl = (sc_he_t*)calloc(cap, sizeof(sc_he_t));
   if (!tbl) return 0;
   size_t mask = cap - 1;

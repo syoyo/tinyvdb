@@ -285,12 +285,22 @@ typedef struct tvdb_tree_node {
     tvdb_node_type_t type;
     int              level;
     int32_t          origin[3];
+    unsigned char    pooled;  /* values/data carved from tree->pool */
     union {
         tvdb_root_node_t     root;
         tvdb_internal_node_t internal;
         tvdb_leaf_node_t     leaf;
     } u;
 } tvdb_tree_node_t;
+
+/* Chunked allocation pool for node payloads built by the from-sparse builder.
+ * Chunks are never moved, so carved pointers stay valid; destroy walks the
+ * chunk list. */
+typedef struct tvdb_pool_chunk {
+    struct tvdb_pool_chunk *next;
+    size_t                  size;
+    size_t                  used;
+} tvdb_pool_chunk_t;
 
 typedef struct tvdb_tree {
     tvdb_tree_node_t *nodes;
@@ -300,6 +310,7 @@ typedef struct tvdb_tree {
     int               is_point_data_grid;
     int               is_point_index_grid;
     tvdb_allocator_t  *alloc;
+    tvdb_pool_chunk_t *pool;  /* from-sparse builder payload arena */
 } tvdb_tree_t;
 
 /* ========================================================================== */
@@ -2987,7 +2998,7 @@ static void tvdb__tree_destroy(tvdb_tree_t *tree) {
                 tvdb_internal_node_t *in = &n->u.internal;
                 tvdb__nodemask_destroy(&in->child_mask);
                 tvdb__nodemask_destroy(&in->value_mask);
-                if (in->values)
+                if (in->values && !n->pooled)
                     tvdb__free(a, in->values, in->values_size);
                 if (in->child_indices)
                     tvdb__free(a, in->child_indices,
@@ -2997,7 +3008,7 @@ static void tvdb__tree_destroy(tvdb_tree_t *tree) {
             case TVDB_NODE_LEAF: {
                 tvdb_leaf_node_t *lf = &n->u.leaf;
                 tvdb__nodemask_destroy(&lf->value_mask);
-                if (lf->data)
+                if (lf->data && !n->pooled)
                     tvdb__free(a, lf->data, lf->data_size);
                 if (lf->point_indices)
                     tvdb__free(a, lf->point_indices,
@@ -3013,6 +3024,14 @@ static void tvdb__tree_destroy(tvdb_tree_t *tree) {
     if (tree->nodes)
         tvdb__free(a, tree->nodes,
                    tree->nodes_capacity * sizeof(tvdb_tree_node_t));
+    if (tree->pool) {
+        tvdb_pool_chunk_t *c = tree->pool;
+        while (c) {
+            tvdb_pool_chunk_t *next = c->next;
+            tvdb__free(a, c, sizeof(tvdb_pool_chunk_t) + c->size);
+            c = next;
+        }
+    }
     memset(tree, 0, sizeof(*tree));
 }
 
