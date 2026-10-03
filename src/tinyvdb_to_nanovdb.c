@@ -443,6 +443,10 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
     int32_t root_bb_min[3] = { INT32_MAX, INT32_MAX, INT32_MAX };
     int32_t root_bb_max[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
     uint64_t total_active = 0;
+    /* nv__collect appends each node's children contiguously and in ascending
+       parent_slot order, so a running cursor resolves child lookups in O(1)
+       instead of rescanning the whole child array per parent. */
+    size_t lower_cursor = 0;
 
     for (size_t u = 0; u < ctx.n_upper; ++u) {
         const nv_node_info_t *up = &ctx.uppers[u];
@@ -465,10 +469,12 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
         int32_t up_bb_max[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
 
         size_t c_idx_check = 0;  /* tracks lowers[] index for this upper */
-        size_t lower_base = 0;
-        for (size_t l = 0; l < ctx.n_lower; ++l) {
-            if (ctx.lowers[l].parent_idx == u) { lower_base = l; break; }
+        size_t lower_base = lower_cursor;
+        while (lower_cursor < ctx.n_lower
+               && ctx.lowers[lower_cursor].parent_idx == u) {
+            ++lower_cursor;
         }
+        size_t lower_end = lower_cursor;
 
         for (int32_t s = 0; s < total_bits; ++s) {
             int32_t ix, iy, iz;
@@ -480,15 +486,14 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
 
             if (has_child) {
                 /* Child slot: 8-byte child offset relative to this upper. */
-                /* Find which lower has parent_idx==u and parent_slot==s. */
+                /* Children are contiguous and slot-ordered, so the next
+                   unconsumed entry is the match; verify before using it. */
                 size_t lower_idx = SIZE_MAX;
-                for (size_t l = lower_base + c_idx_check; l < ctx.n_lower; ++l) {
-                    if (ctx.lowers[l].parent_idx == u
-                        && ctx.lowers[l].parent_slot == (uint32_t)s) {
-                        lower_idx = l;
-                        ++c_idx_check;
-                        break;
-                    }
+                size_t cand = lower_base + c_idx_check;
+                if (cand < lower_end
+                    && ctx.lowers[cand].parent_slot == (uint32_t)s) {
+                    lower_idx = cand;
+                    ++c_idx_check;
                 }
                 if (lower_idx == SIZE_MAX) continue;  /* shouldn't happen */
                 size_t off_l = off_lo0 + lower_idx * NV_LOWER_FLOAT_BYTES;
@@ -533,6 +538,7 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
     }
 
     /* Lower nodes. */
+    size_t leaf_cursor = 0;
     for (size_t l = 0; l < ctx.n_lower; ++l) {
         const nv_node_info_t *lo = &ctx.lowers[l];
         size_t off_lower = off_lo0 + l * NV_LOWER_FLOAT_BYTES;
@@ -542,10 +548,12 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
         int32_t total_bits = 1 << (3 * log2);
 
         size_t c_idx_check = 0;
-        size_t leaf_base = 0;
-        for (size_t lf = 0; lf < ctx.n_leaf; ++lf) {
-            if (ctx.leaves[lf].parent_idx == l) { leaf_base = lf; break; }
+        size_t leaf_base = leaf_cursor;
+        while (leaf_cursor < ctx.n_leaf
+               && ctx.leaves[leaf_cursor].parent_idx == l) {
+            ++leaf_cursor;
         }
+        size_t leaf_end = leaf_cursor;
 
         for (int32_t s = 0; s < total_bits; ++s) {
             int32_t ix, iy, iz;
@@ -556,13 +564,11 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
 
             if (has_child) {
                 size_t leaf_idx = SIZE_MAX;
-                for (size_t lf = leaf_base + c_idx_check; lf < ctx.n_leaf; ++lf) {
-                    if (ctx.leaves[lf].parent_idx == l
-                        && ctx.leaves[lf].parent_slot == (uint32_t)s) {
-                        leaf_idx = lf;
-                        ++c_idx_check;
-                        break;
-                    }
+                size_t cand = leaf_base + c_idx_check;
+                if (cand < leaf_end
+                    && ctx.leaves[cand].parent_slot == (uint32_t)s) {
+                    leaf_idx = cand;
+                    ++c_idx_check;
                 }
                 if (leaf_idx == SIZE_MAX) continue;
                 size_t off_lf = off_lf0 + leaf_idx * NV_LEAF_FLOAT_BYTES;
@@ -668,12 +674,17 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
     }
 
     /* Now propagate bboxes upper & root. (Lowers got them above.) */
+    size_t bbox_cursor = 0;
     for (size_t u = 0; u < ctx.n_upper; ++u) {
         size_t off_upper = off_up0 + u * NV_UPPER_FLOAT_BYTES;
         int32_t bb_min[3] = { INT32_MAX, INT32_MAX, INT32_MAX };
         int32_t bb_max[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
-        for (size_t l = 0; l < ctx.n_lower; ++l) {
-            if (ctx.lowers[l].parent_idx != u) continue;
+        size_t bb_base = bbox_cursor;
+        while (bbox_cursor < ctx.n_lower
+               && ctx.lowers[bbox_cursor].parent_idx == u) {
+            ++bbox_cursor;
+        }
+        for (size_t l = bb_base; l < bbox_cursor; ++l) {
             int32_t lh = 1 << (4 + 3);
             int32_t lo[3] = { ctx.lowers[l].origin[0], ctx.lowers[l].origin[1], ctx.lowers[l].origin[2] };
             int32_t hi[3] = { lo[0] + lh - 1, lo[1] + lh - 1, lo[2] + lh - 1 };
