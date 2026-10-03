@@ -1,6 +1,6 @@
 set(EXAMPLE_TARGET "vdbdump")
 
-add_executable(${EXAMPLE_TARGET} vdbdump.cc)
+add_executable(${EXAMPLE_TARGET} vdbdump.c)
 
 target_link_libraries(${EXAMPLE_TARGET} PRIVATE tinyvdb)
 

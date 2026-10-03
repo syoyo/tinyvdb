@@ -33,6 +33,33 @@
 
 using namespace emscripten;
 
+/* Error channel.
+ *
+ * This module is built with -fno-exceptions (see web/CMakeLists.txt), and
+ * embind cannot carry a C++ exception message across the boundary anyway: with
+ * exceptions enabled JS still caught a bare pointer (e.g. 120424) instead of
+ * the text. So failures are reported the C way -- record a message, return a
+ * null/empty result -- and JS reads it back with TinyVDB.lastError().
+ *
+ * Every fallible wrapper below sets this before returning, so a JS caller that
+ * checks the result cannot miss it. lastError() is cleared on entry to each
+ * fallible call, so it always describes the most recent failure. */
+static thread_local std::string g_last_error;
+
+static void setLastError(const std::string &m) { g_last_error = m; }
+static void clearLastError() { g_last_error.clear(); }
+
+static std::string lastError() { return g_last_error; }
+
+/* Convenience for the common "native call returned false" shape. */
+template <typename T>
+static T fail(const std::string &m) {
+    setLastError(m);
+    return T();
+}
+
+static void failVoid(const std::string &m) { setLastError(m); }
+
 /* ======================================================================== */
 /*  VDB File I/O wrapper (memory-based, no filesystem)                      */
 /* ======================================================================== */
@@ -49,8 +76,10 @@ public:
         tvdb_status_t st = tvdb_file_open_memory(
             &file_, reinterpret_cast<const uint8_t *>(buf_.data()),
             buf_.size(), NULL, &err);
-        if (st != TVDB_OK)
-            throw std::runtime_error(std::string("openMemory failed: ") + err.message);
+        if (st != TVDB_OK) {
+            failVoid(std::string("openMemory failed: ") + err.message);
+            return;
+        }
         is_open_ = true;
     }
 
@@ -65,17 +94,20 @@ public:
         tvdb_status_t st = tvdb_file_open_memory(
             &file_, reinterpret_cast<const uint8_t *>(buf_.data()),
             buf_.size(), NULL, &err);
-        if (st != TVDB_OK)
-            throw std::runtime_error(std::string("openMemory failed: ") + err.message);
+        if (st != TVDB_OK) {
+            failVoid(std::string("openMemory failed: ") + err.message);
+            return;
+        }
         is_open_ = true;
     }
 
     void readGrids() {
-        checkOpen();
+        clearLastError();
+        if (!checkOpen()) return;
         tvdb_error_t err; memset(&err, 0, sizeof(err));
         tvdb_status_t st = tvdb_read_all_grids(&file_, &err);
         if (st != TVDB_OK)
-            throw std::runtime_error(std::string("readGrids failed: ") + err.message);
+            failVoid(std::string("readGrids failed: ") + err.message); return;
     }
 
     void close() {
@@ -86,25 +118,27 @@ public:
     int gridCount() const { return is_open_ ? (int)tvdb_grid_count(&file_) : 0; }
 
     std::string gridName(int idx) const {
-        checkOpen();
+        if (!checkOpen()) return std::string();
         const char *n = tvdb_grid_name(&file_, (size_t)idx);
         return n ? n : "";
     }
 
     std::string gridTypeName(int idx) const {
-        checkOpen();
+        if (!checkOpen()) return std::string();
         const char *n = tvdb_grid_type_name(&file_, (size_t)idx);
         return n ? n : "";
     }
 
     val toBytes(int compression, int level) const {
-        checkOpen();
+        if (!checkOpen()) return val::undefined();
         tvdb_error_t err; memset(&err, 0, sizeof(err));
         uint8_t *out = NULL; size_t out_sz = 0;
         tvdb_status_t st = tvdb_write_to_memory(
             &file_, (uint32_t)compression, level, &out, &out_sz, &err);
-        if (st != TVDB_OK)
-            throw std::runtime_error(std::string("toBytes failed: ") + err.message);
+        if (st != TVDB_OK) {
+            failVoid(std::string("toBytes failed: ") + err.message);
+            return val::null();
+        }
         val view = val(typed_memory_view(out_sz, out));
         val js_arr = val::global("Uint8Array").new_(view);
         free(out);
@@ -112,7 +146,7 @@ public:
     }
 
     val header() const {
-        checkOpen();
+        if (!checkOpen()) return val::undefined();
         val h = val::object();
         h.set("fileVersion",      (int)file_.header.file_version);
         h.set("majorVersion",     (int)file_.header.major_version);
@@ -123,9 +157,9 @@ public:
     }
 
     val gridMetadata(int idx) const {
-        checkOpen();
+        if (!checkOpen()) return val::undefined();
         if ((size_t)idx >= file_.num_grids)
-            throw std::runtime_error("grid index out of range");
+            failVoid("grid index out of range"); return val::undefined();
         const tvdb_grid_t &g = file_.grids[idx];
         val d = val::object();
         for (size_t i = 0; i < g.metadata.count; i++) {
@@ -149,9 +183,9 @@ public:
     }
 
     val gridTransform(int idx) const {
-        checkOpen();
+        if (!checkOpen()) return val::undefined();
         if ((size_t)idx >= file_.num_grids)
-            throw std::runtime_error("grid index out of range");
+            failVoid("grid index out of range"); return val::undefined();
         const tvdb_transform_t &t = file_.grids[idx].transform;
         val d = val::object();
         val vs = val::array();
@@ -168,18 +202,18 @@ public:
     }
 
     int treeNodeCount(int idx) const {
-        checkOpen();
+        if (!checkOpen()) return 0;
         if ((size_t)idx >= file_.num_grids) return 0;
         return (int)file_.grids[idx].tree.num_nodes;
     }
 
     val treeNodeInfo(int gridIdx, int nodeIdx) const {
-        checkOpen();
+        if (!checkOpen()) return val::undefined();
         if ((size_t)gridIdx >= file_.num_grids)
-            throw std::runtime_error("grid index out of range");
+            failVoid("grid index out of range"); return val::undefined();
         const tvdb_tree_t &tree = file_.grids[gridIdx].tree;
         if ((size_t)nodeIdx >= tree.num_nodes)
-            throw std::runtime_error("node index out of range");
+            failVoid("node index out of range"); return val::undefined();
         const tvdb_tree_node_t &n = tree.nodes[nodeIdx];
         val d = val::object();
         const char *types[] = {"root", "internal", "leaf"};
@@ -199,8 +233,12 @@ public:
     }
 
 private:
-    void checkOpen() const {
-        if (!is_open_) throw std::runtime_error("VDB file is not open");
+    /* Returns false and records the error when the file is not open. Every
+     * caller must bail out: continuing would dereference an unopened
+     * tvdb_file_t. */
+    bool checkOpen() const {
+        if (!is_open_) { setLastError("VDB file is not open"); return false; }
+        return true;
     }
     tvdb_file_t file_;
     bool is_open_;
@@ -523,31 +561,34 @@ private:
 
 DenseGridWrap meshToSDF(TriangleMeshWrap &m, float voxelSize,
                         float bandWidth, int signMethod) {
+    clearLastError();
     DenseGridWrap result;
     tvdb_sign_method sm = (signMethod == 1) ? TVDB_SIGN_SWEEP
                                               : TVDB_SIGN_FLOOD_FILL;
     bool ok = tvdb_mesh_to_sdf_vdb(&m.mesh, voxelSize, bandWidth,
                                     &result.grid, sm, /*arena=*/nullptr);
-    if (!ok) throw std::runtime_error("tvdb_mesh_to_sdf_vdb failed");
+    if (!ok) { failVoid("tvdb_mesh_to_sdf_vdb failed"); return DenseGridWrap(); }
     return result;
 }
 
 TriangleMeshWrap sdfToMesh(const DenseGridWrap &g, float isovalue) {
+    clearLastError();
     TriangleMeshWrap result;
     bool ok = tvdb_sdf_to_mesh(&g.grid, isovalue, &result.mesh,
                                 /*arena=*/nullptr);
-    if (!ok) throw std::runtime_error("tvdb_sdf_to_mesh failed");
+    if (!ok) { failVoid("tvdb_sdf_to_mesh failed"); return TriangleMeshWrap(); }
     return result;
 }
 
 TriangleMeshWrap makeManifold(TriangleMeshWrap &m, double resolution,
                               double isovalue, int signMethod) {
+    clearLastError();
     TriangleMeshWrap result;
     tvdb_sign_method sm = (signMethod == 1) ? TVDB_SIGN_SWEEP
                                               : TVDB_SIGN_FLOOD_FILL;
     bool ok = tvdb_make_manifold_vdb(&m.mesh, resolution, isovalue,
                                       &result.mesh, sm, /*arena=*/nullptr);
-    if (!ok) throw std::runtime_error("tvdb_make_manifold_vdb failed");
+    if (!ok) { failVoid("tvdb_make_manifold_vdb failed"); return TriangleMeshWrap(); }
     return result;
 }
 
@@ -607,11 +648,12 @@ static void throwOnError(tvdb_status_t st, const tvdb_error_t &err, const char *
     if (st != TVDB_OK) {
         std::string msg = what;
         if (err.message[0]) { msg += ": "; msg += err.message; }
-        throw std::runtime_error(msg);
+        failVoid(msg);
     }
 }
 
 DenseGridWrap meshToSDFEx(TriangleMeshWrap &m, float voxelSize, float bandWidth, int signMethod) {
+    clearLastError();
     tvdb_error_t err; std::memset(&err, 0, sizeof(err));
     DenseGridWrap out;
     /* pool = NULL (serial; TINYVDB_THREAD_NONE forces size 1 anyway)
@@ -623,6 +665,7 @@ DenseGridWrap meshToSDFEx(TriangleMeshWrap &m, float voxelSize, float bandWidth,
 }
 
 TriangleMeshWrap sdfToMeshEx(const DenseGridWrap &g, float isovalue, int winding) {
+    clearLastError();
     tvdb_error_t err; std::memset(&err, 0, sizeof(err));
     TriangleMeshWrap out;
     tvdb_mesh_winding_t w = (winding == 1) ? TVDB_MESH_WINDING_OUTWARD
@@ -645,16 +688,24 @@ val mcTriTableFlat() { return val(typed_memory_view(256 * 16, tvdb_mc_tri_table_
 namespace {
 /* `result` is pre-allocated and the inputs must be the same shape, so build
  * the target from `a` and reject a mismatch rather than scribbling past it. */
-void requireSameShape(const DenseGridWrap &a, const DenseGridWrap &b, const char *what) {
-    if (a.grid.nx != b.grid.nx || a.grid.ny != b.grid.ny || a.grid.nz != b.grid.nz)
-        throw std::runtime_error(std::string(what) + ": grid shapes differ (" +
+/* Returns false and records the error when the shapes differ. Callers MUST
+   bail: tvdb_comp_* writes elementwise into a result sized like `a`, so a
+   smaller `b` would be read past its end. */
+bool requireSameShape(const DenseGridWrap &a, const DenseGridWrap &b, const char *what) {
+    if (a.grid.nx != b.grid.nx || a.grid.ny != b.grid.ny || a.grid.nz == 0
+        || b.grid.nz == 0 || a.grid.nz != b.grid.nz || a.grid.ny != b.grid.ny
+        || a.grid.nx != b.grid.nx) {
+        failVoid(std::string(what) + ": grid shapes differ (" +
             std::to_string(a.grid.nx) + "x" + std::to_string(a.grid.ny) + "x" + std::to_string(a.grid.nz) +
             " vs " + std::to_string(b.grid.nx) + "x" + std::to_string(b.grid.ny) + "x" + std::to_string(b.grid.nz) + ")");
+        return false;
+    }
+    return true;
 }
 
 template <void (*Fn)(const tvdb_dense_grid *, const tvdb_dense_grid *, tvdb_dense_grid *)>
 DenseGridWrap compOp(const DenseGridWrap &a, const DenseGridWrap &b, const char *what) {
-    requireSameShape(a, b, what);
+    if (!requireSameShape(a, b, what)) return DenseGridWrap();
     DenseGridWrap r;
     tvdb_dense_grid_init(&r.grid, a.grid.nx, a.grid.ny, a.grid.nz);
     r.grid.ox = a.grid.ox; r.grid.oy = a.grid.oy; r.grid.oz = a.grid.oz;
@@ -684,6 +735,7 @@ void meanCurvatureFlow(DenseGridWrap &g, float dt, int iterations) {
     tvdb_mean_curvature_flow(&g.grid, dt, iterations);
 }
 void signedFloodFill(DenseGridWrap &g, float bandWorld) {
+    clearLastError();
     tvdb_signed_flood_fill(&g.grid, bandWorld);
 }
 int  fastSweeping(DenseGridWrap &g, float frozenBand, int maxIters, float tol) {
@@ -770,9 +822,10 @@ DenseGridWrap advect(const DenseGridWrap &field, const DenseVecGridWrap &vel,
 /* ======================================================================== */
 
 val statistics(const DenseGridWrap &g) {
+    clearLastError();
     tvdb_grid_stats_t s;
     if (!tvdb_grid_statistics(&g.grid, &s))
-        throw std::runtime_error("gridStatistics failed");
+        return fail<val>("gridStatistics failed");
     val d = val::object();
     d.set("min",    s.min);
     d.set("max",    s.max);
@@ -784,17 +837,18 @@ val statistics(const DenseGridWrap &g) {
 }
 
 val histogram(const DenseGridWrap &g, double rangeMin, double rangeMax, int nbins) {
-    if (nbins <= 0) throw std::runtime_error("histogram: nbins must be > 0");
+    clearLastError();
+    if (nbins <= 0) return fail<val>("histogram: nbins must be > 0");
     std::vector<size_t> counts((size_t)nbins, 0);
     if (!tvdb_grid_histogram(&g.grid, rangeMin, rangeMax, nbins, counts.data()))
-        throw std::runtime_error("gridHistogram failed");
+        return fail<val>("gridHistogram failed");
     return val(typed_memory_view((size_t)nbins, counts.data()));
 }
 
 val checkLevelSet(const DenseGridWrap &g, double bandWorld, double tol) {
     tvdb_level_set_check_t c;
     if (!tvdb_check_level_set(&g.grid, bandWorld, tol, &c))
-        throw std::runtime_error("checkLevelSet failed");
+        return fail<val>("checkLevelSet failed");
     val d = val::object();
     d.set("meanGradMag",  c.mean_grad_mag);
     d.set("maxGradError", c.max_grad_error);
@@ -806,7 +860,7 @@ val checkLevelSet(const DenseGridWrap &g, double bandWorld, double tol) {
 val checkFogVolume(const DenseGridWrap &g, double eps) {
     int valid = 0; double mn = 0.0, mx = 0.0;
     if (!tvdb_check_fog_volume(&g.grid, eps, &valid, &mn, &mx))
-        throw std::runtime_error("checkFogVolume failed");
+        return fail<val>("checkFogVolume failed");
     val d = val::object();
     d.set("valid", (bool)valid);
     d.set("min",   mn);
@@ -823,12 +877,13 @@ val checkFogVolume(const DenseGridWrap &g, double eps) {
 
 namespace {
 void requireOk(bool ok, const char *what) {
-    if (!ok) throw std::runtime_error(std::string(what) + " failed");
+    if (!ok) setLastError(std::string(what) + " failed");
 }
 } // namespace
 
 DenseGridWrap levelSetSphere(float radius, float cx, float cy, float cz,
                              float voxelSize, float halfWidth) {
+    clearLastError();
     const float c[3] = {cx, cy, cz};
     DenseGridWrap out;
     requireOk(tvdb_level_set_sphere(radius, c, voxelSize, halfWidth, &out.grid),
@@ -837,6 +892,7 @@ DenseGridWrap levelSetSphere(float radius, float cx, float cy, float cz,
 }
 DenseGridWrap levelSetBox(float hx, float hy, float hz, float cx, float cy, float cz,
                           float voxelSize, float halfWidth) {
+    clearLastError();
     const float he[3] = {hx, hy, hz};
     const float c[3]  = {cx, cy, cz};
     DenseGridWrap out;
@@ -845,6 +901,7 @@ DenseGridWrap levelSetBox(float hx, float hy, float hz, float cx, float cy, floa
 }
 DenseGridWrap levelSetTorus(float major, float minor, float cx, float cy, float cz,
                             float voxelSize, float halfWidth) {
+    clearLastError();
     const float c[3] = {cx, cy, cz};
     DenseGridWrap out;
     requireOk(tvdb_level_set_torus(major, minor, c, voxelSize, halfWidth, &out.grid),
@@ -853,6 +910,7 @@ DenseGridWrap levelSetTorus(float major, float minor, float cx, float cy, float 
 }
 DenseGridWrap levelSetCapsule(float x0, float y0, float z0, float x1, float y1, float z1,
                               float radius, float voxelSize, float halfWidth) {
+    clearLastError();
     const float p0[3] = {x0, y0, z0};
     const float p1[3] = {x1, y1, z1};
     DenseGridWrap out;
@@ -862,6 +920,7 @@ DenseGridWrap levelSetCapsule(float x0, float y0, float z0, float x1, float y1, 
 }
 DenseGridWrap levelSetPlatonic(int faces, float radius, float cx, float cy, float cz,
                                float voxelSize, float halfWidth) {
+    clearLastError();
     const float c[3] = {cx, cy, cz};
     DenseGridWrap out;
     requireOk(tvdb_level_set_platonic(faces, radius, c, voxelSize, halfWidth, &out.grid),
@@ -870,16 +929,19 @@ DenseGridWrap levelSetPlatonic(int faces, float radius, float cx, float cy, floa
 }
 
 DenseGridWrap sdfToFogVolume(const DenseGridWrap &sdf, float halfWidth) {
+    clearLastError();
     DenseGridWrap out;
     requireOk(tvdb_sdf_to_fog_volume(&sdf.grid, halfWidth, &out.grid), "sdfToFogVolume");
     return out;
 }
 DenseGridWrap sdfInteriorMask(const DenseGridWrap &sdf, float isovalue) {
+    clearLastError();
     DenseGridWrap out;
     requireOk(tvdb_sdf_interior_mask(&sdf.grid, isovalue, &out.grid), "sdfInteriorMask");
     return out;
 }
 DenseGridWrap sdfEnclosedRegions(const DenseGridWrap &sdf, float isovalue, int connectivity) {
+    clearLastError();
     DenseGridWrap out;
     requireOk(tvdb_sdf_extract_enclosed_regions(&sdf.grid, isovalue, connectivity, &out.grid),
               "sdfEnclosedRegions");
@@ -937,7 +999,7 @@ val uniformRaySamples(float ox, float oy, float oz, float dx, float dy, float dz
     r.origin.x = ox; r.origin.y = oy; r.origin.z = oz;
     r.dir.x = dx;    r.dir.y = dy;    r.dir.z = dz;
     r.tmin = tmin;   r.tmax = tmax;
-    if (nSamples <= 0) throw std::runtime_error("uniformRaySamples: nSamples must be > 0");
+    if (nSamples <= 0) return fail<val>("uniformRaySamples: nSamples must be > 0");
     std::vector<tvdb_vec3f> pts((size_t)nSamples);
     std::vector<float> ts((size_t)nSamples);
     tvdb_uniform_ray_samples(&r, (size_t)nSamples, pts.data(), wantT ? ts.data() : NULL);
@@ -973,7 +1035,8 @@ namespace {
 DenseGridWrap resampleLike(tvdb_dense_grid *tmp, bool ok, const char *what) {
     if (!ok) {
         tvdb_dense_grid_free(tmp);
-        throw std::runtime_error(std::string(what) + " failed");
+        setLastError(std::string(what) + " failed");
+        return DenseGridWrap();
     }
     DenseGridWrap w;
     tvdb_dense_grid_free(&w.grid);
@@ -1039,7 +1102,8 @@ namespace {
 SparseGridWrap sparseLike(tvdb_sparse_grid *tmp, bool ok, const char *what) {
     if (!ok) {
         tvdb_sparse_grid_free(tmp);
-        throw std::runtime_error(std::string(what) + " failed");
+        setLastError(std::string(what) + " failed");
+        return SparseGridWrap();
     }
     SparseGridWrap w;
     tvdb_sparse_grid_free(&w.sg);
@@ -1122,7 +1186,7 @@ SparseGridWrap erodeSparse(const SparseGridWrap &a, int iterations) {
 SparseGridWrap sparseConv3d(const SparseGridWrap &a, const val &kernel,
                             int kx, int ky, int kz, float padValue) {
     const int klen = kx * ky * kz;
-    if (klen <= 0) throw std::runtime_error("sparseConv3d: empty kernel");
+    if (klen <= 0) return fail<SparseGridWrap>("sparseConv3d: empty kernel");
     std::vector<float> k((size_t)klen);
     val(typed_memory_view(klen, k.data())).call<void>("set", kernel);
     tvdb_sparse_grid tmp; tvdb_sparse_grid_init(&tmp);
@@ -1151,6 +1215,12 @@ EMSCRIPTEN_BINDINGS(tinyvdb) {
     constant("ADVECT_RK4",           (int)TVDB_ADVECT_RK4);
     constant("ADVECT_MACCORMACK",    (int)TVDB_ADVECT_MACCORMACK);
     constant("ADVECT_BFECC",         (int)TVDB_ADVECT_BFECC);
+
+    /* Error channel (see the note above thread_local std::string g_last_error).
+       Failures are reported here rather than by throwing, so this module needs
+       no C++ exceptions and JS can finally read the message. */
+    function("lastError",     &lastError);
+    function("clearLastError", &clearLastError);
 
     class_<VDBFile>("VDBFile")
         .constructor<>()

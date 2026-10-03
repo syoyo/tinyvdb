@@ -88,18 +88,22 @@ add_executable(tinyvdb
 target_link_libraries(tinyvdb PRIVATE tinyvdb_c tinyvdb_mesh_ops)
 target_include_directories(tinyvdb PRIVATE ${TINYVDB_ROOT}/src)
 
-# Emscripten compiles C++ with -fno-exceptions by default, so every `throw` in
-# the embind layer degrades to abort(). Enabling real unwinding costs nothing
-# here and lets C++ destructors run while a failure propagates; the C sources
-# never throw, so this applies to the C++ binding TU only.
+# No C++ exceptions here. Failures are reported through TinyVDB.lastError()
+# rather than by throwing, which also fixes a real defect: embind could not
+# carry an exception message across the boundary, so JS caught a bare pointer
+# instead of the text. Emscripten already defaults to -fno-exceptions; being
+# explicit keeps that from changing under us.
+# Exceptions are off, and failures are reported through TinyVDB.lastError()
+# instead -- see the note above g_last_error.
 #
-# KNOWN LIMITATION: embind still does not carry the exception *message* across
-# the boundary in this toolchain -- JS catches a bare number. try/catch works
-# and the module stays usable afterwards, so treat a caught throw as a generic
-# failure. Callers that need to distinguish causes should validate arguments
-# before calling (the wrappers do this for shape mismatches, so those are
-# rejected deterministically).
-target_compile_options(tinyvdb PRIVATE -fexceptions)
+# RTTI stays ON here, and that is a hard requirement of the toolchain rather
+# than a preference. embind derives JS type names from typeid(): with -fno-rtti
+# the module still links once EMSCRIPTEN_HAS_UNBOUND_TYPE_NAMES=0 silences
+# wire.h's static_assert, but every binding throws at runtime with
+# "UnboundTypeError: Cannot call <fn> due to unbound types". There is no way to
+# keep embind and drop RTTI. The rest of the C++ in this repository (examples,
+# Python bindings) does build with -fno-rtti; only this target cannot.
+target_compile_options(tinyvdb PRIVATE -fno-exceptions)
 
 # Emscripten link flags
 #
@@ -116,7 +120,6 @@ target_link_options(tinyvdb PRIVATE
     "SHELL:-s ALLOW_MEMORY_GROWTH=1"
     "SHELL:-s MAXIMUM_MEMORY=1073741824"   # 1 GB
     "SHELL:-s ENVIRONMENT='web,worker,node'"
-    "SHELL:-s DISABLE_EXCEPTION_CATCHING=0"
     "SHELL:--bind"
 )
 

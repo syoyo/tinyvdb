@@ -1,6 +1,6 @@
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "tinyvdb_nanovdb.h"
 
 int main(int argc, char **argv) {

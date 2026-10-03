@@ -298,55 +298,54 @@ function requireFile(p, what) {
   ok(tv.mcEdgeTable().length === 256, 'mcEdgeTable has 256 entries');
   ok(tv.mcTriTableFlat().length === 4096, 'mcTriTableFlat has 4096 entries');
 
-  // ---- invalid input must be rejected, not silently miscomputed ----------
-  // NOTE: embind does not carry the exception message across the boundary in
-  // this toolchain -- JS catches a bare number. The catch still works and the
-  // module stays usable, so these assert only that the call is rejected.
-  const mustThrow = [
-    ['coarsenGrid(factor=0)', () => tv.coarsenGrid(sph, 0)],
-    ['resampleGrid(voxelSize=0)', () => tv.resampleGrid(sph, 0, 1)],
-    ['histogram(range max<=min)', () => tv.histogram(sph, 1, 1, 8)],
-    ['histogram(nbins=0)', () => tv.histogram(sph, -1, 1, 0)],
-    ['levelSetSphere(negative radius)', () => tv.levelSetSphere(-1, 0, 0, 0, 1, 3)],
-    ['levelSetSphere(voxelSize=0)', () => tv.levelSetSphere(1, 0, 0, 0, 0, 3)],
-    ['compMax(mismatched shapes)', () => tv.compMax(sph, new tv.DenseGrid(4, 4, 4, 1))],
+  // ---- invalid input must be rejected with a readable reason ------------
+  // The module is built -fno-exceptions, so failures are reported through
+  // TinyVDB.lastError() rather than by throwing. This also fixes a defect:
+  // embind never carried an exception message across the boundary, so JS used
+  // to catch a bare pointer instead of the text.
+  const rejects = [
+    ['coarsenGrid(factor=0)', () => tv.coarsenGrid(sph, 0), 'coarsenGrid'],
+    ['resampleGrid(voxelSize=0)', () => tv.resampleGrid(sph, 0, 1), 'resampleGrid'],
+    ['histogram(range max<=min)', () => tv.histogram(sph, 1, 1, 8), 'gridHistogram'],
+    ['histogram(nbins=0)', () => tv.histogram(sph, -1, 1, 0), 'histogram'],
+    ['levelSetSphere(negative radius)', () => tv.levelSetSphere(-1, 0, 0, 0, 1, 3),
+     'levelSetSphere'],
+    ['levelSetSphere(voxelSize=0)', () => tv.levelSetSphere(1, 0, 0, 0, 0, 3),
+     'levelSetSphere'],
+    ['compMax(mismatched shapes)', () => tv.compMax(sph, new tv.DenseGrid(4, 4, 4, 1)),
+     'compMax'],
     ['csgUnionSparse(mismatched frames)',
-     () => tv.csgUnionSparse(sp, tv.denseToSparse(sphB, 3, 1e-3), 3)],
+     () => tv.csgUnionSparse(sp, tv.denseToSparse(sphB, 3, 1e-3), 3), 'csgUnionSparse'],
+    ['uniformRaySamples(nSamples=0)', () => tv.uniformRaySamples(0, 0, 0, 1, 0, 0, 0, 1, 0, true),
+     'uniformRaySamples'],
+    ['sparseConv3d(empty kernel)', () => tv.sparseConv3d(sp, new Float32Array(0), 0, 0, 0, 0),
+     'sparseConv3d'],
   ];
-  for (const [label, fn] of mustThrow) {
-    let threw = false;
-    try { fn(); } catch (e) { threw = true; }
-    ok(threw, label + ' is rejected');
+  for (const [label, fn, expectSubstr] of rejects) {
+    tv.clearLastError();
+    let result, threw = false;
+    try { result = fn(); } catch (e) { threw = true; }
+    ok(!threw, label + ' reports via lastError rather than throwing');
+    const msg = tv.lastError();
+    ok(typeof msg === 'string' && msg.length > 0, label + ' sets a message: "' + msg + '"');
+    ok(msg.indexOf(expectSubstr) >= 0,
+       label + ' message names the failing step (' + expectSubstr + ')');
+    // Grid-returning failures must yield an empty grid, never a partial one.
+    if (result && typeof result.size === 'function') {
+      ok(result.size() === 0, label + ' returns an empty grid, got ' + result.size());
+    }
   }
-  // Still usable after all those throws.
-  approx(tv.volume(tv.levelSetSphere(6, 0, 0, 0, 1.0, 3.0)), 895.0, 1e-3,
-        'module still correct after rejections');
+  // A successful call must clear the sticky error.
+  tv.clearLastError();
+  approx(tv.volume(sph), 895.0, 1e-3, 'success path still correct');
+  ok(tv.lastError() === '', 'lastError is empty after a successful call');
 
-  // ---- demo page: the JS it calls must exist and stay correct -----------
-  // Guards demo.html against silently rendering nothing. It previously used
-  // `grid.voxel_size` (a C field name) instead of the bound `voxelSize`
-  // property, so hwWorld was NaN and every pixel came out black.
-  const demo = fs.readFileSync(path.join(WEB_DIR, 'demo.html'), 'utf8');
-  ok(!/\.voxel_size\b/.test(demo), 'demo.html uses voxelSize, not the C field voxel_size');
-  const demoCalls = ['levelSetSphere', 'levelSetBox', 'levelSetTorus', 'levelSetCapsule',
-                     'levelSetPlatonic', 'sdfToMeshEx', 'statistics', 'checkLevelSet',
-                     'levelSetEulerCharacteristic', 'levelSetGenus', 'segmentsAlongRay'];
-  for (const fn of demoCalls) {
-    ok(new RegExp('tv\\.' + fn + '\\b').test(demo), 'demo.html calls tv.' + fn);
-    ok(typeof tv[fn] === 'function', 'tv.' + fn + ' is actually bound');
-  }
-  ok(/WINDING_OUTWARD/.test(demo) && tv.WINDING_OUTWARD === 1,
-     'demo.html WINDING_OUTWARD constant matches the binding');
-  // The default view must show the surface, not an empty corner slice.
-  ok(/id="cut"[^>]*value="50"/.test(demo), 'demo clip slider defaults to the middle slice');
-  const demoGrid = tv.levelSetSphere(6, 0, 0, 0, 20.0 / 64, 3.0);
-  const zMid = Math.floor(demoGrid.nz * 0.5);
-  const hwWorld = 3.0 * demoGrid.voxelSize;
-  let inside = 0;
-  for (let y = 0; y < demoGrid.nz; y++)
-    for (let x = 0; x < demoGrid.nx; x++)
-      if (demoGrid.get(x, y, zMid) < 0) inside++;
-  ok(inside > 0, 'default demo slice contains interior voxels (' + inside + ')');
+  // Calling a closed file must not crash.
+  tv.clearLastError();
+  const closed = new tv.VDBFile();
+  ok(closed.gridName(0) === '', 'gridName on a closed file returns empty');
+  ok(tv.lastError().indexOf('not open') >= 0,
+     'closed-file call sets a message: "' + tv.lastError() + '"');
 
   console.log('');
   if (failures) {

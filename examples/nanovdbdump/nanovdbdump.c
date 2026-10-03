@@ -1,6 +1,6 @@
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "tinyvdb_nanovdb.h"
 
 static const char *codec_name(uint16_t codec) {

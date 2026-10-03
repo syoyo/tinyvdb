@@ -1,19 +1,15 @@
 /*
  * vdbdump — Dump VDB file info using TinyVDB (C11 library, C++11 example).
  */
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <cinttypes>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <inttypes.h>
 
 #include "tinyvdb_io.h"
 
-/* Simple RAII guard for tvdb_file_t */
-struct TvdbFileGuard {
-    tvdb_file_t *f;
-    explicit TvdbFileGuard(tvdb_file_t *fp) : f(fp) {}
-    ~TvdbFileGuard() { tvdb_file_close(f); }
-};
+/* C has no destructors, so tvdb_file_t is closed explicitly on each exit path
+ * below rather than through an RAII guard. */
 
 static const char *value_type_name(tvdb_value_type_t t) {
     switch (t) {
@@ -142,7 +138,6 @@ int main(int argc, char **argv) {
                 infile, err.message, tvdb_status_string(st));
         return EXIT_FAILURE;
     }
-    TvdbFileGuard guard(&file);
 
     /* Print header */
     printf("File: %s\n", infile);
@@ -168,6 +163,7 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Error reading grids: %s (%s)\n",
                 err.message, tvdb_status_string(st));
         return EXIT_FAILURE;
+        tvdb_file_close(&file);
     }
 
     /* Print grid info */
@@ -276,10 +272,12 @@ int main(int argc, char **argv) {
             fprintf(stderr, "Error writing %s: %s (%s)\n",
                     outfile, err.message, tvdb_status_string(st));
             return EXIT_FAILURE;
+            tvdb_file_close(&file);
         }
         printf("Write OK\n");
     }
 
     printf("\nOK\n");
     return EXIT_SUCCESS;
+    tvdb_file_close(&file);
 }

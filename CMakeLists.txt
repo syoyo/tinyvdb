@@ -39,6 +39,25 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# The library in src/ is C11 and must stay that way: no C++ translation units,
+# no exceptions, no RTTI. Everything outside the library (examples, Python and
+# WebAssembly bindings) is C++ only because its host API demands it -- the
+# Python C API and Emscripten's embind are C++ interfaces.
+#
+# Disable exceptions and RTTI for all C++ so that stays a property of the build
+# rather than a convention. The binding layers report failure through
+# TinyVDB.lastError() instead of throwing, so nothing needs to catch. Turn
+# TVDB_ALLOW_CXX_EXCEPTIONS on only if some future host API forces it back.
+option(TVDB_ALLOW_CXX_EXCEPTIONS
+       "Allow C++ exceptions in binding/example code (off by default)")
+if(NOT TVDB_ALLOW_CXX_EXCEPTIONS)
+  if(MSVC)
+    string(APPEND CMAKE_CXX_FLAGS " /EHs-c- /GR-")
+  else()
+    string(APPEND CMAKE_CXX_FLAGS " -fno-exceptions -fno-rtti")
+  endif()
+endif()
+
 # Resolve an interpreter and its stable-ABI development files together, so
 # CTest cannot select a newer interpreter whose headers are unavailable.
 if(TINYVDB_BUILD_PYTHON)
