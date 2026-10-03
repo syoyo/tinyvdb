@@ -13,7 +13,7 @@
 
 #include <string.h>
 #include <stdlib.h>
-#include <cstdio>
+#include <stdio.h>
 
 /* ======================================================================== */
 /*  Module globals                                                           */
