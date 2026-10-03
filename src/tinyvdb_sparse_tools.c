@@ -1014,7 +1014,8 @@ static size_t tool_root(size_t* parent, size_t i) {
   return r;
 }
 typedef struct {
-  size_t n, *neighbors, *parent, *component_size;
+  size_t n, *parent, *component_size;
+  uint32_t* neighbors;
   unsigned char* anchored;
   double *weight, *diagonal, *b, *x, *r, *z, *direction, *ap, *sums;
 } tool_pcg;
@@ -1037,12 +1038,13 @@ static void tool_pcg_free(tool_pcg* p) {
 static tvdb_status_t tool_pcg_alloc(tool_pcg* p, size_t n, tvdb_error_t* err) {
   p->n = n;
   if (!n) return TVDB_OK;
+  if (n > SIZE_MAX / 6 || n > UINT32_MAX) goto overflow;
   size_t bytes, six;
-  if (!tvdb_size_mul(n, 6, &six) || !tvdb_size_mul(six, sizeof(size_t), &bytes))
+  if (!tvdb_size_mul(n, 6, &six) || !tvdb_size_mul(six, sizeof(uint32_t), &bytes))
     goto overflow;
   p->neighbors = malloc(bytes);
   if (!p->neighbors) goto oom;
-  for (size_t i = 0; i < six; ++i) p->neighbors[i] = SIZE_MAX;
+  for (size_t i = 0; i < six; ++i) p->neighbors[i] = UINT32_MAX;
   if (!tvdb_size_mul(six, sizeof(double), &bytes)) goto overflow;
   p->weight = calloc(1, bytes);
   if (!p->weight) goto oom;
@@ -1087,7 +1089,7 @@ static void tool_apply(const tool_pcg* p, const double* x, double* out) {
   for (size_t i = 0; i < p->n; ++i) {
     double v = p->diagonal[i] * x[i];
     for (int d = 0; d < 6; ++d)
-      if (p->neighbors[6 * i + d] != SIZE_MAX)
+      if (p->neighbors[6 * i + d] != UINT32_MAX)
         v -= p->weight[6 * i + d] * x[p->neighbors[6 * i + d]];
     out[i] = v;
   }
@@ -1102,9 +1104,9 @@ static double tool_dot(size_t n, const double* a, const double* b) {
   return s;
 }
 static double tool_norm(size_t n, const double* x) {
-  double nrm = 0;
-  for (size_t i = 0; i < n; ++i) nrm = hypot(nrm, x[i]);
-  return nrm;
+  double s = 0;
+  for (size_t i = 0; i < n; ++i) s += x[i] * x[i];
+  return sqrt(s);
 }
 static tvdb_status_t tool_assemble(tool_map* m, const double h[3],
                                    const tvdb_sparse_poisson_options_t* opts,

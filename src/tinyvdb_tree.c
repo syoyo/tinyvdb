@@ -17,12 +17,7 @@ tvdb_status_t tvdb_tree_error(tvdb_error_t* err, tvdb_status_t st,
   return st;
 }
 static unsigned tree_pop(unsigned x) {
-  unsigned n = 0;
-  while (x) {
-    x &= x - 1;
-    ++n;
-  }
-  return n;
+  return (unsigned)__builtin_popcount(x);
 }
 size_t tvdb_tree_mask_rank(const tvdb_nodemask_t* m, size_t bit) {
   size_t n = 0, i;
@@ -204,6 +199,7 @@ tvdb_status_t tvdb_tree_index_create(const tvdb_grid_t* g, int float_only,
                              "unsupported tree dimensions/type");
     sum += L;
     p->span[l] = INT64_C(1) << sum;
+    p->span_shift[l] = sum;
   }
   const tvdb_root_node_t* r = &t->nodes[0].u.root;
   if ((r->num_children && (!r->child_origins || !r->child_indices)) ||
@@ -284,8 +280,8 @@ float tvdb_tree_get(const tvdb_tree_index* p, const int32_t coord[3],
   int32_t origin[3];
   if (active) *active = 0;
   for (int a = 0; a < 3; ++a) {
-    int64_t v = coord[a], span = p->span[1];
-    origin[a] = (int32_t)((v >= 0 ? v / span : -1 - ((-1 - v) / span)) * span);
+    int64_t v = coord[a], span = p->span[1], sh = p->span_shift[1];
+    origin[a] = (int32_t)((v >= 0 ? v >> sh : -1 - ((-1 - v) >> sh)) * span);
   }
   size_t h = (size_t)root_hash(origin) & (p->root_capacity - 1),
          item = SIZE_MAX;
@@ -308,10 +304,10 @@ float tvdb_tree_get(const tvdb_tree_index* p, const int32_t coord[3],
     const tvdb_tree_node_t* n = &p->grid->tree.nodes[node];
     int L = p->grid->tree.layout.levels[l].log2dim;
     size_t slot = 0;
-    int64_t step = l + 1 == p->levels ? 1 : p->span[l + 1];
+    const int sh = l + 1 == p->levels ? 0 : p->span_shift[l + 1];
     for (int a = 0; a < 3; ++a)
       slot = (slot << L) |
-             (size_t)(((int64_t)coord[a] - p->origins[node][a]) / step);
+             (size_t)(((int64_t)coord[a] - p->origins[node][a]) >> sh);
     if (n->type == TVDB_NODE_LEAF) {
       float v;
       memcpy(&v, n->u.leaf.data + slot * 4, 4);
@@ -821,22 +817,36 @@ tvdb_status_t tvdb_grid_signed_flood_fill(const tvdb_grid_t* g, float outside,
       for (size_t s = 0; s < slots; ++s) v[s] = fill;
     } else {
       size_t rank = 0;
+      /* Byte-level cumulative popcount of the child mask: turns every
+         O(bit/8) mask_rank scan below into an O(1) lookup. */
+      unsigned short ranktab[64];
+      const size_t nbytes = slots / 8;
+      const int fast_rank = nbytes <= sizeof(ranktab);
+      if (fast_rank) {
+        unsigned short crun = 0;
+        for (size_t bi = 0; bi < nbytes; ++bi) {
+          ranktab[bi] = crun;
+          crun = (unsigned short)(crun + __builtin_popcount(mask->bits.data[bi]));
+        }
+      }
+      #define MASK_RANK_FAST(m, bit) \
+        (fast_rank ? ((size_t)ranktab[(bit) / 8] + \
+         (size_t)__builtin_popcount((m)->bits.data[(bit) / 8] & ((1u << ((bit) % 8)) - 1))) \
+                   : tvdb_tree_mask_rank(m, bit))
       int xinside =
           leaf ? v[first] < 0 : ends[n->u.internal.child_indices[0]][0] < 0;
       for (int x = 0; x < dim; ++x) {
         size_t x00 = (size_t)x << (2 * L);
         if (mask_on(mask, x00))
           xinside = leaf ? v[x00] < 0
-                         : ends[n->u.internal.child_indices[tvdb_tree_mask_rank(
-                               mask, x00)]][1] < 0;
+                         : ends[n->u.internal.child_indices[MASK_RANK_FAST(mask, x00)]][1] < 0;
         int yinside = xinside;
         for (int y = 0; y < dim; ++y) {
           size_t xy0 = x00 + ((size_t)y << L);
           if (mask_on(mask, xy0))
             yinside =
                 leaf ? v[xy0] < 0
-                     : ends[n->u.internal.child_indices[tvdb_tree_mask_rank(
-                           mask, xy0)]][1] < 0;
+                     : ends[n->u.internal.child_indices[MASK_RANK_FAST(mask, xy0)]][1] < 0;
           int zinside = yinside;
           for (int z = 0; z < dim; ++z) {
             size_t s = xy0 + (size_t)z;
@@ -848,6 +858,7 @@ tvdb_status_t tvdb_grid_signed_flood_fill(const tvdb_grid_t* g, float outside,
           }
         }
       }
+      #undef MASK_RANK_FAST
     }
     node_ends(n, L, (const float (*)[2])ends, ends[ni]);
   }
@@ -871,7 +882,7 @@ tvdb_status_t tvdb_grid_signed_flood_fill(const tvdb_grid_t* g, float outside,
     if (a->c[0] != b->c[0] || a->c[1] != b->c[1] || dz <= p.span[1] ||
         ends[a->node][1] >= 0 || ends[b->node][0] >= 0)
       continue;
-    size_t gaps = (size_t)(dz / p.span[1] - 1);
+    size_t gaps = (size_t)((dz >> p.span_shift[1]) - 1);
     if (gaps > UINT32_MAX - total) goto overflow;
     total += gaps;
   }

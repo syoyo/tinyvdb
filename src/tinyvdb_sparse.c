@@ -244,13 +244,14 @@ static bool tvdb_csg_sparse_impl(const tvdb_sparse_grid* a, const tvdb_sparse_gr
 
   tvdb_hash_entry *ha = NULL, *hb = NULL;
   size_t ma = 0, mb = 0;
-  if (!tvdb_hash_build(a, &ha, &ma, NULL)) return false;
-  if (!tvdb_hash_build(b, &hb, &mb, NULL)) { free(ha); return false; }
+  uint8_t *first_a = NULL, *first_b = NULL;
+  if (!tvdb_hash_build(a, &ha, &ma, &first_a)) return false;
+  if (!tvdb_hash_build(b, &hb, &mb, &first_b)) { free(ha); free(first_a); return false; }
 
   // Walk a, looking up b
   for (size_t i = 0; i < a->count; ++i) {
     int x = a->coords[i].x, y = a->coords[i].y, z = a->coords[i].z;
-    if (tvdb_hash_get(ha,ma,a->coords,x,y,z) != (int)i) continue;
+    if (!(first_a[i >> 3] & (uint8_t)(1u << (i & 7u)))) continue;
     int j = tvdb_hash_get(hb, mb, b->coords, x, y, z);
     float va = a->values[i];
     float vb = (j >= 0) ? b->values[j] : background;
@@ -258,21 +259,22 @@ static bool tvdb_csg_sparse_impl(const tvdb_sparse_grid* a, const tvdb_sparse_gr
     if (op == 0)      v = va < vb ? va : vb;
     else if (op == 1) v = va > vb ? va : vb;
     else              v = va > -vb ? va : -vb;
-    if (!tvdb_sparse_push(out, x, y, z, v)) { free(ha); free(hb); return false; }
+    if (!tvdb_sparse_push(out, x, y, z, v)) { free(ha); free(hb); free(first_a); free(first_b); return false; }
   }
   // All CSG operations span the coordinate union.
   {
     for (size_t i = 0; i < b->count; ++i) {
       int x = b->coords[i].x, y = b->coords[i].y, z = b->coords[i].z;
       if (tvdb_hash_get(ha, ma, a->coords, x, y, z) >= 0 ||
-          tvdb_hash_get(hb,mb,b->coords,x,y,z) != (int)i) continue;
+          !(first_b[i >> 3] & (uint8_t)(1u << (i & 7u)))) continue;
       float vb = b->values[i];
       float v = op == 0 ? (background < vb ? background : vb) :
                 op == 1 ? (background > vb ? background : vb) :
                           (background > -vb ? background : -vb);
-      if (!tvdb_sparse_push(out, x, y, z, v)) { free(ha); free(hb); return false; }
+      if (!tvdb_sparse_push(out, x, y, z, v)) { free(ha); free(hb); free(first_a); free(first_b); return false; }
     }
   }
+  free(first_a); free(first_b);
   free(ha); free(hb);
   return true;
 }
@@ -487,6 +489,9 @@ static bool tvdb_sparse_conv3d_impl(const tvdb_sparse_grid* in,
   // Anchor (matches numpy/scipy: floor(k/2) regardless of parity).
   const int ax = kx / 2, ay = ky / 2, az = kz / 2;
 
+  float ksum = 0.0f;
+  for (size_t i = 0; i < (size_t)kx * (size_t)ky * (size_t)kz; ++i) ksum += kernel[i];
+
   // Hash input coords for O(1) neighbor lookup.
   tvdb_hash_entry* tbl = NULL; size_t mask = 0;
   if (!tvdb_hash_build(in, &tbl, &mask, NULL)) return false;
@@ -496,7 +501,7 @@ static bool tvdb_sparse_conv3d_impl(const tvdb_sparse_grid* in,
     int cx = in->coords[i].x;
     int cy = in->coords[i].y;
     int cz = in->coords[i].z;
-    float acc = 0.0f;
+    float acc = ksum * pad_value;
     // K[di,dj,dk] convolves over neighbors offset by (di-ax, dj-ay, dk-az).
     for (int dk = 0; dk < kz; ++dk) {
       int64_t oz = (int64_t)cz + (dk - az);
@@ -509,8 +514,8 @@ static bool tvdb_sparse_conv3d_impl(const tvdb_sparse_grid* in,
           int j = (ox < INT32_MIN || ox > INT32_MAX || oy < INT32_MIN || oy > INT32_MAX ||
                    oz < INT32_MIN || oz > INT32_MAX) ? -1 :
                   tvdb_hash_get(tbl, mask, in->coords, (int)ox, (int)oy, (int)oz);
-          float v = (j >= 0) ? in->values[j] : pad_value;
-          acc += w * v;
+          if (j >= 0)
+            acc += w * (in->values[j] - pad_value);
         }
       }
     }
@@ -557,6 +562,20 @@ static bool tvdb_sparse_conv3d_mc_impl(const tvdb_sparse_grid* in,
     return false;
   }
 
+  // Precompute per-position sum over input channels: pad contributes
+  // pad_value * sum_ci W[co,ci] per kernel position.
+  const size_t npos = (size_t)kx * (size_t)ky * (size_t)kz;
+  float* sumW = (float*)malloc(npos * (size_t)c_out * sizeof(float));
+  if (!sumW) { free(*out_values_mc); *out_values_mc = NULL; return false; }
+  for (size_t p = 0; p < npos; ++p) {
+    const float* W = kernel + p * spatial_stride;
+    for (int co = 0; co < c_out; ++co) {
+      float s = 0.0f;
+      for (int ci = 0; ci < c_in; ++ci) s += W[(size_t)co * (size_t)c_in + (size_t)ci];
+      sumW[p * (size_t)c_out + co] = s;
+    }
+  }
+
   #pragma omp parallel for schedule(static)
   for (long long i = 0; i < (long long)in->count; ++i) {
     int cx = in->coords[i].x;
@@ -566,6 +585,11 @@ static bool tvdb_sparse_conv3d_mc_impl(const tvdb_sparse_grid* in,
     out->coords[i].y = cy;
     out->coords[i].z = cz;
     float* acc = (*out_values_mc) + (size_t)i * (size_t)c_out;
+    for (int co = 0; co < c_out; ++co) {
+      float s = 0.0f;
+      for (size_t p = 0; p < npos; ++p) s += sumW[p * (size_t)c_out + co];
+      acc[co] = s * pad_value;
+    }
 
     for (int dk = 0; dk < kz; ++dk) {
       int64_t oz = (int64_t)cz + (dk - az);
@@ -573,8 +597,8 @@ static bool tvdb_sparse_conv3d_mc_impl(const tvdb_sparse_grid* in,
         int64_t oy = (int64_t)cy + (dj - ay);
         for (int di = 0; di < kx; ++di) {
           int64_t ox = (int64_t)cx + (di - ax);
-          const float* W = kernel +
-              (((size_t)dk * (size_t)ky + (size_t)dj) * (size_t)kx + (size_t)di) * spatial_stride;
+          const size_t p = ((size_t)dk * (size_t)ky + (size_t)dj) * (size_t)kx + (size_t)di;
+          const float* W = kernel + p * spatial_stride;
           int j = (ox < INT32_MIN || ox > INT32_MAX || oy < INT32_MIN || oy > INT32_MAX ||
                    oz < INT32_MIN || oz > INT32_MAX) ? -1 :
                   tvdb_hash_get(tbl, mask, in->coords, (int)ox, (int)oy, (int)oz);
@@ -585,15 +609,7 @@ static bool tvdb_sparse_conv3d_mc_impl(const tvdb_sparse_grid* in,
               for (int ci = 0; ci < c_in; ++ci) {
                 s += W[(size_t)co * (size_t)c_in + (size_t)ci] * in_v[ci];
               }
-              acc[co] += s;
-            }
-          } else {
-            for (int co = 0; co < c_out; ++co) {
-              float s = 0.0f;
-              for (int ci = 0; ci < c_in; ++ci) {
-                s += W[(size_t)co * (size_t)c_in + (size_t)ci] * pad_value;
-              }
-              acc[co] += s;
+              acc[co] += s - sumW[p * (size_t)c_out + co] * pad_value;
             }
           }
         }
@@ -602,6 +618,7 @@ static bool tvdb_sparse_conv3d_mc_impl(const tvdb_sparse_grid* in,
   }
   out->count = in->count;
   free(tbl);
+  free(sumW);
   return true;
 }
 

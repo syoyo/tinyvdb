@@ -12,6 +12,7 @@ typedef struct {
   const tvdb_grid_t* grid;
   int levels;
   int64_t span[TVDB_MAX_TREE_DEPTH];
+  int span_shift[TVDB_MAX_TREE_DEPTH];  // log2(span[l]) == trailing zero bits
   int32_t (*origins)[3];
   size_t *order, *root_map, root_capacity;
   size_t active_voxels, active_tiles;
