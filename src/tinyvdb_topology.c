@@ -14,7 +14,7 @@
  * tvdb_merge_grids is the exception -- see the note on MERGE_FROM. */
 
 static void* tvdb_alloc_or_arena(size_t bytes, tvdb_arena_allocator_t* arena) {
-  if (arena) return tvdb_arena_alloc(arena, bytes);
+  if (arena) return tvdb_arena_alloc_uninit(arena, bytes, 32);
   return malloc(bytes);
 }
 
@@ -128,6 +128,8 @@ bool tvdb_resample_grid(const tvdb_dense_grid* in,
   if (nx < 1) nx = 1; if (ny < 1) ny = 1; if (nz < 1) nz = 1;
   if (!tvdb_init_grid_buffer(out, nx, ny, nz, voxel_size, in->ox, in->oy, in->oz, arena)) return false;
 
+  tvdb_sampler samp;
+  const bool have_samp = (order == 1) && tvdb_sampler_init(&samp, in);
   #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
     for (int iy = 0; iy < ny; ++iy) {
@@ -140,7 +142,8 @@ bool tvdb_resample_grid(const tvdb_dense_grid* in,
         float wx = out->ox + ((float)ix + 0.5f) * voxel_size;
         float val;
         if (order == 0)      val = tvdb_sample_nearest_world(in, wx, wy, wz);
-        else if (order == 1) val = tvdb_sample_trilinear_dense(in, wx, wy, wz);
+        else if (order == 1) val = have_samp ? tvdb_sampler_trilinear(&samp, wx, wy, wz)
+                                             : tvdb_sample_trilinear_dense(in, wx, wy, wz);
         else                 val = tvdb_sample_triquadratic_world(in, wx, wy, wz);
         out->data[tvdb_idx(out, ix, iy, iz)] = val;
       }
@@ -164,6 +167,8 @@ bool tvdb_refine_grid(const tvdb_dense_grid* in,
   if (!tvdb_init_grid_buffer(out, nx, ny, nz, new_vs,
                         in->ox, in->oy, in->oz, arena)) return false;
 
+  tvdb_sampler samp;
+  const bool have_samp = tvdb_sampler_init(&samp, in);
   #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
     for (int iy = 0; iy < ny; ++iy) {
@@ -171,7 +176,9 @@ bool tvdb_refine_grid(const tvdb_dense_grid* in,
       float wy = out->oy + ((float)iy + 0.5f) * new_vs;
       for (int ix = 0; ix < nx; ++ix) {
         float wx = out->ox + ((float)ix + 0.5f) * new_vs;
-        out->data[tvdb_idx(out, ix, iy, iz)] = tvdb_sample_trilinear_dense(in, wx, wy, wz);
+        out->data[tvdb_idx(out, ix, iy, iz)] = have_samp
+            ? tvdb_sampler_trilinear(&samp, wx, wy, wz)
+            : tvdb_sample_trilinear_dense(in, wx, wy, wz);
       }
     }
   }

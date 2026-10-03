@@ -66,7 +66,6 @@ static bool tvdb_tsdf_project_voxel(int ix, int iy, int iz,
     return false;
   int iu = (int)fu;
   int iv = (int)fv;
-  if (iu >= frame->width || iv >= frame->height) return false;
   float d = frame->depth[(size_t)iv * (size_t)frame->width + (size_t)iu];
   if (!(d >= frame->depth_min && d <= frame->depth_max)) return false;
   float sdf = d - cz;

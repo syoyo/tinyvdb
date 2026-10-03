@@ -11,6 +11,22 @@
 extern "C" {
 #endif
 
+// Sampling context: validates the grid once and caches the world->voxel
+// constants, avoiding per-query validation and repeated divisions. Build one
+// per grid and reuse for many queries (render, ray marching, gradients).
+typedef struct tvdb_sampler {
+  const float* data;
+  int nx, ny, nz;
+  double inv_vs;
+  double ox, oy, oz;
+} tvdb_sampler;
+
+// Returns true on success. On failure the context is invalidated and queries
+// return 0.
+bool tvdb_sampler_init(tvdb_sampler* s, const tvdb_dense_grid* g);
+float tvdb_sampler_trilinear(const tvdb_sampler* s, float wx, float wy, float wz);
+float tvdb_sampler_quadratic(const tvdb_sampler* s, float wx, float wy, float wz);
+
 // Sample a dense scalar grid at world-space point (wx, wy, wz).
 // Out-of-range queries clamp to the grid edge.
 float tvdb_sample_trilinear_dense(const tvdb_dense_grid* g,

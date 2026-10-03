@@ -95,6 +95,8 @@ bool tvdb_volume_render(const tvdb_dense_grid* density,
     density->oz + density->nz * density->voxel_size,
   };
 
+  tvdb_sampler sampler;
+  if (!tvdb_sampler_init(&sampler, density)) return false;
   #pragma omp parallel for schedule(static)
   for (int py = 0; py < height; ++py) {
     for (int px = 0; px < width; ++px) {
@@ -117,7 +119,7 @@ bool tvdb_volume_render(const tvdb_dense_grid* density,
         for (long long k = 0; k < n_samples && transmit > 1e-3f; ++k) {
           const float t = (float)((double)t0 + ((double)k + 0.5) * (double)step);
           float wx = eye[0] + t*dir[0], wy = eye[1] + t*dir[1], wz = eye[2] + t*dir[2];
-          float d = tvdb_sample_trilinear_dense(density, wx, wy, wz);
+          float d = tvdb_sampler_trilinear(&sampler, wx, wy, wz);
           if (d <= 0.0f) continue;
           float alpha = 1.0f - expf(-d * sigma * step);
           transmit *= (1.0f - alpha);

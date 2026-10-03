@@ -144,7 +144,9 @@ size_t tvdb_segments_along_ray(const tvdb_dense_grid* g,
   bool inside = false;
   float t_enter = 0.0f;
   float t_prev = ray->tmin;
-  float v_prev = tvdb_sample_trilinear_dense(g,
+  tvdb_sampler sampler;
+  if (!tvdb_sampler_init(&sampler, g)) return 0;
+  float v_prev = tvdb_sampler_trilinear(&sampler,
       ray->origin.x + t_prev * ray->dir.x,
       ray->origin.y + t_prev * ray->dir.y,
       ray->origin.z + t_prev * ray->dir.z) - isovalue;
@@ -153,7 +155,7 @@ size_t tvdb_segments_along_ray(const tvdb_dense_grid* g,
   for (size_t i = 1; i < step_count; ++i) {
     float a = (float)i / (float)(step_count - 1);
     float t = ray->tmin + (ray->tmax - ray->tmin) * a;
-    float v = tvdb_sample_trilinear_dense(g,
+    float v = tvdb_sampler_trilinear(&sampler,
         ray->origin.x + t * ray->dir.x,
         ray->origin.y + t * ray->dir.y,
         ray->origin.z + t * ray->dir.z) - isovalue;

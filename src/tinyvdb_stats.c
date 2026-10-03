@@ -5,6 +5,10 @@
 #include "tinyvdb_checked.h"
 
 #include <math.h>
+#include <stdlib.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 /* Voxel count of a grid with valid positive dimensions whose float storage
    size is representable; false otherwise (negative/zero dims or overflow). */
@@ -24,6 +28,7 @@ bool tvdb_grid_statistics(const tvdb_dense_grid* grid, tvdb_grid_stats_t* out) {
   if (!stats_voxel_count(grid, &n)) return false;
 
   double mn = grid->data[0], mx = grid->data[0], sum = 0.0;
+  #pragma omp parallel for reduction(+:sum) reduction(min:mn) reduction(max:mx) schedule(static)
   for (size_t i = 0; i < n; ++i) {
     double v = grid->data[i];
     if (v < mn) mn = v;
@@ -33,6 +38,7 @@ bool tvdb_grid_statistics(const tvdb_dense_grid* grid, tvdb_grid_stats_t* out) {
   double mean = sum / (double)n;
   // Second pass for a numerically stable variance.
   double var = 0.0;
+  #pragma omp parallel for reduction(+:var) schedule(static)
   for (size_t i = 0; i < n; ++i) {
     double d = (double)grid->data[i] - mean;
     var += d * d;
@@ -52,6 +58,45 @@ bool tvdb_grid_histogram(const tvdb_dense_grid* grid, double range_min,
   for (int b = 0; b < nbins; ++b) out_counts[b] = 0;
   /* Halved operands keep the span finite for ranges near +-DBL_MAX. */
   const double lo = 0.5 * range_min, span = 0.5 * range_max - lo;
+  /* Per-thread bin arrays keep the parallel histogram contention-free. */
+  int nthreads = 1;
+#ifdef _OPENMP
+  #pragma omp parallel
+  {
+    #pragma omp single
+    nthreads = omp_get_num_threads();
+  }
+#endif
+  size_t (*local)[256] = NULL;
+  const bool small = nbins <= 256;
+  if (small && nthreads > 1) {
+    local = (size_t (*)[256])calloc((size_t)nthreads, sizeof(*local));
+  }
+  if (local) {
+#ifdef _OPENMP
+    #pragma omp parallel
+    {
+      const int tid = omp_get_thread_num();
+      size_t* counts = local[tid];
+      #pragma omp for schedule(static)
+      for (size_t i = 0; i < n; ++i) {
+        double v = grid->data[i];
+        if (isnan(v)) continue;
+        double x = (0.5 * v - lo) / span * (double)nbins;
+        int b;
+        if (!(x > 0.0)) b = 0;
+        else if (x >= (double)nbins) b = nbins - 1;
+        else b = (int)x;
+        ++counts[b];
+      }
+    }
+#endif
+    for (int t = 0; t < nthreads; ++t)
+      for (int b = 0; b < nbins; ++b) out_counts[b] += local[t][b];
+    free(local);
+    return true;
+  }
+  #pragma omp parallel for schedule(static)
   for (size_t i = 0; i < n; ++i) {
     double v = grid->data[i];
     if (isnan(v)) continue;  /* NaN belongs to no bin */
@@ -62,6 +107,7 @@ bool tvdb_grid_histogram(const tvdb_dense_grid* grid, double range_min,
     if (!(x > 0.0)) b = 0;
     else if (x >= (double)nbins) b = nbins - 1;
     else b = (int)x;
+    #pragma omp atomic
     ++out_counts[b];
   }
   return true;
@@ -80,6 +126,8 @@ bool tvdb_check_level_set(const tvdb_dense_grid* grid, double band_world,
 
   size_t band = 0, bad = 0;
   double sum_mag = 0.0, max_err = 0.0;
+  const size_t sl = (size_t)nx * (size_t)ny;
+  #pragma omp parallel for collapse(2) reduction(+:band,bad,sum_mag) reduction(max:max_err) schedule(static)
   for (int k = 1; k < nz - 1; ++k)
     for (int j = 1; j < ny - 1; ++j)
       for (int i = 1; i < nx - 1; ++i) {
@@ -87,7 +135,6 @@ bool tvdb_check_level_set(const tvdb_dense_grid* grid, double band_world,
         if (band_world > 0.0 && fabs((double)grid->data[c]) > band_world) continue;
         double gx = ((double)grid->data[c + 1] - grid->data[c - 1]) * inv2vs;
         double gy = ((double)grid->data[c + nx] - grid->data[c - nx]) * inv2vs;
-        size_t sl = (size_t)nx * ny;
         double gz = ((double)grid->data[c + sl] - grid->data[c - sl]) * inv2vs;
         double mag = sqrt(gx * gx + gy * gy + gz * gz);
         double err = fabs(mag - 1.0);
@@ -112,12 +159,13 @@ bool tvdb_check_fog_volume(const tvdb_dense_grid* grid, double eps,
   /* NaN is excluded from the reported range; any non-finite voxel makes the
      grid invalid. min/max are NaN only if every voxel is NaN. */
   double mn = INFINITY, mx = -INFINITY;
-  bool finite = true, any = false;
+  int finite = 1, any = 0;
+  #pragma omp parallel for reduction(min:mn,finite) reduction(max:mx,any) schedule(static)
   for (size_t i = 0; i < n; ++i) {
     double v = grid->data[i];
-    if (!isfinite(v)) finite = false;
+    if (!isfinite(v)) finite = 0;
     if (isnan(v)) continue;
-    any = true;
+    any = 1;
     if (v < mn) mn = v;
     if (v > mx) mx = v;
   }

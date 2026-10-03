@@ -46,7 +46,7 @@ static bool lvl_make_grid(const float lo[3], const float hi[3], float vs,
     if (!(cells >= 1.0) || cells > (double)INT_MAX) return false;
     n[a] = (int)cells;
   }
-  tvdb_dense_grid_init(out, n[0], n[1], n[2]);  // mallocs + zeroes data
+  tvdb_dense_grid_init_uninit(out, n[0], n[1], n[2]);  // mallocs data; lvl_fill writes every voxel
   if (!out->data) return false;
   out->voxel_size = vs;
   out->ox = lo[0] - 0.5f * vs;
@@ -61,6 +61,7 @@ typedef float (*lvl_sdf_fn)(float wx, float wy, float wz, const void* params);
 static void lvl_fill(tvdb_dense_grid* g, float bg, lvl_sdf_fn fn,
                      const void* params) {
   const float vs = g->voxel_size;
+  #pragma omp parallel for schedule(static)
   for (int k = 0; k < g->nz; ++k) {
     float wz = g->oz + ((float)k + 0.5f) * vs;
     for (int j = 0; j < g->ny; ++j) {
@@ -308,7 +309,7 @@ bool tvdb_level_set_platonic(int face_count, float radius, const float center[3]
 
 static bool lvl_clone_shape(const tvdb_dense_grid* in, tvdb_dense_grid* out) {
   if (!in || !out || !in->data) return false;
-  tvdb_dense_grid_init(out, in->nx, in->ny, in->nz);
+  tvdb_dense_grid_init_uninit(out, in->nx, in->ny, in->nz);
   if (!out->data && (size_t)in->nx * in->ny * in->nz > 0) return false;
   out->voxel_size = in->voxel_size;
   out->ox = in->ox; out->oy = in->oy; out->oz = in->oz;
@@ -322,6 +323,7 @@ bool tvdb_sdf_to_fog_volume(const tvdb_dense_grid* sdf, float half_width,
   float gamma = lvl_background(half_width, sdf->voxel_size, NULL);
   if (gamma <= 0.0f) gamma = sdf->voxel_size;
   size_t n = (size_t)sdf->nx * sdf->ny * sdf->nz;
+  #pragma omp parallel for schedule(static)
   for (size_t i = 0; i < n; ++i)
     out->data[i] = lvl_clampf(-sdf->data[i] / gamma, 0.0f, 1.0f);
   return true;
@@ -331,6 +333,7 @@ bool tvdb_sdf_interior_mask(const tvdb_dense_grid* sdf, float isovalue,
                             tvdb_dense_grid* out) {
   if (!lvl_clone_shape(sdf, out)) return false;
   size_t n = (size_t)sdf->nx * sdf->ny * sdf->nz;
+  #pragma omp parallel for schedule(static)
   for (size_t i = 0; i < n; ++i)
     out->data[i] = (sdf->data[i] < isovalue) ? 1.0f : 0.0f;
   return true;
@@ -403,19 +406,26 @@ bool tvdb_sdf_segmentation(const tvdb_dense_grid* sdf, float isovalue,
 
   tvdb_dense_grid* grids = (tvdb_dense_grid*)malloc((size_t)count * sizeof(tvdb_dense_grid));
   if (!grids) { free(labels); return false; }
+  int oom = 0;
+  #pragma omp parallel for schedule(static)
   for (int c = 1; c <= count; ++c) {
     tvdb_dense_grid* g = &grids[c - 1];
     tvdb_dense_grid_init(g, nx, ny, nz);
-    if (!g->data) {  // OOM: tear down what we built
-      for (int p = 0; p < c - 1; ++p) tvdb_dense_grid_free(&grids[p]);
-      free(grids); free(labels);
-      return false;
+    if (!g->data) {
+      #pragma omp atomic write
+      oom = 1;
+      continue;
     }
     g->voxel_size = sdf->voxel_size; g->ox = sdf->ox; g->oy = sdf->oy; g->oz = sdf->oz;
     for (size_t i = 0; i < n; ++i) {
       if (labels[i] == 0 || labels[i] == c) g->data[i] = sdf->data[i];  // exterior or this object
       else g->data[i] = bg;                                              // fill other objects solid
     }
+  }
+  if (oom) {
+    for (int c = 0; c < count; ++c) if (grids[c].data) tvdb_dense_grid_free(&grids[c]);
+    free(grids); free(labels);
+    return false;
   }
   free(labels);
   *out_grids = grids;
@@ -515,17 +525,15 @@ static bool lvl_chi_solid(const tvdb_dense_grid* sdf, float isovalue, long* chi)
   size_t fxn = (size_t)(nx+1) * ny     * nz;
   size_t fyn = (size_t)nx     * (ny+1) * nz;
   size_t fzn = (size_t)nx     * ny     * (nz+1);
-  uint8_t* V  = (uint8_t*)calloc(vn, 1);
-  uint8_t* EX = (uint8_t*)calloc(exn, 1);
-  uint8_t* EY = (uint8_t*)calloc(eyn, 1);
-  uint8_t* EZ = (uint8_t*)calloc(ezn, 1);
-  uint8_t* FX = (uint8_t*)calloc(fxn, 1);
-  uint8_t* FY = (uint8_t*)calloc(fyn, 1);
-  uint8_t* FZ = (uint8_t*)calloc(fzn, 1);
-  if (!V || !EX || !EY || !EZ || !FX || !FY || !FZ) {
-    free(V); free(EX); free(EY); free(EZ); free(FX); free(FY); free(FZ);
-    return false;
-  }
+  uint8_t* block = (uint8_t*)calloc(vn + exn + eyn + ezn + fxn + fyn + fzn, 1);
+  if (!block) return false;
+  uint8_t* V  = block;
+  uint8_t* EX = V + vn;
+  uint8_t* EY = EX + exn;
+  uint8_t* EZ = EY + eyn;
+  uint8_t* FX = EZ + ezn;
+  uint8_t* FY = FX + fxn;
+  uint8_t* FZ = FY + fyn;
   long nv = 0, ne = 0, nf = 0, nc = 0;
   for (int k = 0; k < nz; ++k)
     for (int j = 0; j < ny; ++j)
@@ -566,7 +574,7 @@ static bool lvl_chi_solid(const tvdb_dense_grid* sdf, float isovalue, long* chi)
           LVL_MARK(FZ, f, nf);
         }
       }
-  free(V); free(EX); free(EY); free(EZ); free(FX); free(FY); free(FZ);
+  free(block);
   *chi = nv - ne + nf - nc;
   return true;
 }
@@ -619,16 +627,20 @@ bool tvdb_level_set_rebuild(const tvdb_dense_grid* sdf, float isovalue,
   //    on the marching-cubes winding (which can disagree); the inside/outside
   //    sign is invariant under the input's (possibly damaged/scaled) values, so
   //    take it directly: out = sign(input(p) - isovalue) * |out|.
+  tvdb_sampler src_sampler;
+  if (!tvdb_sampler_init(&src_sampler, sdf)) return false;
+  #pragma omp parallel for schedule(static)
   for (int k = 0; k < out->nz; ++k)
-    for (int j = 0; j < out->ny; ++j)
+    for (int j = 0; j < out->ny; ++j) {
+      const float pz = out->oz + ((float)k + 0.5f) * out->voxel_size;
+      const float py = out->oy + ((float)j + 0.5f) * out->voxel_size;
       for (int i = 0; i < out->nx; ++i) {
         float px = out->ox + ((float)i + 0.5f) * out->voxel_size;
-        float py = out->oy + ((float)j + 0.5f) * out->voxel_size;
-        float pz = out->oz + ((float)k + 0.5f) * out->voxel_size;
-        float in_val = tvdb_sample_trilinear_dense(sdf, px, py, pz) - isovalue;
+        float in_val = tvdb_sampler_trilinear(&src_sampler, px, py, pz) - isovalue;
         size_t idx = ((size_t)k * out->ny + j) * out->nx + i;
         float mag = fabsf(out->data[idx]);
         out->data[idx] = (in_val < 0.0f) ? -mag : mag;
       }
+    }
   return true;
 }
