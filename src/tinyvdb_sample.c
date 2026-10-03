@@ -225,8 +225,6 @@ void tvdb_splat_trilinear_dense(tvdb_dense_grid* g,
     vx=(float)qx; vy=(float)qy; vz=(float)qz;
     int ix = tvdb_sample_floor(vx,g->nx), iy = tvdb_sample_floor(vy,g->ny), iz = tvdb_sample_floor(vz,g->nz);
     float fx = vx - (float)ix, fy = vy - (float)iy, fz = vz - (float)iz;
-    if (ix < -1 || iy < -1 || iz < -1) continue;
-    if (ix >= g->nx || iy >= g->ny || iz >= g->nz) continue;
 
     const float v = vals[p];
     for (int dz = 0; dz < 2; ++dz) {
