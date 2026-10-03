@@ -344,6 +344,16 @@ static size_t append_node(tvdb_tree_t *tree, tvdb_node_type_t type, int level,
     return idx;
 }
 
+typedef struct { int32_t slot; size_t idx; } slot_pair_t;
+
+// Comparator for slot_pair_t: ascending slot.
+static int cmp_slot_pair(const void* a, const void* b) {
+    const slot_pair_t* x = (const slot_pair_t*)a;
+    const slot_pair_t* y = (const slot_pair_t*)b;
+    if (x->slot != y->slot) return x->slot < y->slot ? -1 : 1;
+    return 0;
+}
+
 // Build internal nodes at level `lv` from an unsorted children list.
 // Groups children by parent origin via hash table, regardless of input order.
 // Returns a list of created internal-node entries (one per unique parent).
@@ -437,7 +447,6 @@ static bool build_parent_level(tvdb_tree_t *tree, int parent_lv,
     grouping_entry_t *parents = (grouping_entry_t *)malloc(n_pg * sizeof(grouping_entry_t));
     if (!parents) goto fail;
 
-    typedef struct { int32_t slot; size_t idx; } slot_pair_t;
     for (size_t g = 0; g < n_pg; ++g) {
         pgroup_t *gp = &pg[g];
         size_t pidx = append_node(tree, TVDB_NODE_INTERNAL, parent_lv, gp->origin);
@@ -472,13 +481,7 @@ static bool build_parent_level(tvdb_tree_t *tree, int parent_lv,
                                            gp->origin, corigin);
             pairs[k].idx = cni;
         }
-        for (size_t a = 1; a < gp->n_child; ++a) {
-            slot_pair_t v = pairs[a]; size_t b = a;
-            while (b > 0 && pairs[b - 1].slot > v.slot) {
-                pairs[b] = pairs[b - 1]; --b;
-            }
-            pairs[b] = v;
-        }
+        qsort(pairs, gp->n_child, sizeof(*pairs), cmp_slot_pair);
         for (size_t k = 0; k < gp->n_child; ++k) {
             nm_set(&in->child_mask, pairs[k].slot);
             in->child_indices[k] = pairs[k].idx;
