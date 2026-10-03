@@ -165,13 +165,24 @@ static void tvdb_separable_pass(const tvdb_dense_grid* in, tvdb_dense_grid* out,
       const size_t plane_y = (size_t)iz * plane;           /* axis 1 */
       for (int ix = 0; ix < nx; ++ix) {
         float acc = 0.0f;
-        for (int k = -radius; k <= radius; ++k) {
-          int c = (axis == 0) ? ix + k : (axis == 1) ? iy + k : iz + k;
-          if (c < 0) c = 0; else if (c >= extent) c = extent - 1;
-          const size_t t = axis == 0 ? row_x + (size_t)c
-                        : axis == 1 ? plane_y + (size_t)c * nx + (size_t)ix
-                                    : (size_t)c * plane + (size_t)iy * nx + (size_t)ix;
-          acc += kernel[k + radius] * in->data[t];
+        if (axis == 0) {
+          for (int k = -radius; k <= radius; ++k) {
+            int c = ix + k;
+            if (c < 0) c = 0; else if (c >= extent) c = extent - 1;
+            acc += kernel[k + radius] * in->data[row_x + (size_t)c];
+          }
+        } else if (axis == 1) {
+          for (int k = -radius; k <= radius; ++k) {
+            int c = iy + k;
+            if (c < 0) c = 0; else if (c >= extent) c = extent - 1;
+            acc += kernel[k + radius] * in->data[plane_y + (size_t)c * nx + (size_t)ix];
+          }
+        } else {
+          for (int k = -radius; k <= radius; ++k) {
+            int c = iz + k;
+            if (c < 0) c = 0; else if (c >= extent) c = extent - 1;
+            acc += kernel[k + radius] * in->data[(size_t)c * plane + (size_t)iy * nx + (size_t)ix];
+          }
         }
         out->data[row_x + (size_t)ix] = acc;
       }
