@@ -310,14 +310,14 @@ float tvdb_tree_get(const tvdb_tree_index* p, const int32_t coord[3],
              (size_t)(((int64_t)coord[a] - p->origins[node][a]) >> sh);
     if (n->type == TVDB_NODE_LEAF) {
       float v;
-      memcpy(&v, n->u.leaf.data + slot * 4, 4);
+      v = *(const float*)(n->u.leaf.data + slot * 4);
       if (active) *active = mask_on(&n->u.leaf.value_mask, slot);
       return v;
     }
     const tvdb_internal_node_t* in = &n->u.internal;
     if (!mask_on(&in->child_mask, slot)) {
       float v;
-      memcpy(&v, in->values + slot * 4, 4);
+      v = *(const float*)(in->values + slot * 4);
       if (active) *active = mask_on(&in->value_mask, slot);
       return v;
     }
@@ -656,7 +656,7 @@ tvdb_status_t tvdb_grid_diagnose(const tvdb_grid_t* g,
       int active =
           mask_on(leaf ? &n->u.leaf.value_mask : &n->u.internal.value_mask, s);
       float v;
-      memcpy(&v, (leaf ? n->u.leaf.data : n->u.internal.values) + s * 4, 4);
+      v = *(const float*)((leaf ? n->u.leaf.data : n->u.internal.values) + s * 4);
       int32_t c[3];
       int64_t step = leaf ? 1 : p.span[n->level + 1];
       for (int a = 0; a < 3; ++a)
@@ -746,7 +746,7 @@ static tvdb_status_t finite_tree(const tvdb_grid_t* g, tvdb_error_t* err) {
     for (size_t s = 0; s < slots; ++s) {
       if (!leaf && mask_on(&n->u.internal.child_mask, s)) continue;
       float v;
-      memcpy(&v, (leaf ? n->u.leaf.data : n->u.internal.values) + s * 4, 4);
+      v = *(const float*)((leaf ? n->u.leaf.data : n->u.internal.values) + s * 4);
       if (!isfinite(v)) goto nonfinite;
     }
   }
@@ -1023,7 +1023,7 @@ tvdb_status_t tvdb_grid_prune(const tvdb_grid_t* g, tvdb_grid_t* out,
           continue;
         }
       } else {
-        memcpy(&v, (leaf ? n->u.leaf.data : n->u.internal.values) + s * 4, 4);
+        v = *(const float*)((leaf ? n->u.leaf.data : n->u.internal.values) + s * 4);
         on = mask_on(leaf ? &n->u.leaf.value_mask : &n->u.internal.value_mask,
                      s);
       }
@@ -1344,7 +1344,7 @@ tvdb_status_t tvdb_grid_materialize_dense_ex(
       for (int a = 0; a < 3; ++a)
         c[a] = (int32_t)((int64_t)p.origins[ni][a] +
                          (int64_t)((s >> ((2 - a) * L)) & (dim - 1)) * step);
-      memcpy(&v, (leaf ? n->u.leaf.data : n->u.internal.values) + s * 4, 4);
+      v = *(const float*)((leaf ? n->u.leaf.data : n->u.internal.values) + s * 4);
       materialize_region(&d, min, max, c, step, v);
     }
   }
