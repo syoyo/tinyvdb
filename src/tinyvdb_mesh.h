@@ -96,6 +96,7 @@ bool tvdb_make_manifold_vdb(const tvdb_triangle_mesh* input, double resolution, 
 void tvdb_triangle_mesh_init(tvdb_triangle_mesh* mesh);
 void tvdb_triangle_mesh_free(tvdb_triangle_mesh* mesh);
 void tvdb_dense_grid_init(tvdb_dense_grid* grid, int nx, int ny, int nz);
+void tvdb_dense_grid_init_uninit(tvdb_dense_grid* grid, int nx, int ny, int nz);
 void tvdb_dense_grid_free(tvdb_dense_grid* grid);
 
 // Arena-based init

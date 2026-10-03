@@ -6,6 +6,9 @@
 
 #include <math.h>
 #include <stdlib.h>
+#if defined(__BMI2__)
+#include <immintrin.h>
+#endif
 
 /* Every loop below is a per-point gather against a hash that is built once and
  * then only read: each iteration writes exactly one output element that no other
@@ -70,6 +73,9 @@ void tvdb_ijk_to_world(const int32_t* ijk, size_t n,
 // ---- Morton (Z-order) -------------------------------------------------------
 
 static uint64_t gi_split3(uint64_t a) {            // spread 21 low bits to every 3rd
+#if defined(__BMI2__)
+  return _pdep_u64(a & 0x1fffffULL, 0x1249249249249249ULL);
+#else
   a &= 0x1fffffULL;
   a = (a | a << 32) & 0x1f00000000ffffULL;
   a = (a | a << 16) & 0x1f0000ff0000ffULL;
@@ -77,8 +83,12 @@ static uint64_t gi_split3(uint64_t a) {            // spread 21 low bits to ever
   a = (a | a << 4)  & 0x10c30c30c30c30c3ULL;
   a = (a | a << 2)  & 0x1249249249249249ULL;
   return a;
+#endif
 }
 static uint64_t gi_compact3(uint64_t a) {          // inverse of gi_split3
+#if defined(__BMI2__)
+  return _pext_u64(a, 0x1249249249249249ULL);
+#else
   a &= 0x1249249249249249ULL;
   a = (a | a >> 2)  & 0x10c30c30c30c30c3ULL;
   a = (a | a >> 4)  & 0x100f00f00f00f00fULL;
@@ -86,6 +96,7 @@ static uint64_t gi_compact3(uint64_t a) {          // inverse of gi_split3
   a = (a | a >> 16) & 0x1f00000000ffffULL;
   a = (a | a >> 32) & 0x1fffffULL;
   return a;
+#endif
 }
 
 uint64_t tvdb_morton_encode(int32_t x, int32_t y, int32_t z) {
