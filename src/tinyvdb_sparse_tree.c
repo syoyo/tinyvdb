@@ -244,7 +244,7 @@ static void *pool_alloc(tvdb_tree_t *tree, size_t size) {
 // Per-coord entry collected from input. `val_bytes` holds up to 24 bytes
 // (matches the largest tvdb_value_type_t = VEC3D); only `vsize` bytes are
 // meaningful per builder invocation.
-typedef struct { int32_t lorig[3]; int32_t slot; size_t order; uint8_t val_bytes[24]; } tvdb__coord_entry;
+typedef struct { int32_t lorig[3]; int32_t slot; uint32_t order; uint8_t val_bytes[24]; } tvdb__coord_entry;
 // Sort PRIMARILY by leaf origin (not by full coord). Coords with the same
 // leaf origin must be contiguous so the per-leaf grouping loop is correct.
 static int tvdb__cmp_coord_entry(const void *a, const void *b) {

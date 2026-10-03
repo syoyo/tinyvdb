@@ -47,6 +47,7 @@ bool tvdb_sparse_grid_reserve(tvdb_sparse_grid* sg, size_t capacity) {
   return true;
 }
 
+
 static bool tvdb_sparse_push(tvdb_sparse_grid* sg, int x, int y, int z, float v) {
   if (sg->count == sg->capacity) {
     if (sg->capacity > SIZE_MAX / 2) return false;
