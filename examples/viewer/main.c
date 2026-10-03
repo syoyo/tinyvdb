@@ -1,5 +1,5 @@
-#include <iostream>
-#include <string>
+#include <stdio.h>
+#include <stdlib.h>
 
 #if TINYVDB_IO_USE_SYSTEM_ZLIB
 #include <zlib.h>
@@ -11,13 +11,13 @@
 int main(int argc, char **argv)
 {
   if (argc < 2) {
-    std::cerr << "Need input.vdb\n";
+    fprintf(stderr, "Need input.vdb\n");
     return EXIT_FAILURE;
   }
 
-  std::string filename = argv[1];
+  const char *filename = argv[1];
 
-  std::cout << "Loading : " << filename << "\n";
+  printf("Loading : %s\n", filename);
 
   return EXIT_SUCCESS;
 }
