@@ -18,7 +18,8 @@ C and C++).
 | Header | Description |
 |--------|-------------|
 | `tinyvdb_io.h` | OpenVDB read/write with custom allocator + mmap support |
-| `tinyvdb_nanovdb.h` | NanoVDB read/write, hierarchical accessor, trilinear sampler, CRC32, Gaussian-splat rasterizer (CPU forward+backward) |
+| `tinyvdb_nanovdb.h` | NanoVDB read/write, VDB → NanoVDB conversion (float, double, int32, int64, vec3f, vec3d, mask), hierarchical accessor, trilinear sampler, CRC32, Gaussian-splat rasterizer (CPU forward+backward) |
+| `tinyvdb_volume.h` | Volume access for renderers and UsdVol: grid info (class, type, transform, exact or header-only bounds), typed dense extraction with a voxel budget, nearest/trilinear sparse sampling in world or index space |
 | `tinyvdb_to_nanovdb.c` | VDB → NanoVDB FloatGrid converter (byte-compatible with libnanovdb) |
 | `tinyvdb_mesh.h` | Mesh ↔ SDF, marching cubes, manifold preprocessing |
 | `tinyvdb_ops.h` | Dense ops: morphology, filtering, CSG, differential operators, Poisson PCG, advection, fast sweeping, fp64 variants |
@@ -336,6 +337,15 @@ remains advisory. Neither API promises a watertight manifold reconstruction.
 * [x] Half-float (FP16) grid support
 * [x] PointIndexGrid (`Tree_ptidx32_*`) leaf payload read/write
 * [x] PointDataGrid (`Tree_ptdataidx32_*`) topology read + opaque point payload round-trip
+* [x] MaskGrid (`Tree_mask_*`) read/write (bool trees whose values are the active state)
+* [x] Per-grid reads: `tvdb_read_grid` decodes one grid, `tvdb_read_grid_header`
+  only its metadata, transform and layout (class, file bounding box, voxel
+  count) without touching voxel data
+* [x] Grid metadata access: `tvdb_grid_find_metadata`, `tvdb_grid_set_metadata`
+  (bool, int32, int64, float, double, vec3i, vec3s, vec3d, string)
+* [x] AffineMap transforms in OpenVDB's row-vector layout, held in memory as
+  column-vector matrices (`world = matrix * (i, j, k, 1)`); checked against
+  libopenvdb in both directions (`test_io_openvdb`)
 
 ### NanoVDB I/O (`tinyvdb_nanovdb.h`)
 

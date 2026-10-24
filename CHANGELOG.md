@@ -27,6 +27,23 @@
   `tvdb_stuffing_options_t.batch_sample` let other batch evaluators plug in.
 - `tinyvdb_winding.h` exposes the fast tree (`tvdb_winding_nodes`,
   `tvdb_winding_order`) for device ports.
+- `tvdb_read_grid` / `tvdb_read_grid_header`: decode one grid, or only its
+  header (metadata, transform, layout), instead of the whole file.
+- `tvdb_grid_find_metadata`, `tvdb_grid_set_metadata(_string)`; vec3s
+  metadata is read and written.
+- OpenVDB MaskGrids (`Tree_mask_*`) read and write.
+- `tinyvdb_volume.h`: `tvdb_grid_get_info` (class, value type, components,
+  index-to-world, exact bounds from the tree or the file's bounding-box
+  metadata), `tvdb_grid_to_dense_volume` (any value type, stride/budget box
+  filter, windows, inactive-as-background) and `tvdb_volume_sampler_*`
+  (nearest/trilinear, world or index space). `tvdb_tree_lookup` returns any
+  type's stored value.
+- `tvdb_grid_to_nanovdb`: float, double, int32, int64, vec3f, vec3d and mask
+  grids, with the full affine map, the grid class, root tiles and exact node
+  bounding boxes (`tvdb_grid_to_nanovdb_float` now wraps it).
+- `test_io_openvdb` (OpenVDB oracle): affine maps both ways, lazy reads,
+  typed grids through dense, sampler, info and NanoVDB (read back with
+  PNanoVDB); `test_volume`.
 
 - Checked float-tree diagnostics, signed flood fill, exact pruning, and sparse
   and dense bridges in `tinyvdb_tree.h`.
@@ -55,6 +72,11 @@
   output.
 - Sparse-tool coordinate maps store coordinates in their slots (one cache
   line per probe).
+- AffineMap matrices were read and written verbatim, i.e. transposed: real
+  OpenVDB affine grids were rejected by every tool (`tvdb_tree_matrix`) and
+  tinyvdb-written ones were misplaced in OpenVDB.
+- VDB → NanoVDB dropped root tiles (large flood-filled interiors read the
+  background), wrote only the diagonal of the map and no grid class.
 
 - Preserve initialized outputs on constructor failure and reject malformed
   trees, invalid transforms, nonfinite inputs, and unsupported active tiles.

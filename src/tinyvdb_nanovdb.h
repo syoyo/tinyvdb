@@ -423,6 +423,13 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const struct tvdb_grid *grid,
                                           uint8_t **out_data,
                                           size_t *out_size,
                                           tvdb_error_t *err);
+/* Any decoded 5_4_3 grid of float, double, int32, int64, vec3f, vec3d or
+ * mask values to one NanoVDB grid buffer (free with free()): the full
+ * affine map, the grid class from the "class" metadata (masks: Topology),
+ * root tiles kept, exact node bounding boxes, breadth-first node order.
+ * Bool and vec3i grids return TVDB_ERROR_UNSUPPORTED_GRID_TYPE. */
+tvdb_status_t tvdb_grid_to_nanovdb(const struct tvdb_grid *grid, uint8_t **out_data,
+                                   size_t *out_size, tvdb_error_t *err);
 
 /* Trilinear sample for FloatGrid. Cell-center convention: integer voxel
    (i,j,k) sits at sample point (i+0.5, j+0.5, k+0.5), so a sample at

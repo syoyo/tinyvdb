@@ -54,6 +54,13 @@ each theme. Notes point at the nearest existing primitive to reuse.
       `test_tetmesh` (watertight outward boundary, orientation, volume,
       dihedral range, determinism). Open: graded (octree) lattices, and the
       paper's parity stencils to restore its exact dihedral bounds.
+- [x] **Volume access (UsdVol consumers).** Per-grid and header-only reads,
+      metadata get/set, MaskGrid I/O, `tinyvdb_volume.h` (grid info, typed
+      dense extraction with budget/stride, sparse sampler), typed NanoVDB
+      conversion with affine maps and root tiles, AffineMap layout fix.
+      Covered by `test_io_openvdb` (OpenVDB + PNanoVDB oracle) and
+      `test_volume`. Open: bool and vec3i NanoVDB grids, half-valued trees
+      (`Tree_half_*`, OpenVDB 11+), frustum maps.
 - [x] **GPU level sets and stuffing (CUDA/HIP).** `tinyvdb_gpu_compute.h`:
       distance + winding per candidate voxel and stuffing lattice samples on
       the device, host bookkeeping through the CPU option hooks. Covered by
