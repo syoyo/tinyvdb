@@ -632,6 +632,11 @@ if(TINYVDB_BUILD_TESTS)
     foreach(_oracle test_tree_openvdb test_sparse_tools_openvdb)
       add_executable(${_oracle} tests/${_oracle}.cc)
       set_target_properties(${_oracle} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+      # OpenVDB's headers need exceptions and RTTI, which the project's C++
+      # flags disable; the oracles are the only C++ that includes them.
+      if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${_oracle} PRIVATE -fexceptions -frtti)
+      endif()
       target_include_directories(${_oracle} PRIVATE ${TINYVDB_OPENVDB_INCLUDE_DIR})
       target_link_libraries(${_oracle} PRIVATE tinyvdb_mesh_ops ${TINYVDB_OPENVDB_LIBRARY} TBB::tbb Imath::Imath)
       add_test(NAME ${_oracle} COMMAND ${_oracle})

@@ -75,7 +75,11 @@ static tvdb_status_t tool_insert(tool_map* m, const int32_t c[3],
   }
   if (!m->hash_capacity || m->count >= m->hash_capacity / 2) {
     size_t n, bytes;
-    if (!tvdb_hash_capacity_scaled(m->count + 1, 4, 3, &n) ||
+    /* Size for four times the count, so the table doubles and the next
+     * rehash waits for twice as many coordinates (amortized O(1) inserts).
+     * Sizing for 4/3 of the count put the half-load trigger right behind
+     * the new size and rehashed on almost every insert. */
+    if (!tvdb_hash_capacity_scaled(m->count + 1, 4, 1, &n) ||
         !tvdb_size_mul(n, sizeof(size_t), &bytes))
       goto overflow;
     size_t* slots = calloc(1, bytes);
