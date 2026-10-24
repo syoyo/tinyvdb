@@ -831,8 +831,10 @@ static float tvdb__half_to_float(uint16_t h) {
         if (mant == 0) {
             f = sign << 31;
         } else {
-            /* denormalized */
-            exp = 1;
+            /* Subnormal: mant * 2^-24. Normalize with `exp` shifts to
+               1.m * 2^(-14 - exp); the counter starts at 0 (starting at 1
+               halved every subnormal). */
+            exp = 0;
             while (!(mant & 0x400u)) { mant <<= 1; exp++; }
             mant &= 0x3ffu;
             f = (sign << 31) | ((127 - 15 + 1 - exp) << 23) | (mant << 13);

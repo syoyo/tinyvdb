@@ -199,7 +199,52 @@ static void check_metadata(tvdb_grid_t *g) {
   CHECK(tvdb_grid_class_from_string("other") == TVDB_GRID_CLASS_UNKNOWN);
 }
 
+/* Half-stored floats, including subnormals, round-trip exactly (the scalar
+ * half decoder used to halve every subnormal; SIMD builds use F16C). */
+static void check_half(void) {
+  tvdb_grid_t tmpl;
+  sdf_fixture_template(&tmpl);
+  tvdb_sparse_grid sg = {0};
+  CHECK(tvdb_sparse_grid_reserve(&sg, 4096));
+  for (int i = 0; i < 2000; ++i) {
+    sg.coords[sg.count] = (tvdb_vec3i){i % 20, (i / 20) % 10, i / 200};
+    /* m * 2^-24 (subnormal) and m * 2^-22 / 2^-20 (smallest normals). */
+    sg.values[sg.count++] = ldexpf((float)(1 + i % 1023), -24 + 2 * (i % 3));
+  }
+  tvdb_grid_t g = {0};
+  CHECK(tvdb_grid_from_sparse_using_template(&tmpl, &sg, "half", 0, &g));
+  g.descriptor.save_float_as_half = 1;
+  tvdb_file_t f;
+  tvdb_file_init_for_write(&f, NULL);
+  f.grids = &g;
+  f.num_grids = 1;
+  uint8_t *bytes = NULL;
+  size_t size = 0;
+  tvdb_error_t err;
+  CHECK(tvdb_write_to_memory(&f, TVDB_COMPRESS_ZIP, 0, &bytes, &size, &err) == TVDB_OK);
+  tvdb_file_t r;
+  CHECK(tvdb_file_open_memory(&r, bytes, size, NULL, &err) == TVDB_OK);
+  CHECK(tvdb_read_grid(&r, 0, &err) == TVDB_OK);
+  tvdb_volume_sampler_t *s = NULL;
+  CHECK(tvdb_volume_sampler_create(&r.grids[0], &s, &err) == TVDB_OK);
+  int bad = 0;
+  for (size_t i = 0; i < sg.count && s; ++i) {
+    const int32_t c[3] = {sg.coords[i].x, sg.coords[i].y, sg.coords[i].z};
+    float v;
+    tvdb_volume_sampler_get(s, c, &v, NULL);
+    bad += v != sg.values[i];
+  }
+  printf("half round trip: %d of %zu values differ\n", bad, sg.count);
+  CHECK(bad == 0);
+  tvdb_volume_sampler_destroy(s);
+  tvdb_file_close(&r);
+  free(bytes);
+  tvdb_grid_destroy_owned(&g);
+  tvdb_sparse_grid_free(&sg);
+}
+
 int main(void) {
+  check_half();
   tvdb_grid_t g = {0};
   CHECK(make_sphere(&g, 12, 3.0f));
   tvdb_grid_info_t info;

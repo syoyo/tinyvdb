@@ -396,6 +396,10 @@ static void TestTypedGrids() {
   }
   CheckTyped<openvdb::FloatGrid>("half", Fill<openvdb::FloatGrid>(0.f, [](int i, int j, int) {
     return 0.5f * float(i + j); }), 1, true);
+  /* Half subnormals (below 2^-14) and the smallest normals, all exactly
+     representable in half so the file round trip is lossless. */
+  CheckTyped<openvdb::FloatGrid>("half small", Fill<openvdb::FloatGrid>(0.f, [](int i, int j, int k) {
+    return std::ldexp(float(1 + ((i + 7) * 13 + (j + 3) * 5 + k) % 1023), -24 + (k % 3)); }), 1, true);
   CheckTyped<openvdb::DoubleGrid>("double", Fill<openvdb::DoubleGrid>(-1.0, [](int i, int j, int k) {
     return 1e-3 * double(i * j * k); }), 1);
   CheckTyped<openvdb::Int32Grid>("int32", Fill<openvdb::Int32Grid>(-7, [](int i, int j, int k) {
