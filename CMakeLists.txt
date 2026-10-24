@@ -109,6 +109,8 @@ add_library(tinyvdb_mesh_ops STATIC
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_jagged.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_render.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_lifecycle.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_winding.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_tetmesh.c
   ${PROJECT_SOURCE_DIR}/src/tvdb_memory.c)
 if(NOT WIN32)
   target_link_libraries(tinyvdb_mesh_ops PUBLIC m)
@@ -491,7 +493,8 @@ if(TINYVDB_BUILD_TESTS)
     DEPENDS generate_test_fixture "${PROJECT_SOURCE_DIR}/data/sphere-div1.vdb"
     VERBATIM)
   add_custom_target(tinyvdb_test_fixture ALL DEPENDS "${TINYVDB_TEST_FIXTURE}")
-  foreach(_test test_thread_pool test_sdf_tree test_mesh_conversion test_mesh_conversion_failure)
+  foreach(_test test_thread_pool test_sdf_tree test_mesh_conversion test_mesh_conversion_failure
+                test_mesh_level_set test_tetmesh)
     add_executable(${_test} ${PROJECT_SOURCE_DIR}/tests/${_test}.c)
     target_link_libraries(${_test} PRIVATE tinyvdb_mesh_ops)
     add_test(NAME ${_test} COMMAND ${_test} ${TINYVDB_TEST_FIXTURE})
@@ -629,7 +632,7 @@ if(TINYVDB_BUILD_TESTS)
     endif()
     find_package(TBB REQUIRED)
     find_package(Imath CONFIG REQUIRED)
-    foreach(_oracle test_tree_openvdb test_sparse_tools_openvdb)
+    foreach(_oracle test_tree_openvdb test_sparse_tools_openvdb test_mesh_level_set_openvdb)
       add_executable(${_oracle} tests/${_oracle}.cc)
       set_target_properties(${_oracle} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
       # OpenVDB's headers need exceptions and RTTI, which the project's C++

@@ -26,7 +26,9 @@ C and C++).
 | `tinyvdb_topology.h` / `tinyvdb_ray.h` | Coarsen / refine / prune / clip / merge / pool; Amanatides–Woo DDA, ray-cast SDF, segments-along-ray, batched marching cubes |
 | `tinyvdb_sparse.h` / `tinyvdb_sparse_tree.h` | Flat sparse-grid representation (hash-based CSG/morphology, sparse 3D conv); operations on a loaded `tvdb_grid_t` (leaf iter, dilate/erode active or topology, tree-aware CSG, from-scratch rebuilders) |
 | `tinyvdb_tree.h` | Checked float-tree diagnostics, signed flood fill, exact pruning and sparse/dense bridges |
-| `tinyvdb_sparse_tools.h` | Sparse level-set tracking/rebuild, affine resampling, indexed/adaptive meshing and Poisson/PDE domains |
+| `tinyvdb_sparse_tools.h` | Sparse level-set tracking/rebuild, mesh → narrow-band level set (winding-number signs), affine resampling, indexed/adaptive meshing and Poisson/PDE domains |
+| `tinyvdb_winding.h` | Generalized winding numbers of triangle meshes, exact and fast (AABB tree with dipole far field) |
+| `tinyvdb_tetmesh.h` | Tetrahedral meshes of an SDF interior by isosurface stuffing (BCC lattice), from a level-set grid or a field callback; dihedral-angle quality report |
 | `tinyvdb_sdf_tree.h` | In-place hierarchical SDF fast sweeping, filtering, morphology and offsets with compact active-voxel workspaces |
 | `tinyvdb_thread.h` | Reusable synchronous task pool: C11, GCD, pthread or serial backend |
 | `tinyvdb_autograd.h` | Per-op CPU VJPs (sample, splat, CSG, sparse_conv3d) — framework-free |
@@ -493,6 +495,13 @@ the test suite (build with `-DTINYVDB_BUILD_TESTS=ON` and run `ctest`):
   buffers that `nanovdb_validate` accepts (exit 0) and
   `nanovdb_convert` reads back into a valid `Tree_float_5_4_3` `.vdb`
   with matching topology and value range.
+* **Mesh → level set**: `test_mesh_level_set_openvdb`
+  (`-DTINYVDB_BUILD_OPENVDB_TESTS=ON`) checks `tvdb_mesh_to_level_set`
+  against brute-force closest-triangle distances (within 1e-5) and
+  against `openvdb::tools::meshToLevelSet` (same signs; within 0.3 voxel,
+  since OpenVDB propagates and renormalizes distances away from the
+  polygons). libopenvdb also reads tinyvdb's level set back as
+  `GRID_LEVEL_SET` with identical values.
 * **Gaussian-splat rasterizer**: backward-pass gradients are
   gradient-checked against central finite differences for every
   parameter.

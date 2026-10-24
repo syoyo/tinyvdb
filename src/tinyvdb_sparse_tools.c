@@ -2,12 +2,14 @@
 
 #include <float.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "tinyvdb_checked.h"
 #include "tinyvdb_mesh_conversion.h"
 #include "tinyvdb_tree_internal.h"
+#include "tinyvdb_winding.h"
 
 /* Complete coordinate keys; no 21-bit packing or bounding-box strides. */
 typedef struct {
@@ -1031,6 +1033,253 @@ done:
   tvdb_tree_index_destroy(&p);
   tvdb_mesh_sdf_destroy(query);
   tvdb_triangle_mesh_free(&mesh);
+  tvdb_grid_destroy_owned(&generated);
+  tvdb_grid_destroy_owned(&filled);
+  tvdb_grid_destroy_owned(&pruned);
+  return st;
+}
+/* ---- Mesh to narrow-band level set ------------------------------------ */
+typedef struct {
+  const tool_voxel* voxels;
+  float* distance;
+  double* winding;
+  const tvdb_mesh_sdf_t* query;
+  const tvdb_winding_t* wn;
+  double h;
+  atomic_int bad;
+} tool_level_set_job;
+static void tool_level_set_range(size_t begin, size_t end, void* user) {
+  tool_level_set_job* job = (tool_level_set_job*)user;
+  for (size_t i = begin; i < end; ++i) {
+    const double w[3] = {job->voxels[i].c[0] * job->h,
+                         job->voxels[i].c[1] * job->h,
+                         job->voxels[i].c[2] * job->h};
+    double d = 0;
+    if (tvdb_mesh_sdf_distance(job->query, w, &d, NULL) != TVDB_OK ||
+        !isfinite(d)) {
+      atomic_store_explicit(&job->bad, 1, memory_order_relaxed);
+      continue;
+    }
+    const double wn = tvdb_winding_eval(job->wn, w);
+    if (!isfinite(wn)) atomic_store_explicit(&job->bad, 1, memory_order_relaxed);
+    job->distance[i] = (float)d;
+    job->winding[i] = wn;
+  }
+}
+/* Index of the voxel nearest a world point, or 0 outside int32. */
+static int tool_nearest_voxel(const double p[3], double inv_h, int32_t c[3]) {
+  for (int a = 0; a < 3; ++a) {
+    const double q = floor(p[a] * inv_h + 0.5);
+    if (!(q >= INT32_MIN && q <= INT32_MAX)) return 0;
+    c[a] = (int32_t)q;
+  }
+  return 1;
+}
+tvdb_status_t tvdb_mesh_to_level_set(const tvdb_triangle_mesh* mesh,
+                                     const tvdb_mesh_level_set_options_t* options,
+                                     tvdb_thread_pool_t* pool, tvdb_grid_t* out,
+                                     tvdb_mesh_level_set_result_t* result,
+                                     tvdb_error_t* err) {
+  if (!mesh || !options || !out || !mesh->faces || !mesh->vertices ||
+      !mesh->face_count || !isfinite(options->voxel_size) ||
+      options->voxel_size <= 0 || !isfinite(options->exterior_width) ||
+      options->exterior_width <= 0 || !isfinite(options->interior_width) ||
+      options->interior_width <= 0 ||
+      (options->sign != TVDB_LEVEL_SET_SIGN_WINDING_FAST &&
+       options->sign != TVDB_LEVEL_SET_SIGN_WINDING_EXACT))
+    return tvdb_tree_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                           "invalid mesh level set arguments");
+  for (size_t i = 0; i < mesh->vertex_count; ++i) {
+    const tvdb_vec3f v = mesh->vertices[i];
+    if (!isfinite(v.x) || !isfinite(v.y) || !isfinite(v.z))
+      return tvdb_tree_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                             "mesh level set vertex is not finite");
+  }
+  for (size_t i = 0; i < mesh->face_count; ++i) {
+    const tvdb_triangle f = mesh->faces[i];
+    if (f.v0 >= mesh->vertex_count || f.v1 >= mesh->vertex_count ||
+        f.v2 >= mesh->vertex_count)
+      return tvdb_tree_error(err, TVDB_ERROR_INVALID_DATA,
+                             "mesh level set face index out of range");
+  }
+  const double h = options->voxel_size, inv_h = 1.0 / h;
+  const float outside = options->exterior_width,
+              inside = options->interior_width;
+  tool_map voxels = {0}, band = {0};
+  tvdb_mesh_sdf_t* query = NULL;
+  tvdb_winding_t* wn = NULL;
+  tvdb_thread_pool_t* owned = NULL;
+  float* distance = NULL;
+  double* winding = NULL;
+  tvdb_grid_t stub = {0}, generated = {0}, filled = {0}, pruned = {0};
+  tvdb_mesh_level_set_result_t report = {0};
+  tvdb_status_t st = TVDB_OK;
+  voxels.limit = band.limit = tool_limit(options->max_voxels);
+  voxels.err = band.err = err;
+
+  /* Seeds: samples at most h/2 apart cover every face, so every voxel whose
+   * center lies within h * sqrt(3) / 2 of a face is at most one 6-neighbor
+   * step from a seed. */
+  for (size_t f = 0; f < mesh->face_count && st == TVDB_OK; ++f) {
+    const tvdb_vec3f* v[3] = {mesh->vertices + mesh->faces[f].v0,
+                              mesh->vertices + mesh->faces[f].v1,
+                              mesh->vertices + mesh->faces[f].v2};
+    const double p0[3] = {v[0]->x, v[0]->y, v[0]->z};
+    const double e1[3] = {v[1]->x - p0[0], v[1]->y - p0[1], v[1]->z - p0[2]};
+    const double e2[3] = {v[2]->x - p0[0], v[2]->y - p0[1], v[2]->z - p0[2]};
+    const double l = fmax(fmax(sqrt(e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]),
+                               sqrt(e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2])),
+                          sqrt((e1[0] - e2[0]) * (e1[0] - e2[0]) +
+                               (e1[1] - e2[1]) * (e1[1] - e2[1]) +
+                               (e1[2] - e2[2]) * (e1[2] - e2[2])));
+    const double steps = ceil(2.0 * l * inv_h);
+    if (!isfinite(steps) || steps > 1e6 ||
+        (steps + 1) * (steps + 2) / 2 > 32.0 * (double)voxels.limit) {
+      st = tvdb_tree_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                           "mesh level set face exceeds the voxel budget");
+      break;
+    }
+    const size_t n = steps < 1 ? 1 : (size_t)steps;
+    for (size_t i = 0; i <= n && st == TVDB_OK; ++i)
+      for (size_t j = 0; i + j <= n; ++j) {
+        const double a = (double)i / (double)n, b = (double)j / (double)n;
+        const double p[3] = {p0[0] + a * e1[0] + b * e2[0],
+                             p0[1] + a * e1[1] + b * e2[1],
+                             p0[2] + a * e1[2] + b * e2[2]};
+        int32_t c[3];
+        if (!tool_nearest_voxel(p, inv_h, c)) {
+          st = tvdb_tree_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                               "mesh level set coordinate outside int32");
+          break;
+        }
+        st = tool_insert(&voxels, c, NULL);
+        if (st != TVDB_OK) break;
+      }
+  }
+  if (st != TVDB_OK) goto done;
+  report.seed_voxels = voxels.count;
+  {
+    /* Dilate by enough 6-neighbor layers to reach every voxel within the
+     * band (Euclidean distance <= L1 distance / sqrt(3)). */
+    const double layers =
+        ceil(sqrt(3.0) * fmax(outside, inside) * inv_h) + 2;
+    if (!isfinite(layers) || layers > (double)voxels.limit) {
+      st = tvdb_tree_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                           "mesh level set band exceeds the voxel budget");
+      goto done;
+    }
+    size_t begin = 0;
+    for (size_t layer = 0; layer < (size_t)layers; ++layer) {
+      const size_t end = voxels.count;
+      for (size_t i = begin; i < end; ++i) {
+        int32_t base[3];
+        memcpy(base, voxels.v[i].c, sizeof(base));
+        for (int a = 0; a < 3; ++a)
+          for (int dir = -1; dir <= 1; dir += 2) {
+            int32_t c[3];
+            memcpy(c, base, sizeof(c));
+            const int64_t q = (int64_t)c[a] + dir;
+            if (q < INT32_MIN || q > INT32_MAX) {
+              st = tvdb_tree_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                                   "mesh level set coordinate outside int32");
+              goto done;
+            }
+            c[a] = (int32_t)q;
+            st = tool_insert(&voxels, c, NULL);
+            if (st != TVDB_OK) goto done;
+          }
+      }
+      begin = end;
+    }
+  }
+  report.candidate_voxels = voxels.count;
+  {
+    size_t fbytes, dbytes;
+    if (!tvdb_size_mul(voxels.count, sizeof(float), &fbytes) ||
+        !tvdb_size_mul(voxels.count, sizeof(double), &dbytes)) {
+      st = tvdb_tree_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                           "mesh level set size overflow");
+      goto done;
+    }
+    distance = (float*)malloc(fbytes ? fbytes : 1);
+    winding = (double*)malloc(dbytes ? dbytes : 1);
+    if (!distance || !winding) {
+      st = tvdb_tree_error(err, TVDB_ERROR_OUT_OF_MEMORY,
+                           "mesh level set allocation failed");
+      goto done;
+    }
+  }
+  st = tvdb_mesh_sdf_create(mesh, &query, err);
+  if (st != TVDB_OK) goto done;
+  st = tvdb_winding_create(mesh,
+                           options->sign == TVDB_LEVEL_SET_SIGN_WINDING_EXACT
+                               ? TVDB_WINDING_EXACT
+                               : TVDB_WINDING_FAST,
+                           &wn, err);
+  if (st != TVDB_OK) goto done;
+  if (!pool) {
+    size_t workers = voxels.count < 32768 ? 1 : tvdb_thread_default_count();
+    if (workers > 8) workers = 8;
+    st = tvdb_thread_pool_create(workers ? workers : 1, &owned, err);
+    if (st != TVDB_OK) goto done;
+    pool = owned;
+  }
+  {
+    tool_level_set_job job = {.voxels = voxels.v, .distance = distance,
+                              .winding = winding, .query = query, .wn = wn,
+                              .h = h};
+    atomic_init(&job.bad, 0);
+    st = tvdb_thread_pool_for(pool, 0, voxels.count, 1024,
+                              tool_level_set_range, &job, err);
+    if (st == TVDB_OK && atomic_load_explicit(&job.bad, memory_order_relaxed))
+      st = tvdb_tree_error(err, TVDB_ERROR_INVALID_DATA,
+                           "mesh level set distance arithmetic failed");
+    if (st != TVDB_OK) goto done;
+  }
+  /* Serial, in candidate order: the band is independent of worker count. */
+  for (size_t i = 0; i < voxels.count; ++i) {
+    /* |w| > 1/2: inside-out closed meshes (winding -1) still read inside. */
+    const int negative = fabs(winding[i]) > 0.5;
+    const float d = distance[i];
+    if (d >= (negative ? inside : outside)) continue;
+    size_t j;
+    st = tool_insert(&band, voxels.v[i].c, &j);
+    if (st != TVDB_OK) goto done;
+    /* No negative zero: voxels on the surface read +0 for either sign. */
+    band.v[j].value = negative && d > 0 ? -d : d;
+    band.v[j].active = 1;
+    if (d > report.max_distance) report.max_distance = d;
+  }
+  report.active_voxels = band.count;
+  {
+    tvdb_transform_t transform;
+    memset(&transform, 0, sizeof(transform));
+    transform.type = TVDB_TRANSFORM_UNIFORM_SCALE;
+    for (int a = 0; a < 3; ++a)
+      transform.scale_values[a] = transform.voxel_size[a] = h;
+    stub.descriptor.grid_name =
+        (char*)(options->grid_name ? options->grid_name : "surface");
+    stub.transform = transform;
+    st = tool_build(&stub, &band, outside, &transform, &generated, err);
+  }
+  if (st == TVDB_OK) st = tool_set_class(&generated, "level set", err);
+  if (st == TVDB_OK)
+    st = tvdb_grid_signed_flood_fill(&generated, outside, -inside, &filled, err);
+  if (st == TVDB_OK) st = tvdb_grid_prune(&filled, &pruned, err);
+  if (st == TVDB_OK) {
+    tvdb_grid_destroy_owned(out);
+    *out = pruned;
+    memset(&pruned, 0, sizeof(pruned));
+    if (result) *result = report;
+  }
+done:
+  tool_map_free(&voxels);
+  tool_map_free(&band);
+  tvdb_mesh_sdf_destroy(query);
+  tvdb_winding_destroy(wn);
+  tvdb_thread_pool_destroy(owned);
+  free(distance);
+  free(winding);
   tvdb_grid_destroy_owned(&generated);
   tvdb_grid_destroy_owned(&filled);
   tvdb_grid_destroy_owned(&pruned);

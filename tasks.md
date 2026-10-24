@@ -42,6 +42,19 @@ each theme. Notes point at the nearest existing primitive to reuse.
       Covered by `test_levelset` (C + py). NOTE: inherits `mesh_to_sdf`'s
       brute-force O(voxels·triangles) cost — keep voxel sizes coarse.
 
+- [x] **Mesh to sparse level set.** `tvdb_mesh_to_level_set` (parallels
+      OpenVDB `MeshToVolume`): face-sampled seeds dilated to the band, exact
+      BVH closest-face distances, generalized-winding-number signs
+      (`tinyvdb_winding.h`), flood fill and prune; no dense bounding box.
+      Covered by `test_mesh_level_set` and `test_mesh_level_set_openvdb`
+      (brute-force exact, OpenVDB sign/0.3-voxel agreement and read-back).
+- [x] **Tetrahedral meshing.** Isosurface stuffing (Labelle and Shewchuk
+      2007) in `tinyvdb_tetmesh.h`, from a level-set grid or a field
+      callback; minimum-key diagonals for wedge/pyramid pieces. Covered by
+      `test_tetmesh` (watertight outward boundary, orientation, volume,
+      dihedral range, determinism). Open: graded (octree) lattices, and the
+      paper's parity stencils to restore its exact dihedral bounds.
+
 **B. Statistics, diagnostics & operators**
 
 - [x] **Grid statistics.** `tvdb_grid_statistics` (min/max/mean/stddev/sum)

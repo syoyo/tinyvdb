@@ -1,6 +1,7 @@
 #pragma once
 #include "tinyvdb_ops.h"
 #include "tinyvdb_tree.h"
+#include "tinyvdb_thread.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -54,6 +55,39 @@ tvdb_status_t tvdb_grid_level_set_rebuild(
     const tvdb_grid_t* source, float isovalue, float outside_width,
     float inside_width, size_t max_voxels, tvdb_grid_t* out,
     tvdb_level_set_rebuild_result_t* result, tvdb_error_t* err);
+typedef enum {
+  TVDB_LEVEL_SET_SIGN_WINDING_FAST = 0, /* fast winding number (default) */
+  TVDB_LEVEL_SET_SIGN_WINDING_EXACT = 1 /* exact winding number, O(faces) */
+} tvdb_level_set_sign_t;
+typedef struct {
+  float voxel_size;      /* world units; index i has its center at i * size */
+  float exterior_width;  /* positive world distance kept outside */
+  float interior_width;  /* positive world distance kept inside */
+  tvdb_level_set_sign_t sign;
+  size_t max_voxels;     /* candidate budget; zero selects 1,000,000 */
+  const char* grid_name; /* NULL selects "surface" */
+} tvdb_mesh_level_set_options_t;
+typedef struct {
+  size_t seed_voxels, candidate_voxels, active_voxels;
+  double max_distance;
+} tvdb_mesh_level_set_result_t;
+/* Narrow-band level set of a triangle mesh, without a dense bounding-box
+ * array. Voxels near every face are seeded by sampling the faces at half the
+ * voxel size, then dilated to cover the band. Unsigned distances are exact
+ * closest-face distances (BVH); the sign is inside where the generalized
+ * winding number's magnitude exceeds 0.5, so open, self-intersecting,
+ * inconsistently oriented and inside-out meshes still get a consistent sign. The result is a standard float
+ * 5/4/3 tree with a uniform-scale transform, class "level set", background
+ * exterior_width, interior tiles flood-filled to -interior_width and pruned.
+ * Active values satisfy -interior_width < value < exterior_width. Output is
+ * independent of the pool's worker count; NULL pool selects up to eight
+ * workers for large jobs. The mesh must have finite vertices and in-range
+ * faces. Replaces an initialized owning out; failure preserves out. */
+tvdb_status_t tvdb_mesh_to_level_set(const tvdb_triangle_mesh* mesh,
+                                     const tvdb_mesh_level_set_options_t* options,
+                                     tvdb_thread_pool_t* pool, tvdb_grid_t* out,
+                                     tvdb_mesh_level_set_result_t* result,
+                                     tvdb_error_t* err);
 tvdb_status_t tvdb_grid_level_set_track(const tvdb_grid_t* source,
                                         float outside_width, float inside_width,
                                         size_t max_voxels, tvdb_grid_t* out,

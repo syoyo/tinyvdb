@@ -4,6 +4,19 @@
 
 ### Added
 
+- `tvdb_mesh_to_level_set` (`tinyvdb_sparse_tools.h`): sparse narrow-band
+  level set of a triangle mesh with exact closest-face distances, signs from
+  generalized winding numbers (robust to open, inside-out and inconsistently
+  oriented meshes), flood-filled interior and pruning; deterministic for any
+  worker count.
+- `tinyvdb_winding.h`: exact and fast generalized winding numbers.
+- `tinyvdb_tetmesh.h`: isosurface stuffing tetrahedral meshes of SDF
+  interiors (`tvdb_level_set_to_tet_mesh`, `tvdb_sdf_to_tet_mesh`) with
+  watertight outward boundaries, positive orientation and
+  `tvdb_tet_mesh_quality`.
+- `tvdb_file_init_for_write`: set up a header and allocator for writing
+  caller-owned grids without reading a file first.
+
 - Checked float-tree diagnostics, signed flood fill, exact pruning, and sparse
   and dense bridges in `tinyvdb_tree.h`.
 - Sparse level-set rebuild/tracking, affine nearest/trilinear resampling,
@@ -13,6 +26,13 @@
   regressions, and procedural fixtures for clean-checkout and wheel tests.
 
 ### Fixed and hardened
+
+- Sparse tool coordinate maps rehashed on almost every insert once their
+  table reached its 4/3 sizing (the half-load trigger sat right behind the
+  new size), making large rebuilds, resamples and meshing quadratic; tables
+  now double (186x faster on a 13k-voxel band).
+- The OpenVDB oracle tests did not compile since exceptions and RTTI were
+  disabled project-wide; they now enable both for their own targets.
 
 - Preserve initialized outputs on constructor failure and reject malformed
   trees, invalid transforms, nonfinite inputs, and unsupported active tiles.

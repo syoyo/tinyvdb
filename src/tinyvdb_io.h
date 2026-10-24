@@ -458,6 +458,14 @@ size_t        tvdb_value_type_size(tvdb_value_type_t type);
    values as half precision, matching OpenVDB's _HalfFloat encoding.
    compression_flags: combination of TVDB_COMPRESS_* flags.
    compression_level: 1 (fastest) to 9 (best ratio), 0 for default (5). */
+/* Initialize an empty file for writing caller-owned grids: header file
+ * version 224 (OpenVDB 10.0), grid offsets on, the fixed UUID
+ * 00000000-0000-0000-0000-000000000000 (so output is deterministic; set
+ * header.uuid to override), and alloc (NULL selects malloc/free). Point
+ * grids/num_grids at the grids, then call tvdb_write_to_memory or
+ * tvdb_file_save. The file does not own the grids: do not tvdb_file_close it. */
+void tvdb_file_init_for_write(tvdb_file_t *file, const tvdb_allocator_t *alloc);
+
 tvdb_status_t tvdb_write_to_memory(const tvdb_file_t *file,
                                    uint32_t compression_flags,
                                    int compression_level,
@@ -4527,6 +4535,17 @@ static tvdb_status_t tvdb__write_grid(
 /* ========================================================================== */
 /*  Public write API                                                          */
 /* ========================================================================== */
+
+void tvdb_file_init_for_write(tvdb_file_t *file, const tvdb_allocator_t *alloc) {
+    if (!file) return;
+    memset(file, 0, sizeof(*file));
+    file->header.file_version = 224;
+    file->header.major_version = 10;
+    file->header.minor_version = 0;
+    file->header.has_grid_offsets = 1;
+    memcpy(file->header.uuid, "00000000-0000-0000-0000-000000000000", 37);
+    file->alloc = alloc ? *alloc : tvdb__default_allocator();
+}
 
 tvdb_status_t tvdb_write_to_memory(const tvdb_file_t *file,
                                    uint32_t compression_flags,
