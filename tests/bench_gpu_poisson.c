@@ -35,7 +35,7 @@ int main(int argc,char** argv) {
     if(dim<2 || dim>256 || precision<0 || precision>2 || budget<1 || budget>10000) {
         fprintf(stderr,"dimension 2..256, precision 0..2, iterations 1..10000 required\n");return 1;
     }
-    tvdb_gpu_backend_t backend=argc>1 && argv[1][0]=='c'?TVDB_GPU_BACKEND_CUDA:TVDB_GPU_BACKEND_VULKAN;
+    tvdb_gpu_backend_t backend=argc>1 && argv[1][0]=='c'?TVDB_GPU_BACKEND_CUDA:(argc > 1 && argv[1][0] == 'h') ? TVDB_GPU_BACKEND_HIP : TVDB_GPU_BACKEND_VULKAN;
     size_t n=(size_t)dim*dim*dim,bytes=n*(precision==2?sizeof(double):sizeof(float));
     void *rhs=calloc(1,bytes),*output=calloc(1,bytes);
     double* reference=malloc(n*sizeof(double));

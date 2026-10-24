@@ -321,10 +321,10 @@ done:
 }
 
 int main(int argc, char** argv) {
-  int want_cuda = (argc > 1 && argv[1][0] == 'c');
+  int want_cuda = (argc > 1 && (argv[1][0] == 'c' || argv[1][0] == 'h'));
   tvdb_error_t e; memset(&e, 0, sizeof e);
   tvdb_gpu_context_t* ctx = NULL;
-  tvdb_status_t st = tvdb_gpu_context_create(want_cuda ? TVDB_GPU_BACKEND_CUDA
+  tvdb_status_t st = tvdb_gpu_context_create(want_cuda ? (argv[1][0] == 'h' ? TVDB_GPU_BACKEND_HIP : TVDB_GPU_BACKEND_CUDA)
                                                       : TVDB_GPU_BACKEND_VULKAN,
                                              0, &ctx, &e);
   if (st != TVDB_OK) { printf("no context: %s\n", e.message); return 77; }

@@ -118,7 +118,7 @@ static void run_filters(tvdb_gpu_context_t* ctx, const shape* s,
 }
 
 int main(int argc, char** argv) {
-  int backend = (argc > 1 && argv[1][0] == 'c') ? TVDB_GPU_BACKEND_CUDA : TVDB_GPU_BACKEND_VULKAN;
+  int backend = (argc > 1 && argv[1][0] == 'c') ? TVDB_GPU_BACKEND_CUDA : (argc > 1 && argv[1][0] == 'h') ? TVDB_GPU_BACKEND_HIP : TVDB_GPU_BACKEND_VULKAN;
   tvdb_error_t e; memset(&e, 0, sizeof e);
   tvdb_gpu_context_t* ctx = NULL;
   if (tvdb_gpu_context_create(backend, 0, &ctx, &e) != TVDB_OK) { printf("no ctx\n"); return 77; }

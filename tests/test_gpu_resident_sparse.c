@@ -38,7 +38,7 @@ int main(int argc,char** argv){
     tvdb_gpu_context_t* c=NULL;tvdb_error_t err={0};int failed=0;
     tvdb_gpu_sparse_grid_t *g=NULL,*o=NULL;tvdb_gpu_dense_grid_t* dense=NULL;tvdb_gpu_buffer_t* points=NULL;tvdb_sparse_grid in,ref,got;
     tvdb_sparse_grid_init(&in);tvdb_sparse_grid_init(&ref);tvdb_sparse_grid_init(&got);
-    tvdb_gpu_backend_t backend=argc>1 && argv[1][0]=='c'?TVDB_GPU_BACKEND_CUDA:TVDB_GPU_BACKEND_VULKAN;
+    tvdb_gpu_backend_t backend=argc>1 && argv[1][0]=='c'?TVDB_GPU_BACKEND_CUDA:(argc > 1 && argv[1][0] == 'h') ? TVDB_GPU_BACKEND_HIP : TVDB_GPU_BACKEND_VULKAN;
     if(tvdb_gpu_context_create(backend,0,&c,&err)!=TVDB_OK){fprintf(stderr,"SKIP: %s\n",err.message);return 77;}
     if(backend==TVDB_GPU_BACKEND_VULKAN && !tvdb_gpu_spirv_available()){tvdb_gpu_context_destroy(c);return 77;}
     tvdb_gpu_context_info_t info;tvdb_gpu_context_info(c,&info,&err);printf("backend=%d device=%s\n",info.backend,info.device_name);

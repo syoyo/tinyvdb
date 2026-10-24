@@ -54,6 +54,12 @@ each theme. Notes point at the nearest existing primitive to reuse.
       `test_tetmesh` (watertight outward boundary, orientation, volume,
       dihedral range, determinism). Open: graded (octree) lattices, and the
       paper's parity stencils to restore its exact dihedral bounds.
+- [x] **GPU level sets and stuffing (CUDA/HIP).** `tinyvdb_gpu_compute.h`:
+      distance + winding per candidate voxel and stuffing lattice samples on
+      the device, host bookkeeping through the CPU option hooks. Covered by
+      `test_gpu_volumetric` (CPU parity, context wrapper) and
+      `bench_volumetric`. Open: Vulkan kernels; a device-side stuffing
+      assembly (the warp step is order-dependent on the CPU).
 
 **B. Statistics, diagnostics & operators**
 
@@ -137,6 +143,10 @@ each theme. Notes point at the nearest existing primitive to reuse.
 - [x] **CUDA driver-loader API.** `tvdb_gpu_enumerate_devices` detects
       `libcuda`/`nvcuda.dll` plus `libnvrtc`, and the public backend enum/context
       API supports CUDA contexts.
+- [x] **HIP backend.** `TVDB_GPU_BACKEND_HIP` loads `libamdhip64` +
+      `libhiprtc` into the CUDA loader table (same C ABI) and runs the CUDA
+      paths; the CUDA parity tests run as `*_hip` variants (all pass on an
+      RX 9070 XT, gfx1201). External-memory interop stays CUDA only.
 - [x] **CUDA kernels.** Runtime-loaded CUDA Driver API + NVRTC kernels matching
       the Vulkan v1 operation set: analytic sphere/box/torus SDF generation, dense CSG,
       dense trilinear batch sampling, and same-topology sparse conv3d. Covered

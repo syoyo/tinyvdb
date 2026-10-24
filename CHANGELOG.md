@@ -16,6 +16,17 @@
   `tvdb_tet_mesh_quality`.
 - `tvdb_file_init_for_write`: set up a header and allocator for writing
   caller-owned grids without reading a file first.
+- HIP backend (`TVDB_GPU_BACKEND_HIP`): AMD GPUs through runtime-loaded
+  `libamdhip64` and `libhiprtc`, running the CUDA backend's kernels and code
+  paths; `*_hip` variants of the CUDA tests.
+- `tinyvdb_gpu_compute.h`: a lean CUDA/HIP device and GPU
+  `tvdb_mesh_to_level_set`, level-set sampling and
+  `tvdb_level_set_to_tet_mesh` (also on `tvdb_gpu_context_t`), with CPU-equal
+  results; 24-32x faster level sets on an RX 9070 XT than 8 CPU threads.
+  `tvdb_mesh_level_set_options_t.evaluate` and
+  `tvdb_stuffing_options_t.batch_sample` let other batch evaluators plug in.
+- `tinyvdb_winding.h` exposes the fast tree (`tvdb_winding_nodes`,
+  `tvdb_winding_order`) for device ports.
 
 - Checked float-tree diagnostics, signed flood fill, exact pruning, and sparse
   and dense bridges in `tinyvdb_tree.h`.
@@ -33,6 +44,17 @@
   now double (186x faster on a 13k-voxel band).
 - The OpenVDB oracle tests did not compile since exceptions and RTTI were
   disabled project-wide; they now enable both for their own targets.
+- Mesh level sets build their candidate band from 8^3 bitmask bricks instead
+  of a coordinate hash map and emit leaf order, so the tree builder skips its
+  sort (`tvdb_grid_from_sparse*` now checks for sorted input): 5.7x less host
+  time at 4.9M candidates, byte-identical output.
+- Stuffing found boundary faces through a hash table of 8 slots per
+  tetrahedron (1.8 GB and 3.6 s at 6.3M tets); a bucket pass by smallest
+  vertex takes 16 bytes per face and ~0.4 s. Outside lattice cells are
+  skipped and warp neighbors come from index arithmetic. Byte-identical
+  output.
+- Sparse-tool coordinate maps store coordinates in their slots (one cache
+  line per probe).
 
 - Preserve initialized outputs on constructor failure and reject malformed
   trees, invalid transforms, nonfinite inputs, and unsupported active tiles.

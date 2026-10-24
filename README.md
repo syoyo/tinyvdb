@@ -33,7 +33,8 @@ C and C++).
 | `tinyvdb_thread.h` | Reusable synchronous task pool: C11, GCD, pthread or serial backend |
 | `tinyvdb_autograd.h` | Per-op CPU VJPs (sample, splat, CSG, sparse_conv3d) — framework-free |
 | `tinyvdb_simd.h` | Optional SSE4.2/AVX2/F16C primitives gated on `TINYVDB_SIMD` |
-| `tinyvdb_gpu.h` | Optional runtime-loaded GPU backend: Vulkan and CUDA kernels for analytic sphere/box/torus SDF generation, dense CSG, dense trilinear batch sampling, and same-topology sparse conv3d |
+| `tinyvdb_gpu.h` | Optional runtime-loaded GPU backend: Vulkan, CUDA and HIP kernels for analytic sphere/box/torus SDF generation, dense CSG, dense trilinear batch sampling, and same-topology sparse conv3d |
+| `tinyvdb_gpu_compute.h` | Lean CUDA/HIP device (runtime-loaded, no SDK) running mesh-to-level-set, level-set sampling and isosurface stuffing; needs only the CPU modules it accelerates |
 
 ### VDB operations contracts
 
@@ -405,6 +406,13 @@ remains advisory. Neither API promises a watertight manifold reconstruction.
   `glslangValidator` and `xxd` are available.
 * [x] Runtime-loaded CUDA Driver API + NVRTC backend (`libcuda`/`nvcuda.dll`
   plus `libnvrtc`) that compiles kernels to PTX at runtime.
+* [x] Runtime-loaded HIP backend (`TVDB_GPU_BACKEND_HIP`: `libamdhip64` plus
+  `libhiprtc`, found on the loader path or under `$ROCM_PATH`, `/opt/rocm`)
+  for AMD GPUs. The HIP driver API has the CUDA one's C ABI, so a HIP context
+  fills the CUDA loader table and runs every CUDA code path, with the same
+  kernel source compiled by hiprtc. The CUDA parity tests run on HIP as
+  `*_hip` ctest variants. ROCm is never unloaded once loaded (unloading it
+  leaves LLVM options registered and a reload crashes).
 * [x] Blocking high-level C entrypoints for analytic sphere/box/torus SDF generation,
   dense CSG, dense trilinear batch sampling, and same-topology
   `tvdb_sparse_conv3d` on Vulkan and CUDA.
@@ -457,6 +465,42 @@ transpose API uses the resident path for representable candidates and retains
 its existing clipped-boundary fallback for overflowing candidates. Resident point
 voxelization currently uses isotropic spacing. Missing generated SPIR-V returns
 `TVDB_ERROR_UNIMPLEMENTED` on Vulkan; CUDA remains usable through NVRTC.
+
+#### Sparse level sets and tetrahedral meshes on CUDA/HIP
+
+`tinyvdb_gpu_compute.h` runs `tvdb_mesh_to_level_set`, level-set sampling and
+`tvdb_level_set_to_tet_mesh` on a CUDA or HIP device (`tvdb_gpu_compute_create`,
+or the `tvdb_gpu_mesh_to_level_set` family on a `tvdb_gpu_context_t`). The
+device does the per-point work: closest-face distance and winding number per
+candidate voxel, and the stuffing lattice samples. The host keeps the sparse
+bookkeeping, through hooks on the CPU options (`evaluate`, `batch_sample`), so
+outputs follow the CPU rules and are deterministic.
+
+The kernels compile with floating-point contraction off and repeat the CPU's
+arithmetic:
+- distances use the same BVH, closest-point code and tie-break (in float, then
+  double);
+- winding numbers walk the same tree in float (the CPU uses double), so signs
+  can differ only at voxels on the surface, where the distance is zero to
+  rounding;
+- lattice samples are the CPU's double trilinear interpolation.
+
+On an RX 9070 XT the level sets of the test meshes were byte-identical to the
+CPU's except for such on-surface voxels, and stuffing meshes were identical.
+Timings against the CPU on 8 Threadripper 1950X threads:
+
+| Input | CPU | HIP (RX 9070 XT) |
+|---|---|---|
+| Mug, 24,544 faces, voxel extent/160 (0.98M candidates) | 8.2 s | 0.34 s |
+| Mug, voxel extent/320 (4.9M candidates) | 40.8 s | 1.28 s |
+| Bunny, 4,968 faces, voxel extent/256 (2.3M candidates) | 11.6 s | 0.46 s |
+| Stuffing the extent/160 mug at spacing extent/192 (6.35M tets) | 7.0 s | 2.0 s |
+
+The first call on a device compiles the kernels (0.1 s with a warm hiprtc
+cache). `tests/bench_volumetric` reproduces these (`--gpu cuda|hip
+--compare`); `test_gpu_volumetric` checks parity. Vulkan contexts return
+`TVDB_ERROR_UNIMPLEMENTED`. CUDA shares the kernel source and code paths with
+HIP; NVRTC compiles it, but no NVIDIA device was available to run it.
 
 Grid contents can be released with `tvdb_grid_destroy(grid, allocator)`, which
 also releases metadata and point-data payloads. Use the allocator that owns the
@@ -706,7 +750,7 @@ $ make
 | `TINYVDB_USE_SYSTEM_BLOSC` | `OFF` | Link system libblosc — required to read NanoVDB BLOSC files produced by libnanovdb |
 | `TINYVDB_OPENMP` | `OFF` | Enable OpenMP parallelism in dense ops, Poisson CG, sparse conv, sample batches, TSDF fusion |
 | `TINYVDB_SIMD` | `ON` | Enable SSE4.2/AVX2/F16C (x86-64 only; scalar fallback otherwise) |
-| `TINYVDB_BUILD_GPU` | `ON` | Build the runtime-loaded Vulkan/CUDA backend (no SDK needed at build time) |
+| `TINYVDB_BUILD_GPU` | `ON` | Build the runtime-loaded Vulkan/CUDA/HIP backend and `tinyvdb_gpu_compute` (no SDK needed at build time) |
 | `TINYVDB_BUILD_TVDBVIEW` | `ON` | Build the `tvdbview` viewer |
 | `TINYVDB_USE_CCACHE` | `ON` | Use ccache when available |
 

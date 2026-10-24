@@ -5,10 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 int main(int argc, char **argv) {
-    int cuda = argc > 1 && argv[1][0] == 'c';
+    int cuda = argc > 1 && (argv[1][0] == 'c' || argv[1][0] == 'h');
     tvdb_error_t err = {0};
     tvdb_gpu_context_t *ctx = NULL;
-    if (tvdb_gpu_context_create(cuda ? TVDB_GPU_BACKEND_CUDA : TVDB_GPU_BACKEND_VULKAN, 0, &ctx,
+    if (tvdb_gpu_context_create(cuda ? (argv[1][0] == 'h' ? TVDB_GPU_BACKEND_HIP : TVDB_GPU_BACKEND_CUDA) : TVDB_GPU_BACKEND_VULKAN, 0, &ctx,
                                 &err) != TVDB_OK) {
         printf("SKIP: %s\n", err.message);
         return 77;
