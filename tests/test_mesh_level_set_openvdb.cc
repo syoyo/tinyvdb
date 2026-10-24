@@ -153,6 +153,8 @@ int main() {
   CHECK(grids && grids->size() == 1);
   auto read = openvdb::gridPtrCast<openvdb::FloatGrid>((*grids)[0]);
   CHECK(read && read->getGridClass() == openvdb::GRID_LEVEL_SET);
+  CHECK(read->getName() == "surface");  // default name, also as "name" metadata
+  CHECK(read->metaValue<std::string>("name") == "surface");
   CHECK(std::fabs(read->voxelSize()[0] - double(o.voxel_size)) < 1e-12);
   CHECK(read->background() == width);
   auto racc = read->getConstAccessor();
