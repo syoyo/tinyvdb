@@ -8,4 +8,4 @@ target_include_directories(test_roundtrip PRIVATE
     ${PROJECT_SOURCE_DIR}/../src
 )
 
-target_link_libraries(test_roundtrip tinyvdb_nanovdb m)
+target_link_libraries(test_roundtrip tinyvdb_nanovdb tinyvdb_mesh_ops m)
