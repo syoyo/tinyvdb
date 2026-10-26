@@ -75,6 +75,9 @@
   own tree accessor, so the leaf lookup is cached: the teapot level set at
   0.5 spacing went from 1.40 s to 0.90 s of sampling on one thread (3.14 s to
   3.03 s for the whole mesh at four). Byte-identical output.
+- Sparse tree CSG looked up both inputs uncached per output voxel; it now
+  keeps one accessor per input (3.24 s to 2.60 s for the teapot level set
+  unioned with itself, 7.0M voxels; identical output).
 - Sparse-tool coordinate maps store coordinates in their slots (one cache
   line per probe).
 - AffineMap matrices were read and written verbatim, i.e. transposed: real
