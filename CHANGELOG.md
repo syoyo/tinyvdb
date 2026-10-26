@@ -83,6 +83,17 @@
   `test_gaussian_project` compares the conic and radius against an independent
   reference, checks the 90-degree view-axis symmetry, culling, opacity and
   features. Rendered splat sizes change; the device parity test needs a GPU.
+- Surface meshing looked every edge up in one ~100 MB hash table per axis, so
+  the polygonize pass was DRAM-latency bound (0.65 s of the teapot level-set
+  run). Edges are now bucketed into three live x slabs per axis: a cell can
+  only reference an edge whose lower corner sits at its own x or the next one,
+  so a three-slot ring of small maps (a few hundred KB, cache resident) covers
+  any border, cleared per slab. Vertex numbering and output are unchanged;
+  teapot 1.99 s -> 1.65 s, bunny 1.58 s -> 1.30 s.
+- The merged cell list was one global qsort. Each slice now sorts its own cells
+  as it finishes and the merge is a k-way heap merge with the repeats dropped
+  on the fly: teapot 1.65 s -> 1.36 s, bunny 1.30 s -> 1.10 s, icosahedron
+  0.09 s -> 0.07 s, byte-identical.
 - Isosurface stuffing extracted the watertight boundary with a single-threaded
   counting sort plus a fused sort/singleton pass (1.65 s of the 2.9 s teapot
   level-set run). The counting sort now runs on the pool: each slice counts
