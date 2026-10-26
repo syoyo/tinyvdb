@@ -70,6 +70,11 @@
   vertex takes 16 bytes per face and ~0.4 s. Outside lattice cells are
   skipped and warp neighbors come from index arithmetic. Byte-identical
   output.
+- Level-set stuffing sampled every lattice vertex with an uncached tree
+  descent (8 lookups per vertex). Each 4096-vertex pool slice now opens its
+  own tree accessor, so the leaf lookup is cached: the teapot level set at
+  0.5 spacing went from 1.40 s to 0.90 s of sampling on one thread (3.14 s to
+  3.03 s for the whole mesh at four). Byte-identical output.
 - Sparse-tool coordinate maps store coordinates in their slots (one cache
   line per probe).
 - AffineMap matrices were read and written verbatim, i.e. transposed: real

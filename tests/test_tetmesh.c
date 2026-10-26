@@ -171,6 +171,18 @@ int main(void) {
            q.min_dihedral, q.max_dihedral, q.volume);
     CHECK(q.inverted == 0 && boundary_euler(&t) == 2);
     CHECK(fabs(q.volume - 4.0 / 3.0 * TEST_PI) < 0.05 * 4.0 / 3.0 * TEST_PI);
+    /* The level-set sampler caches tree lookups per range; the mesh must not
+     * depend on how many ranges run at once. */
+    for (size_t threads = 2; threads <= 4; threads += 2) {
+      tvdb_thread_pool_t *pool = NULL;
+      tvdb_tet_mesh t2 = {0};
+      CHECK(tvdb_thread_pool_create(threads, &pool, &err) == TVDB_OK);
+      CHECK(tvdb_level_set_to_tet_mesh(&g, &so, pool, &t2, &err) == TVDB_OK);
+      printf("level set, %zu threads: %zu tets\n", threads, t2.tet_count);
+      CHECK(same_mesh(&t, &t2));
+      tvdb_tet_mesh_free(&t2);
+      tvdb_thread_pool_destroy(pool);
+    }
     tvdb_tet_mesh_free(&t);
     tvdb_grid_destroy_owned(&g);
     free(mesh.vertices);
