@@ -78,6 +78,15 @@
 - Sparse tree CSG looked up both inputs uncached per output voxel; it now
   keeps one accessor per input (3.24 s to 2.60 s for the teapot level set
   unioned with itself, 7.0M voxels; identical output).
+- `tvdb_grid_volume_to_mesh` classified surface cells on one thread with one
+  global cell hash. It now collects the surface-adjacent regions in tree order
+  and classifies them on the task pool, with one cell map and one tree
+  accessor per slice, merging by sort so the mesh is byte-identical for any
+  worker count: teapot level set 7.2 s to 2.2 s, bunny 5.2 s to 1.7 s on eight
+  threads, at a lower peak footprint (the per-slice probe tables are released
+  before the merged copy). The cell budget is counted across slices, so
+  `max_cells` still bounds memory globally. `tvdb_grid_volume_to_mesh_pooled`
+  accepts a caller's pool.
 - Sparse-tool coordinate maps store coordinates in their slots (one cache
   line per probe).
 - AffineMap matrices were read and written verbatim, i.e. transposed: real

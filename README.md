@@ -273,6 +273,13 @@ may share a task pool. Mesh voxelization uses the same C11/GCD/pthread/serial
 module as hierarchical SDF processing, including with OpenMP disabled. A NULL
 pool chooses up to eight workers and runs small inputs serially.
 
+`tvdb_grid_volume_to_mesh` collects the surface-adjacent regions of the tree in
+tree order, classifies their cells on a pool (one cell map and one lookup cache
+per slice) and then sorts the merged cells, so the mesh and the `max_cells`
+budget do not depend on the worker count. `tvdb_grid_volume_to_mesh_pooled`
+takes a caller's pool; the plain form creates its own for inputs with at least
+32k active voxels.
+
 ```c
 #include "tinyvdb_mesh_conversion.h"
 

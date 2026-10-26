@@ -3,6 +3,7 @@
 #include "sdf_tree_fixture.h"
 #include "tinyvdb_mesh_conversion.h"
 #include "tinyvdb_sparse_tools.h"
+#include "tinyvdb_thread.h"
 #include "tinyvdb_tree_internal.h"
 #define CHECK(x)                                                        \
   do {                                                                  \
@@ -159,6 +160,32 @@ int main(void) {
     }
     CHECK(best <= 1);
   }
+  /* Surface classification runs on a pool: the mesh must not depend on how
+   * many slices it was split into. Radius 12 gives enough leaves and tiles to
+   * spread over several workers. */
+  tvdb_grid_t wide = {0};
+  CHECK(make_sphere(&wide, 12, 2));
+  tvdb_triangle_mesh serial = {0}, threaded = {0};
+  tvdb_thread_pool_t* pool = NULL;
+  CHECK(tvdb_thread_pool_create(1, &pool, &err) == TVDB_OK);
+  CHECK(tvdb_grid_volume_to_mesh_pooled(&wide, 0, 0, 200000, pool, &serial,
+                                        &err) == TVDB_OK);
+  tvdb_thread_pool_destroy(pool);
+  pool = NULL;
+  CHECK(tvdb_thread_pool_create(4, &pool, &err) == TVDB_OK);
+  CHECK(tvdb_grid_volume_to_mesh_pooled(&wide, 0, 0, 200000, pool, &threaded,
+                                        &err) == TVDB_OK);
+  tvdb_thread_pool_destroy(pool);
+  CHECK(serial.vertex_count && serial.face_count);
+  CHECK(serial.vertex_count == threaded.vertex_count &&
+        serial.face_count == threaded.face_count);
+  CHECK(!memcmp(serial.vertices, threaded.vertices,
+                serial.vertex_count * sizeof(tvdb_vec3f)) &&
+        !memcmp(serial.faces, threaded.faces,
+                serial.face_count * sizeof(tvdb_triangle)));
+  tvdb_triangle_mesh_free(&serial);
+  tvdb_triangle_mesh_free(&threaded);
+  tvdb_grid_destroy_owned(&wide);
   tvdb_triangle_mesh keep = mesh;
   CHECK(tvdb_grid_volume_to_mesh(&sphere, 0, 0, 1, &mesh, &err) != TVDB_OK);
   CHECK(!memcmp(&keep, &mesh, sizeof(mesh)));
