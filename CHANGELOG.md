@@ -83,6 +83,15 @@
   `test_gaussian_project` compares the conic and radius against an independent
   reference, checks the 90-degree view-axis symmetry, culling, opacity and
   features. Rendered splat sizes change; the device parity test needs a GPU.
+- Surface meshing classified every crossing cell from each of its voxels in
+  the narrow band, i.e. up to eight times, and scanned all six slabs of every
+  interior tile. A cell is now classified once, by the lowest-numbered voxel
+  the walk visits (its `tool_scan` cost drops to one per cell), and an interior
+  tile whose whole shell stays on its side of the isovalue skips the slab scan.
+  Byte-identical meshes; teapot level set 2.18 s -> 2.01 s, bunny 1.72 s ->
+  1.61 s, bunny_cloud at 0.1 4.96 s -> 4.12 s. `max_cells * 32` still bounds
+  cell classifications, so it now bounds slightly more real work than before
+  (redundant repeats no longer consume it).
 - Level-set stuffing sampled every lattice vertex with an uncached tree
   descent (8 lookups per vertex). Each 4096-vertex pool slice now opens its
   own tree accessor, so the leaf lookup is cached: the teapot level set at
