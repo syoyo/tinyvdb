@@ -504,7 +504,7 @@ if(TINYVDB_BUILD_TESTS)
     VERBATIM)
   add_custom_target(tinyvdb_test_fixture ALL DEPENDS "${TINYVDB_TEST_FIXTURE}")
   foreach(_test test_thread_pool test_sdf_tree test_mesh_conversion test_mesh_conversion_failure
-                test_mesh_level_set test_tetmesh test_volume)
+                test_mesh_level_set test_tetmesh test_volume test_tree_accessor)
     add_executable(${_test} ${PROJECT_SOURCE_DIR}/tests/${_test}.c)
     target_link_libraries(${_test} PRIVATE tinyvdb_mesh_ops)
     add_test(NAME ${_test} COMMAND ${_test} ${TINYVDB_TEST_FIXTURE})
