@@ -109,6 +109,19 @@
   `NanoVDB0` number as `GridData::magic`; NanoVDB's C++ `GridHandle` and
   `nanovdb::io` expect `NanoVDB1` (tinyvdb's own reader accepts both). They
   now write `NanoVDB1`, matching what `test_nanovdb_roundtrip` builds by hand.
+- The GPU level-set sampler (CUDA/HIP) flattened the float tree into host
+  arrays on every call - per-node origin/type/log2dim/value+child offsets,
+  every slot value, per-slot child indices and a root hash - and uploaded them,
+  which capped grids at `INT32_MAX` entries and made small edits re-upload the
+  whole tree. It now converts the grid once with `tvdb_grid_to_nanovdb` and the
+  kernel reads NanoVDB's own layout (root tiles, upper/lower internal nodes,
+  leaves) through `src/tinyvdb_nanovdb_device.h`: one buffer, no size cap. The
+  accessor is an ordinary header, so NVRTC and hiprtc compile the same text the
+  new host test `test_nanovdb_device` compares against the CPU tree lookup
+  (214k voxels over a generated 5-4-3 sphere, including internal tiles, root
+  tiles, the background and negative coordinates). On the RTX 5060 Ti
+  `test_gpu_volumetric cuda` samples 200k points with 0 differences and builds
+  the same 18757 tets as the CPU; HIP compiles with hipcc.
 - Isosurface stuffing extracted the watertight boundary with a single-threaded
   counting sort plus a fused sort/singleton pass (1.65 s of the 2.9 s teapot
   level-set run). The counting sort now runs on the pool: each slice counts

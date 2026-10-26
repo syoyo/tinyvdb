@@ -424,9 +424,23 @@ if(TINYVDB_BUILD_GPU)
   add_custom_target(tinyvdb_gpu_spv DEPENDS ${TINYVDB_GPU_SHADER_INCS})
   # CUDA/HIP runtime loaders and the volumetric kernels; needs only the CPU
   # modules (vendorable on its own, see tinyvdb_gpu_compute.h).
+  # The device side of the level-set sampler is a normal header so the host
+  # test can compile the same code; the GPU module gets its text as a string.
+  set(TINYVDB_NVDB_DEVICE_INC ${CMAKE_CURRENT_BINARY_DIR}/generated/tinyvdb_nanovdb_device_src.inc)
+  add_custom_command(
+    OUTPUT ${TINYVDB_NVDB_DEVICE_INC}
+    COMMAND ${CMAKE_COMMAND} -DIN=${PROJECT_SOURCE_DIR}/src/tinyvdb_nanovdb_device.h
+            -DOUT=${TINYVDB_NVDB_DEVICE_INC}
+            -P ${PROJECT_SOURCE_DIR}/cmake/embed_c_string.cmake
+    DEPENDS ${PROJECT_SOURCE_DIR}/src/tinyvdb_nanovdb_device.h
+            ${PROJECT_SOURCE_DIR}/cmake/embed_c_string.cmake
+    VERBATIM)
+  add_custom_target(tinyvdb_nanovdb_device_src DEPENDS ${TINYVDB_NVDB_DEVICE_INC})
   add_library(tinyvdb_gpu_compute STATIC ${PROJECT_SOURCE_DIR}/src/tinyvdb_gpu_compute.c)
+  add_dependencies(tinyvdb_gpu_compute tinyvdb_nanovdb_device_src)
   target_include_directories(tinyvdb_gpu_compute PUBLIC ${PROJECT_SOURCE_DIR}/src)
-  target_link_libraries(tinyvdb_gpu_compute PUBLIC tinyvdb_mesh_ops)
+  target_include_directories(tinyvdb_gpu_compute PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+  target_link_libraries(tinyvdb_gpu_compute PUBLIC tinyvdb_mesh_ops tinyvdb_nanovdb)
   if(NOT WIN32)
     target_link_libraries(tinyvdb_gpu_compute PRIVATE ${CMAKE_DL_LIBS})
   endif()
@@ -683,6 +697,11 @@ if(TINYVDB_BUILD_TESTS)
   target_include_directories(test_gaussian_backward PRIVATE
                               ${PROJECT_SOURCE_DIR}/src)
   add_test(NAME test_gaussian_backward COMMAND test_gaussian_backward)
+
+  add_executable(test_nanovdb_device tests/test_nanovdb_device.c)
+  target_link_libraries(test_nanovdb_device PRIVATE tinyvdb_nanovdb tinyvdb_mesh_ops m)
+  target_include_directories(test_nanovdb_device PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  add_test(NAME test_nanovdb_device COMMAND test_nanovdb_device)
 
   add_executable(test_nanovdb_reference
                  ${PROJECT_SOURCE_DIR}/tests/test_nanovdb_reference.c)
