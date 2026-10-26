@@ -83,6 +83,14 @@
   `test_gaussian_project` compares the conic and radius against an independent
   reference, checks the 90-degree view-axis symmetry, culling, opacity and
   features. Rendered splat sizes change; the device parity test needs a GPU.
+- Isosurface stuffing extracted the watertight boundary with a single-threaded
+  counting sort plus a fused sort/singleton pass (1.65 s of the 2.9 s teapot
+  level-set run). The counting sort now runs on the pool: each slice counts
+  into a private per-bucket cursor table, a prefix sum lays the cursors out in
+  slice order, the slices scatter, and bucket ranges are sorted and emitted in
+  parallel with exact output offsets. Byte-identical meshes for any worker
+  count; teapot level set 2.90 s -> 1.64 s, bunny 0.30 s -> 0.20 s on eight
+  threads, single-thread unchanged.
 - Surface meshing classified every crossing cell from each of its voxels in
   the narrow band, i.e. up to eight times, and scanned all six slabs of every
   interior tile. A cell is now classified once, by the lowest-numbered voxel
