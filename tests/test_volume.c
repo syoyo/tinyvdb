@@ -149,6 +149,40 @@ static void check_strided(const tvdb_grid_t *g) {
   tvdb_volume_sampler_destroy(s);
 }
 
+/* Caller buffers and slabs: the same cells and layout as the allocating call,
+ * whatever the scratch size; too-small buffers fail. */
+static void check_buffer(const tvdb_grid_t *g) {
+  for (int stride = 1; stride <= 4; stride += 3) {
+    tvdb_dense_volume_options_t o;
+    memset(&o, 0, sizeof(o));
+    o.stride = stride;
+    o.inactive_as_background = 1;
+    o.vector_magnitude = 1; /* no-op on a scalar grid */
+    tvdb_dense_volume_t ref = {0}, lay, lay2;
+    CHECK(tvdb_grid_to_dense_volume(g, &o, &ref, NULL) == TVDB_OK);
+    CHECK(tvdb_grid_dense_volume_layout(g, &o, &lay, NULL) == TVDB_OK);
+    CHECK(lay.data == NULL && lay.components == 1 && lay.stride == stride);
+    const size_t n = (size_t)lay.dims[0] * lay.dims[1] * lay.dims[2];
+    CHECK(n == (size_t)ref.dims[0] * ref.dims[1] * ref.dims[2]);
+    CHECK(!memcmp(lay.cell_to_world, ref.cell_to_world, sizeof(ref.cell_to_world)));
+    CHECK(!memcmp(lay.index_min, ref.index_min, sizeof(ref.index_min)));
+    float *buf = (float *)malloc((n + 1) * sizeof(float));
+    CHECK(tvdb_grid_to_dense_volume_buffer(g, &o, buf, n - 1, NULL, NULL) == TVDB_ERROR_INVALID_ARGUMENT);
+    CHECK(tvdb_grid_to_dense_volume_buffer(g, &o, NULL, n, NULL, NULL) == TVDB_ERROR_INVALID_ARGUMENT);
+    for (size_t scratch = 0; scratch <= 1; ++scratch) {
+      o.scratch_bytes = scratch; /* 1: one output layer per pass */
+      buf[n] = 12345.0f;
+      CHECK(tvdb_grid_to_dense_volume_buffer(g, &o, buf, n + 1, &lay2, NULL) == TVDB_OK);
+      CHECK(!memcmp(buf, ref.data, n * sizeof(float)));
+      CHECK(buf[n] == 12345.0f); /* past the cells: untouched */
+      CHECK(lay2.data == NULL && !memcmp(lay2.dims, ref.dims, sizeof(ref.dims)));
+    }
+    printf("buffer stride %d: %zu cells, identical across scratch sizes\n", stride, n);
+    free(buf);
+    tvdb_dense_volume_free(&ref);
+  }
+}
+
 /* Metadata set on a generated grid survives the writer and a header read. */
 static void check_metadata(tvdb_grid_t *g) {
   tvdb_error_t err;
@@ -255,6 +289,7 @@ int main(void) {
          info.index_min[1], info.index_min[2], info.index_max[0], info.index_max[1],
          info.index_max[2], (unsigned long long)info.active_voxels);
   check_strided(&g);
+  check_buffer(&g);
   check_metadata(&g);
   tvdb_grid_destroy_owned(&g);
   /* Arguments. */
