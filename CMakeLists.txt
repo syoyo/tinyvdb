@@ -673,6 +673,9 @@ if(TINYVDB_BUILD_TESTS)
   add_executable(test_gaussian_raster tests/test_gaussian_raster.c)
   target_link_libraries(test_gaussian_raster PRIVATE tinyvdb_nanovdb m)
   add_test(NAME test_gaussian_raster COMMAND test_gaussian_raster)
+  add_executable(test_gaussian_project tests/test_gaussian_project.c)
+  target_link_libraries(test_gaussian_project PRIVATE tinyvdb_nanovdb m)
+  add_test(NAME test_gaussian_project COMMAND test_gaussian_project)
 
   add_executable(test_gaussian_backward
                  ${PROJECT_SOURCE_DIR}/tests/test_gaussian_backward.c)

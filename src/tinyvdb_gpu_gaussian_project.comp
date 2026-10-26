@@ -52,16 +52,22 @@ void main() {
   float R0 = 1.0 - 2.0*(qy*qy + qz*qz), R1 = 2.0*(qx*qy - qw*qz), R2 = 2.0*(qx*qz + qw*qy);
   float R3 = 2.0*(qx*qy + qw*qz), R4 = 1.0 - 2.0*(qx*qx + qz*qz), R5 = 2.0*(qy*qz - qw*qx);
   float R6 = 2.0*(qx*qz - qw*qy), R7 = 2.0*(qy*qz + qw*qx), R8 = 1.0 - 2.0*(qx*qx + qy*qy);
-  float rot00 = R0*R0*sqx + R1*R1*sqy + R2*R2*sqz;   // covar_rot[0]
-  float rot01 = R0*R3*sqx + R1*R4*sqy + R2*R5*sqz;   // covar_rot[1] == [3]
-  float rot02 = R0*R6*sqx + R1*R7*sqy + R2*R8*sqz;   // covar_rot[2]
-  float rot12 = R3*R6*sqx + R4*R7*sqy + R5*R8*sqz;   // covar_rot[5]
+  // World-space covariance R S R^T (row major, symmetric).
+  float rot00 = R0*R0*sqx + R1*R1*sqy + R2*R2*sqz;
+  float rot01 = R0*R3*sqx + R1*R4*sqy + R2*R5*sqz;
+  float rot02 = R0*R6*sqx + R1*R7*sqy + R2*R8*sqz;
+  float rot11 = R3*R3*sqx + R4*R4*sqy + R5*R5*sqz;
+  float rot12 = R3*R6*sqx + R4*R7*sqy + R5*R8*sqz;
+  float rot22 = R6*R6*sqx + R7*R7*sqy + R8*R8*sqz;
 
-  float inv_fx = 1.0 / fx, inv_fy = 1.0 / fy;
+  // EWA: J = [[fx/z, 0, -d_x/z], [0, fy/z, -d_y/z]], so the 2D covariance is
+  // J (R S R^T) J^T, including the z variance.
   float d_x = x - cx, d_y = y - cy;
-  float c2d0 = inv_fx*inv_fx*rot00 + d_x*d_x*inv_fx*inv_fx*inv_depth*inv_depth*rot02;
-  float c2d1 = d_x*d_y*inv_fx*inv_fy*inv_depth*inv_depth*rot02;
-  float c2d2 = inv_fy*inv_fy*rot01 + d_y*d_y*inv_fy*inv_fy*inv_depth*inv_depth*rot12;
+  float jx = fx*inv_depth, jy = fy*inv_depth;
+  float jp = -d_x*inv_depth, jq = -d_y*inv_depth;
+  float c2d0 = jx*jx*rot00 + 2.0*jx*jp*rot02 + jp*jp*rot22;
+  float c2d1 = jx*jy*rot01 + jx*jq*rot02 + jp*jy*rot12 + jp*jq*rot22;
+  float c2d2 = jy*jy*rot11 + 2.0*jy*jq*rot12 + jq*jq*rot22;
   c2d0 += eps2d; c2d2 += eps2d;
 
   float conic_a, conic_b, conic_c;
@@ -74,9 +80,10 @@ void main() {
   } else {
     conic_a = 1.0; conic_b = 0.0; conic_c = 1.0;
   }
-  float eig_max = 0.5 * (conic_a + conic_c +
-      fast_sqrt((conic_a - conic_c)*(conic_a - conic_c) + 4.0*conic_b*conic_b));
-  float radius = (eig_max > 1e-10) ? 3.0 * fast_sqrt(1.0 / eig_max) : 0.0;
+  // Three sigma along the major axis of that covariance.
+  float mid = 0.5 * (c2d0 + c2d2);
+  float eig_max = mid + 0.5 * fast_sqrt((c2d0 - c2d2)*(c2d0 - c2d2) + 4.0*c2d1*c2d1);
+  float radius = (eig_max > 0.0) ? 3.0 * fast_sqrt(eig_max) : 0.0;
   float opacity = 1.0 / (1.0 + exp2(-opac));
 
   gout[ob+0u] = x;       gout[ob+1u] = y;

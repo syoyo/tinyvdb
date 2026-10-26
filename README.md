@@ -534,6 +534,9 @@ remains the convenience wrapper for grids built with the default allocator.
   opacity, and per-feature color — reverses the alpha blend without
   saving per-pixel intersection lists. Gradient-checked against
   central FD for all parameters
+* [x] CPU projection (`tvdb_gaussian_project`): EWA conic from the full 3x3
+  covariance and pinhole Jacobian (including the z variance), three-sigma
+  radius from the major axis, culled splats zeroed
 * [x] PLY I/O for splat scenes (load + save)
 
 ## Validation

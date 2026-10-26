@@ -70,6 +70,19 @@
   vertex takes 16 bytes per face and ~0.4 s. Outside lattice cells are
   skipped and warp neighbors come from index arithmetic. Byte-identical
   output.
+- `tvdb_gaussian_project` (3D Gaussian splatting) wrote a full 3x3 rotated
+  covariance into a six-float stack array (indices 6-8 overflowed) and scaled
+  the 2D covariance by `1/fx^2` instead of `(fx/z)^2`, dropped the z variance
+  and read the xy term for the yy entry, so a radius-1 splat at depth 2 with
+  `fx=800` projected to 0.004 px instead of ~1200 px and anisotropic rotations
+  could yield a non-positive-definite conic. The projection now builds
+  `J (R S R^T) J^T` with `J = [[fx/z, 0, -dx/z], [0, fy/z, -dy/z]]` and takes
+  the radius from the covariance's major axis; the Vulkan shader and the
+  embedded CUDA/HIP kernel use the same arithmetic. Culled splats are zeroed
+  (they previously kept uninitialised conic/x/y/feature fields). New
+  `test_gaussian_project` compares the conic and radius against an independent
+  reference, checks the 90-degree view-axis symmetry, culling, opacity and
+  features. Rendered splat sizes change; the device parity test needs a GPU.
 - Level-set stuffing sampled every lattice vertex with an uncached tree
   descent (8 lookups per vertex). Each 4096-vertex pool slice now opens its
   own tree accessor, so the leaf lookup is cached: the teapot level set at
