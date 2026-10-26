@@ -94,6 +94,21 @@
   as it finishes and the merge is a k-way heap merge with the repeats dropped
   on the fly: teapot 1.65 s -> 1.36 s, bunny 1.30 s -> 1.10 s, icosahedron
   0.09 s -> 0.07 s, byte-identical.
+- The stuffing warp pass scanned all 14 lattice edges of every vertex. A
+  vertex farther than sqrt(3) spacings from the isovalue cannot be crossed by
+  any edge (a signed distance field changes by at most that over the longest
+  edge), so the scan is skipped for it: teapot level set at 1.0 spacing
+  0.45 s -> 0.29 s at eight workers, byte-identical. The sampler contract now
+  states the 1-Lipschitz requirement this relies on.
+- Surface-cell classification recomputed a box index per corner
+  (`(z*n + y)*n + x` eight times a cell); it now computes the cell's base
+  index once and adds precomputed per-corner offsets (teapot level set
+  1.36 s -> 1.27 s, bunny 1.10 s -> 1.02 s), and adaptive clustering computes
+  its per-vertex cluster keys on the pool.
+- Grid buffers written by `tvdb_grid_to_nanovdb*` carried the legacy
+  `NanoVDB0` number as `GridData::magic`; NanoVDB's C++ `GridHandle` and
+  `nanovdb::io` expect `NanoVDB1` (tinyvdb's own reader accepts both). They
+  now write `NanoVDB1`, matching what `test_nanovdb_roundtrip` builds by hand.
 - Isosurface stuffing extracted the watertight boundary with a single-threaded
   counting sort plus a fused sort/singleton pass (1.65 s of the 2.9 s teapot
   level-set run). The counting sort now runs on the pool: each slice counts
