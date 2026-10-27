@@ -8,6 +8,7 @@
 
 #include "tinyvdb_sparse_tools.h"
 #include "tinyvdb_tetmesh.h"
+#include "tinyvdb_tet_graded.h"
 
 #define TEST_PI 3.14159265358979323846
 
@@ -195,6 +196,16 @@ int main(void) {
       tvdb_thread_pool_destroy(pool);
     }
     tvdb_tet_mesh_free(&t);
+    {
+      tvdb_graded_stuffing_options_t graded = {0};
+      graded.fine_spacing = 0.15; graded.coarse_spacing = 0.45;
+      graded.grading = 0.8; graded.warp_alpha = 0.2;
+      CHECK(tvdb_level_set_to_tet_mesh_graded(&g, &graded, &t, &err) == TVDB_OK);
+      CHECK(t.tet_count && tvdb_tet_mesh_quality(&t, &q, &err) == TVDB_OK);
+      CHECK(q.inverted == 0 && boundary_euler(&t) == 2);
+      CHECK(fabs(q.volume - 4.0 / 3.0 * TEST_PI) < 0.08 * 4.0 / 3.0 * TEST_PI);
+      tvdb_tet_mesh_free(&t);
+    }
     tvdb_grid_destroy_owned(&g);
     free(mesh.vertices);
     free(mesh.faces);
