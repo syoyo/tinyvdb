@@ -10,6 +10,7 @@
 #include "tinyvdb_sparse_tree.h"
 #include "tinyvdb_tree_internal.h"
 #include "tinyvdb_winding.h"
+#include "tinyvdb_mesh_conversion.h"
 
 #define CHECK(x)                                                    \
   do {                                                              \
@@ -170,6 +171,23 @@ static int close_grid(const tvdb_grid_t *a, const tvdb_grid_t *b, float tol) {
   return ok;
 }
 
+/* Reference evaluator deliberately computes winding for every candidate. */
+typedef struct { tvdb_mesh_sdf_t *sdf; tvdb_winding_t *wn; int partial; } full_eval;
+static tvdb_status_t eval_all(void *user, const int32_t *ijk, size_t count, double h,
+                              float *distance, double *winding, tvdb_error_t *err) {
+  full_eval *ref = (full_eval *)user;
+  for (size_t i = 0; i < count; ++i) {
+    const double p[3] = {ijk[3*i] * h, ijk[3*i+1] * h, ijk[3*i+2] * h};
+    double d;
+    tvdb_status_t st = tvdb_mesh_sdf_distance(ref->sdf, p, &d, err);
+    if (st != TVDB_OK) return st;
+    distance[i] = (float)d;
+    winding[i] = tvdb_winding_eval(ref->wn, p);
+    if (ref->partial && (i & 1)) distance[i] = NAN;
+  }
+  return TVDB_OK;
+}
+
 int main(void) {
   tvdb_error_t err;
   tvdb_triangle_mesh box = {0}, sphere = {0}, open = {0};
@@ -180,6 +198,43 @@ int main(void) {
   o.exterior_width = o.interior_width = 0.3f;
   tvdb_mesh_level_set_result_t r;
   size_t active = 0;
+
+  /* Compare against a full evaluator for asymmetric bands, both signs and
+   * an open surface. The band boundary falls exactly on some voxel centers. */
+  for (int mesh_id = 0; mesh_id < 2; ++mesh_id) {
+    const tvdb_triangle_mesh *m = mesh_id ? &open : &box;
+    for (int sign = 0; sign < 2; ++sign) {
+      full_eval ref = {0};
+      CHECK(tvdb_mesh_sdf_create(m, &ref.sdf, &err) == TVDB_OK);
+      CHECK(tvdb_winding_create(m, sign ? TVDB_WINDING_EXACT : TVDB_WINDING_FAST,
+                                &ref.wn, &err) == TVDB_OK);
+      for (int swap = 0; swap < 2; ++swap) {
+        tvdb_mesh_level_set_options_t opt = o;
+        opt.sign = sign ? TVDB_LEVEL_SET_SIGN_WINDING_EXACT : TVDB_LEVEL_SET_SIGN_WINDING_FAST;
+        opt.interior_width = swap ? 0.2f : 0.4f;
+        opt.exterior_width = swap ? 0.4f : 0.2f;
+        tvdb_grid_t optimized = {0}, reference = {0};
+        tvdb_mesh_level_set_result_t a, b;
+        CHECK(tvdb_mesh_to_level_set(m, &opt, NULL, &optimized, &a, &err) == TVDB_OK);
+        opt.evaluate = eval_all;
+        opt.evaluate_user = &ref;
+        CHECK(tvdb_mesh_to_level_set(m, &opt, NULL, &reference, &b, &err) == TVDB_OK);
+        CHECK(same_grid(&optimized, &reference));
+        ref.partial = 1;
+        tvdb_grid_t partial = {0};
+        CHECK(tvdb_mesh_to_level_set(m, &opt, NULL, &partial, NULL, &err) == TVDB_OK);
+        CHECK(same_grid(&optimized, &partial));
+        tvdb_grid_destroy_owned(&partial);
+        ref.partial = 0;
+        CHECK(a.seed_voxels == b.seed_voxels && a.candidate_voxels == b.candidate_voxels &&
+              a.active_voxels == b.active_voxels && a.max_distance == b.max_distance);
+        tvdb_grid_destroy_owned(&optimized);
+        tvdb_grid_destroy_owned(&reference);
+      }
+      tvdb_winding_destroy(ref.wn);
+      tvdb_mesh_sdf_destroy(ref.sdf);
+    }
+  }
 
   /* Winding numbers: inside a closed box 1, outside 0, inside-out -1. */
   {
