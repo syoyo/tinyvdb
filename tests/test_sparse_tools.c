@@ -70,6 +70,24 @@ int main(void) {
   tvdb_error_t err = {0};
   tvdb_grid_t sphere = {0}, rebuilt = {0}, sampled = {0}, empty = {0};
   CHECK(make_sphere(&sphere, 5, 4));
+  /* A negative background makes the region walk visit above-isovalue
+   * voxels. One positive voxel in it has an octahedral boundary. */
+  {
+    tvdb_grid_t tmpl, inverted = {0};
+    sdf_fixture_template(&tmpl);
+    tvdb_sparse_grid one = {0};
+    CHECK(tvdb_sparse_grid_reserve(&one, 1));
+    one.coords[0] = (tvdb_vec3i){0, 0, 0};
+    one.values[0] = 1;
+    one.count = 1;
+    CHECK(tvdb_grid_from_sparse_using_template(&tmpl, &one, "inverted", -1, &inverted));
+    tvdb_triangle_mesh surface = {0};
+    CHECK(tvdb_grid_volume_to_mesh(&inverted, 0, 0, 1000, &surface, &err) == TVDB_OK);
+    CHECK(surface.vertex_count == 6 && surface.face_count == 8);
+    tvdb_triangle_mesh_free(&surface);
+    tvdb_grid_destroy_owned(&inverted);
+    tvdb_sparse_grid_free(&one);
+  }
   tvdb_grid_t before = sphere;
   tvdb_level_set_rebuild_result_t info = {0};
   CHECK(tvdb_grid_level_set_track(&sphere, 3, 3, 200000, &rebuilt, &info,
