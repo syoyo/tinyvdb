@@ -1,6 +1,6 @@
 # Preparing a release
 
-Versions in `CMakeLists.txt`, `pyproject.toml`, and
+Versions in `CMakeLists.txt`, `pyproject.toml`, `package.json`, and
 `python/tinyvdb/__init__.py` must agree. Update `CHANGELOG.md` and the version
 regression test together, and record the release date before publishing.
 
@@ -45,3 +45,37 @@ existing `v*` tag trigger publishes to PyPI, so create/push a release tag only
 under explicit publication authorization, after the exact outgoing history has
 passed the repository's pre-push audit. Preparation alone does not authorize a
 commit, tag, push, or upload.
+
+## npm WebAssembly package
+
+The root `package.json` publishes only `web/build-wasm/tinyvdb.js`, its
+companion `.wasm` binary, and third-party notices. The `npm-publish.yml`
+workflow rebuilds the Emscripten module, runs the WebAssembly runtime checks,
+checks the package contents, and stages a release on `v*` tags. It uses [npm
+Trusted Publishing](https://docs.npmjs.com/trusted-publishers/) with GitHub
+OIDC; do not add an npm publish token to GitHub secrets. Manual runs are
+limited to `main` and require the requested version to match `package.json`.
+Each staged release must be reviewed and approved by a maintainer with 2FA on
+npmjs.com under the package's Staged Packages tab, or with `npm stage approve`
+from the CLI.
+
+Before the first automated publish, create the package on npm once using an
+npm maintainer account. npm requires a package to exist before it can have a
+Trusted Publisher. Then configure the package's trusted publisher for GitHub
+Actions with owner `syoyo`, repository `tinyvdb`, workflow filename
+`npm-publish.yml`, and no environment. Leave direct `npm publish` and `npm
+dist-tag` permissions disabled; the workflow uses `npm stage publish`, which
+is allowed by default.
+Alternatively, after the package exists, configure it with [npm CLI 11.15.0 or
+newer](https://docs.npmjs.com/cli/v11/commands/npm-trust/) and account-level
+2FA enabled:
+
+```sh
+npm trust github tinyvdb --file npm-publish.yml --repo syoyo/tinyvdb --allow-stage-publish
+```
+
+The first seed publish consumes its name/version permanently. If you seed
+version 0.9.1, the workflow must wait for the next version; to publish 0.9.1
+through OIDC, seed a lower version first and then manually dispatch
+`npm-publish.yml` from `main` with version `0.9.1`. Future `v*` tags stage a
+release for maintainer approval.

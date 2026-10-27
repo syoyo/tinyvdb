@@ -1,0 +1,79 @@
+name: Publish WebAssembly package to npm
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version to publish (must match package.json)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Install npm with trusted publishing support
+        run: |
+          npm install --global 'npm@^11.15.0'
+          node --version
+          npm --version
+
+      - name: Set up Emscripten
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: 4.0.14
+
+      - name: Check package version
+        env:
+          DISPATCH_VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            case "$GITHUB_REF_NAME" in
+              v*) expected="${GITHUB_REF_NAME#v}" ;;
+              *) echo "Release tags must start with v" >&2; exit 1 ;;
+            esac
+          else
+            expected="$DISPATCH_VERSION"
+          fi
+          actual="$(node -p "require('./package.json').version")"
+          if [ "$actual" != "$expected" ]; then
+            echo "Tag/dispatch version $expected does not match package.json version $actual" >&2
+            exit 1
+          fi
+
+      - name: Build WebAssembly module
+        run: ./web/build.sh Release
+
+      - name: Verify generated artifacts
+        run: |
+          test -s web/build-wasm/tinyvdb.js
+          test -s web/build-wasm/tinyvdb.wasm
+
+      - name: Run WebAssembly runtime checks
+        run: node web/test_wasm_smoke.js
+
+      - name: Check npm package contents
+        run: npm pack --dry-run --json
+
+      - name: Stage package with npm Trusted Publishing
+        run: npm stage publish

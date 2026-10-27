@@ -908,6 +908,31 @@ val_size = tinyvdb.value_size()            # 4 for Float
 val_size = tinyvdb.value_size(tinyvdb.GRID_TYPE_VEC3F)  # 12
 ```
 
+## JavaScript and WebAssembly
+
+Install the Emscripten module for Node.js:
+
+```bash
+npm install tinyvdb
+```
+
+The package contains the JavaScript module loader and its companion
+`tinyvdb.wasm` binary. The module factory is asynchronous:
+
+```js
+const createTinyVDB = require("tinyvdb");
+
+async function main() {
+  const tvdb = await createTinyVDB();
+  const grid = new tvdb.DenseGrid(16, 16, 16, 1.0);
+  console.log(grid.size());
+}
+
+main();
+```
+
+For browser usage, see the [WebAssembly demo](web/demo.html).
+
 ## Notes
 
 ### Terms

@@ -1,0 +1,36 @@
+{
+  "name": "tinyvdb",
+  "version": "0.9.1",
+  "description": "OpenVDB and NanoVDB support compiled to WebAssembly",
+  "license": "Apache-2.0",
+  "author": "Syoyo Fujita",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syoyo/tinyvdb.git"
+  },
+  "homepage": "https://github.com/syoyo/tinyvdb#readme",
+  "bugs": {
+    "url": "https://github.com/syoyo/tinyvdb/issues"
+  },
+  "keywords": [
+    "openvdb",
+    "nanovdb",
+    "webassembly",
+    "wasm",
+    "emscripten",
+    "sparse-volume"
+  ],
+  "main": "web/build-wasm/tinyvdb.js",
+  "browser": "web/build-wasm/tinyvdb.js",
+  "unpkg": "web/build-wasm/tinyvdb.js",
+  "jsdelivr": "web/build-wasm/tinyvdb.js",
+  "files": [
+    "THIRD_PARTY_NOTICES.md",
+    "web/build-wasm/tinyvdb.js",
+    "web/build-wasm/tinyvdb.wasm"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
