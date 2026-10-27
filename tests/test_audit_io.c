@@ -9,6 +9,7 @@
 #endif
 #include "tinyvdb_io.h"
 #include "tinyvdb_nanovdb.h"
+#include "tinyvdb_sparse_tree.h"
 #include "lz4.h"
 
 #include <stdint.h>
@@ -739,6 +740,23 @@ static void test_half_nonfloat_grids(void) {
 /*  Finding 10: VDB->NanoVDB conversion keeps a readable map                 */
 /* ------------------------------------------------------------------------ */
 
+/* Grow bb = { min[3], max[3] } to cover the leaf's active voxels. */
+static int active_bounds(const tvdb_leaf_view_t *leaf, void *user) {
+    int32_t *bb = (int32_t *)user;
+    int32_t dim = 1 << leaf->log2dim, n = 0;
+    for (int32_t i = 0; i < dim; ++i)
+        for (int32_t j = 0; j < dim; ++j)
+            for (int32_t k = 0; k < dim; ++k, ++n) {
+                if (!tvdb_nodemask_is_on(leaf->value_mask, n)) continue;
+                int32_t p[3] = { leaf->origin[0] + i, leaf->origin[1] + j, leaf->origin[2] + k };
+                for (int a = 0; a < 3; ++a) {
+                    if (p[a] < bb[a]) bb[a] = p[a];
+                    if (p[a] > bb[a + 3]) bb[a + 3] = p[a];
+                }
+            }
+    return 0;
+}
+
 static void test_to_nanovdb_map(void) {
     tvdb_file_t f;
     tvdb_error_t e; memset(&e, 0, sizeof(e));
@@ -767,6 +785,12 @@ static void test_to_nanovdb_map(void) {
         double w[3];
         tvdb_nanovdb_index_to_world(g, 2, 2, 2, w);
         CHECK(w[0] == 2.0 && w[1] == 3.0 && w[2] == 4.0);
+        /* The index bbox is tight to the active voxels, as libnanovdb writes
+           it, not the extent of the nodes holding them. */
+        int32_t bb[6] = { INT32_MAX, INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN, INT32_MIN };
+        tvdb_grid_visit_leaves_float(&f.grids[0], active_bounds, bb);
+        for (int k = 0; k < 3; ++k)
+            CHECK(g->index_bbox_min[k] == bb[k] && g->index_bbox_max[k] == bb[k + 3]);
         tvdb_nanovdb_file_close(&nf);
     }
     free(nv);

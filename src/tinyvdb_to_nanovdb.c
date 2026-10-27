@@ -145,6 +145,8 @@ typedef struct nv_node_info {
     size_t  vdb_node_idx;  /* index into grid->tree.nodes[] */
     size_t  parent_idx;    /* index into the same per-level array */
     uint32_t parent_slot;  /* slot index within parent's child table */
+    int32_t bb_min[3];     /* tight bbox of active voxels and tiles; */
+    int32_t bb_max[3];     /* empty when bb_min[0] > bb_max[0] */
 } nv_node_info_t;
 
 typedef struct nv_build_ctx {
@@ -172,6 +174,38 @@ static void nv__slot_to_ijk(int32_t s, int log2dim,
     *ix = (s >> (2 * log2dim)) & mask;
     *iy = (s >> log2dim) & mask;
     *iz =  s & mask;
+}
+
+static void nv__bbox_clear(int32_t mn[3], int32_t mx[3]) {
+    for (int k = 0; k < 3; ++k) { mn[k] = INT32_MAX; mx[k] = INT32_MIN; }
+}
+
+/* Grow [mn, mx] to cover [lo, hi]; an empty [lo, hi] leaves it unchanged. */
+static void nv__bbox_union(int32_t mn[3], int32_t mx[3],
+                           const int32_t lo[3], const int32_t hi[3]) {
+    if (lo[0] > hi[0]) return;
+    for (int k = 0; k < 3; ++k) {
+        if (lo[k] < mn[k]) mn[k] = lo[k];
+        if (hi[k] > mx[k]) mx[k] = hi[k];
+    }
+}
+
+/* Grow [mn, mx] to cover the dim^3 tile at slot (ix, iy, iz) of a node at origin. */
+static void nv__bbox_union_tile(int32_t mn[3], int32_t mx[3], const int32_t origin[3],
+                                int32_t ix, int32_t iy, int32_t iz, int32_t dim) {
+    int32_t lo[3] = { origin[0] + ix * dim, origin[1] + iy * dim, origin[2] + iz * dim };
+    int32_t hi[3] = { lo[0] + dim - 1, lo[1] + dim - 1, lo[2] + dim - 1 };
+    nv__bbox_union(mn, mx, lo, hi);
+}
+
+/* Write a node bbox; an empty one collapses to the node origin. */
+static void nv__write_bbox(uint8_t *buf, size_t off_min, size_t off_max,
+                           const int32_t mn[3], const int32_t mx[3], const int32_t origin[3]) {
+    int empty = mn[0] > mx[0];
+    for (int k = 0; k < 3; ++k) {
+        nv__write_i32(buf, off_min + 4u * (size_t)k, empty ? origin[k] : mn[k]);
+        nv__write_i32(buf, off_max + 4u * (size_t)k, empty ? origin[k] : mx[k]);
+    }
 }
 
 /* DFS walk: collect uppers/lowers/leaves with origins and parent linkage. */
@@ -465,8 +499,7 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
         int32_t log2 = ui->child_mask.log2dim;  /* 5 */
         int32_t total_bits = 1 << (3 * log2);
 
-        int32_t up_bb_min[3] = { INT32_MAX, INT32_MAX, INT32_MAX };
-        int32_t up_bb_max[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
+        nv__bbox_clear(ctx.uppers[u].bb_min, ctx.uppers[u].bb_max);
 
         size_t c_idx_check = 0;  /* tracks lowers[] index for this upper */
         size_t lower_base = lower_cursor;
@@ -505,6 +538,8 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
             } else {
                 if (has_value) {
                     nv__set_bit(buf + off_upper + NV_UPPER_VALUE_MASK_OFF, (size_t)s);
+                    nv__bbox_union_tile(ctx.uppers[u].bb_min, ctx.uppers[u].bb_max,
+                                        up->origin, ix, iy, iz, 1 << (4 + 3));
                 }
                 /* Tile value lives in low 4 bytes of the 8-byte slot. */
                 float tile_v = bg;
@@ -521,20 +556,26 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
             }
         }
 
-        /* Upper bbox = union of all child lower bboxes + active tile bboxes.
-           We compute it after lowers/leaves are written; for now leave the
-           min/max placeholder. */
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MIN_OFF + 0, up_bb_min[0]);
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MIN_OFF + 4, up_bb_min[1]);
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MIN_OFF + 8, up_bb_min[2]);
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MAX_OFF + 0, up_bb_max[0]);
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MAX_OFF + 4, up_bb_max[1]);
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MAX_OFF + 8, up_bb_max[2]);
+        /* Upper bbox = active tiles (above) + child lower bboxes, written
+           once the lowers are known. */
         nv__write_u64(buf, off_upper + NV_UPPER_FLAGS_OFF, 0ull);
         nv__write_f32(buf, off_upper + NV_UPPER_MIN_OFF + 0, bg);
         nv__write_f32(buf, off_upper + NV_UPPER_MIN_OFF + 4, bg);
         nv__write_f32(buf, off_upper + NV_UPPER_MIN_OFF + 8, 0.0f);
         nv__write_f32(buf, off_upper + NV_UPPER_MIN_OFF + 12, 0.0f);
+    }
+
+    /* Leaf bboxes, tight to the active voxels (bit b = x << 6 | y << 3 | z). */
+    for (size_t lf = 0; lf < ctx.n_leaf; ++lf) {
+        nv_node_info_t *li = &ctx.leaves[lf];
+        const tvdb_leaf_node_t *vl = &grid->tree.nodes[li->vdb_node_idx].u.leaf;
+        nv__bbox_clear(li->bb_min, li->bb_max);
+        if (vl->value_mask.bits.num_bytes < 64u) continue;  /* rejected below */
+        for (int32_t b = 0; b < 512; ++b) {
+            if (vl->value_mask.bits.data[b >> 3] & (1u << (b & 7)))
+                nv__bbox_union_tile(li->bb_min, li->bb_max, li->origin,
+                                    b >> 6, (b >> 3) & 7, b & 7, 1);
+        }
     }
 
     /* Lower nodes. */
@@ -547,6 +588,7 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
         int32_t log2 = li->child_mask.log2dim;  /* 4 */
         int32_t total_bits = 1 << (3 * log2);
 
+        nv__bbox_clear(ctx.lowers[l].bb_min, ctx.lowers[l].bb_max);
         size_t c_idx_check = 0;
         size_t leaf_base = leaf_cursor;
         while (leaf_cursor < ctx.n_leaf
@@ -571,6 +613,8 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
                     ++c_idx_check;
                 }
                 if (leaf_idx == SIZE_MAX) continue;
+                nv__bbox_union(ctx.lowers[l].bb_min, ctx.lowers[l].bb_max,
+                               ctx.leaves[leaf_idx].bb_min, ctx.leaves[leaf_idx].bb_max);
                 size_t off_lf = off_lf0 + leaf_idx * NV_LEAF_FLOAT_BYTES;
                 int64_t rel = (int64_t)off_lf - (int64_t)off_lower;
                 nv__set_bit(buf + off_lower + NV_LOWER_CHILD_MASK_OFF, (size_t)s);
@@ -578,6 +622,8 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
             } else {
                 if (has_value) {
                     nv__set_bit(buf + off_lower + NV_LOWER_VALUE_MASK_OFF, (size_t)s);
+                    nv__bbox_union_tile(ctx.lowers[l].bb_min, ctx.lowers[l].bb_max,
+                                        lo->origin, ix, iy, iz, 1 << 3);
                 }
                 float tile_v = bg;
                 if (li->values &&
@@ -592,13 +638,8 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
                               0u);
             }
         }
-        nv__write_i32(buf, off_lower + NV_LOWER_BBOX_MIN_OFF + 0, lo->origin[0]);
-        nv__write_i32(buf, off_lower + NV_LOWER_BBOX_MIN_OFF + 4, lo->origin[1]);
-        nv__write_i32(buf, off_lower + NV_LOWER_BBOX_MIN_OFF + 8, lo->origin[2]);
-        int32_t lh = (1 << (4 + 3));
-        nv__write_i32(buf, off_lower + NV_LOWER_BBOX_MAX_OFF + 0, lo->origin[0] + lh - 1);
-        nv__write_i32(buf, off_lower + NV_LOWER_BBOX_MAX_OFF + 4, lo->origin[1] + lh - 1);
-        nv__write_i32(buf, off_lower + NV_LOWER_BBOX_MAX_OFF + 8, lo->origin[2] + lh - 1);
+        nv__write_bbox(buf, off_lower + NV_LOWER_BBOX_MIN_OFF, off_lower + NV_LOWER_BBOX_MAX_OFF,
+                       lo->bb_min, lo->bb_max, lo->origin);
         nv__write_u64(buf, off_lower + NV_LOWER_FLAGS_OFF, 0ull);
         nv__write_f32(buf, off_lower + NV_LOWER_MIN_OFF + 0, bg);
         nv__write_f32(buf, off_lower + NV_LOWER_MIN_OFF + 4, bg);
@@ -626,13 +667,17 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
             return TVDB_ERROR_INVALID_DATA;
         }
 
-        nv__write_i32(buf, off_leaf + NV_LEAF_BBOX_MIN_OFF + 0, li->origin[0]);
-        nv__write_i32(buf, off_leaf + NV_LEAF_BBOX_MIN_OFF + 4, li->origin[1]);
-        nv__write_i32(buf, off_leaf + NV_LEAF_BBOX_MIN_OFF + 8, li->origin[2]);
-        /* dif_and_flags: low 24 bits = (max-min) per axis; flags in high 8.
-           NanoVDB uses bit 1 for "has bbox" — set so vdb_print recognizes it. */
-        nv__write_u32(buf, off_leaf + NV_LEAF_BBOX_DIF_FLAGS_OFF,
-                      (7u << 0) | (7u << 8) | (7u << 16) | (1u << 24));
+        /* bbox min, then dif_and_flags: low 24 bits = (max-min) per axis;
+           flags in high 8. NanoVDB uses bit 1 for "has bbox" — set so
+           vdb_print recognizes it. */
+        int leaf_empty = li->bb_min[0] > li->bb_max[0];
+        uint32_t dif = 0u;
+        for (int k = 0; k < 3; ++k) {
+            nv__write_i32(buf, off_leaf + NV_LEAF_BBOX_MIN_OFF + 4u * (size_t)k,
+                          leaf_empty ? li->origin[k] : li->bb_min[k]);
+            if (!leaf_empty) dif |= (uint32_t)(li->bb_max[k] - li->bb_min[k]) << (8 * k);
+        }
+        nv__write_u32(buf, off_leaf + NV_LEAF_BBOX_DIF_FLAGS_OFF, dif | (1u << 24));
 
         /* Value mask: 64 bytes, bit s indicates voxel s is active. tinyvdb's
            NodeMask stores bits in the same convention. */
@@ -673,41 +718,22 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const tvdb_grid_t *grid,
         total_active += active;
     }
 
-    /* Now propagate bboxes upper & root. (Lowers got them above.) */
+    /* Now propagate bboxes upper & root. (Lowers got them above.) NanoVDB
+       bboxes are tight to the active values, not node extents: readers take
+       the grid's index bbox from the root. */
     size_t bbox_cursor = 0;
     for (size_t u = 0; u < ctx.n_upper; ++u) {
         size_t off_upper = off_up0 + u * NV_UPPER_FLOAT_BYTES;
-        int32_t bb_min[3] = { INT32_MAX, INT32_MAX, INT32_MAX };
-        int32_t bb_max[3] = { INT32_MIN, INT32_MIN, INT32_MIN };
-        size_t bb_base = bbox_cursor;
+        nv_node_info_t *up = &ctx.uppers[u];
         while (bbox_cursor < ctx.n_lower
                && ctx.lowers[bbox_cursor].parent_idx == u) {
+            nv__bbox_union(up->bb_min, up->bb_max,
+                           ctx.lowers[bbox_cursor].bb_min, ctx.lowers[bbox_cursor].bb_max);
             ++bbox_cursor;
         }
-        for (size_t l = bb_base; l < bbox_cursor; ++l) {
-            int32_t lh = 1 << (4 + 3);
-            int32_t lo[3] = { ctx.lowers[l].origin[0], ctx.lowers[l].origin[1], ctx.lowers[l].origin[2] };
-            int32_t hi[3] = { lo[0] + lh - 1, lo[1] + lh - 1, lo[2] + lh - 1 };
-            for (int k = 0; k < 3; ++k) {
-                if (lo[k] < bb_min[k]) bb_min[k] = lo[k];
-                if (hi[k] > bb_max[k]) bb_max[k] = hi[k];
-            }
-        }
-        if (bb_min[0] == INT32_MAX) {
-            bb_min[0] = bb_min[1] = bb_min[2] = ctx.uppers[u].origin[0];
-            bb_max[0] = bb_max[1] = bb_max[2] = ctx.uppers[u].origin[0];
-        }
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MIN_OFF + 0, bb_min[0]);
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MIN_OFF + 4, bb_min[1]);
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MIN_OFF + 8, bb_min[2]);
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MAX_OFF + 0, bb_max[0]);
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MAX_OFF + 4, bb_max[1]);
-        nv__write_i32(buf, off_upper + NV_UPPER_BBOX_MAX_OFF + 8, bb_max[2]);
-
-        for (int k = 0; k < 3; ++k) {
-            if (bb_min[k] < root_bb_min[k]) root_bb_min[k] = bb_min[k];
-            if (bb_max[k] > root_bb_max[k]) root_bb_max[k] = bb_max[k];
-        }
+        nv__write_bbox(buf, off_upper + NV_UPPER_BBOX_MIN_OFF, off_upper + NV_UPPER_BBOX_MAX_OFF,
+                       up->bb_min, up->bb_max, up->origin);
+        nv__bbox_union(root_bb_min, root_bb_max, up->bb_min, up->bb_max);
     }
 
     if (root_bb_min[0] == INT32_MAX) {
