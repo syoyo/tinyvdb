@@ -6,7 +6,7 @@ TinyVDB provides lightweight C/C++ libraries for working with OpenVDB data. It i
 
 TinyVDB is suitable for genAI, graphics applications, HPC visualization tools, physics simulation, and any project that needs lightweight VDB functionality.
 
-The 0.10.0 release candidate adds checked tree maintenance and sparse volume
+The 0.9.1 release adds checked tree maintenance and sparse volume
 tools. See the [release notes](CHANGELOG.md) for new APIs, behavior changes, and
 migration details. Python bindings require Python 3.11 or newer.
 

@@ -671,7 +671,7 @@ def level_set_icosahedron(radius, center=(0.0, 0.0, 0.0), voxel_size=0.1, half_w
     return level_set_platonic(20, radius, center=center, voxel_size=voxel_size, half_width=half_width)
 
 
-__version__ = "0.10.0"
+__version__ = "0.9.1"
 
 __all__ = [
     "nanovdb",

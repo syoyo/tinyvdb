@@ -2,8 +2,7 @@
 
 Versions in `CMakeLists.txt`, `pyproject.toml`, and
 `python/tinyvdb/__init__.py` must agree. Update `CHANGELOG.md` and the version
-regression test together. The current candidate is 0.10.0; assigning its final
-release date and creating a tag are publication steps.
+regression test together, and record the release date before publishing.
 
 Build Python artifacts using Python 3.11 or newer, CMake 3.26 or newer, and a
 C/C++ compiler. Keep artifacts and virtual environments outside the checkout:

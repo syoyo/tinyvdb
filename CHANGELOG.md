@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.0 — release candidate
+## 0.9.1 — 2026-10-28
 
 ### Added
 
@@ -184,7 +184,7 @@
 ### Packaging and migration
 
 - Python requires **3.11+**, matching the existing `cp311-abi3` extensions.
-  CMake, package metadata, and `tinyvdb.__version__` now agree on 0.10.0.
+  CMake, package metadata, and `tinyvdb.__version__` now agree on 0.9.1.
 - Default Python wheels build scalar CPU kernels without AVX2, OpenMP, or GPU
   dependencies. Optimized native/source builds can explicitly enable these
   options. NumPy remains optional at runtime for array convenience functions.

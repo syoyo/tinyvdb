@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "tinyvdb"
-version = "0.10.0"
+version = "0.9.1"
 description = "OpenVDB and NanoVDB I/O, sparse volume processing, mesh conversion, and CPU autograd"
 readme = "python/README.md"
 license = "Apache-2.0"

@@ -4,7 +4,7 @@ Lightweight Python bindings for [TinyVDB](https://github.com/syoyo/tinyvdb) — 
 
 Built with the Python C Stable API (abi3) for broad compatibility: one wheel per platform works across CPython 3.11+.
 
-The 0.10.0 release candidate adds owning tree-maintenance results and sparse
+The 0.9.1 release adds owning tree-maintenance results and sparse
 rebuild, resampling, meshing, and Poisson methods. Python views raise errors
 after their source is closed, reloaded, or replaced.
 
