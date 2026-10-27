@@ -18,7 +18,8 @@ C and C++).
 | Header | Description |
 |--------|-------------|
 | `tinyvdb_io.h` | OpenVDB read/write with custom allocator + mmap support |
-| `tinyvdb_nanovdb.h` | NanoVDB read/write, hierarchical accessor, trilinear sampler, CRC32, Gaussian-splat rasterizer (CPU forward+backward) |
+| `tinyvdb_nanovdb.h` | NanoVDB read/write, VDB → NanoVDB conversion (float, double, int32, int64, vec3f, vec3d, mask), hierarchical accessor, trilinear sampler, CRC32, Gaussian-splat rasterizer (CPU forward+backward) |
+| `tinyvdb_volume.h` | Volume access for renderers and UsdVol: grid info (class, type, transform, exact or header-only bounds), typed dense extraction with a voxel budget, nearest/trilinear sparse sampling in world or index space |
 | `tinyvdb_to_nanovdb.c` | VDB → NanoVDB FloatGrid converter (byte-compatible with libnanovdb) |
 | `tinyvdb_mesh.h` | Mesh ↔ SDF, marching cubes, manifold preprocessing |
 | `tinyvdb_ops.h` | Dense ops: morphology, filtering, CSG, differential operators, Poisson PCG, advection, fast sweeping, fp64 variants |
@@ -26,12 +27,15 @@ C and C++).
 | `tinyvdb_topology.h` / `tinyvdb_ray.h` | Coarsen / refine / prune / clip / merge / pool; Amanatides–Woo DDA, ray-cast SDF, segments-along-ray, batched marching cubes |
 | `tinyvdb_sparse.h` / `tinyvdb_sparse_tree.h` | Flat sparse-grid representation (hash-based CSG/morphology, sparse 3D conv); operations on a loaded `tvdb_grid_t` (leaf iter, dilate/erode active or topology, tree-aware CSG, from-scratch rebuilders) |
 | `tinyvdb_tree.h` | Checked float-tree diagnostics, signed flood fill, exact pruning and sparse/dense bridges |
-| `tinyvdb_sparse_tools.h` | Sparse level-set tracking/rebuild, affine resampling, indexed/adaptive meshing and Poisson/PDE domains |
+| `tinyvdb_sparse_tools.h` | Sparse level-set tracking/rebuild, mesh → narrow-band level set (winding-number signs), affine resampling, indexed/adaptive meshing and Poisson/PDE domains |
+| `tinyvdb_winding.h` | Generalized winding numbers of triangle meshes, exact and fast (AABB tree with dipole far field) |
+| `tinyvdb_tetmesh.h` | Tetrahedral meshes of an SDF interior by isosurface stuffing (BCC lattice), from a level-set grid or a field callback; dihedral-angle quality report |
 | `tinyvdb_sdf_tree.h` | In-place hierarchical SDF fast sweeping, filtering, morphology and offsets with compact active-voxel workspaces |
 | `tinyvdb_thread.h` | Reusable synchronous task pool: C11, GCD, pthread or serial backend |
 | `tinyvdb_autograd.h` | Per-op CPU VJPs (sample, splat, CSG, sparse_conv3d) — framework-free |
 | `tinyvdb_simd.h` | Optional SSE4.2/AVX2/F16C primitives gated on `TINYVDB_SIMD` |
-| `tinyvdb_gpu.h` | Optional runtime-loaded GPU backend: Vulkan and CUDA kernels for analytic sphere/box/torus SDF generation, dense CSG, dense trilinear batch sampling, and same-topology sparse conv3d |
+| `tinyvdb_gpu.h` | Optional runtime-loaded GPU backend: Vulkan, CUDA and HIP kernels for analytic sphere/box/torus SDF generation, dense CSG, dense trilinear batch sampling, and same-topology sparse conv3d |
+| `tinyvdb_gpu_compute.h` | Lean CUDA/HIP device (runtime-loaded, no SDK) running mesh-to-level-set, level-set sampling and isosurface stuffing; needs only the CPU modules it accelerates |
 
 ### VDB operations contracts
 
@@ -269,6 +273,13 @@ may share a task pool. Mesh voxelization uses the same C11/GCD/pthread/serial
 module as hierarchical SDF processing, including with OpenMP disabled. A NULL
 pool chooses up to eight workers and runs small inputs serially.
 
+`tvdb_grid_volume_to_mesh` collects the surface-adjacent regions of the tree in
+tree order, classifies their cells on a pool (one cell map and one lookup cache
+per slice) and then sorts the merged cells, so the mesh and the `max_cells`
+budget do not depend on the worker count. `tvdb_grid_volume_to_mesh_pooled`
+takes a caller's pool; the plain form creates its own for inputs with at least
+32k active voxels.
+
 ```c
 #include "tinyvdb_mesh_conversion.h"
 
@@ -333,6 +344,15 @@ remains advisory. Neither API promises a watertight manifold reconstruction.
 * [x] Half-float (FP16) grid support
 * [x] PointIndexGrid (`Tree_ptidx32_*`) leaf payload read/write
 * [x] PointDataGrid (`Tree_ptdataidx32_*`) topology read + opaque point payload round-trip
+* [x] MaskGrid (`Tree_mask_*`) read/write (bool trees whose values are the active state)
+* [x] Per-grid reads: `tvdb_read_grid` decodes one grid, `tvdb_read_grid_header`
+  only its metadata, transform and layout (class, file bounding box, voxel
+  count) without touching voxel data
+* [x] Grid metadata access: `tvdb_grid_find_metadata`, `tvdb_grid_set_metadata`
+  (bool, int32, int64, float, double, vec3i, vec3s, vec3d, string)
+* [x] AffineMap transforms in OpenVDB's row-vector layout, held in memory as
+  column-vector matrices (`world = matrix * (i, j, k, 1)`); checked against
+  libopenvdb in both directions (`test_io_openvdb`)
 
 ### NanoVDB I/O (`tinyvdb_nanovdb.h`)
 
@@ -403,6 +423,13 @@ remains advisory. Neither API promises a watertight manifold reconstruction.
   `glslangValidator` and `xxd` are available.
 * [x] Runtime-loaded CUDA Driver API + NVRTC backend (`libcuda`/`nvcuda.dll`
   plus `libnvrtc`) that compiles kernels to PTX at runtime.
+* [x] Runtime-loaded HIP backend (`TVDB_GPU_BACKEND_HIP`: `libamdhip64` plus
+  `libhiprtc`, found on the loader path or under `$ROCM_PATH`, `/opt/rocm`)
+  for AMD GPUs. The HIP driver API has the CUDA one's C ABI, so a HIP context
+  fills the CUDA loader table and runs every CUDA code path, with the same
+  kernel source compiled by hiprtc. The CUDA parity tests run on HIP as
+  `*_hip` ctest variants. ROCm is never unloaded once loaded (unloading it
+  leaves LLVM options registered and a reload crashes).
 * [x] Blocking high-level C entrypoints for analytic sphere/box/torus SDF generation,
   dense CSG, dense trilinear batch sampling, and same-topology
   `tvdb_sparse_conv3d` on Vulkan and CUDA.
@@ -456,6 +483,42 @@ its existing clipped-boundary fallback for overflowing candidates. Resident poin
 voxelization currently uses isotropic spacing. Missing generated SPIR-V returns
 `TVDB_ERROR_UNIMPLEMENTED` on Vulkan; CUDA remains usable through NVRTC.
 
+#### Sparse level sets and tetrahedral meshes on CUDA/HIP
+
+`tinyvdb_gpu_compute.h` runs `tvdb_mesh_to_level_set`, level-set sampling and
+`tvdb_level_set_to_tet_mesh` on a CUDA or HIP device (`tvdb_gpu_compute_create`,
+or the `tvdb_gpu_mesh_to_level_set` family on a `tvdb_gpu_context_t`). The
+device does the per-point work: closest-face distance and winding number per
+candidate voxel, and the stuffing lattice samples. The host keeps the sparse
+bookkeeping, through hooks on the CPU options (`evaluate`, `batch_sample`), so
+outputs follow the CPU rules and are deterministic.
+
+The kernels compile with floating-point contraction off and repeat the CPU's
+arithmetic:
+- distances use the same BVH, closest-point code and tie-break (in float, then
+  double);
+- winding numbers walk the same tree in float (the CPU uses double), so signs
+  can differ only at voxels on the surface, where the distance is zero to
+  rounding;
+- lattice samples are the CPU's double trilinear interpolation.
+
+On an RX 9070 XT the level sets of the test meshes were byte-identical to the
+CPU's except for such on-surface voxels, and stuffing meshes were identical.
+Timings against the CPU on 8 Threadripper 1950X threads:
+
+| Input | CPU | HIP (RX 9070 XT) |
+|---|---|---|
+| Mug, 24,544 faces, voxel extent/160 (0.98M candidates) | 8.2 s | 0.34 s |
+| Mug, voxel extent/320 (4.9M candidates) | 40.8 s | 1.28 s |
+| Bunny, 4,968 faces, voxel extent/256 (2.3M candidates) | 11.6 s | 0.46 s |
+| Stuffing the extent/160 mug at spacing extent/192 (6.35M tets) | 7.0 s | 2.0 s |
+
+The first call on a device compiles the kernels (0.1 s with a warm hiprtc
+cache). `tests/bench_volumetric` reproduces these (`--gpu cuda|hip
+--compare`); `test_gpu_volumetric` checks parity. Vulkan contexts return
+`TVDB_ERROR_UNIMPLEMENTED`. CUDA shares the kernel source and code paths with
+HIP; NVRTC compiles it, but no NVIDIA device was available to run it.
+
 Grid contents can be released with `tvdb_grid_destroy(grid, allocator)`, which
 also releases metadata and point-data payloads. Use the allocator that owns the
 descriptor strings and payload (`NULL` for the default allocator); tree and
@@ -471,6 +534,9 @@ remains the convenience wrapper for grids built with the default allocator.
   opacity, and per-feature color — reverses the alpha blend without
   saving per-pixel intersection lists. Gradient-checked against
   central FD for all parameters
+* [x] CPU projection (`tvdb_gaussian_project`): EWA conic from the full 3x3
+  covariance and pinhole Jacobian (including the z variance), three-sigma
+  radius from the major axis, culled splats zeroed
 * [x] PLY I/O for splat scenes (load + save)
 
 ## Validation
@@ -493,6 +559,13 @@ the test suite (build with `-DTINYVDB_BUILD_TESTS=ON` and run `ctest`):
   buffers that `nanovdb_validate` accepts (exit 0) and
   `nanovdb_convert` reads back into a valid `Tree_float_5_4_3` `.vdb`
   with matching topology and value range.
+* **Mesh → level set**: `test_mesh_level_set_openvdb`
+  (`-DTINYVDB_BUILD_OPENVDB_TESTS=ON`) checks `tvdb_mesh_to_level_set`
+  against brute-force closest-triangle distances (within 1e-5) and
+  against `openvdb::tools::meshToLevelSet` (same signs; within 0.3 voxel,
+  since OpenVDB propagates and renormalizes distances away from the
+  polygons). libopenvdb also reads tinyvdb's level set back as
+  `GRID_LEVEL_SET` with identical values.
 * **Gaussian-splat rasterizer**: backward-pass gradients are
   gradient-checked against central finite differences for every
   parameter.
@@ -697,7 +770,7 @@ $ make
 | `TINYVDB_USE_SYSTEM_BLOSC` | `OFF` | Link system libblosc — required to read NanoVDB BLOSC files produced by libnanovdb |
 | `TINYVDB_OPENMP` | `OFF` | Enable OpenMP parallelism in dense ops, Poisson CG, sparse conv, sample batches, TSDF fusion |
 | `TINYVDB_SIMD` | `ON` | Enable SSE4.2/AVX2/F16C (x86-64 only; scalar fallback otherwise) |
-| `TINYVDB_BUILD_GPU` | `ON` | Build the runtime-loaded Vulkan/CUDA backend (no SDK needed at build time) |
+| `TINYVDB_BUILD_GPU` | `ON` | Build the runtime-loaded Vulkan/CUDA/HIP backend and `tinyvdb_gpu_compute` (no SDK needed at build time) |
 | `TINYVDB_BUILD_TVDBVIEW` | `ON` | Build the `tvdbview` viewer |
 | `TINYVDB_USE_CCACHE` | `ON` | Use ccache when available |
 

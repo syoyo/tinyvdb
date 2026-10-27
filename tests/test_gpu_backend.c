@@ -2255,17 +2255,20 @@ static int run_backend(tvdb_gpu_backend_t backend, const char* label, int requir
   return 1;
 }
 
-int main(void) {
+/* Optional argument: run only "vulkan", "cuda" or "hip". */
+int main(int argc, char** argv) {
+  const char* only = argc > 1 ? argv[1] : NULL;
   tvdb_gpu_device_info_t devices[8];
   size_t ndev = tvdb_gpu_enumerate_devices(TVDB_GPU_BACKEND_AUTO, devices, 8);
   if (ndev == 0) {
-    printf("SKIP: no Vulkan or CUDA runtime available\n");
+    printf("SKIP: no Vulkan, CUDA or HIP runtime available\n");
     return 77;
   }
   int ran = 0;
-  ran += run_backend(TVDB_GPU_BACKEND_VULKAN, "vulkan", 0);
-  ran += run_backend(TVDB_GPU_BACKEND_CUDA, "cuda", 0);
-  test_external_memory_interop();
+  if (!only || !strcmp(only, "vulkan")) ran += run_backend(TVDB_GPU_BACKEND_VULKAN, "vulkan", 0);
+  if (!only || !strcmp(only, "cuda")) ran += run_backend(TVDB_GPU_BACKEND_CUDA, "cuda", 0);
+  if (!only || !strcmp(only, "hip")) ran += run_backend(TVDB_GPU_BACKEND_HIP, "hip", 0);
+  if (!only) test_external_memory_interop();
   if (ran == 0) {
     printf("SKIP: no GPU context could be created\n");
     return 77;

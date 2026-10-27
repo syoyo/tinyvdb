@@ -6,13 +6,17 @@
 #   - Emscripten SDK installed and activated (source emsdk_env.sh)
 #
 # Usage:
+#   ./web/build.sh [Release|Debug]      (from anywhere)
 #   cd web && ./build.sh [Release|Debug]
 #
+# Paths are resolved relative to this script, so the working directory does not
+# matter. CI invokes it as ./web/build.sh from the repository root.
 
 set -e
 
 BUILD_TYPE="${1:-Release}"
-BUILD_DIR="build-wasm"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUILD_DIR="${SCRIPT_DIR}/build-wasm"
 
 if ! command -v emcmake &> /dev/null; then
     echo "Error: emcmake not found. Activate Emscripten SDK first:"
@@ -27,7 +31,7 @@ mkdir -p "${BUILD_DIR}"
 
 emcmake cmake -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
-    .
+    "${SCRIPT_DIR}"
 
 emmake cmake --build "${BUILD_DIR}" -j$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 

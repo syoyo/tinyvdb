@@ -153,3 +153,37 @@ jobs:
         run: cmake --build build-sdf --parallel 4
       - name: Run CPU regressions
         run: ctest --test-dir build-sdf --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  #  Web / WASM module (Emscripten, single-threaded)
+  #
+  #  Nothing else in this workflow builds web/, which is how it rotted: a
+  #  duplicate-symbol link failure and a missing thread-pool dependency both sat
+  #  unbroken for months. The runtime test also pins the two properties that a
+  #  native build cannot check -- the module must stay single-threaded (no
+  #  SharedArrayBuffer, so no COOP/COEP headers needed to serve it) and must stay
+  #  numerically identical to the native scalar build.
+  # ---------------------------------------------------------------------------
+  web-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Set up Emscripten
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          # Pinned to the version this was validated against. Bump deliberately.
+          version: 4.0.14
+      - name: Report toolchain versions
+        run: |
+          emcc --version | head -1
+          node --version
+      - name: Build WASM module
+        run: ./web/build.sh Release
+      - name: Verify module artifacts
+        run: |
+          test -s web/build-wasm/tinyvdb.js
+          test -s web/build-wasm/tinyvdb.wasm
+      - name: Run WASM runtime tests
+        run: node web/test_wasm_smoke.js

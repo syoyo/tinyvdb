@@ -13,7 +13,7 @@ static float lookup(const tvdb_sparse_grid* g,int x,int y,int z) {
 }
 int main(int argc,char** argv) {
   tvdb_gpu_context_t* ctx=NULL; tvdb_error_t err;
-  tvdb_gpu_backend_t backend=argc>1 && argv[1][0]=='c' ? TVDB_GPU_BACKEND_CUDA : TVDB_GPU_BACKEND_VULKAN;
+  tvdb_gpu_backend_t backend=argc>1 && argv[1][0]=='c' ? TVDB_GPU_BACKEND_CUDA : (argc > 1 && argv[1][0] == 'h') ? TVDB_GPU_BACKEND_HIP : TVDB_GPU_BACKEND_VULKAN;
   if(tvdb_gpu_context_create(backend,0,&ctx,&err)!=TVDB_OK) return 77;
   if(backend==TVDB_GPU_BACKEND_VULKAN && !tvdb_gpu_spirv_available()) { tvdb_gpu_context_destroy(ctx); return 77; }
   tvdb_gpu_context_info_t device; tvdb_gpu_context_info(ctx,&device,&err);

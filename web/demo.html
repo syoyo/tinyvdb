@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<!--
+  TinyVDB WebAssembly demo.
+
+  Single-threaded on purpose: tinyvdb.js is a plain static script with no
+  SharedArrayBuffer requirement, so this page works when served from any static
+  host or opened over file://. Do NOT add COOP/COEP headers expecting to turn
+  on threads -- web/CMakeLists.txt pins TINYVDB_THREAD_NONE, and adding
+  -sUSE_PTHREADS there would change the deployment requirements.
+
+  Serve it with any static server from the repository root, e.g.
+      python3 -m http.server 8000
+  then open http://localhost:8000/web/demo.html
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TinyVDB &mdash; WebAssembly demo</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 24px;
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    background: #14161a; color: #d7dae0;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; color: #8b929e; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+  canvas { background: #0c0e11; border: 1px solid #2a2f38; border-radius: 4px;
+           image-rendering: pixelated; }
+  .panel { min-width: 320px; }
+  label { display: block; margin: 10px 0 3px; color: #8b929e; font-size: 12px; }
+  select, input[type=range] { width: 100%; }
+  button { background: #2d3742; color: #e6e9ef; border: 1px solid #3d4753;
+           border-radius: 4px; padding: 7px 12px; margin: 4px 4px 0 0;
+           font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { background: #3a4653; }
+  button:disabled { opacity: .45; cursor: default; }
+  table { border-collapse: collapse; margin-top: 14px; width: 100%; }
+  td { padding: 2px 10px 2px 0; vertical-align: top; }
+  td.k { color: #8b929e; white-space: nowrap; }
+  td.v { color: #9fd3a0; }
+  #log { margin-top: 16px; padding: 10px; background: #0c0e11;
+         border: 1px solid #2a2f38; border-radius: 4px;
+         white-space: pre-wrap; max-height: 190px; overflow: auto;
+         color: #8b929e; font-size: 12px; }
+  .err { color: #e08a8a; }
+</style>
+</head>
+<body>
+<h1>TinyVDB &mdash; WebAssembly demo</h1>
+<p class="sub">Single-threaded build. No cross-origin isolation headers required.</p>
+
+<div class="row">
+  <canvas id="view" width="360" height="360"></canvas>
+
+  <div class="panel">
+    <label for="prim">Primitive</label>
+    <select id="prim">
+      <option value="sphere">Sphere</option>
+      <option value="box">Box</option>
+      <option value="torus">Torus</option>
+      <option value="capsule">Capsule</option>
+      <option value="tetra">Tetrahedron</option>
+      <option value="octa">Octahedron</option>
+      <option value="icosa">Icosahedron</option>
+    </select>
+
+    <label for="res">Grid resolution: <span id="resv">64</span></label>
+    <input type="range" id="res" min="24" max="128" step="8" value="64">
+
+    <label for="cut">Clip plane</label>
+    <input type="range" id="cut" min="0" max="100" value="50">
+
+    <div>
+      <button id="render">Render</button>
+      <button id="mesh">Show mesh</button>
+      <button id="stats">Statistics</button>
+      <button id="ray">Ray march</button>
+    </div>
+
+    <table id="out"></table>
+  </div>
+</div>
+
+<div id="log">loading module&hellip;</div>
+
+<script src="build-wasm/tinyvdb.js"></script>
+<script>
+'use strict';
+const logEl = document.getElementById('log');
+const outEl = document.getElementById('out');
+function log(msg, isErr) {
+  logEl.textContent += (isErr ? '\n!! ' : '\n') + msg;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function rows(pairs) {
+  outEl.innerHTML = pairs
+    .map(([k, v]) => '<tr><td class="k">' + k + '</td><td class="v">' + v + '</td></tr>')
+    .join('');
+}
+
+let tv = null;
+const PRIM = {
+  sphere:  (r, vs, hw) => tv.levelSetSphere(r, 0, 0, 0, vs, hw),
+  box:     (r, vs, hw) => tv.levelSetBox(r, r, r, 0, 0, 0, vs, hw),
+  torus:   (r, vs, hw) => tv.levelSetTorus(r, r * 0.25, 0, 0, 0, vs, hw),
+  capsule: (r, vs, hw) => tv.levelSetCapsule(-r, 0, 0, r, 0, 0, r * 0.3, vs, hw),
+  tetra:   (r, vs, hw) => tv.levelSetPlatonic(4, r, 0, 0, 0, vs, hw),
+  octa:    (r, vs, hw) => tv.levelSetPlatonic(8, r, 0, 0, 0, vs, hw),
+  icosa:   (r, vs, hw) => tv.levelSetPlatonic(20, r, 0, 0, 0, vs, hw),
+};
+
+function build() {
+  const n = +document.getElementById('res').value;
+  const hw = 3.0;
+  // Keep the world extent fixed so changing resolution changes detail, not size.
+  const vs = 20.0 / n;
+  return { grid: PRIM[document.getElementById('prim').value](6.0, vs, hw), vs: vs, n: n };
+}
+
+// Slice through the middle of the grid and paint the isosurface bright.
+function drawSlice(grid, clipFrac) {
+  const cv = document.getElementById('view');
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(grid.nx, grid.nz);
+  const z = Math.min(grid.nz - 1, Math.floor(grid.nz * clipFrac));
+  const hwWorld = 3.0 * grid.voxelSize;
+  for (let y = 0; y < grid.nz; y++) {
+    for (let x = 0; x < grid.nx; x++) {
+      const v = grid.get(x, y, z);
+      const t = Math.max(-1, Math.min(1, -v / hwWorld));      // 1 inside
+      const o = (y * grid.nx + x) * 4;
+      // Background -> warm surface tint.
+      img.data[o + 0] = 24 + 200 * Math.max(0, t) + 40 * (1 - Math.abs(t));
+      img.data[o + 1] = 26 + 120 * Math.max(0, t);
+      img.data[o + 2] = 30 + 60 * (1 - Math.abs(t));
+      img.data[o + 3] = 255;
+    }
+  }
+  // Blit scaled to the canvas.
+  const off = document.createElement('canvas');
+  off.width = grid.nx; off.height = grid.nz;
+  off.getContext('2d').putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(off, 0, 0, cv.width, cv.height);
+  return z;
+}
+
+function withBusy(fn) {
+  const btns = [...document.querySelectorAll('button')];
+  btns.forEach(b => b.disabled = true);
+  setTimeout(() => {
+    try { fn(); } catch (e) { log('error: ' + e, true); rows([['error', String(e)]]); }
+    btns.forEach(b => b.disabled = false);
+  }, 10);
+}
+
+document.getElementById('res').oninput = (e) => {
+  document.getElementById('resv').textContent = e.target.value;
+};
+
+document.getElementById('render').onclick = () => withBusy(() => {
+  const t0 = performance.now();
+  const { grid } = build();
+  const z = drawSlice(grid, +document.getElementById('cut').value / 100);
+  const ms = performance.now() - t0;
+  log('generated ' + grid.nx + '^3 in ' + ms.toFixed(1) + ' ms');
+  rows([
+    ['grid', grid.nx + ' x ' + grid.ny + ' x ' + grid.nz],
+    ['voxel size', grid.voxelSize.toFixed(4)],
+    ['slice z', String(z)],
+    ['generate', ms.toFixed(1) + ' ms'],
+  ]);
+});
+
+document.getElementById('mesh').onclick = () => withBusy(() => {
+  const { grid } = build();
+  drawSlice(grid, +document.getElementById('cut').value / 100);
+  const t0 = performance.now();
+  const m = tv.sdfToMeshEx(grid, 0, tv.WINDING_OUTWARD);
+  const ms = performance.now() - t0;
+  log('marching cubes: ' + m.numVertices() + ' verts, ' + m.numFaces() + ' faces in '
+      + ms.toFixed(1) + ' ms');
+  rows([
+    ['vertices', String(m.numVertices())],
+    ['triangles', String(m.numFaces())],
+    ['marching cubes', ms.toFixed(1) + ' ms'],
+  ]);
+});
+
+document.getElementById('stats').onclick = () => withBusy(() => {
+  const { grid } = build();
+  drawSlice(grid, +document.getElementById('cut').value / 100);
+  const st = tv.statistics(grid);
+  const ls = tv.checkLevelSet(grid, 3.0, 0.5);
+  const eu = tv.levelSetEulerCharacteristic(grid, 0);
+  const gen = tv.levelSetGenus(grid, 0);
+  log('stats over ' + st.count + ' voxels');
+  rows([
+    ['min', st.min.toFixed(4)],
+    ['max', st.max.toFixed(4)],
+    ['mean', st.mean.toFixed(6)],
+    ['stddev', st.stddev.toFixed(6)],
+    ['mean |grad|', ls.meanGradMag.toFixed(6)],
+    ['euler chi', String(eu)],
+    ['genus', String(gen)],
+  ]);
+});
+
+document.getElementById('ray').onclick = () => withBusy(() => {
+  const { grid } = build();
+  drawSlice(grid, +document.getElementById('cut').value / 100);
+  // Fire a ray down -X through the middle and list the surface crossings.
+  const far = Math.max(grid.nx, grid.ny, grid.nz) * grid.voxelSize;
+  const nPairs = tv.segmentsAlongRay(grid, far, 0, 0, -1, 0, 0, 0, 2 * far, 0, 512, true);
+  const pairs = tv.segmentsAlongRay(grid, far, 0, 0, -1, 0, 0, 0, 2 * far, 0, 512, false);
+  const t = [];
+  for (let i = 0; i < pairs.length; i++) t.push(pairs[i].toFixed(3));
+  log('ray crossings: ' + nPairs + ' segment pair(s), t = [' + t.join(', ') + ']');
+  rows([
+    ['segments', String(nPairs)],
+    ['t values', t.join(', ') || '(none)'],
+  ]);
+});
+
+(async () => {
+  try {
+    tv = await TinyVDB();
+    log('module loaded, ' + Object.keys(tv).length + ' exports');
+    document.getElementById('render').click();
+  } catch (e) {
+    log('failed to load module: ' + e, true);
+  }
+})();
+</script>
+</body>
+</html>

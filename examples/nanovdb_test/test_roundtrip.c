@@ -1,6 +1,9 @@
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+/* tinyvdb_io.h first: it defines the shared status/error/allocator types, and
+ * tinyvdb_nanovdb.h only declares them when that has not happened yet. */
+#include "tinyvdb_sparse_tree.h"
 #include "tinyvdb_nanovdb.h"
 
 int main(int argc, char **argv) {
@@ -45,56 +48,74 @@ int main(int argc, char **argv) {
     printf("  Destroyed grid\n\n");
 
     printf("Testing round-trip with memory buffer:\n");
+    tvdb_error_t err;
+    memset(&err, 0, sizeof(err));
+    /* Build a real FloatGrid instead of hand-filled bytes: a 5-4-3 tree from
+     * a few sparse values, converted to a NanoVDB grid buffer. */
+    tvdb_grid_t tmpl;
+    memset(&tmpl, 0, sizeof(tmpl));
+    tmpl.descriptor.grid_type = (char *)"Tree_float_5_4_3";
+    tmpl.transform.type = TVDB_TRANSFORM_UNIFORM_SCALE;
+    tmpl.transform.voxel_size[0] = 1.0;
+    tmpl.tree.layout.num_levels = 4;
+    {
+        static const int dims[4] = {0, 5, 4, 3};
+        for (int i = 0; i < 4; ++i) {
+            tmpl.tree.layout.levels[i].log2dim = dims[i];
+            tmpl.tree.layout.levels[i].value_type = TVDB_VALUE_FLOAT;
+            tmpl.tree.layout.levels[i].node_type =
+                i == 0 ? TVDB_NODE_ROOT : i == 3 ? TVDB_NODE_LEAF : TVDB_NODE_INTERNAL;
+        }
+    }
+    tvdb_sparse_grid sparse;
+    memset(&sparse, 0, sizeof(sparse));
+    if (!tvdb_sparse_grid_reserve(&sparse, 8 * 8 * 8)) {
+        fprintf(stderr, "Failed to reserve sparse grid\n");
+        return EXIT_FAILURE;
+    }
+    for (int x = 0; x < 8; ++x)
+        for (int y = 0; y < 8; ++y)
+            for (int z = 0; z < 8; ++z) {
+                if (((x + y + z) & 1) != 0) continue; /* every other voxel */
+                size_t i = sparse.count++;
+                sparse.coords[i] = (tvdb_vec3i){x, y, z};
+                sparse.values[i] = (float)(x + 2 * y + 3 * z) + 0.5f;
+            }
+    tvdb_grid_t authored;
+    memset(&authored, 0, sizeof(authored));
+    if (!tvdb_grid_from_sparse_using_template(&tmpl, &sparse, "TestGrid", 0.0f,
+                                              &authored)) {
+        fprintf(stderr, "Failed to build the sparse grid\n");
+        tvdb_sparse_grid_free(&sparse);
+        return EXIT_FAILURE;
+    }
+    tvdb_sparse_grid_free(&sparse);
+    uint8_t *grid_bytes = NULL;
+    size_t grid_size = 0;
+    st = tvdb_grid_to_nanovdb(&authored, &grid_bytes, &grid_size, &err);
+    if (st != TVDB_OK) {
+        fprintf(stderr, "NanoVDB conversion failed: %s\n", err.message);
+        tvdb_grid_destroy_owned(&authored);
+        return EXIT_FAILURE;
+    }
+    tvdb_grid_destroy_owned(&authored);
+
     tvdb_nanovdb_file_t file;
     memset(&file, 0, sizeof(file));
-
     file.num_grids = 1;
     file.grids = (tvdb_nanovdb_grid_t *)calloc(1, sizeof(tvdb_nanovdb_grid_t));
     if (!file.grids) {
         fprintf(stderr, "Failed to allocate grid\n");
+        free(grid_bytes);
         return EXIT_FAILURE;
     }
-
     tvdb_nanovdb_grid_t *g = &file.grids[0];
     g->name = (char *)"TestGrid";
-    g->grid_type = TVDB_NANOVDB_GRID_TYPE_FLOAT;
-    g->grid_class = TVDB_NANOVDB_GRID_CLASS_LEVEL_SET;
-    g->voxel_size[0] = 0.1;
-    g->voxel_size[1] = 0.1;
-    g->voxel_size[2] = 0.1;
-    g->world_bbox_min[0] = 0.0;
-    g->world_bbox_min[1] = 0.0;
-    g->world_bbox_min[2] = 0.0;
-    g->world_bbox_max[0] = 10.0;
-    g->world_bbox_max[1] = 10.0;
-    g->world_bbox_max[2] = 10.0;
-    g->index_bbox_min[0] = 0;
-    g->index_bbox_min[1] = 0;
-    g->index_bbox_min[2] = 0;
-    g->index_bbox_max[0] = 99;
-    g->index_bbox_max[1] = 99;
-    g->index_bbox_max[2] = 99;
-    g->active_voxel_count = 1000;
-    g->node_count[0] = 1;
-    g->node_count[1] = 1;
-    g->node_count[2] = 1;
-    g->node_count[3] = 1;
-    g->tile_count[0] = 0;
-    g->tile_count[1] = 0;
-    g->tile_count[2] = 0;
-    g->size = 4096;
-
-    g->data = (uint8_t *)malloc(g->size);
-    if (!g->data) {
-        fprintf(stderr, "Failed to allocate grid data\n");
-        free(file.grids);
-        return EXIT_FAILURE;
-    }
-    memset(g->data, 0, g->size);
+    g->data = grid_bytes;
+    g->size = grid_size;
     g->owns_data = 1;
-
-    tvdb_error_t err;
-    memset(&err, 0, sizeof(err));
+    /* The grid buffer already carries its own header, so the file-level
+     * metadata fields (type, class, voxel count) are read back from it. */
 
     uint8_t *out_data = NULL;
     size_t out_size = 0;
@@ -103,7 +124,7 @@ int main(int argc, char **argv) {
     st = tvdb_nanovdb_write_to_memory(&file, 0, &out_data, &out_size, &err);
     if (st != TVDB_OK) {
         fprintf(stderr, "Write failed: %s\n", err.message);
-        free(g->data);
+        free(grid_bytes);
         free(file.grids);
         return EXIT_FAILURE;
     }
@@ -118,7 +139,7 @@ int main(int argc, char **argv) {
     if (st != TVDB_OK) {
         fprintf(stderr, "Read failed: %s\n", err.message);
         free(out_data);
-        free(g->data);
+        free(grid_bytes);
         free(file.grids);
         return EXIT_FAILURE;
     }
@@ -135,10 +156,37 @@ int main(int argc, char **argv) {
                tvdb_nanovdb_grid_class_name(gclass),
                (size_t)file2.grids[i].size);
     }
+    /* The authored values must survive the write/read cycle. */
+    if (tvdb_nanovdb_grid_count(&file2) != 1) {
+        fprintf(stderr, "Expected exactly one grid after the round-trip\n");
+        tvdb_nanovdb_file_close(&file2);
+        free(out_data);
+        free(grid_bytes);
+        free(file.grids);
+        return EXIT_FAILURE;
+    }
+    for (int x = 0; x < 8; ++x)
+        for (int y = 0; y < 8; ++y)
+            for (int z = 0; z < 8; ++z) {
+                const float want = ((x + y + z) & 1) == 0
+                                       ? (float)(x + 2 * y + 3 * z) + 0.5f
+                                       : 0.0f;
+                const float got = tvdb_nanovdb_get_voxel_f(&file2.grids[0], x, y, z);
+                if (got != want) {
+                    fprintf(stderr, "Voxel (%d,%d,%d): got %g, want %g\n", x, y, z,
+                            (double)got, (double)want);
+                    tvdb_nanovdb_file_close(&file2);
+                    free(out_data);
+                    free(grid_bytes);
+                    free(file.grids);
+                    return EXIT_FAILURE;
+                }
+            }
+    printf("  Authored voxels round-tripped exactly\n");
 
     free(out_data);
     tvdb_nanovdb_file_close(&file2);
-    free(g->data);
+    free(grid_bytes);
     free(file.grids);
 
     printf("\n=== NanoVDB Tests PASSED! ===\n\n");

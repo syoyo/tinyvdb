@@ -42,6 +42,32 @@ each theme. Notes point at the nearest existing primitive to reuse.
       Covered by `test_levelset` (C + py). NOTE: inherits `mesh_to_sdf`'s
       brute-force O(voxels·triangles) cost — keep voxel sizes coarse.
 
+- [x] **Mesh to sparse level set.** `tvdb_mesh_to_level_set` (parallels
+      OpenVDB `MeshToVolume`): face-sampled seeds dilated to the band, exact
+      BVH closest-face distances, generalized-winding-number signs
+      (`tinyvdb_winding.h`), flood fill and prune; no dense bounding box.
+      Covered by `test_mesh_level_set` and `test_mesh_level_set_openvdb`
+      (brute-force exact, OpenVDB sign/0.3-voxel agreement and read-back).
+- [x] **Tetrahedral meshing.** Isosurface stuffing (Labelle and Shewchuk
+      2007) in `tinyvdb_tetmesh.h`, from a level-set grid or a field
+      callback; minimum-key diagonals for wedge/pyramid pieces. Covered by
+      `test_tetmesh` (watertight outward boundary, orientation, volume,
+      dihedral range, determinism). Open: graded (octree) lattices, and the
+      paper's parity stencils to restore its exact dihedral bounds.
+- [x] **Volume access (UsdVol consumers).** Per-grid and header-only reads,
+      metadata get/set, MaskGrid I/O, `tinyvdb_volume.h` (grid info, typed
+      dense extraction with budget/stride, sparse sampler), typed NanoVDB
+      conversion with affine maps and root tiles, AffineMap layout fix.
+      Covered by `test_io_openvdb` (OpenVDB + PNanoVDB oracle) and
+      `test_volume`. Open: bool and vec3i NanoVDB grids, half-valued trees
+      (`Tree_half_*`, OpenVDB 11+), frustum maps.
+- [x] **GPU level sets and stuffing (CUDA/HIP).** `tinyvdb_gpu_compute.h`:
+      distance + winding per candidate voxel and stuffing lattice samples on
+      the device, host bookkeeping through the CPU option hooks. Covered by
+      `test_gpu_volumetric` (CPU parity, context wrapper) and
+      `bench_volumetric`. Open: Vulkan kernels; a device-side stuffing
+      assembly (the warp step is order-dependent on the CPU).
+
 **B. Statistics, diagnostics & operators**
 
 - [x] **Grid statistics.** `tvdb_grid_statistics` (min/max/mean/stddev/sum)
@@ -124,6 +150,10 @@ each theme. Notes point at the nearest existing primitive to reuse.
 - [x] **CUDA driver-loader API.** `tvdb_gpu_enumerate_devices` detects
       `libcuda`/`nvcuda.dll` plus `libnvrtc`, and the public backend enum/context
       API supports CUDA contexts.
+- [x] **HIP backend.** `TVDB_GPU_BACKEND_HIP` loads `libamdhip64` +
+      `libhiprtc` into the CUDA loader table (same C ABI) and runs the CUDA
+      paths; the CUDA parity tests run as `*_hip` variants (all pass on an
+      RX 9070 XT, gfx1201). External-memory interop stays CUDA only.
 - [x] **CUDA kernels.** Runtime-loaded CUDA Driver API + NVRTC kernels matching
       the Vulkan v1 operation set: analytic sphere/box/torus SDF generation, dense CSG,
       dense trilinear batch sampling, and same-topology sparse conv3d. Covered

@@ -135,6 +135,10 @@ static void tvdb_close_opaque_fd(uint64_t handle) {
 #include "tinyvdb_gpu_spv_fallback.inc"
 #endif
 
+/* CUDA/HIP driver ABI, loader table and loaders: tinyvdb_gpu_compute. Kept outside
+ * the Vulkan declarations, which test_vk_abi compiles on their own. */
+#include "tinyvdb_gpu_compute_internal.h"
+
 typedef uint32_t VkBool32;
 typedef uint32_t VkFlags;
 typedef uint64_t VkDeviceSize;
@@ -157,34 +161,6 @@ typedef uint64_t VkFence;
 typedef uint64_t VkImage;
 typedef uint64_t VkImageView;
 typedef uint64_t VkSampler;
-
-typedef int CUresult;
-typedef int CUdevice;
-typedef struct CUctx_st* CUcontext;
-typedef struct CUmod_st* CUmodule;
-typedef struct CUfunc_st* CUfunction;
-typedef uint64_t CUdeviceptr;
-typedef struct CUextMemory_st* CUexternalMemory;
-typedef struct {
-  unsigned int type;
-  union { int fd; struct { void* handle; const void* name; } win32; const void* nvSciBufObject; } handle;
-  unsigned long long size;
-  unsigned int flags;
-  unsigned int reserved[16];
-} CUDA_EXTERNAL_MEMORY_HANDLE_DESC;
-typedef struct {
-  unsigned long long offset;
-  unsigned long long size;
-  unsigned int flags;
-  unsigned int reserved[16];
-} CUDA_EXTERNAL_MEMORY_BUFFER_DESC;
-#define CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD 1
-#define CUDA_EXTERNAL_MEMORY_DEDICATED 0x1u
-typedef int nvrtcResult;
-typedef struct _nvrtcProgram* nvrtcProgram;
-
-#define CUDA_SUCCESS 0
-#define NVRTC_SUCCESS 0
 
 #define VK_NULL_HANDLE 0
 #define VK_SUCCESS 0
@@ -580,43 +556,6 @@ typedef struct {
   VkExtent3D extent;
 } tvdb_vk_sparse_page_region;
 
-typedef struct {
-  void* libcuda;
-  void* libnvrtc;
-  CUresult (*cuInit)(unsigned int);
-  CUresult (*cuDeviceGetCount)(int*);
-  CUresult (*cuDeviceGet)(CUdevice*, int);
-  CUresult (*cuDeviceGetName)(char*, int, CUdevice);
-  CUresult (*cuDeviceGetUuid)(uint8_t*, CUdevice);  // optional; CUuuid is 16 bytes
-  CUresult (*cuCtxCreate)(CUcontext*, unsigned int, CUdevice);
-  CUresult (*cuCtxDestroy)(CUcontext);
-  CUresult (*cuCtxSynchronize)(void);
-  CUresult (*cuMemAlloc)(CUdeviceptr*, size_t);
-  CUresult (*cuMemFree)(CUdeviceptr);
-  CUresult (*cuMemcpyHtoD)(CUdeviceptr, const void*, size_t);
-  CUresult (*cuMemcpyDtoH)(void*, CUdeviceptr, size_t);
-  CUresult (*cuMemsetD32)(CUdeviceptr, unsigned int, size_t);
-  CUresult (*cuModuleLoadData)(CUmodule*, const void*);
-  CUresult (*cuModuleUnload)(CUmodule);
-  CUresult (*cuModuleGetFunction)(CUfunction*, CUmodule, const char*);
-  CUresult (*cuLaunchKernel)(CUfunction, unsigned int, unsigned int, unsigned int,
-                             unsigned int, unsigned int, unsigned int,
-                             unsigned int, void*, void**, void**);
-  CUresult (*cuGetErrorString)(CUresult, const char**);
-  CUresult (*cuImportExternalMemory)(CUexternalMemory*, const CUDA_EXTERNAL_MEMORY_HANDLE_DESC*);
-  CUresult (*cuExternalMemoryGetMappedBuffer)(CUdeviceptr*, CUexternalMemory, const CUDA_EXTERNAL_MEMORY_BUFFER_DESC*);
-  CUresult (*cuDestroyExternalMemory)(CUexternalMemory);
-  nvrtcResult (*nvrtcCreateProgram)(nvrtcProgram*, const char*, const char*, int,
-                                    const char* const*, const char* const*);
-  nvrtcResult (*nvrtcCompileProgram)(nvrtcProgram, int, const char* const*);
-  nvrtcResult (*nvrtcGetPTXSize)(nvrtcProgram, size_t*);
-  nvrtcResult (*nvrtcGetPTX)(nvrtcProgram, char*);
-  nvrtcResult (*nvrtcGetProgramLogSize)(nvrtcProgram, size_t*);
-  nvrtcResult (*nvrtcGetProgramLog)(nvrtcProgram, char*);
-  nvrtcResult (*nvrtcDestroyProgram)(nvrtcProgram*);
-  const char* (*nvrtcGetErrorString)(nvrtcResult);
-} tvdb_cuda_table;
-
 /* Cached compute pipeline objects, keyed on the SPIR-V blob and the descriptor
  * shape.
  *
@@ -751,6 +690,7 @@ struct tvdb_gpu_context {
   CUcontext cu_ctx;
   CUdevice cu_device;
   CUmodule cu_module;
+  CUmodule cu_vol_module;  /* tinyvdb_gpu_compute volumetric kernels */
 };
 struct tvdb_gpu_buffer { tvdb_vk_buffer vk; tvdb_gpu_context_t* ctx; tvdb_gpu_backend_t backend; CUdeviceptr cu; size_t size;
                          CUexternalMemory ext_mem; int imported; int resident; };
@@ -874,73 +814,6 @@ static void* tvdb_load_vulkan_library(tvdb_vk_table* vk) {
     tvdb_dyn_close(lib);
   }
   return NULL;
-}
-
-static int tvdb_load_cuda_library(tvdb_cuda_table* cu) {
-#if defined(_WIN32)
-  const char* cuda_names[] = {"nvcuda.dll"};
-  const char* nvrtc_names[] = {"nvrtc64_130_0.dll", "nvrtc64_120_0.dll", "nvrtc64_112_0.dll", "nvrtc64_102_0.dll"};
-#elif defined(__APPLE__)
-  const char* cuda_names[] = {"libcuda.dylib"};
-  const char* nvrtc_names[] = {"libnvrtc.dylib"};
-#else
-  const char* cuda_names[] = {"libcuda.so.1", "libcuda.so"};
-  const char* nvrtc_names[] = {"libnvrtc.so.13", "libnvrtc.so.12", "libnvrtc.so.11.2", "libnvrtc.so"};
-#endif
-  cu->libcuda = tvdb_load_first_library(cuda_names, sizeof(cuda_names) / sizeof(cuda_names[0]));
-  if (!cu->libcuda) return 0;
-  cu->libnvrtc = tvdb_load_first_library(nvrtc_names, sizeof(nvrtc_names) / sizeof(nvrtc_names[0]));
-  if (!cu->libnvrtc) {
-    tvdb_dyn_close(cu->libcuda);
-    memset(cu, 0, sizeof(*cu));
-    return 0;
-  }
-#define TVDB_CUDA_SYM(field, name) do { \
-  cu->field = (void*)tvdb_dyn_sym(cu->libcuda, name); \
-  if (!cu->field) goto fail; \
-} while (0)
-#define TVDB_NVRTC_SYM(field, name) do { \
-  cu->field = (void*)tvdb_dyn_sym(cu->libnvrtc, name); \
-  if (!cu->field) goto fail; \
-} while (0)
-  TVDB_CUDA_SYM(cuInit, "cuInit");
-  TVDB_CUDA_SYM(cuDeviceGetCount, "cuDeviceGetCount");
-  TVDB_CUDA_SYM(cuDeviceGet, "cuDeviceGet");
-  TVDB_CUDA_SYM(cuDeviceGetName, "cuDeviceGetName");
-  TVDB_CUDA_SYM(cuCtxCreate, "cuCtxCreate_v2");
-  TVDB_CUDA_SYM(cuCtxDestroy, "cuCtxDestroy_v2");
-  TVDB_CUDA_SYM(cuCtxSynchronize, "cuCtxSynchronize");
-  TVDB_CUDA_SYM(cuMemAlloc, "cuMemAlloc_v2");
-  TVDB_CUDA_SYM(cuMemFree, "cuMemFree_v2");
-  TVDB_CUDA_SYM(cuMemcpyHtoD, "cuMemcpyHtoD_v2");
-  TVDB_CUDA_SYM(cuMemcpyDtoH, "cuMemcpyDtoH_v2");
-  TVDB_CUDA_SYM(cuMemsetD32, "cuMemsetD32_v2");
-  TVDB_CUDA_SYM(cuModuleLoadData, "cuModuleLoadData");
-  TVDB_CUDA_SYM(cuModuleUnload, "cuModuleUnload");
-  TVDB_CUDA_SYM(cuModuleGetFunction, "cuModuleGetFunction");
-  TVDB_CUDA_SYM(cuLaunchKernel, "cuLaunchKernel");
-  cu->cuGetErrorString = (void*)tvdb_dyn_sym(cu->libcuda, "cuGetErrorString");
-  cu->cuDeviceGetUuid = (void*)tvdb_dyn_sym(cu->libcuda, "cuDeviceGetUuid");
-  // External-memory interop (optional; absent on very old drivers).
-  cu->cuImportExternalMemory = (void*)tvdb_dyn_sym(cu->libcuda, "cuImportExternalMemory");
-  cu->cuExternalMemoryGetMappedBuffer = (void*)tvdb_dyn_sym(cu->libcuda, "cuExternalMemoryGetMappedBuffer");
-  cu->cuDestroyExternalMemory = (void*)tvdb_dyn_sym(cu->libcuda, "cuDestroyExternalMemory");
-  TVDB_NVRTC_SYM(nvrtcCreateProgram, "nvrtcCreateProgram");
-  TVDB_NVRTC_SYM(nvrtcCompileProgram, "nvrtcCompileProgram");
-  TVDB_NVRTC_SYM(nvrtcGetPTXSize, "nvrtcGetPTXSize");
-  TVDB_NVRTC_SYM(nvrtcGetPTX, "nvrtcGetPTX");
-  TVDB_NVRTC_SYM(nvrtcGetProgramLogSize, "nvrtcGetProgramLogSize");
-  TVDB_NVRTC_SYM(nvrtcGetProgramLog, "nvrtcGetProgramLog");
-  TVDB_NVRTC_SYM(nvrtcDestroyProgram, "nvrtcDestroyProgram");
-  cu->nvrtcGetErrorString = (void*)tvdb_dyn_sym(cu->libnvrtc, "nvrtcGetErrorString");
-#undef TVDB_CUDA_SYM
-#undef TVDB_NVRTC_SYM
-  return 1;
-fail:
-  tvdb_dyn_close(cu->libnvrtc);
-  tvdb_dyn_close(cu->libcuda);
-  memset(cu, 0, sizeof(*cu));
-  return 0;
 }
 
 static int tvdb_vk_ok(VkResult r, tvdb_error_t* err, const char* label) {
@@ -3436,17 +3309,23 @@ static const char kTvdbCudaSource[] =
 "  float rot00 = R0*R0*sqx + R1*R1*sqy + R2*R2*sqz;\n"
 "  float rot01 = R0*R3*sqx + R1*R4*sqy + R2*R5*sqz;\n"
 "  float rot02 = R0*R6*sqx + R1*R7*sqy + R2*R8*sqz;\n"
+"  float rot11 = R3*R3*sqx + R4*R4*sqy + R5*R5*sqz;\n"
 "  float rot12 = R3*R6*sqx + R4*R7*sqy + R5*R8*sqz;\n"
-"  float inv_fx = 1.0f/fx, inv_fy = 1.0f/fy, d_x = x-cx, d_y = y-cy;\n"
-"  float c2d0 = inv_fx*inv_fx*rot00 + d_x*d_x*inv_fx*inv_fx*inv_depth*inv_depth*rot02;\n"
-"  float c2d1 = d_x*d_y*inv_fx*inv_fy*inv_depth*inv_depth*rot02;\n"
-"  float c2d2 = inv_fy*inv_fy*rot01 + d_y*d_y*inv_fy*inv_fy*inv_depth*inv_depth*rot12;\n"
+"  float rot22 = R6*R6*sqx + R7*R7*sqy + R8*R8*sqz;\n"
+"  /* EWA: J = [[fx/z,0,-d_x/z],[0,fy/z,-d_y/z]]; J (R S R^T) J^T. */\n"
+"  float d_x = x-cx, d_y = y-cy;\n"
+"  float jx = fx*inv_depth, jy = fy*inv_depth;\n"
+"  float jp = -d_x*inv_depth, jq = -d_y*inv_depth;\n"
+"  float c2d0 = jx*jx*rot00 + 2.0f*jx*jp*rot02 + jp*jp*rot22;\n"
+"  float c2d1 = jx*jy*rot01 + jx*jq*rot02 + jp*jy*rot12 + jp*jq*rot22;\n"
+"  float c2d2 = jy*jy*rot11 + 2.0f*jy*jq*rot12 + jq*jq*rot22;\n"
 "  c2d0 += eps2d; c2d2 += eps2d;\n"
 "  float conic_a, conic_b, conic_c, det = c2d0*c2d2 - c2d1*c2d1;\n"
 "  if (det > 1e-10f) { float id = 1.0f/det; conic_a = c2d2*id; conic_b = -c2d1*id; conic_c = c2d0*id; }\n"
 "  else { conic_a = 1.0f; conic_b = 0.0f; conic_c = 1.0f; }\n"
-"  float eig_max = 0.5f*(conic_a + conic_c + tvdb_fast_sqrt((conic_a-conic_c)*(conic_a-conic_c) + 4.0f*conic_b*conic_b));\n"
-"  float radius = (eig_max > 1e-10f) ? 3.0f*tvdb_fast_sqrt(1.0f/eig_max) : 0.0f;\n"
+"  /* Three sigma along the major axis of the covariance. */\n"
+"  float eig_max = 0.5f*(c2d0 + c2d2 + tvdb_fast_sqrt((c2d0-c2d2)*(c2d0-c2d2) + 4.0f*c2d1*c2d1));\n"
+"  float radius = (eig_max > 0.0f) ? 3.0f*tvdb_fast_sqrt(eig_max) : 0.0f;\n"
 "  float opacity = 1.0f/(1.0f + exp2f(-opac));\n"
 "  gout[ob+0u]=x; gout[ob+1u]=y; gout[ob+2u]=conic_a; gout[ob+3u]=conic_b; gout[ob+4u]=conic_c;\n"
 "  gout[ob+5u]=opacity; gout[ob+6u]=pz; gout[ob+7u]=radius;\n"
@@ -4623,7 +4502,9 @@ static tvdb_status_t tvdb_cuda_get_module(tvdb_gpu_context_t* ctx, CUmodule* mod
     tvdb_gpu_set_error(err, TVDB_ERROR_IO, "nvrtcCreateProgram failed");
     return TVDB_ERROR_IO;
   }
-  const char* opts[] = {"--std=c++11"};
+  /* hiprtc targets the current device and takes clang-style options; its
+   * runtime header needs C++14. */
+  const char* opts[] = {ctx->cuda.hip ? "-std=c++14" : "--std=c++11"};
   nr = ctx->cuda.nvrtcCompileProgram(prog, 1, opts);
   if (nr != NVRTC_SUCCESS) {
     size_t log_size = 0;
@@ -4695,7 +4576,7 @@ size_t tvdb_gpu_enumerate_devices(tvdb_gpu_backend_t backend, tvdb_gpu_device_in
   if (backend == TVDB_GPU_BACKEND_AUTO || backend == TVDB_GPU_BACKEND_CUDA) {
     tvdb_cuda_table cu;
     memset(&cu, 0, sizeof(cu));
-    if (tvdb_load_cuda_library(&cu)) {
+    if (tvdb_gpu_driver_load_cuda(&cu)) {
       if (devices && n < capacity) {
         memset(&devices[n], 0, sizeof(devices[n]));
         devices[n].backend = TVDB_GPU_BACKEND_CUDA;
@@ -4703,14 +4584,29 @@ size_t tvdb_gpu_enumerate_devices(tvdb_gpu_backend_t backend, tvdb_gpu_device_in
         snprintf(devices[n].name, sizeof(devices[n].name), "CUDA driver + NVRTC runtime");
       }
       ++n;
-      tvdb_dyn_close(cu.libnvrtc);
-      tvdb_dyn_close(cu.libcuda);
+      tvdb_gpu_driver_close(&cu);
+    }
+  }
+  if (backend == TVDB_GPU_BACKEND_AUTO || backend == TVDB_GPU_BACKEND_HIP) {
+    tvdb_cuda_table cu;
+    if (tvdb_gpu_driver_load_hip(&cu)) {
+      if (devices && n < capacity) {
+        memset(&devices[n], 0, sizeof(devices[n]));
+        devices[n].backend = TVDB_GPU_BACKEND_HIP;
+        devices[n].available = 1;
+        snprintf(devices[n].name, sizeof(devices[n].name), "HIP runtime + hiprtc");
+      }
+      ++n;
+      tvdb_gpu_driver_close(&cu);
     }
   }
   return n;
 }
 
-static tvdb_status_t tvdb_cuda_context_create(uint32_t device_index,
+/* `hip` selects the HIP runtime. Such a context keeps backend CUDA
+ * internally, so every CUDA dispatch site serves it; tvdb_gpu_context_info
+ * reports TVDB_GPU_BACKEND_HIP. */
+static tvdb_status_t tvdb_cuda_context_create(uint32_t device_index, int hip,
                                               tvdb_gpu_context_t** out,
                                               tvdb_error_t* err) {
   tvdb_gpu_context_t* ctx = (tvdb_gpu_context_t*)calloc(1, sizeof(*ctx));
@@ -4719,22 +4615,25 @@ static tvdb_status_t tvdb_cuda_context_create(uint32_t device_index,
     return TVDB_ERROR_OUT_OF_MEMORY;
   }
   ctx->backend = TVDB_GPU_BACKEND_CUDA;
-  if (!tvdb_load_cuda_library(&ctx->cuda)) {
+  if (!(hip ? tvdb_gpu_driver_load_hip(&ctx->cuda) : tvdb_gpu_driver_load_cuda(&ctx->cuda))) {
     free(ctx);
-    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "CUDA driver and NVRTC runtime libraries not found");
+    tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED,
+                       hip ? "HIP runtime and hiprtc libraries not found"
+                           : "CUDA driver and NVRTC runtime libraries not found");
     return TVDB_ERROR_UNIMPLEMENTED;
   }
   if (!tvdb_cuda_ok(ctx, err, "cuInit", ctx->cuda.cuInit(0))) goto fail;
   int count = 0;
   if (!tvdb_cuda_ok(ctx, err, "cuDeviceGetCount", ctx->cuda.cuDeviceGetCount(&count))) goto fail;
   if (count <= 0 || device_index >= (uint32_t)count) {
-    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "requested CUDA device not found");
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                       hip ? "requested HIP device not found" : "requested CUDA device not found");
     goto fail;
   }
   if (!tvdb_cuda_ok(ctx, err, "cuDeviceGet", ctx->cuda.cuDeviceGet(&ctx->cu_device, (int)device_index))) goto fail;
   ctx->cuda.cuDeviceGetName(ctx->device_name, (int)sizeof(ctx->device_name), ctx->cu_device);
   if (ctx->device_name[0] == '\0') {
-    snprintf(ctx->device_name, sizeof(ctx->device_name), "CUDA device %u", device_index);
+    snprintf(ctx->device_name, sizeof(ctx->device_name), "%s device %u", hip ? "HIP" : "CUDA", device_index);
   }
   if (ctx->cuda.cuDeviceGetUuid && ctx->cuda.cuDeviceGetUuid(ctx->device_uuid, ctx->cu_device) == CUDA_SUCCESS)
     ctx->has_device_uuid = 1;
@@ -4928,8 +4827,8 @@ tvdb_status_t tvdb_gpu_context_create(tvdb_gpu_backend_t backend, uint32_t devic
   if (backend == TVDB_GPU_BACKEND_VULKAN) {
     return tvdb_vulkan_context_create(device_index, out, err);
   }
-  if (backend == TVDB_GPU_BACKEND_CUDA) {
-    return tvdb_cuda_context_create(device_index, out, err);
+  if (backend == TVDB_GPU_BACKEND_CUDA || backend == TVDB_GPU_BACKEND_HIP) {
+    return tvdb_cuda_context_create(device_index, backend == TVDB_GPU_BACKEND_HIP, out, err);
   }
   if (backend != TVDB_GPU_BACKEND_AUTO) {
     tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "unknown GPU backend");
@@ -4940,7 +4839,9 @@ tvdb_status_t tvdb_gpu_context_create(tvdb_gpu_backend_t backend, uint32_t devic
   memset(&first_err, 0, sizeof(first_err));
   tvdb_status_t st = tvdb_vulkan_context_create(device_index, out, &first_err);
   if (st == TVDB_OK) return TVDB_OK;
-  st = tvdb_cuda_context_create(device_index, out, err);
+  st = tvdb_cuda_context_create(device_index, 0, out, err);
+  if (st == TVDB_OK) return TVDB_OK;
+  st = tvdb_cuda_context_create(device_index, 1, out, err);
   if (st == TVDB_OK) return TVDB_OK;
   if (err && err->message[0] == '\0') *err = first_err;
   return err ? err->status : st;
@@ -4950,9 +4851,9 @@ void tvdb_gpu_context_destroy(tvdb_gpu_context_t* ctx) {
   if (!ctx) return;
   if (ctx->backend == TVDB_GPU_BACKEND_CUDA) {
     if (ctx->cu_module && ctx->cuda.cuModuleUnload) ctx->cuda.cuModuleUnload(ctx->cu_module);
+    if (ctx->cu_vol_module && ctx->cuda.cuModuleUnload) ctx->cuda.cuModuleUnload(ctx->cu_vol_module);
     if (ctx->cu_ctx && ctx->cuda.cuCtxDestroy) ctx->cuda.cuCtxDestroy(ctx->cu_ctx);
-    tvdb_dyn_close(ctx->cuda.libnvrtc);
-    tvdb_dyn_close(ctx->cuda.libcuda);
+    tvdb_gpu_driver_close(&ctx->cuda);
   } else {
     if (ctx->device && ctx->vk.DeviceWaitIdle) ctx->vk.DeviceWaitIdle(ctx->device);
     if (ctx->device) tvdb_gpu_dispatch_flush(ctx, NULL);
@@ -5022,7 +4923,7 @@ tvdb_status_t tvdb_gpu_context_info(const tvdb_gpu_context_t* ctx, tvdb_gpu_cont
     return TVDB_ERROR_INVALID_ARGUMENT;
   }
   memset(out, 0, sizeof(*out));
-  out->backend = ctx->backend;
+  out->backend = ctx->backend == TVDB_GPU_BACKEND_CUDA && ctx->cuda.hip ? TVDB_GPU_BACKEND_HIP : ctx->backend;
   out->supports_sparse_3d_images = ctx->supports_sparse_3d_images;
   snprintf(out->device_name, sizeof(out->device_name), "%s", ctx->device_name);
   return TVDB_OK;
@@ -13679,3 +13580,59 @@ tvdb_status_t tvdb_gpu_advect_semi_lagrangian(tvdb_gpu_context_t* ctx,const tvdb
 }
 
 #include "tinyvdb_gpu_resident.inl"
+
+/* ---- Sparse level sets and stuffing: tinyvdb_gpu_compute on this context --- */
+/* A borrowed device over the context's CUDA/HIP fields; the volumetric
+ * module it compiles is kept on the context. */
+static tvdb_status_t tvdb_gpu_compute_view(tvdb_gpu_context_t* ctx, tvdb_gpu_compute_t* view,
+                                           tvdb_error_t* err) {
+  if (!ctx || ctx->backend != TVDB_GPU_BACKEND_CUDA) {
+    tvdb_gpu_set_error(err, ctx ? TVDB_ERROR_UNIMPLEMENTED : TVDB_ERROR_INVALID_ARGUMENT,
+                       ctx ? "volumetric GPU operations need a CUDA or HIP context"
+                           : "NULL GPU context");
+    return ctx ? TVDB_ERROR_UNIMPLEMENTED : TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  memset(view, 0, sizeof(*view));
+  view->cuda = ctx->cuda;
+  view->cu_ctx = ctx->cu_ctx;
+  view->cu_device = ctx->cu_device;
+  view->vol_module = ctx->cu_vol_module;
+  snprintf(view->device_name, sizeof(view->device_name), "%s", ctx->device_name);
+  view->borrowed = 1;
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_gpu_mesh_to_level_set(tvdb_gpu_context_t* ctx, const tvdb_triangle_mesh* mesh,
+                                         const tvdb_mesh_level_set_options_t* options,
+                                         tvdb_thread_pool_t* pool, tvdb_grid_t* out,
+                                         tvdb_mesh_level_set_result_t* result, tvdb_error_t* err) {
+  tvdb_gpu_compute_t view;
+  tvdb_status_t st = tvdb_gpu_compute_view(ctx, &view, err);
+  if (st != TVDB_OK) return st;
+  st = tvdb_gpu_compute_mesh_to_level_set(&view, mesh, options, pool, out, result, err);
+  ctx->cu_vol_module = view.vol_module;
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_level_set_sample(tvdb_gpu_context_t* ctx, const tvdb_grid_t* grid,
+                                        const double* points, size_t count, float* values,
+                                        tvdb_error_t* err) {
+  tvdb_gpu_compute_t view;
+  tvdb_status_t st = tvdb_gpu_compute_view(ctx, &view, err);
+  if (st != TVDB_OK) return st;
+  st = tvdb_gpu_compute_level_set_sample(&view, grid, points, count, values, err);
+  ctx->cu_vol_module = view.vol_module;
+  return st;
+}
+
+tvdb_status_t tvdb_gpu_level_set_to_tet_mesh(tvdb_gpu_context_t* ctx, const tvdb_grid_t* level_set,
+                                             const tvdb_stuffing_options_t* options,
+                                             tvdb_thread_pool_t* pool, tvdb_tet_mesh* out,
+                                             tvdb_error_t* err) {
+  tvdb_gpu_compute_t view;
+  tvdb_status_t st = tvdb_gpu_compute_view(ctx, &view, err);
+  if (st != TVDB_OK) return st;
+  st = tvdb_gpu_compute_level_set_to_tet_mesh(&view, level_set, options, pool, out, err);
+  ctx->cu_vol_module = view.vol_module;
+  return st;
+}

@@ -143,7 +143,7 @@ static void resident_alias(int precision) {
 int main(int argc,char** argv) {
   int has64=1;
 #ifdef TVDB_TEST_GPU
-  tvdb_error_t err; tvdb_gpu_backend_t backend=argc>1 && argv[1][0]=='c' ? TVDB_GPU_BACKEND_CUDA : TVDB_GPU_BACKEND_VULKAN;
+  tvdb_error_t err; tvdb_gpu_backend_t backend=argc>1 && argv[1][0]=='c' ? TVDB_GPU_BACKEND_CUDA : (argc > 1 && argv[1][0] == 'h') ? TVDB_GPU_BACKEND_HIP : TVDB_GPU_BACKEND_VULKAN;
   if(tvdb_gpu_context_create(backend,0,&ctx,&err)!=TVDB_OK) return 77;
   if(backend==TVDB_GPU_BACKEND_VULKAN && !tvdb_gpu_spirv_available()) { tvdb_gpu_context_destroy(ctx); return 77; }
   tvdb_gpu_context_info_t device; tvdb_gpu_context_info(ctx,&device,&err);

@@ -62,14 +62,14 @@ if (SANITIZE_ADDRESS)
 endif ()
 
 set(TVDB_VIEWER_SOURCES
-    main.cc
+    main.c
     )
 
 set(TVDB_VIEWER_DEP_SOURCES
     )
 
 set(TVDB_VIEWER_GUI_SOURCES
-    ../common/trackball.cc
+    ../common/trackball.c
     ../common/glad/src/glad.c
     ../common/imgui/imgui.cpp
     ../common/imgui/imgui_draw.cpp

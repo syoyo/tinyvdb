@@ -6,7 +6,7 @@
 
 #include <math.h>
 #include <stdlib.h>
-#if defined(__BMI2__)
+#if defined(__BMI2__) && (defined(__x86_64__) || defined(_M_X64))
 #include <immintrin.h>
 #endif
 
@@ -73,7 +73,7 @@ void tvdb_ijk_to_world(const int32_t* ijk, size_t n,
 // ---- Morton (Z-order) -------------------------------------------------------
 
 static uint64_t gi_split3(uint64_t a) {            // spread 21 low bits to every 3rd
-#if defined(__BMI2__)
+#if defined(__BMI2__) && (defined(__x86_64__) || defined(_M_X64))
   return _pdep_u64(a & 0x1fffffULL, 0x1249249249249249ULL);
 #else
   a &= 0x1fffffULL;
@@ -86,7 +86,7 @@ static uint64_t gi_split3(uint64_t a) {            // spread 21 low bits to ever
 #endif
 }
 static uint64_t gi_compact3(uint64_t a) {          // inverse of gi_split3
-#if defined(__BMI2__)
+#if defined(__BMI2__) && (defined(__x86_64__) || defined(_M_X64))
   return _pext_u64(a, 0x1249249249249249ULL);
 #else
   a &= 0x1249249249249249ULL;

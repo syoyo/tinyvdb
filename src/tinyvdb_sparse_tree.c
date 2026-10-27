@@ -163,9 +163,12 @@ static bool tree_csg_dispatch(const tvdb_grid_t *a,const tvdb_grid_t *b,
        tvdb_tree_index_create(a,1,&ia,NULL)!=TVDB_OK ||
        tvdb_tree_index_create(b,1,&ib,NULL)!=TVDB_OK ||
        !tvdb_csg_union_sparse(&sa,&sb,0,&tmp))goto done;
+    /* Neighbours share leaves, so one cache per input pays off. */
+    tvdb_tree_accessor acca,accb;
+    tvdb_tree_accessor_init(&acca,&ia);tvdb_tree_accessor_init(&accb,&ib);
     for(size_t i=0;i<tmp.count;++i) {
         int32_t c[3]={tmp.coords[i].x,tmp.coords[i].y,tmp.coords[i].z};
-        float x=tvdb_tree_get(&ia,c,NULL),y=tvdb_tree_get(&ib,c,NULL);
+        float x=tvdb_tree_accessor_get(&acca,c,NULL),y=tvdb_tree_accessor_get(&accb,c,NULL);
         if(!isfinite(x) || !isfinite(y))goto done;
         tmp.values[i]=op==0?fminf(x,y):op==1?fmaxf(x,y):fmaxf(x,-y);
     }
@@ -601,7 +604,11 @@ bool tvdb_grid_from_sparse_typed_using_template(const tvdb_grid_t *tmpl,
         ce[ii].order = ii;
         memcpy(ce[ii].val_bytes, vbytes + ii * (size_t)vsize, (size_t)vsize);
     }
-    if (count > 1) qsort(ce, count, sizeof(tvdb__coord_entry), tvdb__cmp_coord_entry);
+    /* Producers that already emit leaf order (mesh level sets) skip the sort. */
+    size_t unsorted = 0;
+    for (size_t i = 1; i < count && !unsorted; ++i)
+        unsorted = tvdb__cmp_coord_entry(ce + i - 1, ce + i) > 0;
+    if (unsorted) qsort(ce, count, sizeof(tvdb__coord_entry), tvdb__cmp_coord_entry);
 
     // Step 2: walk sorted ce[], emit a leaf node per unique leaf origin.
     grouping_entry_t *leaves = NULL;

@@ -4,6 +4,47 @@
 
 ### Added
 
+- `tvdb_mesh_to_level_set` (`tinyvdb_sparse_tools.h`): sparse narrow-band
+  level set of a triangle mesh with exact closest-face distances, signs from
+  generalized winding numbers (robust to open, inside-out and inconsistently
+  oriented meshes), flood-filled interior and pruning; deterministic for any
+  worker count.
+- `tinyvdb_winding.h`: exact and fast generalized winding numbers.
+- `tinyvdb_tetmesh.h`: isosurface stuffing tetrahedral meshes of SDF
+  interiors (`tvdb_level_set_to_tet_mesh`, `tvdb_sdf_to_tet_mesh`) with
+  watertight outward boundaries, positive orientation and
+  `tvdb_tet_mesh_quality`.
+- `tvdb_file_init_for_write`: set up a header and allocator for writing
+  caller-owned grids without reading a file first.
+- HIP backend (`TVDB_GPU_BACKEND_HIP`): AMD GPUs through runtime-loaded
+  `libamdhip64` and `libhiprtc`, running the CUDA backend's kernels and code
+  paths; `*_hip` variants of the CUDA tests.
+- `tinyvdb_gpu_compute.h`: a lean CUDA/HIP device and GPU
+  `tvdb_mesh_to_level_set`, level-set sampling and
+  `tvdb_level_set_to_tet_mesh` (also on `tvdb_gpu_context_t`), with CPU-equal
+  results; 24-32x faster level sets on an RX 9070 XT than 8 CPU threads.
+  `tvdb_mesh_level_set_options_t.evaluate` and
+  `tvdb_stuffing_options_t.batch_sample` let other batch evaluators plug in.
+- `tinyvdb_winding.h` exposes the fast tree (`tvdb_winding_nodes`,
+  `tvdb_winding_order`) for device ports.
+- `tvdb_read_grid` / `tvdb_read_grid_header`: decode one grid, or only its
+  header (metadata, transform, layout), instead of the whole file.
+- `tvdb_grid_find_metadata`, `tvdb_grid_set_metadata(_string)`; vec3s
+  metadata is read and written.
+- OpenVDB MaskGrids (`Tree_mask_*`) read and write.
+- `tinyvdb_volume.h`: `tvdb_grid_get_info` (class, value type, components,
+  index-to-world, exact bounds from the tree or the file's bounding-box
+  metadata), `tvdb_grid_to_dense_volume` (any value type, stride/budget box
+  filter, windows, inactive-as-background) and `tvdb_volume_sampler_*`
+  (nearest/trilinear, world or index space). `tvdb_tree_lookup` returns any
+  type's stored value.
+- `tvdb_grid_to_nanovdb`: float, double, int32, int64, vec3f, vec3d and mask
+  grids, with the full affine map, the grid class, root tiles and exact node
+  bounding boxes (`tvdb_grid_to_nanovdb_float` now wraps it).
+- `test_io_openvdb` (OpenVDB oracle): affine maps both ways, lazy reads,
+  typed grids through dense, sampler, info and NanoVDB (read back with
+  PNanoVDB); `test_volume`.
+
 - Checked float-tree diagnostics, signed flood fill, exact pruning, and sparse
   and dense bridges in `tinyvdb_tree.h`.
 - Sparse level-set rebuild/tracking, affine nearest/trilinear resampling,
@@ -13,6 +54,115 @@
   regressions, and procedural fixtures for clean-checkout and wheel tests.
 
 ### Fixed and hardened
+
+- Sparse tool coordinate maps rehashed on almost every insert once their
+  table reached its 4/3 sizing (the half-load trigger sat right behind the
+  new size), making large rebuilds, resamples and meshing quadratic; tables
+  now double (186x faster on a 13k-voxel band).
+- The OpenVDB oracle tests did not compile since exceptions and RTTI were
+  disabled project-wide; they now enable both for their own targets.
+- Mesh level sets build their candidate band from 8^3 bitmask bricks instead
+  of a coordinate hash map and emit leaf order, so the tree builder skips its
+  sort (`tvdb_grid_from_sparse*` now checks for sorted input): 5.7x less host
+  time at 4.9M candidates, byte-identical output.
+- Stuffing found boundary faces through a hash table of 8 slots per
+  tetrahedron (1.8 GB and 3.6 s at 6.3M tets); a bucket pass by smallest
+  vertex takes 16 bytes per face and ~0.4 s. Outside lattice cells are
+  skipped and warp neighbors come from index arithmetic. Byte-identical
+  output.
+- `tvdb_gaussian_project` (3D Gaussian splatting) wrote a full 3x3 rotated
+  covariance into a six-float stack array (indices 6-8 overflowed) and scaled
+  the 2D covariance by `1/fx^2` instead of `(fx/z)^2`, dropped the z variance
+  and read the xy term for the yy entry, so a radius-1 splat at depth 2 with
+  `fx=800` projected to 0.004 px instead of ~1200 px and anisotropic rotations
+  could yield a non-positive-definite conic. The projection now builds
+  `J (R S R^T) J^T` with `J = [[fx/z, 0, -dx/z], [0, fy/z, -dy/z]]` and takes
+  the radius from the covariance's major axis; the Vulkan shader and the
+  embedded CUDA/HIP kernel use the same arithmetic. Culled splats are zeroed
+  (they previously kept uninitialised conic/x/y/feature fields). New
+  `test_gaussian_project` compares the conic and radius against an independent
+  reference, checks the 90-degree view-axis symmetry, culling, opacity and
+  features. Rendered splat sizes change; the device parity test needs a GPU.
+- Surface meshing looked every edge up in one ~100 MB hash table per axis, so
+  the polygonize pass was DRAM-latency bound (0.65 s of the teapot level-set
+  run). Edges are now bucketed into three live x slabs per axis: a cell can
+  only reference an edge whose lower corner sits at its own x or the next one,
+  so a three-slot ring of small maps (a few hundred KB, cache resident) covers
+  any border, cleared per slab. Vertex numbering and output are unchanged;
+  teapot 1.99 s -> 1.65 s, bunny 1.58 s -> 1.30 s.
+- The merged cell list was one global qsort. Each slice now sorts its own cells
+  as it finishes and the merge is a k-way heap merge with the repeats dropped
+  on the fly: teapot 1.65 s -> 1.36 s, bunny 1.30 s -> 1.10 s, icosahedron
+  0.09 s -> 0.07 s, byte-identical.
+- The stuffing warp pass scanned all 14 lattice edges of every vertex. A
+  vertex farther than sqrt(3) spacings from the isovalue cannot be crossed by
+  any edge (a signed distance field changes by at most that over the longest
+  edge), so the scan is skipped for it: teapot level set at 1.0 spacing
+  0.45 s -> 0.29 s at eight workers, byte-identical. The sampler contract now
+  states the 1-Lipschitz requirement this relies on.
+- Surface-cell classification recomputed a box index per corner
+  (`(z*n + y)*n + x` eight times a cell); it now computes the cell's base
+  index once and adds precomputed per-corner offsets (teapot level set
+  1.36 s -> 1.27 s, bunny 1.10 s -> 1.02 s), and adaptive clustering computes
+  its per-vertex cluster keys on the pool.
+- Grid buffers written by `tvdb_grid_to_nanovdb*` carried the legacy
+  `NanoVDB0` number as `GridData::magic`; NanoVDB's C++ `GridHandle` and
+  `nanovdb::io` expect `NanoVDB1` (tinyvdb's own reader accepts both). They
+  now write `NanoVDB1`, matching what `test_nanovdb_roundtrip` builds by hand.
+- The GPU level-set sampler (CUDA/HIP) flattened the float tree into host
+  arrays on every call - per-node origin/type/log2dim/value+child offsets,
+  every slot value, per-slot child indices and a root hash - and uploaded them,
+  which capped grids at `INT32_MAX` entries and made small edits re-upload the
+  whole tree. It now converts the grid once with `tvdb_grid_to_nanovdb` and the
+  kernel reads NanoVDB's own layout (root tiles, upper/lower internal nodes,
+  leaves) through `src/tinyvdb_nanovdb_device.h`: one buffer, no size cap. The
+  accessor is an ordinary header, so NVRTC and hiprtc compile the same text the
+  new host test `test_nanovdb_device` compares against the CPU tree lookup
+  (214k voxels over a generated 5-4-3 sphere, including internal tiles, root
+  tiles, the background and negative coordinates). On the RTX 5060 Ti
+  `test_gpu_volumetric cuda` samples 200k points with 0 differences and builds
+  the same 18757 tets as the CPU; HIP compiles with hipcc.
+- Isosurface stuffing extracted the watertight boundary with a single-threaded
+  counting sort plus a fused sort/singleton pass (1.65 s of the 2.9 s teapot
+  level-set run). The counting sort now runs on the pool: each slice counts
+  into a private per-bucket cursor table, a prefix sum lays the cursors out in
+  slice order, the slices scatter, and bucket ranges are sorted and emitted in
+  parallel with exact output offsets. Byte-identical meshes for any worker
+  count; teapot level set 2.90 s -> 1.64 s, bunny 0.30 s -> 0.20 s on eight
+  threads, single-thread unchanged.
+- Surface meshing classified every crossing cell from each of its voxels in
+  the narrow band, i.e. up to eight times, and scanned all six slabs of every
+  interior tile. A cell is now classified once, by the lowest-numbered voxel
+  the walk visits (its `tool_scan` cost drops to one per cell), and an interior
+  tile whose whole shell stays on its side of the isovalue skips the slab scan.
+  Byte-identical meshes; teapot level set 2.18 s -> 2.01 s, bunny 1.72 s ->
+  1.61 s, bunny_cloud at 0.1 4.96 s -> 4.12 s. `max_cells * 32` still bounds
+  cell classifications, so it now bounds slightly more real work than before
+  (redundant repeats no longer consume it).
+- Level-set stuffing sampled every lattice vertex with an uncached tree
+  descent (8 lookups per vertex). Each 4096-vertex pool slice now opens its
+  own tree accessor, so the leaf lookup is cached: the teapot level set at
+  0.5 spacing went from 1.40 s to 0.90 s of sampling on one thread (3.14 s to
+  3.03 s for the whole mesh at four). Byte-identical output.
+- Sparse tree CSG looked up both inputs uncached per output voxel; it now
+  keeps one accessor per input (3.24 s to 2.60 s for the teapot level set
+  unioned with itself, 7.0M voxels; identical output).
+- `tvdb_grid_volume_to_mesh` classified surface cells on one thread with one
+  global cell hash. It now collects the surface-adjacent regions in tree order
+  and classifies them on the task pool, with one cell map and one tree
+  accessor per slice, merging by sort so the mesh is byte-identical for any
+  worker count: teapot level set 7.2 s to 2.2 s, bunny 5.2 s to 1.7 s on eight
+  threads, at a lower peak footprint (the per-slice probe tables are released
+  before the merged copy). The cell budget is counted across slices, so
+  `max_cells` still bounds memory globally. `tvdb_grid_volume_to_mesh_pooled`
+  accepts a caller's pool.
+- Sparse-tool coordinate maps store coordinates in their slots (one cache
+  line per probe).
+- AffineMap matrices were read and written verbatim, i.e. transposed: real
+  OpenVDB affine grids were rejected by every tool (`tvdb_tree_matrix`) and
+  tinyvdb-written ones were misplaced in OpenVDB.
+- VDB → NanoVDB dropped root tiles (large flood-filled interiors read the
+  background), wrote only the diagonal of the map and no grid class.
 
 - Preserve initialized outputs on constructor failure and reject malformed
   trees, invalid transforms, nonfinite inputs, and unsupported active tiles.

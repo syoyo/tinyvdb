@@ -423,6 +423,13 @@ tvdb_status_t tvdb_grid_to_nanovdb_float(const struct tvdb_grid *grid,
                                           uint8_t **out_data,
                                           size_t *out_size,
                                           tvdb_error_t *err);
+/* Any decoded 5_4_3 grid of float, double, int32, int64, vec3f, vec3d or
+ * mask values to one NanoVDB grid buffer (free with free()): the full
+ * affine map, the grid class from the "class" metadata (masks: Topology),
+ * root tiles kept, exact node bounding boxes, breadth-first node order.
+ * Bool and vec3i grids return TVDB_ERROR_UNSUPPORTED_GRID_TYPE. */
+tvdb_status_t tvdb_grid_to_nanovdb(const struct tvdb_grid *grid, uint8_t **out_data,
+                                   size_t *out_size, tvdb_error_t *err);
 
 /* Trilinear sample for FloatGrid. Cell-center convention: integer voxel
    (i,j,k) sits at sample point (i+0.5, j+0.5, k+0.5), so a sample at
@@ -2477,6 +2484,8 @@ tvdb_projected_gaussian_t *tvdb_gaussian_project(const tvdb_gaussian_splat_t *sp
     const float eps2d = 0.3f;
 
     for (uint32_t i = 0; i < N; i++) {
+        /* Culled splats stay zero, matching the device kernels' zero fill. */
+        memset(&gaussians[i], 0, sizeof(gaussians[i]));
         const float *mean3d = splats->means + i * 3;
         const float *quat = splats->quats + i * 4;
         const float *log_scale = splats->log_scales + i * 3;
@@ -2493,11 +2502,7 @@ tvdb_projected_gaussian_t *tvdb_gaussian_project(const tvdb_gaussian_splat_t *sp
         tvdb__mat4_mul_vec4(proj, cam->extrinsics, mean_cam);
 
         float depth = proj[2];
-        if (depth <= cam->near || depth >= cam->far) {
-            gaussians[i].radius = 0.0f;
-            gaussians[i].opacity = 0.0f;
-            continue;
-        }
+        if (depth <= cam->near || depth >= cam->far) continue;
 
         float cam_x = proj[0] / proj[3];
         float cam_y = proj[1] / proj[3];
@@ -2531,7 +2536,8 @@ tvdb_projected_gaussian_t *tvdb_gaussian_project(const tvdb_gaussian_splat_t *sp
         R[3] = 2*(qx*qy + qw*qz);     R[4] = 1 - 2*(qx*qx + qz*qz); R[5] = 2*(qy*qz - qw*qx);
         R[6] = 2*(qx*qz - qw*qy);     R[7] = 2*(qy*qz + qw*qx);     R[8] = 1 - 2*(qx*qx + qy*qy);
 
-        float covar_rot[6];
+        /* World-space covariance R S R^T (row major, symmetric). */
+        float covar_rot[9];
         for (int r = 0; r < 3; r++) {
             for (int c = r; c < 3; c++) {
                 covar_rot[r*3+c] = R[r*3+0]*R[c*3+0]*sqx + R[r*3+1]*R[c*3+1]*sqy + R[r*3+2]*R[c*3+2]*sqz;
@@ -2539,15 +2545,19 @@ tvdb_projected_gaussian_t *tvdb_gaussian_project(const tvdb_gaussian_splat_t *sp
             }
         }
 
-        float inv_fx = 1.0f / fx;
-        float inv_fy = 1.0f / fy;
         float d_x = x - cx;
         float d_y = y - cy;
 
+        /* EWA: the pinhole Jacobian at this offset is
+         * J = [[fx/z, 0, -d_x/z], [0, fy/z, -d_y/z]], so the 2D covariance is
+         * J (R S R^T) J^T, including the z variance. */
+        const float jx = fx * inv_depth, jy = fy * inv_depth;
+        const float jp = -d_x * inv_depth, jq = -d_y * inv_depth;
         float covar_2d[3];
-        covar_2d[0] = inv_fx*inv_fx * covar_rot[0] + d_x*d_x*inv_fx*inv_fx*inv_depth*inv_depth * covar_rot[2];
-        covar_2d[1] = d_x*d_y*inv_fx*inv_fy*inv_depth*inv_depth * covar_rot[2];
-        covar_2d[2] = inv_fy*inv_fy * covar_rot[3] + d_y*d_y*inv_fy*inv_fy*inv_depth*inv_depth * covar_rot[5];
+        covar_2d[0] = jx*jx*covar_rot[0] + 2.0f*jx*jp*covar_rot[2] + jp*jp*covar_rot[8];
+        covar_2d[1] = jx*jy*covar_rot[1] + jx*jq*covar_rot[2] + jp*jy*covar_rot[5] +
+                      jp*jq*covar_rot[8];
+        covar_2d[2] = jy*jy*covar_rot[4] + 2.0f*jy*jq*covar_rot[5] + jq*jq*covar_rot[8];
 
         covar_2d[0] += eps2d;
         covar_2d[2] += eps2d;
@@ -2564,10 +2574,13 @@ tvdb_projected_gaussian_t *tvdb_gaussian_project(const tvdb_gaussian_splat_t *sp
             gaussians[i].conic_c = 1.0f;
         }
 
-        float det2d = gaussians[i].conic_a * gaussians[i].conic_c - gaussians[i].conic_b * gaussians[i].conic_b;
-        float eig_max = 0.5f * (gaussians[i].conic_a + gaussians[i].conic_c + tvdb__fast_sqrt((gaussians[i].conic_a - gaussians[i].conic_c) * (gaussians[i].conic_a - gaussians[i].conic_c) + 4.0f * gaussians[i].conic_b * gaussians[i].conic_b));
-        if (eig_max > 1e-10f) {
-            gaussians[i].radius = 3.0f * tvdb__fast_sqrt(1.0f / eig_max);
+        /* Three sigma along the major axis of that covariance. */
+        const float mid = 0.5f * (covar_2d[0] + covar_2d[2]);
+        const float eig_max = mid + 0.5f * tvdb__fast_sqrt(
+            (covar_2d[0] - covar_2d[2]) * (covar_2d[0] - covar_2d[2]) +
+            4.0f * covar_2d[1] * covar_2d[1]);
+        if (isfinite(eig_max) && eig_max > 0.0f) {
+            gaussians[i].radius = 3.0f * tvdb__fast_sqrt(eig_max);
         } else {
             gaussians[i].radius = 0.0f;
         }

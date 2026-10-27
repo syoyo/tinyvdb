@@ -12,17 +12,19 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 set(TINYVDB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
+# TINYVDB_IO_IMPLEMENTATION unlocks a ~205-function implementation block in
+# tinyvdb_io.h. It must be defined for exactly ONE translation unit. Every TU
+# that includes tinyvdb_io.h while the macro is visible re-emits all of those
+# functions, and the link fails with duplicate symbols.
+#
+# So the io TUs and the mesh/ops TUs have to live in separate targets, exactly
+# as the native CMakeLists.txt does (libtinyvdb vs libtinyvdb_mesh_ops). They
+# were previously merged into one target here, which defined the macro for all
+# of them and broke the link.
 set(TINYVDB_C_SOURCES
     ${TINYVDB_ROOT}/src/tinyvdb_io.c
     ${TINYVDB_ROOT}/src/lz4.c
     ${TINYVDB_ROOT}/src/miniz.c
-    # v0.9.0: the formerly-single-header mesh / ops C++ wrappers became
-    # standalone C TUs. Bind them in so the embind module can call the
-    # new C API directly (tvdb_make_manifold_vdb, tvdb_dilate, …).
-    ${TINYVDB_ROOT}/src/tinyvdb_lifecycle.c
-    ${TINYVDB_ROOT}/src/tinyvdb_mesh.c
-    ${TINYVDB_ROOT}/src/tinyvdb_ops.c
-    ${TINYVDB_ROOT}/src/tvdb_memory.c
 )
 
 add_library(tinyvdb_c STATIC ${TINYVDB_C_SOURCES})
@@ -32,6 +34,41 @@ target_compile_definitions(tinyvdb_c PRIVATE
     MINIZ_NO_STDIO
     TVDB_NO_MMAP          # WASM has no mmap
 )
+
+# v0.9.0: the formerly-single-header mesh / ops C++ wrappers became standalone
+# C TUs. Bind them in so the embind module can call the new C API directly
+# (tvdb_make_manifold_vdb, tvdb_dilate, ...).
+#
+# These include tinyvdb_io.h for its type declarations only. They must NOT see
+# TINYVDB_IO_IMPLEMENTATION -- see the note above.
+add_library(tinyvdb_mesh_ops STATIC
+    ${TINYVDB_ROOT}/src/tinyvdb_lifecycle.c
+    ${TINYVDB_ROOT}/src/tinyvdb_mesh.c
+    ${TINYVDB_ROOT}/src/tinyvdb_ops.c
+    ${TINYVDB_ROOT}/src/tinyvdb_thread.c
+    ${TINYVDB_ROOT}/src/tvdb_memory.c
+    # Modules exposed through embind. tinyvdb_sample.c comes first because
+    # levelset.c, ray.c and topology.c all call into the sampler.
+    ${TINYVDB_ROOT}/src/tinyvdb_sample.c
+    ${TINYVDB_ROOT}/src/tinyvdb_levelset.c
+    ${TINYVDB_ROOT}/src/tinyvdb_ray.c
+    ${TINYVDB_ROOT}/src/tinyvdb_topology.c
+    ${TINYVDB_ROOT}/src/tinyvdb_stats.c
+    ${TINYVDB_ROOT}/src/tinyvdb_sparse.c
+    # tinyvdb_ops.c references tvdb_poisson_solve_core unconditionally, so this
+    # one is required even though nothing else pulls it in. wasm-ld only GC'd it
+    # away while every Poisson entry point was unbound.
+    ${TINYVDB_ROOT}/src/tinyvdb_poisson.c
+)
+target_include_directories(tinyvdb_mesh_ops PUBLIC ${TINYVDB_ROOT}/src)
+target_link_libraries(tinyvdb_mesh_ops PUBLIC tinyvdb_c)
+# Force the serial backend of tinyvdb_thread.c. Left to its own detection it
+# would pick C11 <threads.h> under Emscripten and either fail to link or pull
+# in a pthreads build, which needs SharedArrayBuffer and therefore
+# cross-origin isolation. With NONE, tvdb_thread_pool_create() forces a pool of
+# 1 and tvdb_thread_pool_for() takes its serial_for() path, so the whole module
+# stays single-threaded and the .wasm loads on any static host.
+target_compile_definitions(tinyvdb_mesh_ops PRIVATE TINYVDB_THREAD_NONE=1)
 
 # ZSTD (bundled single-file)
 if(EXISTS "${TINYVDB_ROOT}/deps/zstd.c")
@@ -48,10 +85,35 @@ add_executable(tinyvdb
     tinyvdb_embind.cc
 )
 
-target_link_libraries(tinyvdb PRIVATE tinyvdb_c)
+target_link_libraries(tinyvdb PRIVATE tinyvdb_c tinyvdb_mesh_ops)
 target_include_directories(tinyvdb PRIVATE ${TINYVDB_ROOT}/src)
 
+# No C++ exceptions here. Failures are reported through TinyVDB.lastError()
+# rather than by throwing, which also fixes a real defect: embind could not
+# carry an exception message across the boundary, so JS caught a bare pointer
+# instead of the text. Emscripten already defaults to -fno-exceptions; being
+# explicit keeps that from changing under us.
+# Exceptions are off, and failures are reported through TinyVDB.lastError()
+# instead -- see the note above g_last_error.
+#
+# RTTI stays ON here, and that is a hard requirement of the toolchain rather
+# than a preference. embind derives JS type names from typeid(): with -fno-rtti
+# the module still links once EMSCRIPTEN_HAS_UNBOUND_TYPE_NAMES=0 silences
+# wire.h's static_assert, but every binding throws at runtime with
+# "UnboundTypeError: Cannot call <fn> due to unbound types". There is no way to
+# keep embind and drop RTTI. The rest of the C++ in this repository (examples,
+# Python bindings) does build with -fno-rtti; only this target cannot.
+target_compile_options(tinyvdb PRIVATE -fno-exceptions)
+
 # Emscripten link flags
+#
+# Single-threaded on purpose. The module is served as a plain static file, so
+# it must not require COOP/COEP cross-origin isolation headers: no
+# USE_PTHREADS, no -pthread, no SharedArrayBuffer. OpenMP is likewise never
+# enabled here, so the `#pragma omp` directives in the CPU kernels compile away
+# to serial loops. Keep it that way unless the host page is served with
+# Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy:
+# require-corp.
 target_link_options(tinyvdb PRIVATE
     "SHELL:-s MODULARIZE=1"
     "SHELL:-s EXPORT_NAME='TinyVDB'"

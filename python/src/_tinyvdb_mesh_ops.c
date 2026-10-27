@@ -7,6 +7,22 @@
 
 #include "tinyvdb_mesh.h"
 #include "tinyvdb_ops.h"
+
+/* Minimal growable float buffer. Replaces the one std::vector this file used;
+ * C11 has no such container. */
+typedef struct { float *data; size_t count, cap; } tvdb_py_f32vec;
+static int tvdb_py_f32vec_push(tvdb_py_f32vec *v, float x) {
+    if (v->count == v->cap) {
+        size_t ncap = v->cap ? v->cap * 2u : 64u;
+        float *nd = (float *)realloc(v->data, ncap * sizeof(float));
+        if (!nd) return 0;
+        v->data = nd;
+        v->cap = ncap;
+    }
+    v->data[v->count++] = x;
+    return 1;
+}
+
 #include "tinyvdb_sample.h"
 #include "tinyvdb_ray.h"
 #include "tinyvdb_tsdf.h"
@@ -20,16 +36,14 @@
 #include "tinyvdb_grid_index.h"
 #include "tinyvdb_render.h"
 
-#include <cmath>
-#include <cstring>
-#include <cstdlib>
-#include <vector>
-#include <cstdio>
+#include <math.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 /* Thread-local error message buffer */
-static thread_local char s_error_msg[512] = {0};
+static _Thread_local char s_error_msg[512] = {0};
 
-extern "C" {
 
 const char *tvdb_py_last_error(void) { return s_error_msg; }
 
@@ -460,7 +474,7 @@ int tvdb_py_ray_cast_sdf(const float *data, int nx, int ny, int nz,
     tvdb_dense_grid g = make_grid(data, nx, ny, nz, voxel_size, ox, oy, oz);
 
     // Normalize direction.
-    float dlen = std::sqrt(dx * dx + dy * dy + dz * dz);
+    float dlen = sqrt(dx * dx + dy * dy + dz * dz);
     if (dlen < 1e-30f) {
         tvdb_dense_grid_free(&g);
         *out_hit = 0; return 0;
@@ -497,7 +511,7 @@ int tvdb_py_ray_cast_sdf(const float *data, int nx, int ny, int nz,
     float fzp = tvdb_sample_trilinear_dense(&g, hx, hy, hz + h);
     float fzm = tvdb_sample_trilinear_dense(&g, hx, hy, hz - h);
     float gx = (fxp - fxm), gy = (fyp - fym), gz = (fzp - fzm);
-    float gl = std::sqrt(gx * gx + gy * gy + gz * gz);
+    float gl = sqrt(gx * gx + gy * gy + gz * gz);
     if (gl > 1e-30f) { gx /= gl; gy /= gl; gz /= gl; }
 
     *out_hit = 1;
@@ -532,9 +546,9 @@ int tvdb_py_particles_to_sdf(const float *positions, const float *radii, size_t 
     bb[0] -= pad; bb[1] -= pad; bb[2] -= pad;
     bb[3] += pad; bb[4] += pad; bb[5] += pad;
 
-    int nx = (int)std::ceil((bb[3] - bb[0]) / voxel_size);
-    int ny = (int)std::ceil((bb[4] - bb[1]) / voxel_size);
-    int nz = (int)std::ceil((bb[5] - bb[2]) / voxel_size);
+    int nx = (int)ceil((bb[3] - bb[0]) / voxel_size);
+    int ny = (int)ceil((bb[4] - bb[1]) / voxel_size);
+    int nz = (int)ceil((bb[5] - bb[2]) / voxel_size);
     if (nx < 1) nx = 1; if (ny < 1) ny = 1; if (nz < 1) nz = 1;
 
     size_t total = (size_t)nx * ny * nz;
@@ -559,7 +573,7 @@ int tvdb_py_particles_to_sdf(const float *positions, const float *radii, size_t 
             float dx = wx - positions[p * 3 + 0];
             float dy = wy - positions[p * 3 + 1];
             float dz = wz - positions[p * 3 + 2];
-            float d = std::sqrt(dx * dx + dy * dy + dz * dz) - radii[p];
+            float d = sqrt(dx * dx + dy * dy + dz * dz) - radii[p];
             if (d < best) best = d;
           }
           if (best < -band_width) best = -band_width;
@@ -594,7 +608,7 @@ int tvdb_py_volume_to_spheres(const float *data, int nx, int ny, int nz,
     }
     memcpy(work, data, total * sizeof(float));
 
-    std::vector<float> centers, radii;
+    tvdb_py_f32vec centers = {NULL, 0, 0}, radii = {NULL, 0, 0};
     const float keep_factor = 1.0f - (overlap < 0.0f ? 0.0f : (overlap > 1.0f ? 1.0f : overlap));
 
     for (int step = 0; step < max_spheres; ++step) {
@@ -614,13 +628,14 @@ int tvdb_py_volume_to_spheres(const float *data, int nx, int ny, int nz,
         float cx_w = ox + ((float)bx + 0.5f) * voxel_size;
         float cy_w = oy + ((float)by + 0.5f) * voxel_size;
         float cz_w = oz + ((float)bz + 0.5f) * voxel_size;
-        centers.push_back(cx_w); centers.push_back(cy_w); centers.push_back(cz_w);
-        radii.push_back(radius_w);
+        if (!tvdb_py_f32vec_push(&centers, cx_w) || !tvdb_py_f32vec_push(&centers, cy_w)
+        || !tvdb_py_f32vec_push(&centers, cz_w)) goto oom;
+        if (!tvdb_py_f32vec_push(&radii, radius_w)) goto oom;
 
         // Mark as taken: any voxel within keep_factor * radius gets +inf.
         float kr = keep_factor * radius_w;
         float kr_sq = kr * kr;
-        int rad_v = (int)std::ceil(kr / voxel_size) + 1;
+        int rad_v = (int)ceil(kr / voxel_size) + 1;
         int z0 = bz - rad_v < 0 ? 0 : bz - rad_v;
         int z1 = bz + rad_v + 1 > nz ? nz : bz + rad_v + 1;
         int y0 = by - rad_v < 0 ? 0 : by - rad_v;
@@ -640,14 +655,15 @@ int tvdb_py_volume_to_spheres(const float *data, int nx, int ny, int nz,
     }
     free(work);
 
-    *out_count = radii.size();
+    *out_count = radii.count;
     if (*out_count == 0) {
         *out_centers = (float *)malloc(1);  // dummy non-null pointer
         *out_radii   = (float *)malloc(1);
+        free(centers.data); free(radii.data);
         return 0;
     }
-    size_t cb = centers.size() * sizeof(float);
-    size_t rb = radii.size() * sizeof(float);
+    size_t cb = centers.count * sizeof(float);
+    size_t rb = radii.count * sizeof(float);
     *out_centers = (float *)malloc(cb);
     *out_radii   = (float *)malloc(rb);
     if (!*out_centers || !*out_radii) {
@@ -655,9 +671,18 @@ int tvdb_py_volume_to_spheres(const float *data, int nx, int ny, int nz,
         snprintf(s_error_msg, sizeof(s_error_msg), "volume_to_spheres: malloc failed");
         return -1;
     }
-    memcpy(*out_centers, centers.data(), cb);
-    memcpy(*out_radii,   radii.data(),   rb);
+    memcpy(*out_centers, centers.data, cb);
+    memcpy(*out_radii,   radii.data,   rb);
+    free(centers.data); free(radii.data);
     return 0;
+
+oom:
+    free(work);
+    free(centers.data); free(radii.data);
+    *out_centers = *out_radii = NULL;
+    *out_count = 0;
+    snprintf(s_error_msg, sizeof(s_error_msg), "volume_to_spheres: out of memory");
+    return -1;
 }
 int tvdb_py_fracture(const float *data, int nx, int ny, int nz,
                      float voxel_size, float ox, float oy, float oz,
@@ -2296,5 +2321,3 @@ int tvdb_py_level_set_rebuild(const float *data, int nx, int ny, int nz,
     *ovs = out.voxel_size; *oox = out.ox; *ooy = out.oy; *ooz = out.oz;
     return 0;
 }
-
-} /* extern "C" */

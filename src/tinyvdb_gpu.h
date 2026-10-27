@@ -17,16 +17,12 @@
 #include "tinyvdb_stats.h"  // tvdb_grid_stats_t
 #include "tinyvdb_tsdf.h"   // tvdb_depth_frame
 #include "tinyvdb_nanovdb.h" // tvdb_projected_gaussian_t, tvdb_raster_output_t, tvdb_gaussian_grad_t
+#include "tinyvdb_gpu_compute.h" // tvdb_gpu_backend_t; CUDA/HIP level sets and stuffing
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef enum {
-  TVDB_GPU_BACKEND_AUTO = 0,
-  TVDB_GPU_BACKEND_VULKAN = 1,
-  TVDB_GPU_BACKEND_CUDA = 2
-} tvdb_gpu_backend_t;
 
 typedef struct tvdb_gpu_context tvdb_gpu_context_t;
 typedef struct tvdb_gpu_buffer tvdb_gpu_buffer_t;
@@ -53,7 +49,9 @@ typedef struct {
 // Returns the number of devices written to `devices` (up to `capacity`).
 // Passing devices=NULL/capacity=0 returns the number of available runtime
 // backends/devices. CUDA enumeration requires both the driver and NVRTC runtime
-// libraries because kernels are compiled to PTX at runtime.
+// libraries because kernels are compiled to PTX at runtime; HIP likewise needs
+// libamdhip64 and libhiprtc (searched on the loader path, then $ROCM_PATH/lib,
+// /opt/rocm/lib and /opt/rocm/core/lib).
 size_t tvdb_gpu_enumerate_devices(tvdb_gpu_backend_t backend,
                                   tvdb_gpu_device_info_t* devices,
                                   size_t capacity);
@@ -531,6 +529,26 @@ tvdb_status_t tvdb_gpu_volume_d(tvdb_gpu_context_t* ctx, const tvdb_dense_grid_d
 tvdb_status_t tvdb_gpu_mesh_to_sdf(tvdb_gpu_context_t* ctx, const tvdb_triangle_mesh* mesh,
                                    float voxel_size, float band_width,
                                    tvdb_dense_grid* out, tvdb_error_t* err);
+
+// ---- Sparse level sets and tetrahedral meshes (CUDA and HIP) ---------------
+//
+// tinyvdb_gpu_compute.h's operations on a CUDA or HIP context (see there for
+// what runs where and the precision notes). Vulkan contexts return
+// TVDB_ERROR_UNIMPLEMENTED.
+tvdb_status_t tvdb_gpu_mesh_to_level_set(tvdb_gpu_context_t* ctx, const tvdb_triangle_mesh* mesh,
+                                         const tvdb_mesh_level_set_options_t* options,
+                                         tvdb_thread_pool_t* pool, tvdb_grid_t* out,
+                                         tvdb_mesh_level_set_result_t* result, tvdb_error_t* err);
+// Trilinear samples of a float tree's stored values at world points (3
+// doubles each), inactive tiles included and background outside, as
+// tvdb_level_set_to_tet_mesh samples them.
+tvdb_status_t tvdb_gpu_level_set_sample(tvdb_gpu_context_t* ctx, const tvdb_grid_t* grid,
+                                        const double* points, size_t count, float* values,
+                                        tvdb_error_t* err);
+tvdb_status_t tvdb_gpu_level_set_to_tet_mesh(tvdb_gpu_context_t* ctx, const tvdb_grid_t* level_set,
+                                             const tvdb_stuffing_options_t* options,
+                                             tvdb_thread_pool_t* pool, tvdb_tet_mesh* out,
+                                             tvdb_error_t* err);
 
 // Marching cubes on the GPU (parallels tvdb_sdf_to_mesh) producing a triangle
 // soup. Device classification and exclusive scan size the compact output;
