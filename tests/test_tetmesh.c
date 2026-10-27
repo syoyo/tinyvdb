@@ -24,6 +24,17 @@ static int sphere(const double p[3], float *v, void *user) {
   *v = (float)(sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]) - 1.0);
   return 1;
 }
+/* Lattice samples are zero; fail or return NaN at the extra center probe. */
+static int failing_center(const double p[3], float *v, void *user) {
+  for (int i = 0; i < 3; ++i) {
+    if (2 * p[i] != floor(2 * p[i])) {
+      *v = NAN;
+      return *(const int *)user;
+    }
+  }
+  *v = 0;
+  return 1;
+}
 static int box(const double p[3], float *v, void *user) {
   (void)user;
   double out = 0, in = -1e300;
@@ -187,6 +198,21 @@ int main(void) {
     tvdb_grid_destroy_owned(&g);
     free(mesh.vertices);
     free(mesh.faces);
+  }
+
+  /* A failed or non-finite center probe must preserve the existing mesh. */
+  {
+    tvdb_stuffing_options_t probe = {0};
+    const double pmin[3] = {0, 0, 0}, pmax[3] = {1, 1, 1};
+    float *original = m.positions;
+    size_t vertices = m.vertex_count, tets = m.tet_count;
+    probe.spacing = 1;
+    for (int mode = 0; mode < 2; ++mode) {
+      CHECK(tvdb_sdf_to_tet_mesh(failing_center, &mode, pmin, pmax, &probe,
+                                 NULL, &m, &err) == TVDB_ERROR_INVALID_DATA);
+      CHECK(err.status == TVDB_ERROR_INVALID_DATA);
+      CHECK(m.positions == original && m.vertex_count == vertices && m.tet_count == tets);
+    }
   }
 
   /* Failures preserve out. */
