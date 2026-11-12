@@ -81,4 +81,47 @@ theorem GridHeader.parseFrom_emitFrom (h : GridHeader) (hc : h.Canonical)
   rw [htout]
   exact ⟨tout, rfl⟩
 
+
+theorem GridHeader.parseFromChunks (h : GridHeader) (hc : h.Canonical)
+    (pre rest : List Bytes) :
+    ∃ out, GridHeader.parseFrom (concatChunks (pre ++ h.chunks ++ rest))
+      (concatChunks pre).size = some (h, out) := by
+  obtain ⟨hcnt, hwf, htr⟩ := hc
+  rcases h with ⟨fl, md, tr⟩
+  unfold GridHeader.parseFrom GridHeader.chunks
+  dsimp only
+  rw [show concatChunks (pre ++ ([putU32LE fl ByteArray.empty] ++ md.chunks ++ tr.chunks) ++ rest) =
+      concatChunks (pre ++ putU32LE fl ByteArray.empty ::
+        (md.chunks ++ (tr.chunks ++ rest))) from by simp]
+  rw [getU32LE_chunk]
+  dsimp only
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE fl ByteArray.empty])).size from by
+    conv_lhs => rw [concatChunks_size]
+    conv_rhs => rw [concatChunks_size]
+    simp [putU32LE_size]]
+  rw [show concatChunks (pre ++ putU32LE fl ByteArray.empty ::
+      (md.chunks ++ (tr.chunks ++ rest))) =
+      concatChunks (((pre ++ [putU32LE fl ByteArray.empty]) ++ md.chunks) ++
+        (tr.chunks ++ rest)) from by simp]
+  rw [MetaList.parseFromChunks md hcnt hwf (pre ++ [putU32LE fl ByteArray.empty])
+    (tr.chunks ++ rest)]
+  dsimp only
+  rw [show concatChunks (((pre ++ [putU32LE fl ByteArray.empty]) ++ md.chunks) ++
+      (tr.chunks ++ rest)) =
+      tr.emitFrom (concatChunks ((pre ++ [putU32LE fl ByteArray.empty]) ++ md.chunks))
+        ++ concatChunks rest from by
+    simp only [Transform.emitFrom]
+    rw [show concatChunks (pre ++ [putU32LE fl ByteArray.empty] ++ md.chunks ++
+        (tr.chunks ++ rest)) =
+        concatChunks (pre ++ [putU32LE fl ByteArray.empty] ++ md.chunks) ++
+          concatChunks (tr.chunks ++ rest) from concatChunks_append _ _]
+    rw [show concatChunks (tr.chunks ++ rest) =
+        concatChunks tr.chunks ++ concatChunks rest from concatChunks_append _ _]
+    conv_rhs => rw [ByteArray.append_assoc]]
+  obtain ⟨tout, htout⟩ := Transform.parseFrom_emitFrom_rest tr htr
+    (concatChunks ((pre ++ [putU32LE fl ByteArray.empty]) ++ md.chunks)) rest
+  rw [htout]
+  exact ⟨tout, rfl⟩
+
 end Vdb
