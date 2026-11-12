@@ -13,7 +13,12 @@ lake -d "$here" build vdbcheck
 if [ "$#" -gt 0 ]; then
   files=("$@")
 else
-  files=("$root/sphere.vdb" "$root/cube.vdb" "$root/bunny.vdb" "$root/smoke.vdb")
+  files=("$root/sphere.vdb" "$root/cube.vdb" "$root/bunny.vdb" "$root/smoke.vdb"
+         "$root/data/utahteapot.vdb" "$root/data/suzanne.vdb"
+         "$root/data/sphere-div1.vdb" "$root/data/sphere_points.vdb"
+         "$root/data/bunny_bgcolor.vdb" "$root/data/explosion.vdb"
+         "$root/data/smoke.vdb" "$root/data/bunny_cloud.vdb"
+         "$root/data/dragon.vdb")
 fi
 
 python3 "$here/scripts/diff_vdbdump.py" \
