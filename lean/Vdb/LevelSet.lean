@@ -172,4 +172,87 @@ theorem sdfPlane_levelSet (n : Point) (d : ℝ) :
   ext p
   simp [levelSet, sdfPlane_zero_iff]
 
+
+/-! ### Band and sign regions -/
+
+
+/-- The narrow band: points whose field value is closer than `band` to zero.
+    These are the voxels the marching-cubes pass has to visit. -/
+def activeSet (f : Point → ℝ) (band : ℝ) : Set Point := {p | |f p| < band}
+
+/-- The interior (negative) side of a signed field. -/
+def insideSet (f : Point → ℝ) : Set Point := {p | f p < 0}
+
+/-- The exterior (positive) side. -/
+def outsideSet (f : Point → ℝ) : Set Point := {p | 0 < f p}
+
+/-- The surface. -/
+def surface (f : Point → ℝ) : Set Point := levelSet f 0
+
+@[simp] theorem mem_activeSet {f : Point → ℝ} {band : ℝ} {p : Point} :
+    p ∈ activeSet f band ↔ |f p| < band := Iff.rfl
+
+@[simp] theorem mem_insideSet {f : Point → ℝ} {p : Point} :
+    p ∈ insideSet f ↔ f p < 0 := Iff.rfl
+
+@[simp] theorem mem_outsideSet {f : Point → ℝ} {p : Point} :
+    p ∈ outsideSet f ↔ 0 < f p := Iff.rfl
+
+@[simp] theorem mem_surface {f : Point → ℝ} {p : Point} :
+    p ∈ surface f ↔ f p = 0 := Iff.rfl
+
+/-- The three regions are disjoint and cover the space. -/
+theorem surface_disjoint (f : Point → ℝ) :
+    Disjoint (insideSet f) (outsideSet f) := by
+  rw [Set.disjoint_left]
+  intro p hp hq
+  simp at hp hq
+  linarith
+
+theorem not_mem_surface_of_inside {f : Point → ℝ} {p : Point} (h : f p < 0) :
+    p ∉ surface f := by
+  simp [h.ne]
+
+theorem not_mem_surface_of_outside {f : Point → ℝ} {p : Point} (h : 0 < f p) :
+    p ∉ surface f := by
+  simp [h.ne']
+
+/-- The surface sits between the two sides. -/
+theorem surface_subset_compl (f : Point → ℝ) :
+    surface f = (insideSet f ∪ outsideSet f)ᶜ := by
+  ext p
+  simp only [mem_surface, Set.mem_compl_iff, Set.mem_union, mem_insideSet, mem_outsideSet,
+    not_or]
+  constructor
+  · intro h; exact ⟨by linarith, by linarith⟩
+  · rintro ⟨h1, h2⟩; linarith
+
+/-- Any surface point is at distance at least the field magnitude away from
+    the band complement, i.e. the band is a superset of the surface for any
+    positive width. -/
+theorem surface_subset_activeSet {f : Point → ℝ} {band : ℝ} (hb : 0 < band) :
+    surface f ⊆ activeSet f band := by
+  intro p hp
+  simp only [mem_surface] at hp
+  simp [hp, hb]
+
+/-- For the sphere field the band is the spherical shell
+    `r - band < |p| < r + band`. -/
+theorem sdfSphere_activeSet_eq (r band : ℝ) :
+    activeSet (sdfSphere r) band = {p : Point | r - band < ‖p‖ ∧ ‖p‖ < r + band} := by
+  ext p
+  simp only [mem_activeSet, sdfSphere, Set.mem_ofPred_eq, abs_lt]
+  constructor
+  · rintro ⟨h1, h2⟩
+    constructor <;> linarith
+  · rintro ⟨h1, h2⟩
+    constructor <;> linarith
+
+/-- The sphere band lies inside the ball of radius `r + band`. -/
+theorem sdfSphere_activeSet_subset (r band : ℝ) :
+    activeSet (sdfSphere r) band ⊆ {p : Point | ‖p‖ < r + band} := by
+  intro p hp
+  rw [sdfSphere_activeSet_eq] at hp
+  exact hp.2
+
 end Vdb

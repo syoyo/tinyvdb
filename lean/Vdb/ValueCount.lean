@@ -1,0 +1,86 @@
+/-
+  TinyVDB - Lean 4 formalization of the OpenVDB (`.vdb`) file format.
+
+  The per-node stored-value count. `tvdb__read_mask_values` computes the
+  number of values the chunk holds from the grid's active-mask compression
+  flag, the file version and (for mask compression) the node's value mask:
+
+  * every slot, for the "all values" code, non-mask-compressed grids and
+    pre-222 files (whose values are not compacted at internal level);
+  * the active count of the value mask otherwise.
+
+  `storedCount` models that rule, and `ValueRecord.parseFromCount` derives the
+  value-chunk size from it, so a record can be parsed without an externally
+  supplied `expected`.
+
+  Copyright (c) 2026 Syoyo Fujita and TinyVDB authors
+  SPDX-License-Identifier: Apache-2.0
+-/
+import Mathlib.Tactic
+import Vdb.NodeRecord
+
+set_option linter.unusedSimpArgs false
+set_option maxHeartbeats 800000
+
+namespace Vdb
+
+/-- Number of values stored in a node's compressed record, i.e. the C
+    reader's `read_count`: every slot for the "all values" code (or when the
+    grid does not use active-mask compression, or for pre-222 files), and the
+    active count of the value mask otherwise. -/
+def storedCount {L : Nat} (maskCompressed : Bool) (ver : Nat)
+    (m : NodeMask L) (code : MaskCode) : Nat :=
+  if maskCompressed && 222 ≤ ver && code ≠ .noMaskAndAllVals then
+    (setBits m (nodeSlots L)).length
+  else nodeSlots L
+
+theorem setBits_length_le (m : Nat) (n : Nat) : (setBits m n).length ≤ n := by
+  unfold setBits
+  induction n with
+  | zero => simp
+  | succ k ih =>
+    rw [List.range_succ, List.filter_append]
+    simp only [List.length_append]
+    have h : (List.filter (fun i => m.testBit i) [k]).length ≤ 1 := by
+      by_cases hk : m.testBit k <;> simp [hk]
+    omega
+
+theorem storedCount_le {L : Nat} (maskCompressed : Bool) (ver : Nat)
+    (m : NodeMask L) (code : MaskCode) : storedCount maskCompressed ver m code ≤ nodeSlots L := by
+  unfold storedCount
+  split
+  · exact setBits_length_le m (nodeSlots L)
+  · exact le_rfl
+
+/-- The record parser when the stored-value count is derived from the code
+    (the C reader's `read_count` rule) instead of being supplied. -/
+def ValueRecord.parseFromCount {L : Nat} (vsize elemSize : Nat) (countOf : MaskCode → Nat)
+    (decompress : Bytes → Nat → Option Bytes) (b : Bytes) (off : Nat) :
+    Option (ValueRecord L × Nat) :=
+  match getU8? b off with
+  | none => none
+  | some fl =>
+    match MaskCode.ofNat? fl.toNat with
+    | none => none
+    | some code => ValueRecord.parseFrom vsize (countOf code * elemSize) decompress b off
+
+theorem ValueRecord.parseFromCount_emit {L : Nat} (r : ValueRecord L)
+    (vsize elemSize : Nat) (countOf : MaskCode → Nat)
+    (decompress : Bytes → Nat → Option Bytes)
+    (h : r.WellFormed vsize (countOf r.code * elemSize))
+    (pre post : List Bytes) :
+    ValueRecord.parseFromCount vsize elemSize countOf decompress
+        (concatChunks (pre ++ r.chunks ++ post)) (concatChunks pre).size =
+      some (r, (concatChunks (pre ++ r.chunks)).size) := by
+  unfold ValueRecord.parseFromCount ValueRecord.chunks
+  rw [show pre ++ (putU8 r.code.flag ByteArray.empty :: r.tailChunks) ++ post =
+      pre ++ (putU8 r.code.flag ByteArray.empty :: (r.tailChunks ++ post)) from by simp]
+  rw [getU8?_chunk]
+  dsimp only
+  rw [MaskCode.ofNat?_flag]
+  dsimp only
+  rw [show concatChunks (pre ++ putU8 r.code.flag ByteArray.empty :: (r.tailChunks ++ post)) =
+      concatChunks (pre ++ r.chunks ++ post) from by simp [ValueRecord.chunks]]
+  exact ValueRecord.parseFrom_emitFrom r vsize (countOf r.code * elemSize) decompress h pre post
+
+end Vdb
