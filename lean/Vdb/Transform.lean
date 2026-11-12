@@ -256,4 +256,47 @@ theorem parseVecChain_emit (vs : List Vec3d) :
 
 
 
+
+/-- Translation maps: name + one 24-byte vector. -/
+theorem Transform.parseFrom_emitFrom_translation (tr : Vec3d) (acc : Bytes) :
+    ∃ out, Transform.parseFrom
+        ((⟨.translation, tr, Vec3d.zero, Vec3d.zero, ByteArray.empty⟩ : Transform).emitFrom acc)
+        acc.size =
+      some (⟨.translation, tr, Vec3d.zero, Vec3d.zero, ByteArray.empty⟩, out) := by
+  constructor
+  unfold Transform.parseFrom Transform.emitFrom Transform.chunks Transform.fieldChunks
+  rw [acc_append_concatChunks]
+  rw [show (acc :: (putString (TransformKind.translation.name) ByteArray.empty :: [tr.toBytes])) =
+      [acc] ++ putString (TransformKind.translation.name) ByteArray.empty :: [tr].map Vec3d.toBytes
+      from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := TransformKind.translation.name)
+    (post := [tr].map Vec3d.toBytes) (by decide)]
+  dsimp only
+  split
+  · rename_i h
+    exact absurd h (by decide)
+  · split
+    · rename_i h
+      exact absurd h (by decide)
+    · split
+      · rename_i h
+        rw [show (concatChunks [acc]).size + 4 + (TransformKind.translation.name).size =
+            (concatChunks [acc, putString (TransformKind.translation.name) ByteArray.empty]).size by
+          simp [concatChunks_size, putString_size]; omega]
+        have hchain := parseVecChain_emit [tr]
+          [acc, putString (TransformKind.translation.name) ByteArray.empty] ([] : List Bytes)
+        simp only [List.length_cons, List.length_nil] at hchain
+        norm_num at hchain
+        rw [show concatChunks ([acc] ++ putString (TransformKind.translation.name) ByteArray.empty ::
+            [tr].map Vec3d.toBytes) = concatChunks
+            [acc, putString (TransformKind.translation.name) ByteArray.empty, tr.toBytes] from by
+          simp]
+        rw [hchain]
+        dsimp only
+        simp
+        rfl
+      · rename_i h
+        exact absurd h (by decide)
+
 end Vdb

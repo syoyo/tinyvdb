@@ -55,6 +55,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `concatChunks_append`, `concatChunks_size`, `acc_append_concatChunks`, `getU8?_chunk` … `getBytes?_chunk`, `getString?_chunk` | chunk-chain algebra and boundary reads, including VDB strings |
 | `Header.parseFrom_emitFrom` | **header round trip**: every canonical header parses back unchanged from its emitted bytes, with the legacy compression byte present only for versions 220–221 |
 | `Vec3d.ofBytes_toBytes`, `Vec3d.toBytes_size`, `Vec3d.parseAt_toBytes`, `parseVecChain_emit` | 24-byte double-vector round trips and the vector-chain parser inverse |
+| `Transform.parseFrom_emitFrom_translation` | transform round trip for `TranslationMap` (name string + one vector, dispatching through the map-name conditions with `split`) |
 | `nodeSlot_lt` | an in-box coordinate gives a slot below `2^(3L)` |
 | `exampleTree_lookup_origin/inactive/background` | the worked tree reads the active voxel, an inactive stored value, and the background correctly (checked by `decide`) |
 | `lookup_outside_children` | no root child and no root tile means the background, inactive |
