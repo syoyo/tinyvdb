@@ -172,7 +172,7 @@ inductive MetaValue where
   | vec3i : Int32 → Int32 → Int32 → MetaValue
   | vec3f : UInt32 → UInt32 → UInt32 → MetaValue
   | vec3d : UInt64 → UInt64 → UInt64 → MetaValue
-  | str : String → MetaValue
+  | str : Bytes → MetaValue
   | raw : Bytes → MetaValue
   deriving Repr, Inhabited
 
@@ -188,32 +188,5 @@ def MetaValue.type? : MetaValue → Option ValueType
   | .vec3d _ _ _ => some .vec3d
   | .str _ => some .string
   | .raw _ => none
-
-/-- Declared on-disk size of a metadata value. Strings carry their own length;
-    unknown types use the raw blob. -/
-def MetaValue.declaredSize (enc : Bytes → Nat) : MetaValue → Option Nat
-  | .boolean _ => some 1
-  | .int32 _ => some 4
-  | .int64 _ => some 8
-  | .f32 _ => some 4
-  | .f64 _ => some 8
-  | .vec3i _ _ _ => some 12
-  | .vec3f _ _ _ => some 12
-  | .vec3d _ _ _ => some 24
-  | .str s => some (enc s.toUTF8)
-  | .raw b => some b.size
-
-/-- Metadata values whose declared size matches the type's element size. -/
-def MetaValue.fixedSizeMatch : MetaValue → Bool
-  | .boolean _ => true
-  | .int32 _ => true
-  | .int64 _ => true
-  | .f32 _ => true
-  | .f64 _ => true
-  | .vec3i _ _ _ => true
-  | .vec3f _ _ _ => true
-  | .vec3d _ _ _ => true
-  | .str _ => true
-  | .raw _ => true
 
 end Vdb
