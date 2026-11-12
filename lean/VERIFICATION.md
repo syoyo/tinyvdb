@@ -34,6 +34,10 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `nodeSlots_three`, `nodeMaskBytes_three/four/five` | 512 slots, 64/512/4096 mask bytes |
 | `localIndex_nonneg`, `localIndex_lt`, `origin_add_localIndex` | arithmetic-shift local index bounds |
 | `rootKey_le`, `lt_rootKey_add`, `rootKey_dvd` | root key is the floor-multiple box containing the coordinate |
+| `slotOf_lt` | in-range components give a slot below `2^(3L)` |
+| `slotOf_inj` | the slot map is injective on the node box (x, then y, then z recovered) |
+| `slotOf_localOfSlot` | `slotOf` of a slot's components is the slot |
+| `localOfSlot_slotOf` | component extraction is a two-sided inverse of `slotOf` on the node box |
 | `Layout.standard_wf`, `float543_wellFormed`, `parseGridType_float543` | the standard `5_4_3` float layout parses and validates |
 
 Test-level checks: `parseGridType "Tree_float_5_4_3" = some float543` is proven
@@ -44,9 +48,7 @@ by `decide`.
 1. **Mask byte round trip** (`parse (serialize m) = m` slot-wise, all `L`):
    definitions exist, proof is the next target. This closes the topology byte
    layer together with the readers.
-2. **Slot bijection** (`slotOf` injective on a node box, inverse
-   `coordOfSlot`), needed by `T-TREE-WF` and the round-trip theorems.
-3. **Tree model** (`Root`/`Internal`/`Leaf` with well-formedness matching
+2. **Tree model** (`Root`/`Internal`/`Leaf` with well-formedness matching
    `validate_node`), semantics (`lookup`) and `lookup_eq_treeFind`.
 4. **Mask compression** (the 7 `NO_MASK_*` codes) `encode`/`decode` round trip.
 5. **Half float** bit model (`halfToFloat`, trunc vs round-to-nearest).
