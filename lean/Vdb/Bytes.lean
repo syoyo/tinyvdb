@@ -248,6 +248,24 @@ theorem getU8?_pushBytes_add (bs : List UInt8) (acc : Bytes) (k : Nat) :
   rw [getU8?_pushBytes_ge bs acc (by omega)]
   rw [show acc.size + k - acc.size = k by omega]
 
+/-- `pushBytes` is an append of the pushed bytes to the accumulator. -/
+theorem pushBytes_eq_append (bs : List UInt8) (acc : Bytes) :
+    pushBytes bs acc = acc ++ pushBytes bs ByteArray.empty := by
+  induction bs generalizing acc with
+  | nil => simp [pushBytes]
+  | cons b t ih =>
+    change pushBytes t (acc.push b) = acc ++ pushBytes (b :: t) ByteArray.empty
+    rw [ih (acc.push b)]
+    have hstep : pushBytes (b :: t) ByteArray.empty =
+        (ByteArray.empty.push b) ++ pushBytes t ByteArray.empty := by
+      change pushBytes t (ByteArray.empty.push b) = _
+      rw [ih (ByteArray.empty.push b)]
+    rw [hstep]
+    rw [← ByteArray.append_toByteArray_singleton (as := acc) (a := b)]
+    rw [← ByteArray.append_toByteArray_singleton (as := ByteArray.empty) (a := b)]
+    simp only [ByteArray.empty_append]
+    rw [ByteArray.append_assoc]
+
 theorem pushBytes_size (bs : List UInt8) (acc : Bytes) :
     (pushBytes bs acc).size = acc.size + bs.length := by
   induction bs generalizing acc with
