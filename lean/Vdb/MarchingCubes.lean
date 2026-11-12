@@ -281,4 +281,113 @@ theorem Cube.mem_crossedEdges_iff {q : Cube} {e : Fin 8 × Fin 8} :
   unfold Cube.crossedEdges
   simp [List.mem_filter]
 
+
+/-! ### Face boundary crossings and the dual face quad -/
+
+/-- A face's four boundary edges, in cyclic order. -/
+def Face.edges (f : Face) : List (ℚ × ℚ) :=
+  [(f.a, f.b), (f.b, f.c), (f.c, f.d), (f.d, f.a)]
+
+/-- An edge as an unordered pair of endpoint values. -/
+def uedge (u v : ℚ) : Finset ℚ := {u, v}
+
+/-- The boundary edges as a set of unordered pairs. -/
+def Face.edgeSetU (f : Face) : Finset (Finset ℚ) :=
+  {uedge f.a f.b, uedge f.b f.c, uedge f.c f.d, uedge f.d f.a}
+
+/-- The boundary edges crossed by the surface. -/
+def Face.crossedEdges (f : Face) : List (ℚ × ℚ) :=
+  f.edges.filter (fun e => edgeCrosses e.1 e.2)
+
+theorem uedge_comm (u v : ℚ) : uedge u v = uedge v u := by
+  unfold uedge
+  exact Finset.pair_comm u v
+
+/-- Reversing the face keeps the same four boundary edges (as a set). -/
+theorem Face.mem_edgeSetU_rev {f : Face} {e : Finset ℚ} :
+    e ∈ f.rev.edgeSetU ↔ e ∈ f.edgeSetU := by
+  obtain ⟨a, b, c, d⟩ := f
+  simp only [Face.edgeSetU, Face.rev, Finset.mem_insert, Finset.mem_singleton]
+  constructor <;> rintro (h | h | h | h) <;> subst h <;> simp [uedge_comm]
+
+theorem Face.edgeSetU_rev (f : Face) : f.rev.edgeSetU = f.edgeSetU :=
+  Finset.ext (fun _e => Face.mem_edgeSetU_rev)
+
+/-- An ambiguous face has all four boundary edges crossed. -/
+theorem Face.ambiguous_iff_crossed (f : Face) :
+    f.Ambiguous ↔ ∀ e ∈ f.edges, edgeCrosses e.1 e.2 = true := by
+  obtain ⟨a, b, c, d⟩ := f
+  unfold Face.Ambiguous Face.edges
+  simp only [List.mem_cons, List.not_mem_nil, or_false, forall_eq_or_imp,
+    forall_eq, edgeCrosses]
+  cases ha : isInside a <;> cases hb : isInside b <;>
+    cases hc : isInside c <;> cases hd : isInside d <;>
+    simp [ha, hb, hc, hd]
+
+/-- The number of crossed boundary edges of a face is even (a cyclic sign
+    sequence changes sign an even number of times). -/
+theorem Face.length_crossedEdges_even (f : Face) : Even f.crossedEdges.length := by
+  obtain ⟨a, b, c, d⟩ := f
+  unfold Face.crossedEdges Face.edges
+  cases ha : isInside a <;> cases hb : isInside b <;>
+    cases hc : isInside c <;> cases hd : isInside d <;>
+    simp [edgeCrosses, ha, hb, hc, hd] <;> decide
+
+/-- An ambiguous face has exactly four crossed boundary edges. -/
+theorem Face.length_crossedEdges_of_ambiguous {f : Face} (h : f.Ambiguous) :
+    f.crossedEdges.length = 4 := by
+  have hall := (Face.ambiguous_iff_crossed f).mp h
+  unfold Face.crossedEdges
+  rw [List.filter_eq_self.mpr ?_]
+  · unfold Face.edges
+    simp
+  · intro e he
+    exact hall e he
+
+/-- A non-ambiguous face has zero or two crossed boundary edges. -/
+theorem Face.length_crossedEdges_of_not_ambiguous {f : Face} (h : ¬ f.Ambiguous) :
+    f.crossedEdges.length = 0 ∨ f.crossedEdges.length = 2 := by
+  have heven := Face.length_crossedEdges_even f
+  have hle : f.crossedEdges.length ≤ 4 := by
+    unfold Face.crossedEdges
+    exact le_trans (List.length_filter_le _ _) (by unfold Face.edges; simp)
+  have hnotall : ¬ ∀ x ∈ f.edges, edgeCrosses x.1 x.2 = true := by
+    intro hall
+    exact h ((Face.ambiguous_iff_crossed f).mpr hall)
+  have hne : f.crossedEdges.length ≠ 4 := by
+    intro h4
+    have hs : (f.edges.filter (fun e => edgeCrosses e.1 e.2)).Sublist f.edges :=
+      List.filter_sublist
+    have hlen : (f.edges.filter (fun e => edgeCrosses e.1 e.2)).length = f.edges.length := by
+      unfold Face.crossedEdges at h4
+      unfold Face.edges at h4 ⊢
+      simpa using h4
+    exact hnotall (List.filter_eq_self.mp (hs.eq_of_length hlen))
+  have hlt : f.crossedEdges.length < 4 := lt_of_le_of_ne hle hne
+  obtain ⟨k, hk⟩ := heven
+  omega
+
+/-- A face's dual quad: the four boundary edges (as unordered pairs) plus the
+    rule's diagonal choice. Two cubes sharing a face must build the same
+    quad, i.e. the same edges and the same diagonal. -/
+structure FaceQuad where
+  edges : Finset (Finset ℚ)
+  negativeDiagonalJoined : Bool
+
+def Face.quad (f : Face) : FaceQuad :=
+  ⟨f.edgeSetU, f.negConnected⟩
+
+theorem Face.quad_edges_rev (f : Face) : f.rev.quad.edges = f.quad.edges :=
+  Face.edgeSetU_rev f
+
+theorem Face.quad_rule_rev (f : Face) :
+    f.rev.quad.negativeDiagonalJoined = f.quad.negativeDiagonalJoined :=
+  Face.negConnected_rev f
+
+/-- **Face quad consistency**: the face quad is the same when the face is
+    seen from the neighbouring cube (reversed corner order). -/
+theorem Face.quad_rev (f : Face) : f.rev.quad = f.quad := by
+  simp only [Face.quad]
+  rw [Face.edgeSetU_rev, Face.negConnected_rev]
+
 end Vdb
