@@ -80,6 +80,13 @@ def empty : Emit := id
 
 end Emit
 
+/-- Append raw bytes (the "difference list" counterpart of `getBytes?`). -/
+def putBytes (s : Bytes) : Emit := fun acc => acc ++ s
+
+/-- Bounds-checked slice: `n` bytes at `off`. -/
+def getBytes? (b : Bytes) (off n : Nat) : Option Bytes :=
+  if off + n ≤ b.size then some (b.extract off (off + n)) else none
+
 /-! ### Little-endian scalar writers/readers -/
 
 /-- Append a list of bytes. Definitive form of every multi-byte writer, which
@@ -379,6 +386,37 @@ theorem getU64LE_append_left {a b : Bytes} {i : Nat} (h : i + 8 ≤ a.size) :
   simp only [Nat.add_zero] at h0
   rw [h0, e 1 (by omega), e 2 (by omega), e 3 (by omega),
       e 4 (by omega), e 5 (by omega), e 6 (by omega), e 7 (by omega)]
+
+/-- A 16-bit read entirely inside the left operand of an append. -/
+theorem getU16LE_append_left {a b : Bytes} {i : Nat} (h : i + 2 ≤ a.size) :
+    getU16LE (a ++ b) i = getU16LE a i := by
+  unfold getU16LE
+  have e0 : getU8 (a ++ b) i = getU8 a i := by
+    simp only [getU8]
+    exact getU8?_append_left (by omega)
+  have e1 : getU8 (a ++ b) (i + 1) = getU8 a (i + 1) := by
+    simp only [getU8]
+    exact getU8?_append_left (by omega)
+  rw [e0, e1]
+
+/-- A 16-bit read at an offset past the left operand of an append. -/
+theorem getU16LE_append_right' {a b : Bytes} (j : Nat) :
+    getU16LE (a ++ b) (a.size + j) = getU16LE b j := by
+  unfold getU16LE
+  have e0 : getU8 (a ++ b) (a.size + j) = getU8 b j := by
+    simp only [getU8]
+    exact getU8?_append_right' j
+  have e1 : getU8 (a ++ b) (a.size + j + 1) = getU8 b (j + 1) := by
+    simp only [getU8]
+    rw [show a.size + j + 1 = a.size + (j + 1) by omega]
+    exact getU8?_append_right' (j + 1)
+  rw [e0, e1]
+
+/-- A signed 64-bit read at an offset past the left operand of an append. -/
+theorem getI64LE_append_right' {a b : Bytes} (j : Nat) :
+    getI64LE (a ++ b) (a.size + j) = getI64LE b j := by
+  unfold getI64LE
+  rw [getU64LE_append_right']
 
 /-- A 64-bit read entirely inside the left operand of an append. -/
 theorem getI64LE_append_left {a b : Bytes} {i : Nat} (h : i + 8 ≤ a.size) :

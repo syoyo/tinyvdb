@@ -14,4 +14,5 @@ import Vdb.Layout
 import Vdb.Tree
 import Vdb.MaskCompress
 import Vdb.Half
+import Vdb.Chunks
 import Vdb.Header

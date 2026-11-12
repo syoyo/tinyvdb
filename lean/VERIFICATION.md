@@ -16,6 +16,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vdb/Coord.lean` | `Coord`, box membership, `Layout` + `WellFormed` (root level 0, depth 3–8, per-level `log2dim` bound, total ≤ 31), `spanShift`/`span`, `localIndex` (arithmetic shift), non-negativity and `< 2^L` bounds, `origin + span * localIndex ≤ c`, `slotOf`, `childOrigin`, `rootKey` with floor-division bounds. |
 | `Vdb/Tree.lean` | sparse tree model (`Node` leaf/internal, `Root` tiles/children, `Tree` with layout), node slot and child-origin geometry, total `lookup` semantics (root key → tile/child → node descent) with fuel `t.depth`, `Equiv`, and the well-formedness predicate `WellFormed`/`NodeWFuel` mirroring `validate_node`; a worked `5_4_3` tree with three checked lookups. |
 | `Vdb/MaskCompress.lean` | the seven `MaskCompress` codes as `MaskCode`, code byte round trip, `readCount`, `VoxelValue.negate` (bit flip for floats, integer negation, bool identity), the `decodeSlot`/`decodeAll` decoder (active values by rank, code 6 reads the full list), the faithful encoder `classify` (unique-inactive scan seeded with the background, `val0`/`val1`, selection mask, including the background swap), the selection-mask semantics, the scan invariant, and the **general mask-compression round trip** for all seven codes. |
+| `Vdb/Chunks.lean` | fixed-layout chunk chains (`concatChunks`, append/size lemmas, and field reads at chunk boundaries for u8/u16/u32/u64/i64/blobs), used by the header and available to the transform and grid body. |
 | `Vdb/Header.lean` | the string/blob wire primitives (`putBytes`/`getBytes?`, `putString`/`getString?`) with round trips, and the file header: magic, version range, library version, grid-offset flag, the 220–221 legacy compression byte, 36-byte UUID, with `Header.Canonical` and total emit/parse definitions. |
 | `Vdb/Half.lean` | binary16 model: the exact reader bit pattern (`halfToFloatBits`, including the subnormal normalisation loop), the truncating scalar encoder (`floatToHalfTrunc`), the round-to-nearest-even encoder (`floatToHalfRNE`, as used by F16C and OpenVDB), and concrete F1 evidence. |
 | `Vdb/Layout.lean` | `Tree_<type>_<L...>` strict parser and printer, the lenient reader model (`parseGridTypeLenient`), `GridType.WellFormed`, checked parse of `Tree_float_5_4_3`. |
@@ -49,6 +50,8 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `pushBytes_eq_append` | `pushBytes bs acc = acc ++ pushBytes bs empty` (exposes every emitter as an append chain) |
 | `putU8_size` … `putI64LE_size` | emitted sizes of every scalar writer, so read offsets are known to `simp`/`omega` |
 | `getBytes?_append`, `getBytes?_putBytes`, `getString?_putString`, `putString_size` | string/blob wire round trips and emitted sizes |
+| `concatChunks_append`, `concatChunks_size`, `acc_append_concatChunks`, `getU8?_chunk` … `getBytes?_chunk` | chunk-chain algebra and boundary reads |
+| `Header.parseFrom_emitFrom` | **header round trip**: every canonical header parses back unchanged from its emitted bytes, with the legacy compression byte present only for versions 220–221 |
 | `nodeSlot_lt` | an in-box coordinate gives a slot below `2^(3L)` |
 | `exampleTree_lookup_origin/inactive/background` | the worked tree reads the active voxel, an inactive stored value, and the background correctly (checked by `decide`) |
 | `lookup_outside_children` | no root child and no root tile means the background, inactive |
@@ -81,8 +84,8 @@ by `decide`.
    same code/`val0`/`val1`/selection as `tvdb__write_mask_values` (needed for
    byte-identical output, not for correctness).
 3. **Half float** bit model (`halfToFloat`, trunc vs round-to-nearest).
-4. **Header round trip** (`Header.parse_emit` for canonical headers) and then
-   metadata, transform, chunk framing, grid body and the file round trip.
+4. **Metadata round trip** (typed entries, strings and raw blobs), then the
+   transform, chunk framing, grid body and the file round trip.
 5. **Oracle harness**: `VdbCheck`/`VdbGen` executables, C dump program,
    differential scripts (`vdb-diff`).
 6. Phase P2–P4 (level sets, MC/DMC, mesh→volume).

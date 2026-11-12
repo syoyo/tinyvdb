@@ -27,7 +27,8 @@ value and mask modules only use Lean core.
 
 Landed and building: `Vdb/Bytes.lean`, `Vdb/Value.lean`, `Vdb/Mask.lean`,
 `Vdb/Coord.lean`, `Vdb/Tree.lean`, `Vdb/MaskCompress.lean`, `Vdb/Half.lean`,
-`Vdb/Header.lean`, `Vdb/Layout.lean`.
+`Vdb/Header.lean`, `Vdb/Chunks.lean`, `Vdb/Layout.lean`. The file header
+round trip is proven.
 The tree model reads a worked `5_4_3` tree (three lookups checked by `decide`),
 the **general mask-compression round trip is proven** (all seven codes,
 including the background swap and the code-6 full-list path).
