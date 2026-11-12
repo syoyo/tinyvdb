@@ -12,6 +12,7 @@ import Vdb.Mask
 import Vdb.Coord
 import Vdb.Layout
 import Vdb.LevelSet
+import Vdb.MeshDistance
 import Vdb.MarchingCubes
 import Vdb.DualVertex
 import Vdb.Tree
