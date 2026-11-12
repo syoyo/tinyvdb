@@ -447,4 +447,56 @@ theorem parseGrids_emit (gs : List FileGrid)
       exact hb_exp
     rw [ih hrest X hbnd]
     simp [hX, FileGrid.descriptorAt, hd]
+
+theorem VdbFile.parseFrom_emitFrom (f : VdbFile) (hc : f.Canonical) (acc : Bytes)
+    (hacc : (f.emitFrom acc).size < UInt64.size) :
+    ∃ out, VdbFile.parseFrom (f.emitFrom acc) acc.size = some (f, out) := by
+  obtain ⟨hpc, hcount, hver, hgrids⟩ := hc
+  set pf : Bytes := concatChunks ([acc] ++ f.prologue.chunks) with hpfdef
+  have hpf : pf = f.prologue.emitFrom acc := by
+    rw [hpfdef]
+    rw [show [acc] ++ f.prologue.chunks = acc :: f.prologue.chunks from by simp]
+    rw [show f.prologue.emitFrom acc = acc ++ concatChunks f.prologue.chunks from rfl]
+    rw [← acc_append_concatChunks]
+  set restC : List Bytes := gridsChunksAt f.grids pf.size with hrdef
+  have hb : f.emitFrom acc = concatChunks (pf :: restC) := by
+    unfold VdbFile.emitFrom
+    rw [emitGrids_acc]
+    rw [← hpf]
+    rw [show gridsBytesAt f.grids pf.size = concatChunks restC from rfl]
+    rw [hpfdef]
+    rw [show concatChunks ([acc] ++ f.prologue.chunks) ++ concatChunks restC =
+        concatChunks (pf :: restC) from by rw [← hpfdef]; rw [acc_append_concatChunks]]
+  rw [hb]
+  unfold VdbFile.parseFrom
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [show concatChunks (pf :: restC) =
+      concatChunks ([acc] ++ f.prologue.chunks ++ restC) from by
+    rw [hpfdef]
+    rw [← acc_append_concatChunks]
+    rw [← concatChunks_append]]
+  rw [FilePrefix.parseFromChunks f.prologue hpc [acc] restC]
+  dsimp only
+  rw [hcount]
+  rw [show (concatChunks ([acc] ++ f.prologue.chunks)).size = pf.size from by
+    rw [← hpfdef]]
+  rw [show concatChunks ([acc] ++ f.prologue.chunks ++ restC) =
+      concatChunks (pf :: restC) from by
+    rw [hpfdef]
+    rw [← acc_append_concatChunks]
+    rw [← concatChunks_append]]
+  have hbnd : (concatChunks (pf :: restC)).size < UInt64.size := by
+    rw [← hb]; exact hacc
+  rw [parseGrids_emit f.grids hgrids f.prologue.header.fileVersion hver pf hbnd]
+  dsimp only
+  exact ⟨_, rfl⟩
+
+
+/-- The entry-point form: a canonical file round trips from empty memory. -/
+theorem VdbFile.parse_emit (f : VdbFile) (hc : f.Canonical)
+    (hacc : (f.emit).size < UInt64.size) :
+    ∃ out, VdbFile.parse (f.emit) = some (f, out) := by
+  simpa [VdbFile.parse, VdbFile.emit, ByteArray.size_empty] using
+    VdbFile.parseFrom_emitFrom f hc ByteArray.empty hacc
+
 end Vdb
