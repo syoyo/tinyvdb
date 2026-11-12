@@ -28,6 +28,8 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `RootTopo.parseFrom_emitFrom` | **root-topology round trip**: background, tile/child counts (`i32`→`u32` count check, children must be 0) and the tile list parse back to the node |
 | `TreeData.parseFrom_emitFrom` | **tree-data round trip**: the tree-base buffer count (`i32` = 1) + root topology parse back to the tree |
 | `RootTopo.parseFrom_emitFrom_empty` | the empty-root specialisation (background + zero counts) |
+| `Vdb/GridBody5.lean` | a grid body with a fully structured tree: header + `TreeData5` topology + the buffer pass (`TreeData5.fullChunks`). `Canonical` bundles the header, tree and buffer well-formedness (`BufMatch`). This supersedes the opaque `GridBody.tree : Bytes` for the 5/4/3 layout. |
+| `GridBody5.parseFrom_emit` | **structured grid-body round trip**: header, tree topology and buffers parse back exactly |
 | `Vdb/TreeBuffer.lean` | the tree buffer pass: `LeafBuffer` (value mask again + compressed value record), the leaf-buffer list, per-node buffer flattening (`Node4.bufferChunks`), the level-5 child-buffer list (`Child5Buffers`) and the whole tree payload (`TreeData5.fullChunks` = topology chunks ++ buffers). Internal nodes carry no buffer of their own, so the blob is the depth-first flattening of the leaf buffers. |
 | `LeafBuffer.parseFrom_emitFrom`, `parseLeafBuffers_emit` | leaf-buffer and leaf-buffer-list round trips |
 | `Node4.parseBuffers_emit`, `parseChild5Buffers_emit`, `RootNode.parseBuffers_emit` | level-4 node, level-5 child list and root buffer round trips (`BufMatch` ties list lengths to the topology child counts) |
