@@ -94,4 +94,115 @@ def VdbFile.parseFrom (b : Bytes) (off : Nat) : Option (VdbFile × Nat) :=
 
 def VdbFile.parse (b : Bytes) : Option (VdbFile × Nat) := VdbFile.parseFrom b 0
 
+
+/-! ### Emitted positions and chunk decomposition -/
+
+
+
+def FileGrid.Canon (g : FileGrid) : Prop :=
+  g.uniqueName.size < 2 ^ 32 ∧ g.gridType.size < 2 ^ 32 ∧ g.instanceParent.size < 2 ^ 32
+
+theorem FileGrid.descChunks_sum (g : FileGrid) (pos : Nat) :
+    ((g.descriptorAt pos).chunks.map (·.size)).sum =
+      descChunkSizes g.uniqueName g.gridType g.instanceParent := by
+  simp [FileGrid.descriptorAt, GridDescriptor.chunks, descChunkSizes, putString_size, putU64LE_size]
+
+def FileGrid.totalSize (g : FileGrid) : Nat :=
+  descChunkSizes g.uniqueName g.gridType g.instanceParent +
+    (g.body.chunks.map (·.size)).sum
+
+def FileGrid.bytesAt (g : FileGrid) (start : Nat) : Bytes :=
+  concatChunks ((g.descriptorAt start).chunks ++ g.body.chunks)
+
+def gridsChunksAt : List FileGrid → Nat → List Bytes
+  | [], _ => []
+  | g :: rest, start => (g.descriptorAt start).chunks ++ g.body.chunks ++ gridsChunksAt rest (start + g.totalSize)
+
+def gridsBytesAt (gs : List FileGrid) (start : Nat) : Bytes :=
+  concatChunks (gridsChunksAt gs start)
+
+theorem FileGrid.emitInto_eq (g : FileGrid) (acc : Bytes) :
+    g.emitInto acc = concatChunks ([acc] ++ (g.descriptorAt acc.size).chunks ++ g.body.chunks) := by
+  unfold FileGrid.emitInto GridBody.emitFrom GridDescriptor.emitFrom
+  rw [show acc ++ concatChunks (g.descriptorAt acc.size).chunks =
+      concatChunks (acc :: (g.descriptorAt acc.size).chunks) from acc_append_concatChunks acc _]
+  rw [show concatChunks (acc :: (g.descriptorAt acc.size).chunks) ++ concatChunks g.body.chunks =
+      concatChunks ((acc :: (g.descriptorAt acc.size).chunks) ++ g.body.chunks) from
+    by rw [concatChunks_append]]
+  simp
+
+theorem FileGrid.emitInto_acc (g : FileGrid) (acc : Bytes) :
+    g.emitInto acc = acc ++ g.bytesAt acc.size := by
+  rw [FileGrid.emitInto_eq]
+  rw [show [acc] ++ (g.descriptorAt acc.size).chunks ++ g.body.chunks =
+      acc :: ((g.descriptorAt acc.size).chunks ++ g.body.chunks) from by simp]
+  rw [← acc_append_concatChunks]
+  rfl
+
+theorem FileGrid.bytesAt_size (g : FileGrid) (start : Nat) :
+    (g.bytesAt start).size = g.totalSize := by
+  unfold FileGrid.bytesAt FileGrid.totalSize
+  rw [concatChunks_size]
+  rw [show ((g.descriptorAt start).chunks ++ g.body.chunks).map (·.size) =
+      (g.descriptorAt start).chunks.map (·.size) ++ g.body.chunks.map (·.size) from List.map_append]
+  rw [List.sum_append, FileGrid.descChunks_sum]
+
+theorem FileGrid.emitInto_size (g : FileGrid) (acc : Bytes) :
+    (g.emitInto acc).size = acc.size + g.totalSize := by
+  rw [FileGrid.emitInto_acc, ByteArray.size_append, FileGrid.bytesAt_size]
+
+theorem gridsChunksAt_concat (gs : List FileGrid) (start : Nat) :
+    concatChunks (gridsChunksAt gs start) = gridsBytesAt gs start := rfl
+
+theorem emitGrids_acc (gs : List FileGrid) : ∀ (acc : Bytes),
+    emitGrids gs acc = acc ++ gridsBytesAt gs acc.size := by
+  induction gs with
+  | nil =>
+    intro acc
+    simp [emitGrids, gridsBytesAt, gridsChunksAt, concatChunks]
+  | cons g rest ih =>
+    intro acc
+    simp only [emitGrids]
+    rw [ih (g.emitInto acc)]
+    rw [FileGrid.emitInto_acc, ByteArray.size_append, FileGrid.bytesAt_size]
+    show acc ++ g.bytesAt acc.size ++ gridsBytesAt rest (acc.size + g.totalSize) =
+      acc ++ gridsBytesAt (g :: rest) acc.size
+    rw [show gridsBytesAt (g :: rest) acc.size =
+        g.bytesAt acc.size ++ gridsBytesAt rest (acc.size + g.totalSize) from by
+      simp [gridsBytesAt, gridsChunksAt, FileGrid.bytesAt, concatChunks_append]
+      rw [ByteArray.append_assoc]]
+    rw [ByteArray.append_assoc]
+
+theorem UInt64.toNat_ofNat_lt {n : Nat} (h : n < UInt64.size) : (UInt64.ofNat n).toNat = n := by
+  simp [UInt64.toNat_ofNat, Nat.mod_eq_of_lt h]
+
+theorem FileGrid.descriptorAt_canonical (g : FileGrid) (hg : g.Canon) (pos : Nat) :
+    (g.descriptorAt pos).Canonical := by
+  obtain ⟨h1, h2, h3⟩ := hg
+  simp [GridDescriptor.Canonical, FileGrid.descriptorAt]
+  exact ⟨h1, h2, h3⟩
+
+theorem desc_prefix_size (acc : Bytes) (d : List Bytes) :
+    (concatChunks (acc :: d)).size = acc.size + (d.map (·.size)).sum := by
+  rw [concatChunks_size, List.map_cons, List.sum_cons]
+
+theorem FileGrid.gridOffset_toNat (g : FileGrid) (pos : Nat)
+    (h : pos + descChunkSizes g.uniqueName g.gridType g.instanceParent < UInt64.size) :
+    (g.descriptorAt pos).gridOffset.toNat =
+      pos + descChunkSizes g.uniqueName g.gridType g.instanceParent := by
+  show (UInt64.ofNat (pos + descChunkSizes g.uniqueName g.gridType g.instanceParent)).toNat =
+      pos + descChunkSizes g.uniqueName g.gridType g.instanceParent
+  exact UInt64.toNat_ofNat_lt h
+
+theorem FileGrid.endOffset_toNat (g : FileGrid) (pos : Nat)
+    (h : pos + g.totalSize < UInt64.size) :
+    (g.descriptorAt pos).endOffset.toNat = pos + g.totalSize := by
+  unfold FileGrid.descriptorAt
+  dsimp only
+  have h' : pos + g.totalSize < UInt64.size := h
+  rw [show pos + descChunkSizes g.uniqueName g.gridType g.instanceParent +
+      (g.body.chunks.map (·.size)).sum = pos + g.totalSize from by
+    unfold FileGrid.totalSize; omega]
+  exact UInt64.toNat_ofNat_lt h'
+
 end Vdb
