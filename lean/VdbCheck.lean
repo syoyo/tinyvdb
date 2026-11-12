@@ -59,4 +59,9 @@ def main (args : List String) : IO UInt32 := do
             transform={transformKindName gb.header.transform.kind} \
             metadata={gb.header.metadata.entries.length} treebase={gb.bufferCount}"
         o := gd.endOffset.toNat
+    match VdbFile.parseFrom b 0 with
+    | none => IO.println "file: invalid grid sequence"
+    | some (vf, fin) =>
+      IO.println s!"file grids={vf.grids.length} end={fin} size={b.size} \
+        complete={fin == b.size}"
     return 0

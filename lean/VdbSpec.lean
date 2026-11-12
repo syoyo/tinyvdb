@@ -19,6 +19,7 @@ import Vdb.Stable
 import Vdb.Chunks
 import Vdb.Meta
 import Vdb.Transform
+import Vdb.File
 import Vdb.FilePrefix
 import Vdb.GridDescriptor
 import Vdb.GridBody
