@@ -130,6 +130,40 @@ def TransformKind.name : TransformKind → Bytes
   | .translation => "TranslationMap".toUTF8
   | .affine => "AffineMap".toUTF8
 
+/-- Parse a map name (the six names the reader accepts). -/
+def TransformKind.ofName? (b : Bytes) : Option TransformKind :=
+  if b = TransformKind.uniformScale.name then some .uniformScale
+  else if b = TransformKind.scale.name then some .scale
+  else if b = TransformKind.uniformScaleTranslate.name then some .uniformScaleTranslate
+  else if b = TransformKind.scaleTranslate.name then some .scaleTranslate
+  else if b = TransformKind.translation.name then some .translation
+  else if b = TransformKind.affine.name then some .affine
+  else none
+
+@[simp] theorem TransformKind.ofName_uniformScale :
+    TransformKind.ofName? TransformKind.uniformScale.name = some .uniformScale := by
+  native_decide
+
+@[simp] theorem TransformKind.ofName_scale :
+    TransformKind.ofName? TransformKind.scale.name = some .scale := by
+  native_decide
+
+@[simp] theorem TransformKind.ofName_uniformScaleTranslate :
+    TransformKind.ofName? TransformKind.uniformScaleTranslate.name = some .uniformScaleTranslate := by
+  native_decide
+
+@[simp] theorem TransformKind.ofName_scaleTranslate :
+    TransformKind.ofName? TransformKind.scaleTranslate.name = some .scaleTranslate := by
+  native_decide
+
+@[simp] theorem TransformKind.ofName_translation :
+    TransformKind.ofName? TransformKind.translation.name = some .translation := by
+  native_decide
+
+@[simp] theorem TransformKind.ofName_affine :
+    TransformKind.ofName? TransformKind.affine.name = some .affine := by
+  native_decide
+
 /-- A grid transform. `affine` holds the 128 raw bytes of the OpenVDB
     row-vector `Mat4d`; it is only meaningful for `.affine`. -/
 structure Transform where
@@ -191,34 +225,42 @@ def Transform.parseFrom (b : Bytes) (off : Nat) : Option (Transform × Nat) :=
   match getString? b off with
   | none => none
   | some (tn, o1) =>
-    if tn = TransformKind.uniformScale.name || tn = TransformKind.scale.name then
+    match TransformKind.ofName? tn with
+    | none => none
+    | some .uniformScale =>
       match parseVecChain 5 b o1 with
-      | some (vs, o) =>
-        let k : TransformKind :=
-          if tn = TransformKind.uniformScale.name then .uniformScale else .scale
-        some (⟨k, Vec3d.zero, vs.getD 0 Vec3d.zero, vs.getD 1 Vec3d.zero,
-          ByteArray.empty⟩, o)
       | none => none
-    else if tn = TransformKind.uniformScaleTranslate.name ||
-            tn = TransformKind.scaleTranslate.name then
+      | some (vs, o) =>
+        some (⟨.uniformScale, Vec3d.zero, vs.getD 0 Vec3d.zero, vs.getD 1 Vec3d.zero,
+          ByteArray.empty⟩, o)
+    | some .scale =>
+      match parseVecChain 5 b o1 with
+      | none => none
+      | some (vs, o) =>
+        some (⟨.scale, Vec3d.zero, vs.getD 0 Vec3d.zero, vs.getD 1 Vec3d.zero,
+          ByteArray.empty⟩, o)
+    | some .uniformScaleTranslate =>
       match parseVecChain 6 b o1 with
+      | none => none
       | some (vs, o) =>
-        let k : TransformKind :=
-          if tn = TransformKind.uniformScaleTranslate.name then .uniformScaleTranslate
-          else .scaleTranslate
-        some (⟨k, vs.getD 0 Vec3d.zero, vs.getD 1 Vec3d.zero, vs.getD 2 Vec3d.zero,
-          ByteArray.empty⟩, o)
+        some (⟨.uniformScaleTranslate, vs.getD 0 Vec3d.zero, vs.getD 1 Vec3d.zero,
+          vs.getD 2 Vec3d.zero, ByteArray.empty⟩, o)
+    | some .scaleTranslate =>
+      match parseVecChain 6 b o1 with
       | none => none
-    else if tn = TransformKind.translation.name then
+      | some (vs, o) =>
+        some (⟨.scaleTranslate, vs.getD 0 Vec3d.zero, vs.getD 1 Vec3d.zero,
+          vs.getD 2 Vec3d.zero, ByteArray.empty⟩, o)
+    | some .translation =>
       match parseVecChain 1 b o1 with
-      | some (vs, o) => some (⟨.translation, vs.getD 0 Vec3d.zero, Vec3d.zero,
-          Vec3d.zero, ByteArray.empty⟩, o)
       | none => none
-    else if tn = TransformKind.affine.name then
+      | some (vs, o) =>
+        some (⟨.translation, vs.getD 0 Vec3d.zero, Vec3d.zero, Vec3d.zero,
+          ByteArray.empty⟩, o)
+    | some .affine =>
       match getBytes? b o1 128 with
       | none => none
       | some raw => some (⟨.affine, Vec3d.zero, Vec3d.zero, Vec3d.zero, raw⟩, o1 + 128)
-    else none
 
 /-! ### Round trip -/
 
@@ -257,6 +299,156 @@ theorem parseVecChain_emit (vs : List Vec3d) :
 
 
 
+/-- Uniform-scale maps: name + five 24-byte vectors. -/
+theorem Transform.parseFrom_emitFrom_uniformScale (sc vs : Vec3d) (acc : Bytes) :
+    ∃ out, Transform.parseFrom
+        ((⟨.uniformScale, Vec3d.zero, sc, vs, ByteArray.empty⟩ : Transform).emitFrom acc) acc.size =
+      some (⟨.uniformScale, Vec3d.zero, sc, vs, ByteArray.empty⟩, out) := by
+  constructor
+  unfold Transform.parseFrom Transform.emitFrom Transform.chunks Transform.fieldChunks
+  rw [acc_append_concatChunks]
+  rw [show (acc :: (putString (TransformKind.uniformScale.name) ByteArray.empty ::
+      [sc.toBytes, vs.toBytes, (Vec3d.inv sc).toBytes, (Vec3d.invSq sc).toBytes,
+       (Vec3d.invTwice sc).toBytes])) =
+      [acc] ++ putString (TransformKind.uniformScale.name) ByteArray.empty ::
+        [sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := TransformKind.uniformScale.name)
+    (post := [sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes)
+    (by decide)]
+  dsimp only
+  rw [TransformKind.ofName_uniformScale]
+  dsimp only
+  rw [show (concatChunks [acc]).size + 4 + (TransformKind.uniformScale.name).size =
+      (concatChunks [acc, putString (TransformKind.uniformScale.name) ByteArray.empty]).size by
+    simp [concatChunks_size, putString_size]; omega]
+  have hchain := parseVecChain_emit [sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc]
+    [acc, putString (TransformKind.uniformScale.name) ByteArray.empty] ([] : List Bytes)
+  simp only [List.length_cons, List.length_nil] at hchain
+  norm_num at hchain
+  rw [show concatChunks ([acc] ++ putString (TransformKind.uniformScale.name) ByteArray.empty ::
+      [sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes) =
+      concatChunks [acc, putString (TransformKind.uniformScale.name) ByteArray.empty,
+        sc.toBytes, vs.toBytes, (Vec3d.inv sc).toBytes, (Vec3d.invSq sc).toBytes,
+        (Vec3d.invTwice sc).toBytes] from by simp]
+  rw [hchain]
+  dsimp only
+  simp
+  rfl
+
+/-- Scale maps: name + five 24-byte vectors. -/
+theorem Transform.parseFrom_emitFrom_scale (sc vs : Vec3d) (acc : Bytes) :
+    ∃ out, Transform.parseFrom
+        ((⟨.scale, Vec3d.zero, sc, vs, ByteArray.empty⟩ : Transform).emitFrom acc) acc.size =
+      some (⟨.scale, Vec3d.zero, sc, vs, ByteArray.empty⟩, out) := by
+  constructor
+  unfold Transform.parseFrom Transform.emitFrom Transform.chunks Transform.fieldChunks
+  rw [acc_append_concatChunks]
+  rw [show (acc :: (putString (TransformKind.scale.name) ByteArray.empty ::
+      [sc.toBytes, vs.toBytes, (Vec3d.inv sc).toBytes, (Vec3d.invSq sc).toBytes,
+       (Vec3d.invTwice sc).toBytes])) =
+      [acc] ++ putString (TransformKind.scale.name) ByteArray.empty ::
+        [sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := TransformKind.scale.name)
+    (post := [sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes)
+    (by decide)]
+  dsimp only
+  rw [TransformKind.ofName_scale]
+  dsimp only
+  rw [show (concatChunks [acc]).size + 4 + (TransformKind.scale.name).size =
+      (concatChunks [acc, putString (TransformKind.scale.name) ByteArray.empty]).size by
+    simp [concatChunks_size, putString_size]; omega]
+  have hchain := parseVecChain_emit [sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc]
+    [acc, putString (TransformKind.scale.name) ByteArray.empty] ([] : List Bytes)
+  simp only [List.length_cons, List.length_nil] at hchain
+  norm_num at hchain
+  rw [show concatChunks ([acc] ++ putString (TransformKind.scale.name) ByteArray.empty ::
+      [sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes) =
+      concatChunks [acc, putString (TransformKind.scale.name) ByteArray.empty,
+        sc.toBytes, vs.toBytes, (Vec3d.inv sc).toBytes, (Vec3d.invSq sc).toBytes,
+        (Vec3d.invTwice sc).toBytes] from by simp]
+  rw [hchain]
+  dsimp only
+  simp
+  rfl
+
+/-- Uniform scale + translation. -/
+theorem Transform.parseFrom_emitFrom_uniformScaleTranslate (tr sc vs : Vec3d) (acc : Bytes) :
+    ∃ out, Transform.parseFrom
+        ((⟨.uniformScaleTranslate, tr, sc, vs, ByteArray.empty⟩ : Transform).emitFrom acc) acc.size =
+      some (⟨.uniformScaleTranslate, tr, sc, vs, ByteArray.empty⟩, out) := by
+  constructor
+  unfold Transform.parseFrom Transform.emitFrom Transform.chunks Transform.fieldChunks
+  rw [acc_append_concatChunks]
+  rw [show (acc :: (putString (TransformKind.uniformScaleTranslate.name) ByteArray.empty ::
+      [tr.toBytes, sc.toBytes, vs.toBytes, (Vec3d.inv sc).toBytes, (Vec3d.invSq sc).toBytes,
+       (Vec3d.invTwice sc).toBytes])) =
+      [acc] ++ putString (TransformKind.uniformScaleTranslate.name) ByteArray.empty ::
+        [tr, sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := TransformKind.uniformScaleTranslate.name)
+    (post := [tr, sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes)
+    (by decide)]
+  dsimp only
+  rw [TransformKind.ofName_uniformScaleTranslate]
+  dsimp only
+  rw [show (concatChunks [acc]).size + 4 + (TransformKind.uniformScaleTranslate.name).size =
+      (concatChunks [acc, putString (TransformKind.uniformScaleTranslate.name)
+        ByteArray.empty]).size by
+    simp [concatChunks_size, putString_size]; omega]
+  have hchain := parseVecChain_emit [tr, sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc]
+    [acc, putString (TransformKind.uniformScaleTranslate.name) ByteArray.empty] ([] : List Bytes)
+  simp only [List.length_cons, List.length_nil] at hchain
+  norm_num at hchain
+  rw [show concatChunks ([acc] ++ putString (TransformKind.uniformScaleTranslate.name)
+      ByteArray.empty ::
+      [tr, sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes) =
+      concatChunks [acc, putString (TransformKind.uniformScaleTranslate.name) ByteArray.empty,
+        tr.toBytes, sc.toBytes, vs.toBytes, (Vec3d.inv sc).toBytes, (Vec3d.invSq sc).toBytes,
+        (Vec3d.invTwice sc).toBytes] from by simp]
+  rw [hchain]
+  dsimp only
+  simp
+  rfl
+
+/-- Scale + translation. -/
+theorem Transform.parseFrom_emitFrom_scaleTranslate (tr sc vs : Vec3d) (acc : Bytes) :
+    ∃ out, Transform.parseFrom
+        ((⟨.scaleTranslate, tr, sc, vs, ByteArray.empty⟩ : Transform).emitFrom acc) acc.size =
+      some (⟨.scaleTranslate, tr, sc, vs, ByteArray.empty⟩, out) := by
+  constructor
+  unfold Transform.parseFrom Transform.emitFrom Transform.chunks Transform.fieldChunks
+  rw [acc_append_concatChunks]
+  rw [show (acc :: (putString (TransformKind.scaleTranslate.name) ByteArray.empty ::
+      [tr.toBytes, sc.toBytes, vs.toBytes, (Vec3d.inv sc).toBytes, (Vec3d.invSq sc).toBytes,
+       (Vec3d.invTwice sc).toBytes])) =
+      [acc] ++ putString (TransformKind.scaleTranslate.name) ByteArray.empty ::
+        [tr, sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := TransformKind.scaleTranslate.name)
+    (post := [tr, sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes)
+    (by decide)]
+  dsimp only
+  rw [TransformKind.ofName_scaleTranslate]
+  dsimp only
+  rw [show (concatChunks [acc]).size + 4 + (TransformKind.scaleTranslate.name).size =
+      (concatChunks [acc, putString (TransformKind.scaleTranslate.name) ByteArray.empty]).size by
+    simp [concatChunks_size, putString_size]; omega]
+  have hchain := parseVecChain_emit [tr, sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc]
+    [acc, putString (TransformKind.scaleTranslate.name) ByteArray.empty] ([] : List Bytes)
+  simp only [List.length_cons, List.length_nil] at hchain
+  norm_num at hchain
+  rw [show concatChunks ([acc] ++ putString (TransformKind.scaleTranslate.name) ByteArray.empty ::
+      [tr, sc, vs, Vec3d.inv sc, Vec3d.invSq sc, Vec3d.invTwice sc].map Vec3d.toBytes) =
+      concatChunks [acc, putString (TransformKind.scaleTranslate.name) ByteArray.empty,
+        tr.toBytes, sc.toBytes, vs.toBytes, (Vec3d.inv sc).toBytes, (Vec3d.invSq sc).toBytes,
+        (Vec3d.invTwice sc).toBytes] from by simp]
+  rw [hchain]
+  dsimp only
+  simp
+  rfl
+
 /-- Translation maps: name + one 24-byte vector. -/
 theorem Transform.parseFrom_emitFrom_translation (tr : Vec3d) (acc : Bytes) :
     ∃ out, Transform.parseFrom
@@ -273,30 +465,99 @@ theorem Transform.parseFrom_emitFrom_translation (tr : Vec3d) (acc : Bytes) :
   rw [getString?_chunk (pre := [acc]) (s := TransformKind.translation.name)
     (post := [tr].map Vec3d.toBytes) (by decide)]
   dsimp only
-  split
-  · rename_i h
-    exact absurd h (by decide)
-  · split
-    · rename_i h
-      exact absurd h (by decide)
-    · split
-      · rename_i h
-        rw [show (concatChunks [acc]).size + 4 + (TransformKind.translation.name).size =
-            (concatChunks [acc, putString (TransformKind.translation.name) ByteArray.empty]).size by
-          simp [concatChunks_size, putString_size]; omega]
-        have hchain := parseVecChain_emit [tr]
-          [acc, putString (TransformKind.translation.name) ByteArray.empty] ([] : List Bytes)
-        simp only [List.length_cons, List.length_nil] at hchain
-        norm_num at hchain
-        rw [show concatChunks ([acc] ++ putString (TransformKind.translation.name) ByteArray.empty ::
-            [tr].map Vec3d.toBytes) = concatChunks
-            [acc, putString (TransformKind.translation.name) ByteArray.empty, tr.toBytes] from by
-          simp]
-        rw [hchain]
-        dsimp only
-        simp
-        rfl
-      · rename_i h
-        exact absurd h (by decide)
+  rw [TransformKind.ofName_translation]
+  dsimp only
+  rw [show (concatChunks [acc]).size + 4 + (TransformKind.translation.name).size =
+      (concatChunks [acc, putString (TransformKind.translation.name) ByteArray.empty]).size by
+    simp [concatChunks_size, putString_size]; omega]
+  have hchain := parseVecChain_emit [tr]
+    [acc, putString (TransformKind.translation.name) ByteArray.empty] ([] : List Bytes)
+  simp only [List.length_cons, List.length_nil] at hchain
+  norm_num at hchain
+  rw [show concatChunks ([acc] ++ putString (TransformKind.translation.name) ByteArray.empty ::
+      [tr].map Vec3d.toBytes) = concatChunks
+      [acc, putString (TransformKind.translation.name) ByteArray.empty, tr.toBytes] from by
+    simp]
+  rw [hchain]
+  dsimp only
+  simp
+  rfl
+
+/-- Affine maps: name + a 128-byte matrix block. -/
+theorem Transform.parseFrom_emitFrom_affine (af : Bytes) (hsz : af.size = 128) (acc : Bytes) :
+    ∃ out, Transform.parseFrom
+        ((⟨.affine, Vec3d.zero, Vec3d.zero, Vec3d.zero, af⟩ : Transform).emitFrom acc) acc.size =
+      some (⟨.affine, Vec3d.zero, Vec3d.zero, Vec3d.zero, af⟩, out) := by
+  constructor
+  unfold Transform.parseFrom Transform.emitFrom Transform.chunks Transform.fieldChunks
+  rw [acc_append_concatChunks]
+  rw [show (acc :: (putString (TransformKind.affine.name) ByteArray.empty :: [af])) =
+      [acc] ++ putString (TransformKind.affine.name) ByteArray.empty :: [af] from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := TransformKind.affine.name) (post := [af])
+    (by decide)]
+  dsimp only
+  rw [TransformKind.ofName_affine]
+  dsimp only
+  rw [show (concatChunks [acc]).size + 4 + (TransformKind.affine.name).size =
+      (concatChunks [acc, putString (TransformKind.affine.name) ByteArray.empty]).size by
+    simp [concatChunks_size, putString_size]; omega]
+  rw [show (128 : Nat) = af.size from hsz.symm]
+  have hchain := getBytes?_chunk [acc, putString (TransformKind.affine.name) ByteArray.empty] af []
+  rw [show concatChunks ([acc] ++ [putString (TransformKind.affine.name) ByteArray.empty, af]) =
+      concatChunks ([acc, putString (TransformKind.affine.name) ByteArray.empty] ++ [af]) from by
+    simp]
+  rw [hchain]
+
+
+/-- **Transform round trip**: a well-formed transform parses back unchanged. -/
+theorem Transform.parseFrom_emitFrom (t : Transform) (hwf : t.WellFormed) (acc : Bytes) :
+    ∃ out, Transform.parseFrom (t.emitFrom acc) acc.size = some (t, out) := by
+  rcases t with ⟨kind, tr, sc, vs, af⟩
+  obtain ⟨hnt, htr, haff, h128, h0⟩ := hwf
+  cases kind
+  · -- uniformScale
+    have htr0 : tr = Vec3d.zero := hnt (Or.inl rfl)
+    have haf0 : af = ByteArray.empty := by
+      apply ByteArray.size_eq_zero_iff.mp
+      exact h0 (by intro h; cases h)
+    rw [htr0, haf0]
+    exact Transform.parseFrom_emitFrom_uniformScale sc vs acc
+  · -- scale
+    have htr0 : tr = Vec3d.zero := hnt (Or.inr rfl)
+    have haf0 : af = ByteArray.empty := by
+      apply ByteArray.size_eq_zero_iff.mp
+      exact h0 (by intro h; cases h)
+    rw [htr0, haf0]
+    exact Transform.parseFrom_emitFrom_scale sc vs acc
+  · -- uniformScaleTranslate
+    have haf0 : af = ByteArray.empty := by
+      apply ByteArray.size_eq_zero_iff.mp
+      exact h0 (by intro h; cases h)
+    rw [haf0]
+    exact Transform.parseFrom_emitFrom_uniformScaleTranslate tr sc vs acc
+  · -- scaleTranslate
+    have haf0 : af = ByteArray.empty := by
+      apply ByteArray.size_eq_zero_iff.mp
+      exact h0 (by intro h; cases h)
+    rw [haf0]
+    exact Transform.parseFrom_emitFrom_scaleTranslate tr sc vs acc
+  · -- translation
+    obtain ⟨hsc, hvs⟩ := htr rfl
+    have hsc' : sc = Vec3d.zero := hsc
+    have hvs' : vs = Vec3d.zero := hvs
+    have haf0 : af = ByteArray.empty := by
+      apply ByteArray.size_eq_zero_iff.mp
+      exact h0 (by intro h; cases h)
+    rw [hsc', hvs', haf0]
+    exact Transform.parseFrom_emitFrom_translation tr acc
+  · -- affine
+    obtain ⟨hsc, hvs, htr0⟩ := haff rfl
+    have hsc' : sc = Vec3d.zero := hsc
+    have hvs' : vs = Vec3d.zero := hvs
+    have htr0' : tr = Vec3d.zero := htr0
+    have hsz : af.size = 128 := h128 rfl
+    rw [hsc', hvs', htr0']
+    exact Transform.parseFrom_emitFrom_affine af hsz acc
 
 end Vdb
