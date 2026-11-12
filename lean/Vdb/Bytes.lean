@@ -550,3 +550,88 @@ theorem getF32Bits_putF32Bits (acc : Bytes) (v : UInt32) :
 theorem getF64Bits_putF64Bits (acc : Bytes) (v : UInt64) :
     getF64Bits (putF64Bits v acc) acc.size = some v := by
   simp [getF64Bits, putF64Bits, getU64LE_putU64LE]
+
+/-! ### String and blob wire primitives -/
+
+/-- A VDB string: `u32` length followed by that many bytes (no terminator). -/
+def putString (s : Bytes) : Emit :=
+  fun acc => (putU32LE (UInt32.ofNat s.size)) acc ++ s
+
+/-- Parse a VDB string; returns the bytes and the next offset. -/
+def getString? (b : Bytes) (off : Nat) : Option (Bytes × Nat) :=
+  match getU32LE b off with
+  | none => none
+  | some n =>
+    match getBytes? b (off + 4) n.toNat with
+    | none => none
+    | some payload => some (payload, off + 4 + n.toNat)
+
+theorem getBytes?_append (s acc : Bytes) :
+    getBytes? (acc ++ s) acc.size s.size = some s := by
+  unfold getBytes?
+  have h : acc.size + s.size ≤ (acc ++ s).size := by
+    rw [ByteArray.size_append]; omega
+  rw [ite_eq_left h]
+  exact congrArg some extract_append_right_eq
+
+/-- The same read with the `putBytes` spelling. -/
+theorem getBytes?_putBytes (s acc : Bytes) :
+    getBytes? (putBytes s acc) acc.size s.size = some s := getBytes?_append s acc
+
+theorem putString_size (s acc : Bytes) :
+    (putString s acc).size = acc.size + 4 + s.size := by
+  unfold putString
+  rw [ByteArray.size_append]
+  have h : (putU32LE (UInt32.ofNat s.size) acc).size = acc.size + 4 := by
+    unfold putU32LE
+    rw [pushBytes_size]
+    rfl
+  rw [h]
+
+theorem getString?_putString (s acc : Bytes) (hsize : s.size < 2 ^ 32) :
+    getString? (putString s acc) acc.size = some (s, acc.size + 4 + s.size) := by
+  unfold getString? putString
+  have hoff : (putU32LE (UInt32.ofNat s.size) acc).size = acc.size + 4 := by
+    unfold putU32LE
+    rw [pushBytes_size]
+    rfl
+  rw [getU32LE_append_left (a := (putU32LE (UInt32.ofNat s.size)) acc) (b := s)
+    (i := acc.size) (by rw [hoff]; omega)]
+  rw [getU32LE_putU32LE]
+  dsimp only
+  have htoNat : (UInt32.ofNat s.size).toNat = s.size := by
+    rw [UInt32.toNat_ofNat']
+    exact Nat.mod_eq_of_lt hsize
+  have hoff' : acc.size + 4 = (putU32LE (UInt32.ofNat s.size) acc).size := hoff.symm
+  rw [htoNat, hoff', getBytes?_append]
+
+/-- A byte blob read at a prefix boundary with trailing bytes. -/
+theorem getBytes?_prefix (a s rest : Bytes) :
+    getBytes? (a ++ (s ++ rest)) a.size s.size = some s := by
+  unfold getBytes?
+  rw [ite_eq_left (by simp [ByteArray.size_append])]
+  congr 1
+  rw [extract_append_size_head (by simp)]
+  exact ByteArray.extract_append_eq_left (i := s.size) rfl
+
+/-- Reading a VDB string at `acc.size` with trailing bytes after it. -/
+theorem getString?_putString_append (s acc rest : Bytes) (hsize : s.size < 2 ^ 32) :
+    getString? (putString s acc ++ rest) acc.size = some (s, acc.size + 4 + s.size) := by
+  unfold getString? putString
+  have hoff : (putU32LE (UInt32.ofNat s.size) acc).size = acc.size + 4 := by
+    unfold putU32LE
+    rw [pushBytes_size]
+    rfl
+  rw [ByteArray.append_assoc]
+  rw [getU32LE_append_left (a := (putU32LE (UInt32.ofNat s.size) acc)) (b := s ++ rest)
+    (i := acc.size) (by rw [hoff]; omega)]
+  rw [getU32LE_putU32LE]
+  dsimp only
+  have htoNat : (UInt32.ofNat s.size).toNat = s.size := by
+    rw [UInt32.toNat_ofNat']
+    exact Nat.mod_eq_of_lt hsize
+  rw [htoNat]
+  rw [show acc.size + 4 = (putU32LE (UInt32.ofNat s.size) acc).size from hoff.symm]
+  rw [getBytes?_prefix]
+
+end Vdb

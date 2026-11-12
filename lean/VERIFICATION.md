@@ -49,8 +49,8 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Layout.standard_wf`, `float543_wellFormed`, `parseGridType_float543` | the standard `5_4_3` float layout parses and validates |
 | `pushBytes_eq_append` | `pushBytes bs acc = acc ++ pushBytes bs empty` (exposes every emitter as an append chain) |
 | `putU8_size` … `putI64LE_size` | emitted sizes of every scalar writer, so read offsets are known to `simp`/`omega` |
-| `getBytes?_append`, `getBytes?_putBytes`, `getString?_putString`, `putString_size` | string/blob wire round trips and emitted sizes |
-| `concatChunks_append`, `concatChunks_size`, `acc_append_concatChunks`, `getU8?_chunk` … `getBytes?_chunk` | chunk-chain algebra and boundary reads |
+| `getBytes?_append`, `getBytes?_prefix`, `getBytes?_putBytes`, `getString?_putString`, `getString?_putString_append`, `putString_size` | string/blob wire round trips and emitted sizes, including reads with trailing bytes |
+| `concatChunks_append`, `concatChunks_size`, `acc_append_concatChunks`, `getU8?_chunk` … `getBytes?_chunk`, `getString?_chunk` | chunk-chain algebra and boundary reads, including VDB strings |
 | `Header.parseFrom_emitFrom` | **header round trip**: every canonical header parses back unchanged from its emitted bytes, with the legacy compression byte present only for versions 220–221 |
 | `nodeSlot_lt` | an in-box coordinate gives a slot below `2^(3L)` |
 | `exampleTree_lookup_origin/inactive/background` | the worked tree reads the active voxel, an inactive stored value, and the background correctly (checked by `decide`) |

@@ -25,62 +25,6 @@ import Vdb.Value
 
 namespace Vdb
 
-/-! ### String and blob primitives -/
-
-/-- A VDB string: `u32` length followed by that many bytes (no terminator). -/
-def putString (s : Bytes) : Emit :=
-  fun acc => (putU32LE (UInt32.ofNat s.size)) acc ++ s
-
-/-- Parse a VDB string; returns the bytes and the next offset. -/
-def getString? (b : Bytes) (off : Nat) : Option (Bytes × Nat) :=
-  match getU32LE b off with
-  | none => none
-  | some n =>
-    match getBytes? b (off + 4) n.toNat with
-    | none => none
-    | some payload => some (payload, off + 4 + n.toNat)
-
-/-! ### Round trips for the primitives -/
-
-theorem getBytes?_append (s acc : Bytes) :
-    getBytes? (acc ++ s) acc.size s.size = some s := by
-  unfold getBytes?
-  have h : acc.size + s.size ≤ (acc ++ s).size := by
-    rw [ByteArray.size_append]
-  rw [ite_eq_left h]
-  exact congrArg some extract_append_right_eq
-
-/-- The same read with the `putBytes` spelling. -/
-theorem getBytes?_putBytes (s acc : Bytes) :
-    getBytes? (putBytes s acc) acc.size s.size = some s := getBytes?_append s acc
-
-theorem getString?_putString (s acc : Bytes) (hsize : s.size < 2 ^ 32) :
-    getString? (putString s acc) acc.size = some (s, acc.size + 4 + s.size) := by
-  unfold getString? putString
-  have hlen4 : (putU32LE.u32Bytes (UInt32.ofNat s.size)).length = 4 := rfl
-  have hoff : (putU32LE (UInt32.ofNat s.size) acc).size = acc.size + 4 := by
-    unfold putU32LE
-    rw [pushBytes_size, hlen4]
-  rw [getU32LE_append_left (a := (putU32LE (UInt32.ofNat s.size)) acc) (b := s)
-    (i := acc.size) (by rw [hoff])]
-  rw [getU32LE_putU32LE]
-  dsimp only
-  have htoNat : (UInt32.ofNat s.size).toNat = s.size := by
-    rw [UInt32.toNat_ofNat']
-    exact Nat.mod_eq_of_lt hsize
-  rw [htoNat, show acc.size + 4 = (putU32LE (UInt32.ofNat s.size) acc).size from hoff.symm]
-  rw [getBytes?_append]
-
-theorem putString_size (s acc : Bytes) :
-    (putString s acc).size = acc.size + 4 + s.size := by
-  unfold putString
-  rw [ByteArray.size_append]
-  have h : (putU32LE (UInt32.ofNat s.size) acc).size = acc.size + 4 := by
-    unfold putU32LE
-    rw [pushBytes_size]
-    rfl
-  rw [h]
-
 /-! ### Header -/
 
 /-- The VDB magic as a signed 64-bit integer (`0x56444220`). -/

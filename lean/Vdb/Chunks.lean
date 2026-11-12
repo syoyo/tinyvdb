@@ -105,6 +105,23 @@ theorem getU8?_chunk (pre : List Bytes) (v : UInt8) (post : List Bytes) :
   rw [getU8?_append_left (by simp)]
   exact getU8_putU8 ByteArray.empty v
 
+/-- Reading a VDB string at the end of the chunk prefix. -/
+theorem getString?_chunk (pre : List Bytes) (s : Bytes) (post : List Bytes)
+    (hsize : s.size < 2 ^ 32) :
+    getString? (concatChunks (pre ++ putString s ByteArray.empty :: post))
+        (concatChunks pre).size = some (s, (concatChunks pre).size + 4 + s.size) := by
+  rw [concatChunks_split]
+  have hassoc : concatChunks pre ++ (putString s ByteArray.empty ++ concatChunks post) =
+      putString s (concatChunks pre) ++ concatChunks post := by
+    rw [putString, putString]
+    have h1 : putU32LE (UInt32.ofNat s.size) (concatChunks pre) =
+        concatChunks pre ++ putU32LE (UInt32.ofNat s.size) ByteArray.empty :=
+      pushBytes_eq_append _ _
+    rw [h1]
+    simp only [ByteArray.append_assoc]
+  rw [hassoc]
+  exact getString?_putString_append s (concatChunks pre) (concatChunks post) hsize
+
 /-- Reading a byte blob at the end of the chunk prefix. -/
 theorem getBytes?_chunk (pre : List Bytes) (c : Bytes) (post : List Bytes) :
     getBytes? (concatChunks (pre ++ c :: post)) (concatChunks pre).size c.size = some c := by
