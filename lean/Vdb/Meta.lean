@@ -41,6 +41,51 @@ def knownTypeName (b : Bytes) : Bool :=
   b = int32TypeName || b = int64TypeName || b = vec3iTypeName ||
   b = vec3sTypeName || b = vec3dTypeName
 
+/-- The metadata value kinds the reader decodes. -/
+inductive MetaKind where
+  | str
+  | boolean
+  | int32
+  | int64
+  | float
+  | double
+  | vec3i
+  | vec3s
+  | vec3d
+  deriving Repr, DecidableEq
+
+/-- Map-name lookup for metadata types. -/
+def MetaKind.ofName? (b : Bytes) : Option MetaKind :=
+  if b = strTypeName then some .str
+  else if b = boolTypeName then some .boolean
+  else if b = int32TypeName then some .int32
+  else if b = int64TypeName then some .int64
+  else if b = floatTypeName then some .float
+  else if b = doubleTypeName then some .double
+  else if b = vec3iTypeName then some .vec3i
+  else if b = vec3sTypeName then some .vec3s
+  else if b = vec3dTypeName then some .vec3d
+  else none
+
+@[simp] theorem MetaKind.ofName_str : MetaKind.ofName? strTypeName = some .str := by
+  native_decide
+@[simp] theorem MetaKind.ofName_bool : MetaKind.ofName? boolTypeName = some .boolean := by
+  native_decide
+@[simp] theorem MetaKind.ofName_int32 : MetaKind.ofName? int32TypeName = some .int32 := by
+  native_decide
+@[simp] theorem MetaKind.ofName_int64 : MetaKind.ofName? int64TypeName = some .int64 := by
+  native_decide
+@[simp] theorem MetaKind.ofName_float : MetaKind.ofName? floatTypeName = some .float := by
+  native_decide
+@[simp] theorem MetaKind.ofName_double : MetaKind.ofName? doubleTypeName = some .double := by
+  native_decide
+@[simp] theorem MetaKind.ofName_vec3i : MetaKind.ofName? vec3iTypeName = some .vec3i := by
+  native_decide
+@[simp] theorem MetaKind.ofName_vec3s : MetaKind.ofName? vec3sTypeName = some .vec3s := by
+  native_decide
+@[simp] theorem MetaKind.ofName_vec3d : MetaKind.ofName? vec3dTypeName = some .vec3d := by
+  native_decide
+
 /-! ### Entries -/
 
 /-- A metadata entry. `raw` holds the payload of an unknown type; `str` the
@@ -118,55 +163,54 @@ theorem MetaEntry.emitFrom_size (e : MetaEntry) (acc : Bytes) :
 
 /-! ### Parsing -/
 
-/-- Read a value of a known-or-unknown type at `off`, after the type name.
-    `size` is the `i32` byte count that precedes the payload. `len` is that
-    count clamped to `Nat` (the C reader rejects negatives first). -/
-def parseValue (tn : Bytes) (b : Bytes) (off : Nat) : Option (MetaValue × Nat) :=
+/-- Read a value of the given kind at `off`, after the type name. `size` is
+    the `i32` byte count that precedes the payload (the C reader rejects
+    negative counts and requires the exact width for known kinds). -/
+def parseValue (k : MetaKind) (b : Bytes) (off : Nat) : Option (MetaValue × Nat) :=
   match getI32LE b off with
   | none => none
   | some sz =>
     if sz < 0 then none
-    else if tn = boolTypeName then
-      if sz.toNatClampNeg = 1 then
-        (getU8? b (off + 4)).map fun v => (.boolean (v != 0), off + 5)
-      else none
-    else if tn = int32TypeName then
-      if sz.toNatClampNeg = 4 then
-        (getI32LE b (off + 4)).map fun v => (.int32 v, off + 8)
-      else none
-    else if tn = int64TypeName then
-      if sz.toNatClampNeg = 8 then
-        (getI64LE b (off + 4)).map fun v => (.int64 v, off + 12)
-      else none
-    else if tn = floatTypeName then
-      if sz.toNatClampNeg = 4 then
-        (getU32LE b (off + 4)).map fun v => (.f32 v, off + 8)
-      else none
-    else if tn = doubleTypeName then
-      if sz.toNatClampNeg = 8 then
-        (getU64LE b (off + 4)).map fun v => (.f64 v, off + 12)
-      else none
-    else if tn = vec3iTypeName then
-      if sz.toNatClampNeg = 12 then
-        (getI32LE b (off + 4)).bind fun x =>
-          (getI32LE b (off + 8)).bind fun y =>
-            (getI32LE b (off + 12)).map fun z => (.vec3i x y z, off + 16)
-      else none
-    else if tn = vec3sTypeName then
-      if sz.toNatClampNeg = 12 then
-        (getU32LE b (off + 4)).bind fun x =>
-          (getU32LE b (off + 8)).bind fun y =>
-            (getU32LE b (off + 12)).map fun z => (.vec3f x y z, off + 16)
-      else none
-    else if tn = vec3dTypeName then
-      if sz.toNatClampNeg = 24 then
-        (getU64LE b (off + 4)).bind fun x =>
-          (getU64LE b (off + 12)).bind fun y =>
-            (getU64LE b (off + 20)).map fun z => (.vec3d x y z, off + 28)
-      else none
-    else
-      (getBytes? b (off + 4) sz.toNatClampNeg).map fun raw =>
-        (.raw raw, off + 4 + sz.toNatClampNeg)
+    else match k with
+      | .str => none
+      | .boolean =>
+        if sz.toNatClampNeg = 1 then
+          (getU8? b (off + 4)).map fun v => (.boolean (v != 0), off + 5)
+        else none
+      | .int32 =>
+        if sz.toNatClampNeg = 4 then
+          (getI32LE b (off + 4)).map fun v => (.int32 v, off + 8)
+        else none
+      | .int64 =>
+        if sz.toNatClampNeg = 8 then
+          (getI64LE b (off + 4)).map fun v => (.int64 v, off + 12)
+        else none
+      | .float =>
+        if sz.toNatClampNeg = 4 then
+          (getU32LE b (off + 4)).map fun v => (.f32 v, off + 8)
+        else none
+      | .double =>
+        if sz.toNatClampNeg = 8 then
+          (getU64LE b (off + 4)).map fun v => (.f64 v, off + 12)
+        else none
+      | .vec3i =>
+        if sz.toNatClampNeg = 12 then
+          (getI32LE b (off + 4)).bind fun x =>
+            (getI32LE b (off + 8)).bind fun y =>
+              (getI32LE b (off + 12)).map fun z => (.vec3i x y z, off + 16)
+        else none
+      | .vec3s =>
+        if sz.toNatClampNeg = 12 then
+          (getU32LE b (off + 4)).bind fun x =>
+            (getU32LE b (off + 8)).bind fun y =>
+              (getU32LE b (off + 12)).map fun z => (.vec3f x y z, off + 16)
+        else none
+      | .vec3d =>
+        if sz.toNatClampNeg = 24 then
+          (getU64LE b (off + 4)).bind fun x =>
+            (getU64LE b (off + 12)).bind fun y =>
+              (getU64LE b (off + 20)).map fun z => (.vec3d x y z, off + 28)
+        else none
 
 /-- Parse an entry at `off`. -/
 def MetaEntry.parseFrom (b : Bytes) (off : Nat) : Option (MetaEntry × Nat) :=
@@ -176,78 +220,16 @@ def MetaEntry.parseFrom (b : Bytes) (off : Nat) : Option (MetaEntry × Nat) :=
     match getString? b o1 with
     | none => none
     | some (tn, o2) =>
-      if tn = strTypeName then
+      match MetaKind.ofName? tn with
+      | some .str =>
         (getString? b o2).map fun p => (⟨name, tn, .str p.1⟩, p.2)
-      else
-        (parseValue tn b o2).map fun p => (⟨name, tn, p.1⟩, p.2)
-
-
-
+      | some k =>
+        (parseValue k b o2).map fun p => (⟨name, tn, p.1⟩, p.2)
+      | none =>
+        (parseValue .boolean b o2).map fun p => (⟨name, tn, p.1⟩, p.2)
 
 
 /-! ### Round trip -/
-
-/-- Reading a boolean entry back: name, type name, size chunk, one byte. -/
-theorem MetaEntry.parseFrom_emitFrom_bool (name : Bytes) (hn : name.size < 2 ^ 32)
-    (b : Bool) (acc : Bytes) :
-    ∃ out, MetaEntry.parseFrom
-        ((⟨name, boolTypeName, .boolean b⟩ : MetaEntry).emitFrom acc) acc.size =
-      some (⟨name, boolTypeName, .boolean b⟩, out) := by
-  constructor
-  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
-  rw [acc_append_concatChunks]
-  rw [show acc :: (putString name ByteArray.empty :: (putString boolTypeName ByteArray.empty ::
-      (putU32LE 1 ByteArray.empty :: [putU8 (if b then 1 else 0) ByteArray.empty]))) =
-      [acc] ++ putString name ByteArray.empty :: (putString boolTypeName ByteArray.empty ::
-      (putU32LE 1 ByteArray.empty :: [putU8 (if b then 1 else 0) ByteArray.empty])) from rfl]
-  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
-  rw [getString?_chunk (pre := [acc]) (s := name)
-    (post := putString boolTypeName ByteArray.empty ::
-      (putU32LE 1 ByteArray.empty :: [putU8 (if b then 1 else 0) ByteArray.empty])) hn]
-  dsimp only
-  rw [show (concatChunks [acc]).size + 4 + name.size =
-      (concatChunks [acc, putString name ByteArray.empty]).size by
-    simp [concatChunks_size, putString_size]; omega]
-  rw [show [acc] ++ (putString name ByteArray.empty :: (putString boolTypeName ByteArray.empty ::
-      (putU32LE 1 ByteArray.empty :: [putU8 (if b then 1 else 0) ByteArray.empty]))) =
-      [acc, putString name ByteArray.empty] ++ (putString boolTypeName ByteArray.empty ::
-      (putU32LE 1 ByteArray.empty :: [putU8 (if b then 1 else 0) ByteArray.empty])) from rfl]
-  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := boolTypeName)
-    (post := putU32LE 1 ByteArray.empty :: [putU8 (if b then 1 else 0) ByteArray.empty])
-    (by decide)]
-  dsimp only
-  rw [ite_eq_right (by decide : ¬ (boolTypeName = strTypeName))]
-  rw [show (concatChunks [acc, putString name ByteArray.empty]).size + 4 + boolTypeName.size =
-      (concatChunks [acc, putString name ByteArray.empty,
-        putString boolTypeName ByteArray.empty]).size by
-    simp [concatChunks_size, putString_size]; omega]
-  unfold parseValue
-  rw [show [acc, putString name ByteArray.empty] ++ (putString boolTypeName ByteArray.empty ::
-      (putU32LE 1 ByteArray.empty :: [putU8 (if b then 1 else 0) ByteArray.empty])) =
-      [acc, putString name ByteArray.empty, putString boolTypeName ByteArray.empty] ++
-        (putU32LE 1 ByteArray.empty :: [putU8 (if b then 1 else 0) ByteArray.empty]) from rfl]
-  have hsz : getI32LE (concatChunks ([acc, putString name ByteArray.empty,
-        putString boolTypeName ByteArray.empty] ++
-        (putU32LE 1 ByteArray.empty :: [putU8 (if b then 1 else 0) ByteArray.empty])))
-      (concatChunks [acc, putString name ByteArray.empty,
-        putString boolTypeName ByteArray.empty]).size = some 1 := by
-    unfold getI32LE
-    rw [getU32LE_chunk]
-    rfl
-  rw [hsz]
-  simp only [Int32.toNatClampNeg, reduceIte]
-  rw [show (concatChunks [acc, putString name ByteArray.empty,
-        putString boolTypeName ByteArray.empty]).size + 4 =
-      (concatChunks [acc, putString name ByteArray.empty, putString boolTypeName ByteArray.empty,
-        putU32LE 1 ByteArray.empty]).size by
-    simp [concatChunks_size]; omega]
-  rw [show [acc, putString name ByteArray.empty, putString boolTypeName ByteArray.empty] ++
-      (putU32LE 1 ByteArray.empty :: [putU8 (if b then 1 else 0) ByteArray.empty]) =
-      [acc, putString name ByteArray.empty, putString boolTypeName ByteArray.empty,
-        putU32LE 1 ByteArray.empty] ++ [putU8 (if b then 1 else 0) ByteArray.empty] from rfl]
-  rw [getU8?_chunk]
-  cases b <;> rfl
-
 
 /-- Reading a signed 32-bit value chunk. -/
 theorem getI32LE_chunk (pre : List Bytes) (v : Int32) (post : List Bytes) :
@@ -255,106 +237,6 @@ theorem getI32LE_chunk (pre : List Bytes) (v : Int32) (post : List Bytes) :
       (concatChunks pre).size = some v := by
   unfold getI32LE putI32LE
   rw [getU32LE_chunk]
-  rfl
-
-/-- Reading a string entry back: name, type name, string value. -/
-theorem MetaEntry.parseFrom_emitFrom_str (name payload : Bytes) (hn : name.size < 2 ^ 32)
-    (hp : payload.size < 2 ^ 32) (acc : Bytes) :
-    ∃ out, MetaEntry.parseFrom
-        ((⟨name, strTypeName, .str payload⟩ : MetaEntry).emitFrom acc) acc.size =
-      some (⟨name, strTypeName, .str payload⟩, out) := by
-  constructor
-  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
-  rw [acc_append_concatChunks]
-  rw [show acc :: (putString name ByteArray.empty :: (putString strTypeName ByteArray.empty ::
-      [putString payload ByteArray.empty])) =
-      [acc] ++ putString name ByteArray.empty :: (putString strTypeName ByteArray.empty ::
-      [putString payload ByteArray.empty]) from rfl]
-  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
-  rw [getString?_chunk (pre := [acc]) (s := name)
-    (post := putString strTypeName ByteArray.empty :: [putString payload ByteArray.empty]) hn]
-  dsimp only
-  rw [show (concatChunks [acc]).size + 4 + name.size =
-      (concatChunks [acc, putString name ByteArray.empty]).size by
-    simp [concatChunks_size, putString_size]; omega]
-  rw [show [acc] ++ (putString name ByteArray.empty :: (putString strTypeName ByteArray.empty ::
-      [putString payload ByteArray.empty])) =
-      [acc, putString name ByteArray.empty] ++ (putString strTypeName ByteArray.empty ::
-      [putString payload ByteArray.empty]) from rfl]
-  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := strTypeName)
-    (post := [putString payload ByteArray.empty]) (by decide)]
-  dsimp only
-  rw [ite_eq_left (by decide : strTypeName = strTypeName)]
-  rw [show (concatChunks [acc, putString name ByteArray.empty]).size + 4 + strTypeName.size =
-      (concatChunks [acc, putString name ByteArray.empty,
-        putString strTypeName ByteArray.empty]).size by
-    simp [concatChunks_size, putString_size]; omega]
-  rw [show [acc, putString name ByteArray.empty] ++ (putString strTypeName ByteArray.empty ::
-      [putString payload ByteArray.empty]) =
-      [acc, putString name ByteArray.empty, putString strTypeName ByteArray.empty] ++
-        [putString payload ByteArray.empty] from rfl]
-  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty,
-    putString strTypeName ByteArray.empty]) (s := payload) (post := []) hp]
-  rfl
-
-/-- Reading an int32 entry back. -/
-theorem MetaEntry.parseFrom_emitFrom_int32 (name : Bytes) (hn : name.size < 2 ^ 32)
-    (v : Int32) (acc : Bytes) :
-    ∃ out, MetaEntry.parseFrom
-        ((⟨name, int32TypeName, .int32 v⟩ : MetaEntry).emitFrom acc) acc.size =
-      some (⟨name, int32TypeName, .int32 v⟩, out) := by
-  constructor
-  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
-  rw [acc_append_concatChunks]
-  rw [show acc :: (putString name ByteArray.empty :: (putString int32TypeName ByteArray.empty ::
-      [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty])) =
-      [acc] ++ putString name ByteArray.empty :: (putString int32TypeName ByteArray.empty ::
-      [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty]) from rfl]
-  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
-  rw [getString?_chunk (pre := [acc]) (s := name)
-    (post := putString int32TypeName ByteArray.empty ::
-      [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty]) hn]
-  dsimp only
-  rw [show (concatChunks [acc]).size + 4 + name.size =
-      (concatChunks [acc, putString name ByteArray.empty]).size by
-    simp [concatChunks_size, putString_size]; omega]
-  rw [show [acc] ++ (putString name ByteArray.empty :: (putString int32TypeName ByteArray.empty ::
-      [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty])) =
-      [acc, putString name ByteArray.empty] ++ (putString int32TypeName ByteArray.empty ::
-      [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty]) from rfl]
-  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := int32TypeName)
-    (post := [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty]) (by decide)]
-  dsimp only
-  rw [ite_eq_right (by decide : ¬ (int32TypeName = strTypeName))]
-  rw [show (concatChunks [acc, putString name ByteArray.empty]).size + 4 + int32TypeName.size =
-      (concatChunks [acc, putString name ByteArray.empty,
-        putString int32TypeName ByteArray.empty]).size by
-    simp [concatChunks_size, putString_size]; omega]
-  unfold parseValue
-  rw [show [acc, putString name ByteArray.empty] ++ (putString int32TypeName ByteArray.empty ::
-      [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty]) =
-      [acc, putString name ByteArray.empty, putString int32TypeName ByteArray.empty] ++
-        (putU32LE 4 ByteArray.empty :: [putI32LE v ByteArray.empty]) from rfl]
-  have hsz : getI32LE (concatChunks ([acc, putString name ByteArray.empty,
-        putString int32TypeName ByteArray.empty] ++
-        (putU32LE 4 ByteArray.empty :: [putI32LE v ByteArray.empty])))
-      (concatChunks [acc, putString name ByteArray.empty,
-        putString int32TypeName ByteArray.empty]).size = some 4 := by
-    unfold getI32LE
-    rw [getU32LE_chunk]
-    rfl
-  rw [hsz]
-  simp only [Int32.toNatClampNeg, reduceIte]
-  rw [show (concatChunks [acc, putString name ByteArray.empty,
-        putString int32TypeName ByteArray.empty]).size + 4 =
-      (concatChunks [acc, putString name ByteArray.empty, putString int32TypeName ByteArray.empty,
-        putU32LE 4 ByteArray.empty]).size by
-    simp [concatChunks_size]; omega]
-  rw [show [acc, putString name ByteArray.empty, putString int32TypeName ByteArray.empty] ++
-      (putU32LE 4 ByteArray.empty :: [putI32LE v ByteArray.empty]) =
-      [acc, putString name ByteArray.empty, putString int32TypeName ByteArray.empty,
-        putU32LE 4 ByteArray.empty] ++ [putI32LE v ByteArray.empty] from rfl]
-  rw [getI32LE_chunk]
   rfl
 
 end Vdb
