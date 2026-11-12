@@ -142,10 +142,10 @@ def decodeSlot (bg : VoxelValue) (code : MaskCode) (sel : Nat)
     | .noMaskOrInactiveVals => bg
     | .noMaskAndMinusBg => bg.negate
     | .noMaskAndOneInactiveVal => val0
-    | .maskAndNoInactiveVals => if NodeMask.bit sel i then bg.negate else bg
+    | .maskAndNoInactiveVals => if NodeMask.bit sel i then bg else bg.negate
     | .maskAndOneInactiveVal => if NodeMask.bit sel i then bg else val0
     | .maskAndTwoInactiveVals => if NodeMask.bit sel i then val1 else val0
-    | .noMaskAndAllVals => bg
+    | .noMaskAndAllVals => (active[i]?).getD bg
 
 /-- An active slot reads from the compacted value list. -/
 theorem decodeSlot_active {bg : VoxelValue} {code : MaskCode} {sel : Nat}
@@ -167,5 +167,176 @@ theorem decodeSlot_active_stored {bg : VoxelValue} {code : MaskCode} {sel : Nat}
   rw [decodeSlot_active (by simpa [NodeMask.bit] using hb)]
   rw [List.getElem?_map, getElem?_setBits_rank hn hb]
   simp
+
+/-! ### Classification (the encoder side)
+
+`classify` mirrors `tvdb__write_mask_values`: scan the inactive values for at
+most three distinct ones (seeded with the background), then pick the code that
+reconstructs them from `{±bg, val0, val1}` plus a selection mask. -/
+
+/-- Slots with no value (inactive), in increasing order. -/
+def inactiveSlots (mask n : Nat) : List Nat :=
+  (List.range n).filter (fun i => !mask.testBit i)
+
+/-- Inactive stored values in slot order. -/
+def inactiveValues (values : Nat → VoxelValue) (mask n : Nat) : List VoxelValue :=
+  (inactiveSlots mask n).map values
+
+/-- A node's classification: code plus the two inactive values and the
+    selection mask choosing `val1` where set. -/
+structure Compressed where
+  code : MaskCode
+  val0 : VoxelValue
+  val1 : VoxelValue
+  selection : Nat
+
+/-- Selection mask: bits set for inactive slots whose value equals `v1`. -/
+def selectionOf (values : Nat → VoxelValue) (mask n : Nat) (v1 : VoxelValue) : Nat :=
+  (inactiveSlots mask n).foldl
+    (fun acc i => if values i = v1 then acc ||| (1 <<< i) else acc) 0
+
+/-- The C classifier's running state: two inactive values and a count that
+    saturates at 3. -/
+structure Scan where
+  u0 : VoxelValue
+  u1 : VoxelValue
+  count : Nat
+
+/-- One step of the unique-inactive-value scan (seeded with the background). -/
+def Scan.step (s : Scan) (v : VoxelValue) : Scan :=
+  if s.count > 0 ∧ v = s.u0 then s
+  else if s.count > 1 ∧ v = s.u1 then s
+  else if s.count < 2 then
+    (if s.count = 0 then { s with u0 := v, count := 1 }
+     else { s with u1 := v, count := 2 })
+  else { s with count := 3 }
+
+/-- Fold the scan over the inactive values. -/
+def scanValues (vs : List VoxelValue) (bg : VoxelValue) : Scan :=
+  vs.foldl Scan.step ⟨bg, bg, 0⟩
+
+/-- Classify a node the way the writer does. -/
+def classify (bg : VoxelValue) (values : Nat → VoxelValue) (mask n : Nat) : Compressed :=
+  let sc := scanValues (inactiveValues values mask n) bg
+  let negBg := bg.negate
+  if sc.count = 0 then ⟨.noMaskOrInactiveVals, bg, bg, 0⟩
+  else if sc.count = 1 then
+    (if sc.u0 = bg then ⟨.noMaskOrInactiveVals, bg, bg, 0⟩
+     else if sc.u0 = negBg then ⟨.noMaskAndMinusBg, bg, bg, 0⟩
+     else ⟨.noMaskAndOneInactiveVal, sc.u0, bg, 0⟩)
+  else if sc.count = 2 then
+    (if sc.u1 = bg then
+       (if sc.u0 = negBg then
+          ⟨.maskAndNoInactiveVals, sc.u0, bg, selectionOf values mask n bg⟩
+        else ⟨.maskAndOneInactiveVal, sc.u0, bg, selectionOf values mask n bg⟩)
+     else if sc.u0 = bg then
+       -- the background was seen first: swap so that `val1` is the background
+       (if sc.u1 = negBg then
+          ⟨.maskAndNoInactiveVals, sc.u1, bg, selectionOf values mask n bg⟩
+        else ⟨.maskAndOneInactiveVal, sc.u1, bg, selectionOf values mask n bg⟩)
+     else ⟨.maskAndTwoInactiveVals, sc.u0, sc.u1, selectionOf values mask n sc.u1⟩)
+  else ⟨.noMaskAndAllVals, bg, bg, 0⟩
+
+/-- The value list a reader reconstructs from: the compacted active values,
+    or every slot for code 6. -/
+def storedValues (values : Nat → VoxelValue) (mask n : Nat) (c : Compressed) :
+    List VoxelValue :=
+  match c.code with
+  | .noMaskAndAllVals => (List.range n).map values
+  | _ => (setBits mask n).map values
+
+/-- Decode a full node from its classification. -/
+def decodeAll (bg : VoxelValue) (values : Nat → VoxelValue) (mask n : Nat)
+    (c : Compressed) (i : Nat) : VoxelValue :=
+  decodeSlot bg c.code c.selection c.val0 c.val1 mask
+    (storedValues values mask n c) i
+
+/-! ### The uniform case: every inactive value is the background -/
+
+/-- A step that sees the current `u0` again leaves the scan unchanged. -/
+theorem Scan.step_of_eq_u0 (s : Scan) (v : VoxelValue) (hpos : s.count > 0)
+    (hv : v = s.u0) : Scan.step s v = s := by
+  unfold Scan.step
+  rw [ite_eq_left ⟨hpos, hv⟩]
+
+/-- A constant-background inactive list keeps the scan at count ≤ 1 and
+    `u0 = bg`. -/
+theorem fold_const_bg : ∀ (vs : List VoxelValue) (s : Scan) (bg : VoxelValue),
+    s.count ≤ 1 → s.u0 = bg → (∀ v ∈ vs, v = bg) →
+    (vs.foldl Scan.step s).count ≤ 1 ∧ (vs.foldl Scan.step s).u0 = bg
+  | [], s, bg, hs, hu, _ => ⟨hs, hu⟩
+  | v :: t, s, bg, hs, hu, hvs => by
+    have hv : v = bg := hvs v (by simp)
+    rw [hv]
+    have ih := fold_const_bg t (Scan.step s bg) bg ?_ ?_
+      (fun x hx => hvs x (by simp [hx]))
+    · exact ih
+    · by_cases h0 : s.count = 0
+      · simp [Scan.step, h0]
+      · have hpos : s.count > 0 := by omega
+        rw [Scan.step_of_eq_u0 s bg hpos hu.symm]
+        exact hs
+    · by_cases h0 : s.count = 0
+      · simp [Scan.step, h0]
+      · have hpos : s.count > 0 := by omega
+        rw [Scan.step_of_eq_u0 s bg hpos hu.symm]
+        exact hu
+
+/-- Slots in `inactiveSlots` are below `n` and inactive. -/
+theorem mem_inactiveSlots {mask n i : Nat} (h : i ∈ inactiveSlots mask n) :
+    i < n ∧ mask.testBit i = false := by
+  unfold inactiveSlots at h
+  rw [List.mem_filter] at h
+  obtain ⟨hmem, hbit⟩ := h
+  refine ⟨by simpa using hmem, ?_⟩
+  simpa using hbit
+
+/-- The inactive value list is constant when every inactive slot holds `bg`. -/
+theorem inactiveValues_eq_bg {values : Nat → VoxelValue} {mask n : Nat} {bg : VoxelValue}
+    (h : ∀ i < n, mask.testBit i = false → values i = bg) :
+    ∀ v ∈ inactiveValues values mask n, v = bg := by
+  intro v hv
+  unfold inactiveValues at hv
+  obtain ⟨i, hi, rfl⟩ := List.mem_map.1 hv
+  obtain ⟨hlt, hbit⟩ := mem_inactiveSlots hi
+  exact h i hlt hbit
+
+/-- The unique-value scan of a constant background list has count ≤ 1 and
+    keeps `u0 = bg`. -/
+theorem scan_uniform {values : Nat → VoxelValue} {mask n : Nat} {bg : VoxelValue}
+    (h : ∀ i < n, mask.testBit i = false → values i = bg) :
+    (scanValues (inactiveValues values mask n) bg).count ≤ 1 ∧
+    (scanValues (inactiveValues values mask n) bg).u0 = bg :=
+  fold_const_bg _ ⟨bg, bg, 0⟩ bg (by simp) rfl (inactiveValues_eq_bg h)
+
+/-- A constant-background node classifies as `NO_MASK_OR_INACTIVE_VALS`. -/
+theorem classify_uniform {values : Nat → VoxelValue} {mask n : Nat} {bg : VoxelValue}
+    (h : ∀ i < n, mask.testBit i = false → values i = bg) :
+    classify bg values mask n = ⟨.noMaskOrInactiveVals, bg, bg, 0⟩ := by
+  have hc := scan_uniform h
+  unfold classify
+  by_cases h0 : (scanValues (inactiveValues values mask n) bg).count = 0
+  · simp [h0]
+  · have h1 : (scanValues (inactiveValues values mask n) bg).count = 1 := by omega
+    have hu : (scanValues (inactiveValues values mask n) bg).u0 = bg := hc.2
+    simp [h1, hu]
+
+/-- **Mask-compression round trip, uniform case**: if every inactive slot holds
+    the background, the classified node decodes to the original values on every
+    slot inside the node. -/
+theorem classify_uniform_decode {values : Nat → VoxelValue} {mask n i : Nat}
+    {bg : VoxelValue}
+    (h : ∀ i < n, mask.testBit i = false → values i = bg) (hn : i < n) :
+    decodeAll bg values mask n (classify bg values mask n) i = values i := by
+  rw [classify_uniform h]
+  unfold decodeAll storedValues decodeSlot
+  by_cases hb : NodeMask.bit mask i
+  · simp only [hb]
+    rw [List.getElem?_map,
+      getElem?_setBits_rank hn (by simpa [NodeMask.bit] using hb)]
+    simp
+  · simp only [hb]
+    have hoff : mask.testBit i = false := by simpa [NodeMask.bit] using hb
+    exact (h i hn hoff).symm
 
 end Vdb

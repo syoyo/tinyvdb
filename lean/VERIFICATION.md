@@ -15,7 +15,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vdb/Mask.lean` | `nodeSlots L = 2^(3L)`, serialized byte counts for `L = 3/4/5` (64/512/4096), `NodeMask L = Nat` (low `2^(3L)` bits are the slots), bit accessor, `popCount`, `rank` (C `tvdb_tree_mask_rank`), `rank 0 = 0`, `rank (i+1) = rank i + bit i`, `rank (nodeSlots L) = popCount`, `rank ≤ index`, base-256 byte serialization (`serializeNat`, `parseNat`) and the full round trip. |
 | `Vdb/Coord.lean` | `Coord`, box membership, `Layout` + `WellFormed` (root level 0, depth 3–8, per-level `log2dim` bound, total ≤ 31), `spanShift`/`span`, `localIndex` (arithmetic shift), non-negativity and `< 2^L` bounds, `origin + span * localIndex ≤ c`, `slotOf`, `childOrigin`, `rootKey` with floor-division bounds. |
 | `Vdb/Tree.lean` | sparse tree model (`Node` leaf/internal, `Root` tiles/children, `Tree` with layout), node slot and child-origin geometry, total `lookup` semantics (root key → tile/child → node descent) with fuel `t.depth`, `Equiv`, and the well-formedness predicate `WellFormed`/`NodeWFuel` mirroring `validate_node`; a worked `5_4_3` tree with three checked lookups. |
-| `Vdb/MaskCompress.lean` | the seven `MaskCompress` codes as `MaskCode`, code byte round trip, `readCount`, `VoxelValue.negate` (bit flip for floats, integer negation, bool identity), the `decodeSlot` decoder, and the active-slot correctness lemmas. |
+| `Vdb/MaskCompress.lean` | the seven `MaskCompress` codes as `MaskCode`, code byte round trip, `readCount`, `VoxelValue.negate` (bit flip for floats, integer negation, bool identity), the `decodeSlot`/`decodeAll` decoder (active values by rank, code 6 reads the full list), the faithful encoder `classify` (unique-inactive scan seeded with the background, `val0`/`val1`, selection mask, including the background swap), and the uniform-background round trip. |
 | `Vdb/Layout.lean` | `Tree_<type>_<L...>` strict parser and printer, the lenient reader model (`parseGridTypeLenient`), `GridType.WellFormed`, checked parse of `Tree_float_5_4_3`. |
 
 ## Theorem inventory (landed)
@@ -51,6 +51,9 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `MaskCode.ofNat?_toNat`, `readCount_le` | code byte round trip and stored-value count bound |
 | `VoxelValue.type_negate`, `negate_negate_float/double/bool` | negation preserves the type and is an involution for float/bool values |
 | `decodeSlot_active`, `decodeSlot_active_stored` | an active slot decodes from the compacted list; with `active = map values (setBits mask n)` it returns exactly `values i` |
+| `mem_inactiveSlots`, `inactiveValues_eq_bg` | inactive slot membership and constant-background inactive lists |
+| `fold_const_bg`, `scan_uniform` | the unique-value scan stays at count ≤ 1 with `u0 = bg` for a constant background |
+| `classify_uniform`, `classify_uniform_decode` | **mask-compression round trip, uniform case**: a node whose inactive slots all hold the background is classified as code 0 and decodes to the original values on every slot |
 
 Test-level checks: `parseGridType "Tree_float_5_4_3" = some float543` is proven
 by `decide`.
@@ -60,9 +63,11 @@ by `decide`.
 1. **Indexed lookup equivalence**: prove the spec `lookup` equals the C
    `tree_find`/accessor model (root hash map, per-level slot descent, rank
    compaction).
-2. **Mask compression classification**: model `tvdb__write_mask_values`
-   (`classify`) and prove the inactive-slot half of the round trip
-   (code selection, `val0`/`val1`, selection mask). The active half is landed.
+2. **Mask compression, general case**: the encoder model is landed; prove the
+   inactive-slot round trip for the non-uniform branches (codes 1–5 and the
+   code-6 full-list path), which needs the selection-mask bit lemma
+   (`selectionOf` sets exactly the slots equal to `val1`) and the scan
+   invariant for two distinct values.
 3. **Half float** bit model (`halfToFloat`, trunc vs round-to-nearest).
 4. **Header/metadata/transform/chunk/grid/file** parse + emit + file round trip.
 5. **Oracle harness**: `VdbCheck`/`VdbGen` executables, C dump program,
