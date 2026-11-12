@@ -192,4 +192,93 @@ theorem Face.ambiguous_diagonals (f : Face) (h : f.Ambiguous)
       exact lt_of_le_of_ne (not_lt.mp this) (Ne.symm hd)
     exact Or.inl ⟨ha', hc', hb', hd'⟩
 
+
+/-! ### Edge crossings and cube classification -/
+
+/-- Linear interpolation between two corner values. -/
+def lerp (a b t : ℚ) : ℚ := a + t * (b - a)
+
+/-- The parameter where a linear edge crosses zero, measured from `a`. -/
+def edgeParam (a b : ℚ) : ℚ := a / (a - b)
+
+theorem lerp_zero {a b : ℚ} (h : a ≠ b) : lerp a b (edgeParam a b) = 0 := by
+  unfold lerp edgeParam
+  field_simp
+  ring
+
+/-- The zero crossing is independent of which endpoint the edge is walked
+    from: neighbouring cubes place the same vertex. -/
+theorem edgeParam_symm {a b : ℚ} (h : a ≠ b) :
+    edgeParam b a = 1 - edgeParam a b := by
+  unfold edgeParam
+  field_simp
+  ring
+
+theorem lerp_symm (a b t : ℚ) : lerp a b t = lerp b a (1 - t) := by
+  unfold lerp
+  ring
+
+/-- On an edge whose endpoints straddle zero, the crossing parameter lies
+    strictly between the endpoints. -/
+theorem edgeParam_mem_Ioo {a b : ℚ} (ha : a < 0) (hb : 0 < b) :
+    0 < edgeParam a b ∧ edgeParam a b < 1 := by
+  unfold edgeParam
+  have hd : a - b < 0 := by linarith
+  constructor
+  · rw [div_pos_iff]
+    right
+    exact ⟨ha, hd⟩
+  · rw [div_lt_iff_of_neg hd]
+    linarith
+
+/-- A cube's eight corner values (bit 0 = x, bit 1 = y, bit 2 = z). -/
+structure Cube where
+  c : Fin 8 → ℚ
+
+/-- The twelve cube edges, as unordered corner pairs. -/
+def Cube.edges (_q : Cube) : List (Fin 8 × Fin 8) :=
+  [(0, 1), (1, 3), (3, 2), (2, 0),
+   (4, 5), (5, 7), (7, 6), (6, 4),
+   (0, 4), (1, 5), (2, 6), (3, 7)]
+
+/-- Does the surface cross this edge? -/
+def Cube.crosses (q : Cube) (e : Fin 8 × Fin 8) : Bool :=
+  edgeCrosses (q.c e.1) (q.c e.2)
+
+/-- The edges of the cube crossed by the surface: the marching-cubes input. -/
+def Cube.crossedEdges (q : Cube) : List (Fin 8 × Fin 8) :=
+  q.edges.filter (q.crosses ·)
+
+theorem Cube.length_crossedEdges_le (q : Cube) : q.crossedEdges.length ≤ 12 := by
+  unfold Cube.crossedEdges
+  exact le_trans (List.length_filter_le _ _) (by unfold Cube.edges; simp)
+
+/-- A cube with all corners inside has no crossed edges (nothing to mesh). -/
+theorem Cube.crossedEdges_nil_of_all_neg (q : Cube) (h : ∀ k, q.c k < 0) :
+    q.crossedEdges = [] := by
+  unfold Cube.crossedEdges
+  apply List.filter_eq_nil_iff.mpr
+  rintro ⟨i, j⟩ _
+  unfold Cube.crosses edgeCrosses
+  rw [isInside_iff.mpr (h i), isInside_iff.mpr (h j)]
+  simp
+
+/-- A cube with all corners outside has no crossed edges either. -/
+theorem Cube.crossedEdges_nil_of_all_pos (q : Cube) (h : ∀ k, 0 < q.c k) :
+    q.crossedEdges = [] := by
+  unfold Cube.crossedEdges
+  apply List.filter_eq_nil_iff.mpr
+  rintro ⟨i, j⟩ _
+  unfold Cube.crosses edgeCrosses
+  rw [isInside_false_iff.mpr (not_lt.mpr (le_of_lt (h i))),
+    isInside_false_iff.mpr (not_lt.mpr (le_of_lt (h j)))]
+  simp
+
+/-- Every crossing reported by the cube classification is a genuine sign
+    change on that edge. -/
+theorem Cube.mem_crossedEdges_iff {q : Cube} {e : Fin 8 × Fin 8} :
+    e ∈ q.crossedEdges ↔ e ∈ q.edges ∧ q.crosses e = true := by
+  unfold Cube.crossedEdges
+  simp [List.mem_filter]
+
 end Vdb
