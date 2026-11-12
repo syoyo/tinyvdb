@@ -295,4 +295,47 @@ theorem sdfPlane_exact (n : Point) (d : ℝ) (hn : ‖n‖ = 1) (p : Point) :
   ⟨planeProject_mem n d hn p, planeProject_dist n d hn p,
     fun q hq => sdfPlane_abs_le_dist hn d p q hq⟩
 
+
+/-! ### Exact distance: the sphere -/
+
+/-- A fixed unit vector of the space. -/
+noncomputable def e0 : Point := EuclideanSpace.single (0 : Fin 3) (1 : ℝ)
+
+theorem norm_e0 : ‖e0‖ = 1 := by
+  unfold e0
+  exact (EuclideanSpace.orthonormal_single (𝕜 := ℝ) (ι := Fin 3)).1 0
+
+/-- **The sphere field is the exact distance to the sphere**: a nearest point
+    exists and attains the field magnitude, and no sphere point is closer. -/
+theorem sdfSphere_exact (r : ℝ) (hr : 0 ≤ r) (p : Point) :
+    (∃ q : Point, ‖q‖ = r ∧ dist p q = |sdfSphere r p|) ∧
+      (∀ q : Point, ‖q‖ = r → |sdfSphere r p| ≤ dist p q) := by
+  constructor
+  · by_cases hp : p = 0
+    · refine ⟨r • e0, ?_, ?_⟩
+      · rw [norm_smul, norm_e0, Real.norm_eq_abs, abs_of_nonneg hr, mul_one]
+      · subst hp
+        rw [dist_eq_norm]
+        have hz : (0 : Point) - r • e0 = -(r • e0) := by abel
+        rw [hz, norm_neg, norm_smul, norm_e0, Real.norm_eq_abs, abs_of_nonneg hr, mul_one]
+        unfold sdfSphere
+        rw [show ‖(0 : Point)‖ = 0 from norm_zero]
+        rw [show (0 : ℝ) - r = -r from by ring, abs_neg, abs_of_nonneg hr]
+    · refine ⟨(r / ‖p‖) • p, ?_, ?_⟩
+      · rw [norm_smul, Real.norm_eq_abs, abs_div, abs_of_nonneg hr,
+          abs_of_pos (norm_pos_iff.mpr hp), div_mul_cancel₀ _ (norm_ne_zero_iff.mpr hp)]
+      · rw [dist_eq_norm]
+        have hsub : p - (r / ‖p‖) • p = (1 - r / ‖p‖) • p := by
+          rw [sub_smul, one_smul]
+        rw [hsub, norm_smul, Real.norm_eq_abs]
+        unfold sdfSphere
+        have hpos : (0 : ℝ) < ‖p‖ := norm_pos_iff.mpr hp
+        have heq : 1 - r / ‖p‖ = (‖p‖ - r) / ‖p‖ := by field_simp
+        calc |1 - r / ‖p‖| * ‖p‖ = |(‖p‖ - r) / ‖p‖| * ‖p‖ := by rw [heq]
+          _ = (|‖p‖ - r| / ‖p‖) * ‖p‖ := by rw [abs_div, abs_of_pos hpos]
+          _ = |‖p‖ - r| := by
+                field_simp
+  · intro q hq
+    exact sdfSphere_abs_le_dist r hq
+
 end Vdb
