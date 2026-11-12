@@ -57,6 +57,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vec3d.ofBytes_toBytes`, `Vec3d.toBytes_size`, `Vec3d.parseAt_toBytes`, `parseVecChain_emit` | 24-byte double-vector round trips and the vector-chain parser inverse |
 | `TransformKind.ofName?`, `ofName_uniformScale` … `ofName_affine` | map-name lookup and its six `native_decide` characterisations |
 | `Transform.parseFrom_emitFrom_uniformScale/scale/uniformScaleTranslate/scaleTranslate/translation/affine` | per-kind transform round trips (name string + the kind's vector chain or 128-byte affine block) |
+| `MetaEntry.parseFrom_emitFrom_bool/str/int32`, `getI32LE_chunk` | metadata round trips for boolean, string and int32 entries (name string, type name, size chunk, value) |
 | `Transform.parseFrom_emitFrom` | **transform round trip**: every well-formed transform parses back unchanged; the proof canonicalises the fields the reader does not store and applies the per-kind lemma |
 | `nodeSlot_lt` | an in-box coordinate gives a slot below `2^(3L)` |
 | `exampleTree_lookup_origin/inactive/background` | the worked tree reads the active voxel, an inactive stored value, and the background correctly (checked by `decide`) |
