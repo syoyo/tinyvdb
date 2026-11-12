@@ -185,32 +185,35 @@ def parseVecChain : Nat → Bytes → Nat → Option (List Vec3d × Nat)
       | some (vs, o') => some (v :: vs, o')
 
 /-- Parse a transform at `off`. Derived inverse fields are read and discarded
-    (the writer recomputes them), matching the C reader. -/
+    (the writer recomputes them), matching the C reader. Values are taken by
+    position from the parsed vector chain so the branches are non-dependent. -/
 def Transform.parseFrom (b : Bytes) (off : Nat) : Option (Transform × Nat) :=
   match getString? b off with
   | none => none
   | some (tn, o1) =>
     if tn = TransformKind.uniformScale.name || tn = TransformKind.scale.name then
       match parseVecChain 5 b o1 with
-      | some ([sc, vs, _, _, _], o) =>
+      | some (vs, o) =>
         let k : TransformKind :=
           if tn = TransformKind.uniformScale.name then .uniformScale else .scale
-        some (⟨k, Vec3d.zero, sc, vs, ByteArray.empty⟩, o)
-      | _ => none
+        some (⟨k, Vec3d.zero, vs.getD 0 Vec3d.zero, vs.getD 1 Vec3d.zero,
+          ByteArray.empty⟩, o)
+      | none => none
     else if tn = TransformKind.uniformScaleTranslate.name ||
             tn = TransformKind.scaleTranslate.name then
       match parseVecChain 6 b o1 with
-      | some ([tr, sc, vs, _, _, _], o) =>
+      | some (vs, o) =>
         let k : TransformKind :=
           if tn = TransformKind.uniformScaleTranslate.name then .uniformScaleTranslate
           else .scaleTranslate
-        some (⟨k, tr, sc, vs, ByteArray.empty⟩, o)
-      | _ => none
+        some (⟨k, vs.getD 0 Vec3d.zero, vs.getD 1 Vec3d.zero, vs.getD 2 Vec3d.zero,
+          ByteArray.empty⟩, o)
+      | none => none
     else if tn = TransformKind.translation.name then
       match parseVecChain 1 b o1 with
-      | some ([tr], o) => some (⟨.translation, tr, Vec3d.zero, Vec3d.zero,
-          ByteArray.empty⟩, o)
-      | _ => none
+      | some (vs, o) => some (⟨.translation, vs.getD 0 Vec3d.zero, Vec3d.zero,
+          Vec3d.zero, ByteArray.empty⟩, o)
+      | none => none
     else if tn = TransformKind.affine.name then
       match getBytes? b o1 128 with
       | none => none
@@ -250,5 +253,7 @@ theorem parseVecChain_emit (vs : List Vec3d) :
         (pre ++ [v.toBytes]) ++ vs.map Vec3d.toBytes ++ post from by simp]
     rw [ih (pre ++ [v.toBytes]) post]
     simp [List.append_assoc]
+
+
 
 end Vdb
