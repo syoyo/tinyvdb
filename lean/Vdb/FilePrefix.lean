@@ -93,4 +93,48 @@ theorem FilePrefix.parseFrom_emitFrom (f : FilePrefix) (hc : f.Canonical) (acc :
   simp [FilePrefix.chunks, concatChunks_size, concatChunks_append_size, concatChunks_cons_size,
     concatChunks_singleton, concatChunks_nil_size, putI32LE_size]
 
+
+theorem FilePrefix.parseFromChunks (f : FilePrefix) (hc : f.Canonical) (pre rest : List Bytes) :
+    FilePrefix.parseFrom (concatChunks (pre ++ f.chunks ++ rest)) (concatChunks pre).size =
+      some (f, (concatChunks (pre ++ f.chunks)).size) := by
+  obtain ⟨hh, hm, hwf, hcnt⟩ := hc
+  rcases f with ⟨h, md, n⟩
+  unfold FilePrefix.parseFrom FilePrefix.chunks
+  dsimp only
+  rw [show concatChunks (pre ++ (h.chunks ++ md.chunks ++
+      [putI32LE (Int32.ofNat n) ByteArray.empty]) ++ rest) =
+      concatChunks (pre ++ h.chunks ++ (md.chunks ++
+        ([putI32LE (Int32.ofNat n) ByteArray.empty] ++ rest))) from by simp]
+  rw [Header.parseFromChunks h hh pre (md.chunks ++
+    ([putI32LE (Int32.ofNat n) ByteArray.empty] ++ rest))]
+  dsimp only
+  rw [show concatChunks (pre ++ h.chunks ++ (md.chunks ++
+      ([putI32LE (Int32.ofNat n) ByteArray.empty] ++ rest))) =
+      concatChunks (((pre ++ h.chunks) ++ md.chunks) ++
+        ([putI32LE (Int32.ofNat n) ByteArray.empty] ++ rest)) from by simp]
+  rw [MetaList.parseFromChunks md hm hwf (pre ++ h.chunks)
+    ([putI32LE (Int32.ofNat n) ByteArray.empty] ++ rest)]
+  dsimp only
+  rw [show concatChunks (((pre ++ h.chunks) ++ md.chunks) ++
+      ([putI32LE (Int32.ofNat n) ByteArray.empty] ++ rest)) =
+      concatChunks (((pre ++ h.chunks) ++ md.chunks) ++
+        (putI32LE (Int32.ofNat n) ByteArray.empty :: rest)) from by simp]
+  rw [getI32LE_chunk]
+  dsimp only
+  rw [ite_eq_right (by
+    rw [Int32.lt_iff_toInt_lt, Int32.toInt_ofNat_of_lt hcnt, Int32.toInt_zero]
+    omega)]
+  rw [Int32.toNatClampNeg_ofNat_of_lt hcnt]
+  rw [show (concatChunks ((pre ++ h.chunks) ++ md.chunks)).size + 4 =
+      (concatChunks ((pre ++ h.chunks) ++ md.chunks ++
+        [putI32LE (Int32.ofNat n) ByteArray.empty])).size from by
+    conv_rhs => rw [show (pre ++ h.chunks) ++ md.chunks ++
+        [putI32LE (Int32.ofNat n) ByteArray.empty] =
+        ((pre ++ h.chunks) ++ md.chunks) ++
+          [putI32LE (Int32.ofNat n) ByteArray.empty] from by simp]
+    rw [concatChunks_snoc_size]
+    simp [putI32LE_size]]
+  simp [FilePrefix.chunks, concatChunks_size, concatChunks_append_size,
+    concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putI32LE_size]
+
 end Vdb

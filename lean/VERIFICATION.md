@@ -70,6 +70,8 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `GridBody.parseFrom_emitFrom` | **grid-body round trip**: header + tree-base count + opaque tree bytes in `[off, endOff)` parse back to the body with the exact end offset |
 | `Transform.parseFrom_emitFrom_rest_exact`, `Transform.parseFrom_emitFrom_exact` | exact end offsets for the transform (per-kind and general), needed to chain the tree-base read |
 | `GridHeader.parseFromChunks` | **grid-header round trip with trailing bytes**: flags + metadata list + transform compose with the tree data that follows |
+| `FilePrefix.parseFromChunks` | **file prologue with trailing bytes**: header + file metadata + grid count parse with grid data following, at exact offsets |
+| `GridBody.parseFromChunks` | **grid body with trailing bytes**: the body parses with following grids after its tree data, at the exact end offset |
 | `FilePrefix.parseFrom_emitFrom` | **file prologue round trip**: header + file metadata + grid count parse back unchanged, composing `Header.parseFromChunks` with `MetaList.parseFromChunks` |
 | `GridHeader.parseFrom_emitFrom` | **grid-header round trip**: flags + metadata list + transform parse back to the header (the metadata list is composed via `MetaList.parseFromChunks`; the transform contributes its own existential end offset) |
 | `GridDescriptor.parseFrom_append` | a descriptor parse is unchanged by trailing bytes (the stability lemmas plus `split`/`simp_all`), so descriptors can be read from the middle of a file |

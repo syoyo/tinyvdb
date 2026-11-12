@@ -89,4 +89,44 @@ theorem GridBody.parseFrom_emitFrom (g : GridBody) (hg : g.Canonical) (acc : Byt
       rw [concatChunks_snoc_size]
     rw [ha]]
 
+
+theorem GridBody.parseFromChunks (g : GridBody) (hg : g.Canonical)
+    (pre next : List Bytes) :
+    GridBody.parseFrom (concatChunks (pre ++ g.chunks ++ next)) (concatChunks pre).size
+      (concatChunks (pre ++ g.chunks)).size =
+        some (g, (concatChunks (pre ++ g.chunks)).size) := by
+  rcases g with ⟨h, bc, tree⟩
+  simp only [GridBody.Canonical] at hg
+  unfold GridBody.parseFrom GridBody.chunks
+  dsimp only
+  rw [show concatChunks (pre ++ (h.chunks ++ [putI32LE bc ByteArray.empty, tree]) ++ next) =
+      concatChunks (pre ++ h.chunks ++
+        (putI32LE bc ByteArray.empty :: (tree :: next))) from by simp]
+  rw [GridHeader.parseFromChunks_exact h hg pre
+    (putI32LE bc ByteArray.empty :: (tree :: next))]
+  dsimp only
+  rw [getI32LE_chunk]
+  dsimp only
+  rw [show (concatChunks (pre ++ h.chunks)).size + 4 =
+      (concatChunks ((pre ++ h.chunks) ++ [putI32LE bc ByteArray.empty])).size from by
+    conv_rhs => rw [concatChunks_snoc_size]
+    simp [putI32LE_size]]
+  rw [show concatChunks (pre ++ h.chunks ++
+      (putI32LE bc ByteArray.empty :: (tree :: next))) =
+      concatChunks (((pre ++ h.chunks) ++ [putI32LE bc ByteArray.empty]) ++ (tree :: next)) from by simp]
+  rw [show (concatChunks (pre ++ (h.chunks ++ [putI32LE bc ByteArray.empty, tree]))).size -
+      (concatChunks ((pre ++ h.chunks) ++ [putI32LE bc ByteArray.empty])).size = tree.size from by
+    rw [show pre ++ (h.chunks ++ [putI32LE bc ByteArray.empty, tree]) =
+        ((pre ++ h.chunks) ++ [putI32LE bc ByteArray.empty]) ++ [tree] from by simp]
+    rw [concatChunks_snoc_size]
+    simp]
+  rw [getBytes?_chunk]
+  dsimp only
+  rw [show (concatChunks ((pre ++ h.chunks) ++ [putI32LE bc ByteArray.empty])).size + tree.size =
+      (concatChunks (pre ++ (h.chunks ++ [putI32LE bc ByteArray.empty, tree]))).size from by
+    conv_lhs => rw [concatChunks_size]
+    conv_rhs => rw [concatChunks_size]
+    simp [List.map_append, List.sum_append, putI32LE_size]
+    omega]
+
 end Vdb
