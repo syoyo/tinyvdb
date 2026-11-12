@@ -15,7 +15,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vdb/Mask.lean` | `nodeSlots L = 2^(3L)`, serialized byte counts for `L = 3/4/5` (64/512/4096), `NodeMask L = Nat` (low `2^(3L)` bits are the slots), bit accessor, `popCount`, `rank` (C `tvdb_tree_mask_rank`), `rank 0 = 0`, `rank (i+1) = rank i + bit i`, `rank (nodeSlots L) = popCount`, `rank ≤ index`, base-256 byte serialization (`serializeNat`, `parseNat`) and the full round trip. |
 | `Vdb/Coord.lean` | `Coord`, box membership, `Layout` + `WellFormed` (root level 0, depth 3–8, per-level `log2dim` bound, total ≤ 31), `spanShift`/`span`, `localIndex` (arithmetic shift), non-negativity and `< 2^L` bounds, `origin + span * localIndex ≤ c`, `slotOf`, `childOrigin`, `rootKey` with floor-division bounds. |
 | `Vdb/Tree.lean` | sparse tree model (`Node` leaf/internal, `Root` tiles/children, `Tree` with layout), node slot and child-origin geometry, total `lookup` semantics (root key → tile/child → node descent) with fuel `t.depth`, `Equiv`, and the well-formedness predicate `WellFormed`/`NodeWFuel` mirroring `validate_node`; a worked `5_4_3` tree with three checked lookups. |
-| `Vdb/MaskCompress.lean` | the seven `MaskCompress` codes as `MaskCode`, code byte round trip, `readCount`, `VoxelValue.negate` (bit flip for floats, integer negation, bool identity), the `decodeSlot`/`decodeAll` decoder (active values by rank, code 6 reads the full list), the faithful encoder `classify` (unique-inactive scan seeded with the background, `val0`/`val1`, selection mask, including the background swap), and the uniform-background round trip. |
+| `Vdb/MaskCompress.lean` | the seven `MaskCompress` codes as `MaskCode`, code byte round trip, `readCount`, `VoxelValue.negate` (bit flip for floats, integer negation, bool identity), the `decodeSlot`/`decodeAll` decoder (active values by rank, code 6 reads the full list), the faithful encoder `classify` (unique-inactive scan seeded with the background, `val0`/`val1`, selection mask, including the background swap), the selection-mask semantics, the scan invariant, and the **general mask-compression round trip** for all seven codes. |
 | `Vdb/Layout.lean` | `Tree_<type>_<L...>` strict parser and printer, the lenient reader model (`parseGridTypeLenient`), `GridType.WellFormed`, checked parse of `Tree_float_5_4_3`. |
 
 ## Theorem inventory (landed)
@@ -53,7 +53,12 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `decodeSlot_active`, `decodeSlot_active_stored` | an active slot decodes from the compacted list; with `active = map values (setBits mask n)` it returns exactly `values i` |
 | `mem_inactiveSlots`, `inactiveValues_eq_bg` | inactive slot membership and constant-background inactive lists |
 | `fold_const_bg`, `scan_uniform` | the unique-value scan stays at count ≤ 1 with `u0 = bg` for a constant background |
-| `classify_uniform`, `classify_uniform_decode` | **mask-compression round trip, uniform case**: a node whose inactive slots all hold the background is classified as code 0 and decodes to the original values on every slot |
+| `classify_uniform`, `classify_uniform_decode` | mask-compression round trip for a constant-background inactive set (code 0) |
+| `foldl_cond_eq_foldl_filter`, `testBit_foldl_lor`, `selectionOf_bit` | the selection mask is exactly the OR of single-bit shifts of the matching slots, so its bit `i` is set iff `values i = val1` |
+| `selectionOf_bit_of_eq/of_ne`, `mem_inactiveSlots`, `inactiveValues_eq_bg` | selection-bit corollaries and inactive-slot membership |
+| `Scan.Inv`, `Scan.inv_zero`, `Scan.step_inv`, `Scan.fold_inv`, `scanValues_inv` | the unique-inactive-value scan keeps every seen value within `{u0}` (count 1) or `{u0, u1}` (count 2), with `u0 ≠ u1` at count 2 |
+| `decodeAll_active` | an active slot decodes to its stored value for every code (code 6 reads the full per-slot list, others by rank) |
+| `classify_decode` | **general mask-compression round trip**: for every background, value function, mask and node size, the classified node decodes to the original value on every slot, covering codes 0–6, all inactive-value combinations and the background swap |
 
 Test-level checks: `parseGridType "Tree_float_5_4_3" = some float543` is proven
 by `decide`.
@@ -63,11 +68,10 @@ by `decide`.
 1. **Indexed lookup equivalence**: prove the spec `lookup` equals the C
    `tree_find`/accessor model (root hash map, per-level slot descent, rank
    compaction).
-2. **Mask compression, general case**: the encoder model is landed; prove the
-   inactive-slot round trip for the non-uniform branches (codes 1–5 and the
-   code-6 full-list path), which needs the selection-mask bit lemma
-   (`selectionOf` sets exactly the slots equal to `val1`) and the scan
-   invariant for two distinct values.
+2. **Mask compression vs. the C writer**: the model now proves the
+   round trip; the next step is a differential check that `classify` picks the
+   same code/`val0`/`val1`/selection as `tvdb__write_mask_values` (needed for
+   byte-identical output, not for correctness).
 3. **Half float** bit model (`halfToFloat`, trunc vs round-to-nearest).
 4. **Header/metadata/transform/chunk/grid/file** parse + emit + file round trip.
 5. **Oracle harness**: `VdbCheck`/`VdbGen` executables, C dump program,

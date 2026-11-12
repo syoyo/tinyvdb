@@ -130,9 +130,9 @@ the selection mask, the value mask and the compacted active values. Slots
 that are active take values from `active` by rank; inactive slots take the
 code's inactive value. -/
 
-/-- Value at slot `i` given a decoded node. `active` holds the stored values
-    in increasing slot order. -/
-def decodeSlot (bg : VoxelValue) (code : MaskCode) (sel : Nat)
+/-- Value at slot `i` of a compacted node (codes 0–5): active slots read the
+    stored list by rank, inactive slots take the code's inactive value. -/
+def decodeCompacted (bg : VoxelValue) (code : MaskCode) (sel : Nat)
     (val0 val1 : VoxelValue) (valueMask : Nat) (active : List VoxelValue)
     (i : Nat) : VoxelValue :=
   if NodeMask.bit valueMask i then
@@ -147,24 +147,22 @@ def decodeSlot (bg : VoxelValue) (code : MaskCode) (sel : Nat)
     | .maskAndTwoInactiveVals => if NodeMask.bit sel i then val1 else val0
     | .noMaskAndAllVals => (active[i]?).getD bg
 
-/-- An active slot reads from the compacted value list. -/
-theorem decodeSlot_active {bg : VoxelValue} {code : MaskCode} {sel : Nat}
+/-- An active slot of a compacted code reads from the value list by rank. -/
+theorem decodeCompacted_active {bg : VoxelValue} {code : MaskCode} {sel : Nat}
     {val0 val1 : VoxelValue} {valueMask : Nat} {active : List VoxelValue} {i : Nat}
     (h : NodeMask.bit valueMask i = true) :
-    decodeSlot bg code sel val0 val1 valueMask active i =
+    decodeCompacted bg code sel val0 val1 valueMask active i =
       (active[NodeMask.rank valueMask i]?).getD bg := by
-  simp [decodeSlot, h]
+  simp [decodeCompacted, h]
 
 /-- When the compacted list is the stored value image of the set bits, an
-    active slot decodes to exactly its original value. This is the active
-    half of the mask-compression round trip; the inactive half is the
-    classification invariant proved in `classify`. -/
-theorem decodeSlot_active_stored {bg : VoxelValue} {code : MaskCode} {sel : Nat}
+    active slot decodes to exactly its original value. -/
+theorem decodeCompacted_active_stored {bg : VoxelValue} {code : MaskCode} {sel : Nat}
     {val0 val1 : VoxelValue} {valueMask : Nat} {values : Nat → VoxelValue}
     {n i : Nat} (hn : i < n) (hb : valueMask.testBit i = true) :
-    decodeSlot bg code sel val0 val1 valueMask
+    decodeCompacted bg code sel val0 val1 valueMask
         ((setBits valueMask n).map values) i = values i := by
-  rw [decodeSlot_active (by simpa [NodeMask.bit] using hb)]
+  rw [decodeCompacted_active (by simpa [NodeMask.bit] using hb)]
   rw [List.getElem?_map, getElem?_setBits_rank hn hb]
   simp
 
@@ -245,11 +243,41 @@ def storedValues (values : Nat → VoxelValue) (mask n : Nat) (c : Compressed) :
   | .noMaskAndAllVals => (List.range n).map values
   | _ => (setBits mask n).map values
 
-/-- Decode a full node from its classification. -/
+theorem storedValues_of_ne {values : Nat → VoxelValue} {mask n : Nat} {c : Compressed}
+    (h : c.code ≠ .noMaskAndAllVals) :
+    storedValues values mask n c = (setBits mask n).map values := by
+  unfold storedValues
+  split
+  · rename_i hc; exact absurd hc h
+  · rfl
+
+theorem getElem?_range_map (values : Nat → VoxelValue) {n i : Nat} (hi : i < n) :
+    ((List.range n).map values)[i]? = some (values i) := by
+  rw [List.getElem?_map, List.getElem?_range hi]
+  rfl
+
+/-- Decode a full node from its classification: code 6 stores every slot, so
+    it reads the full list directly; the other codes reconstruct inactive
+    slots from the code, `val0`, `val1` and the selection mask. -/
 def decodeAll (bg : VoxelValue) (values : Nat → VoxelValue) (mask n : Nat)
     (c : Compressed) (i : Nat) : VoxelValue :=
-  decodeSlot bg c.code c.selection c.val0 c.val1 mask
-    (storedValues values mask n c) i
+  match c.code with
+  | .noMaskAndAllVals => (storedValues values mask n c)[i]?.getD bg
+  | _ => decodeCompacted bg c.code c.selection c.val0 c.val1 mask
+      (storedValues values mask n c) i
+
+/-- An active slot always decodes to its stored value, for every code. -/
+theorem decodeAll_active {bg : VoxelValue} {values : Nat → VoxelValue} {mask n i : Nat}
+    {c : Compressed} (hn : i < n) (hb : mask.testBit i = true) :
+    decodeAll bg values mask n c i = values i := by
+  unfold decodeAll
+  cases hc : c.code <;> simp only [storedValues, hc]
+  all_goals
+    first
+    | (rw [decodeCompacted_active (by simpa [NodeMask.bit] using hb)]
+       rw [List.getElem?_map, getElem?_setBits_rank hn hb]
+       simp)
+    | (rw [getElem?_range_map values hn]; simp)
 
 /-! ### The uniform case: every inactive value is the background -/
 
@@ -329,7 +357,7 @@ theorem classify_uniform_decode {values : Nat → VoxelValue} {mask n i : Nat}
     (h : ∀ i < n, mask.testBit i = false → values i = bg) (hn : i < n) :
     decodeAll bg values mask n (classify bg values mask n) i = values i := by
   rw [classify_uniform h]
-  unfold decodeAll storedValues decodeSlot
+  unfold decodeAll decodeCompacted storedValues
   by_cases hb : NodeMask.bit mask i
   · simp only [hb]
     rw [List.getElem?_map,
@@ -338,5 +366,316 @@ theorem classify_uniform_decode {values : Nat → VoxelValue} {mask n i : Nat}
   · simp only [hb]
     have hoff : mask.testBit i = false := by simpa [NodeMask.bit] using hb
     exact (h i hn hoff).symm
+
+/-! ### Selection-mask semantics -/
+
+/-- A conditional OR-fold is the OR-fold over the filtered list. -/
+theorem foldl_cond_eq_foldl_filter (l : List Nat) (p : Nat → Prop) [DecidablePred p]
+    (acc : Nat) :
+    l.foldl (fun a j => if p j then a ||| (1 <<< j) else a) acc =
+      (l.filter (fun j => decide (p j))).foldl (fun a j => a ||| (1 <<< j)) acc := by
+  induction l generalizing acc with
+  | nil => rfl
+  | cons a t ih =>
+    rw [List.foldl_cons]
+    by_cases hp : p a
+    · simp [List.filter, hp, List.foldl_cons, ih]
+    · simp [List.filter, hp, ih]
+
+/-- Bit `i` of an OR-fold of single-bit shifts: it is set exactly when the
+    initial accumulator has it set or some shifted position is `i`. -/
+theorem testBit_foldl_lor (l : List Nat) (acc i : Nat) :
+    (l.foldl (fun a j => a ||| (1 <<< j)) acc).testBit i =
+      (acc.testBit i || decide (i ∈ l)) := by
+  induction l generalizing acc with
+  | nil => simp
+  | cons a t ih =>
+    rw [List.foldl_cons, ih, Nat.testBit_or, Nat.one_shiftLeft, Nat.testBit_two_pow]
+    have hcomm : decide (i = a) = decide (a = i) := by
+      by_cases h : i = a
+      · rw [h]
+      · have h' : ¬ (a = i) := fun hh => h hh.symm
+        simp [h, h']
+    simp only [List.mem_cons, Bool.decide_or, hcomm]
+    cases h1 : acc.testBit i <;> cases h2 : decide (a = i) <;>
+      cases h3 : decide (i ∈ t) <;> simp_all
+
+/-- Inactive slot membership from the coordinate bounds. -/
+theorem mem_inactiveSlots_of {mask n i : Nat} (hi : i < n)
+    (hoff : mask.testBit i = false) : i ∈ inactiveSlots mask n := by
+  unfold inactiveSlots
+  rw [List.mem_filter]
+  exact ⟨by simpa using hi, by simpa using hoff⟩
+
+/-- `selectionOf` sets bit `i` exactly for inactive slots holding `v1`. -/
+theorem selectionOf_bit {values : Nat → VoxelValue} {mask n i : Nat} {v1 : VoxelValue}
+    (hi : i < n) (hoff : mask.testBit i = false) :
+    (selectionOf values mask n v1).testBit i = decide (values i = v1) := by
+  unfold selectionOf
+  rw [foldl_cond_eq_foldl_filter, testBit_foldl_lor]
+  have hiff : i ∈ (inactiveSlots mask n).filter (fun j => decide (values j = v1)) ↔
+      values i = v1 := by
+    constructor
+    · intro hm
+      unfold inactiveSlots at hm
+      rw [List.mem_filter] at hm
+      exact of_decide_eq_true hm.2
+    · intro h
+      unfold inactiveSlots
+      rw [List.mem_filter]
+      exact ⟨mem_inactiveSlots_of hi hoff, decide_eq_true h⟩
+  have hdec : decide (i ∈ (inactiveSlots mask n).filter
+      (fun j => decide (values j = v1))) = decide (values i = v1) :=
+    decide_eq_decide.mpr hiff
+  rw [hdec]
+  simp
+
+/-- `selectionOf` marks the `val1` slots for a decode. -/
+theorem selectionOf_bit_of_eq {values : Nat → VoxelValue} {mask n i : Nat} {v1 : VoxelValue}
+    (hi : i < n) (hoff : mask.testBit i = false) (heq : values i = v1) :
+    NodeMask.bit (selectionOf values mask n v1) i = true := by
+  simp [NodeMask.bit, selectionOf_bit hi hoff, heq]
+
+theorem selectionOf_bit_of_ne {values : Nat → VoxelValue} {mask n i : Nat} {v1 : VoxelValue}
+    (hi : i < n) (hoff : mask.testBit i = false) (hne : values i ≠ v1) :
+    NodeMask.bit (selectionOf values mask n v1) i = false := by
+  simp [NodeMask.bit, selectionOf_bit hi hoff, hne]
+
+/-! ### The unique-value scan invariant -/
+
+/-- Every value seen so far is one of the stored inactive values (as long as
+    the scan has not saturated at three distinct values). -/
+def Scan.Inv (s : Scan) (seen : List VoxelValue) : Prop :=
+  (s.count = 0 → seen = []) ∧
+  (s.count = 1 → ∀ v ∈ seen, v = s.u0) ∧
+  (s.count = 2 → ∀ v ∈ seen, v = s.u0 ∨ v = s.u1) ∧
+  (s.count = 2 → s.u0 ≠ s.u1)
+
+theorem Scan.inv_zero (v0 v1 : VoxelValue) : (⟨v0, v1, 0⟩ : Scan).Inv [] := by
+  refine ⟨fun _ => rfl, ?_, ?_, ?_⟩ <;> (intro h; simp at h)
+
+/-- One scan step preserves the invariant. -/
+theorem Scan.step_inv {u0 u1 : VoxelValue} {c : Nat} {seen : List VoxelValue}
+    (h : (⟨u0, u1, c⟩ : Scan).Inv seen) (v : VoxelValue) :
+    (Scan.step ⟨u0, u1, c⟩ v).Inv (v :: seen) := by
+  rcases c with _ | _ | _ | k
+  · -- count 0: the value becomes `u0`
+    have hstep : Scan.step ⟨u0, u1, 0⟩ v = ⟨v, u1, 1⟩ := by simp [Scan.step]
+    rw [hstep]
+    refine ⟨by simp, ?_, by simp, by simp⟩
+    intro _ x hx
+    rcases List.mem_cons.1 hx with rfl | hx
+    · rfl
+    · have hempty : seen = [] := h.1 rfl
+      subst hempty
+      cases hx
+  · -- count 1
+    by_cases hv : v = u0
+    · have hstep : Scan.step ⟨u0, u1, 1⟩ v = ⟨u0, u1, 1⟩ := by simp [Scan.step, hv]
+      rw [hstep]
+      refine ⟨by simp, ?_, by simp, by simp⟩
+      intro _ x hx
+      rcases List.mem_cons.1 hx with rfl | hx
+      · exact hv
+      · exact h.2.1 (by rfl) x hx
+    · have hstep : Scan.step ⟨u0, u1, 1⟩ v = ⟨u0, v, 2⟩ := by simp [Scan.step, hv]
+      rw [hstep]
+      refine ⟨by simp, by simp, ?_, ?_⟩
+      · intro _ x hx
+        rcases List.mem_cons.1 hx with rfl | hx
+        · exact Or.inr rfl
+        · exact Or.inl (h.2.1 (by rfl) x hx)
+      · intro _ hh
+        exact hv hh.symm
+  · -- count 2
+    by_cases hv : v = u0
+    · have hstep : Scan.step ⟨u0, u1, 2⟩ v = ⟨u0, u1, 2⟩ := by simp [Scan.step, hv]
+      rw [hstep]
+      refine ⟨by simp, by simp, ?_, ?_⟩
+      · intro _ x hx
+        rcases List.mem_cons.1 hx with rfl | hx
+        · exact Or.inl hv
+        · exact h.2.2.1 (by rfl) x hx
+      · exact h.2.2.2
+    · by_cases hv1 : v = u1
+      · have hstep : Scan.step ⟨u0, u1, 2⟩ v = ⟨u0, u1, 2⟩ := by simp [Scan.step, hv1]
+        rw [hstep]
+        refine ⟨by simp, by simp, ?_, ?_⟩
+        · intro _ x hx
+          rcases List.mem_cons.1 hx with rfl | hx
+          · exact Or.inr hv1
+          · exact h.2.2.1 (by rfl) x hx
+        · exact h.2.2.2
+      · -- saturated: count 3, no constraint
+        have hstep : Scan.step ⟨u0, u1, 2⟩ v = ⟨u0, u1, 3⟩ := by simp [Scan.step, hv, hv1]
+        rw [hstep]
+        exact ⟨by simp, by simp, by simp, by simp⟩
+  · -- count ≥ 3: no constraint
+    have hge : 3 ≤ (Scan.step ⟨u0, u1, k + 1 + 1 + 1⟩ v).count := by
+      unfold Scan.step
+      by_cases hv0 : v = u0
+      · simp [hv0]
+      · by_cases hv1 : v = u1
+        · simp [hv1]
+        · by_cases hlt : k + 3 < 2
+          · omega
+          · simp [hv0, hv1, hlt]
+    refine ⟨fun h0 => ?_, fun h1 => ?_, fun h2 => ?_, fun h3 => ?_⟩ <;> omega
+
+/-- Folding the step preserves the invariant over the reversed prefix. -/
+theorem Scan.fold_inv (l : List VoxelValue) (s : Scan) (seen : List VoxelValue)
+    (h : s.Inv seen) : (l.foldl Scan.step s).Inv (l.reverse ++ seen) := by
+  induction l generalizing s seen with
+  | nil => simpa using h
+  | cons a t ih =>
+    rw [List.foldl_cons, List.reverse_cons, List.append_assoc]
+    exact ih (Scan.step s a) (a :: seen) (Scan.step_inv h a)
+
+theorem Scan.Inv.of_reverse {s : Scan} {l : List VoxelValue} (h : s.Inv l.reverse) :
+    s.Inv l := by
+  have mem : ∀ x, x ∈ l ↔ x ∈ l.reverse := fun x => List.mem_reverse.symm
+  refine ⟨fun h0 => ?_, fun h1 v hv => h.2.1 h1 v ((mem v).1 hv),
+    fun h2 v hv => h.2.2.1 h2 v ((mem v).1 hv), fun h2 => h.2.2.2 h2⟩
+  rw [← List.reverse_reverse l, h.1 h0]
+  simp
+
+/-- The scan of the inactive values satisfies the invariant. -/
+theorem scanValues_inv (vs : List VoxelValue) (bg : VoxelValue) :
+    (scanValues vs bg).Inv vs := by
+  have h := Scan.fold_inv vs ⟨bg, bg, 0⟩ [] (Scan.inv_zero bg bg)
+  rw [List.append_nil] at h
+  exact h.of_reverse
+
+/-! ### General mask-compression round trip -/
+
+/-- An inactive slot's value is a member of the inactive value list. -/
+theorem inactiveValues_mem {values : Nat → VoxelValue} {mask n i : Nat}
+    (hi : i < n) (hoff : mask.testBit i = false) :
+    values i ∈ inactiveValues values mask n := by
+  unfold inactiveValues
+  exact List.mem_map.mpr ⟨i, mem_inactiveSlots_of hi hoff, rfl⟩
+
+/-- **Mask-compression round trip**: decoding a classified node returns the
+    original value on every slot inside the node, for every combination of
+    inactive values. This covers all seven codes: the scan invariant bounds
+    the inactive values by `{u0, u1}`, the selection mask separates them, and
+    code 6 stores the full per-slot list. -/
+theorem classify_decode {bg : VoxelValue} {values : Nat → VoxelValue} {mask n i : Nat}
+    (hn : i < n) :
+    decodeAll bg values mask n (classify bg values mask n) i = values i := by
+  by_cases hb : mask.testBit i = true
+  · exact decodeAll_active hn hb
+  · have hoff : mask.testBit i = false := by simpa using hb
+    have hbit : NodeMask.bit mask i = false := by simpa [NodeMask.bit] using hoff
+    have hmem : values i ∈ inactiveValues values mask n := inactiveValues_mem hn hoff
+    have hinv := scanValues_inv (inactiveValues values mask n) bg
+    rcases hscan : scanValues (inactiveValues values mask n) bg with ⟨u0, u1, c⟩
+    rw [hscan] at hinv
+    rcases c with _ | _ | _ | k
+    · -- count 0: there are no inactive values
+      have hempty : inactiveValues values mask n = [] := hinv.1 rfl
+      rw [hempty] at hmem
+      simp at hmem
+    · -- count 1: every inactive value is `u0`
+      have hval : values i = u0 := hinv.2.1 rfl (values i) hmem
+      by_cases hu : u0 = bg
+      · -- code 0
+        have hcls : classify bg values mask n = ⟨.noMaskOrInactiveVals, bg, bg, 0⟩ := by
+          unfold classify; rw [hscan]; simp [hu]
+        rw [hcls]
+        simp [decodeAll, decodeCompacted, hbit]
+        rw [hval, hu]
+      · by_cases hneg : u0 = bg.negate
+        · -- code 1
+          have hne' : bg.negate ≠ bg := fun hh => hu (hneg.trans hh)
+          have hcls : classify bg values mask n = ⟨.noMaskAndMinusBg, bg, bg, 0⟩ := by
+            unfold classify; rw [hscan]; simp [hneg, hne']
+          rw [hcls]
+          simp [decodeAll, decodeCompacted, hbit]
+          rw [hval, ← hneg]
+        · -- code 2
+          have hcls : classify bg values mask n =
+              ⟨.noMaskAndOneInactiveVal, u0, bg, 0⟩ := by
+            unfold classify; rw [hscan]; simp [hu, hneg]
+          rw [hcls]
+          simp [decodeAll, decodeCompacted, hbit, hval]
+    · -- count 2: inactive values are `u0` or `u1`, and they differ
+      have hval : values i = u0 ∨ values i = u1 := hinv.2.2.1 rfl (values i) hmem
+      have hne : u0 ≠ u1 := hinv.2.2.2 rfl
+      by_cases hu1 : u1 = bg
+      · by_cases hneg : u0 = bg.negate
+        · -- code 3 (selection marks `bg`)
+          have hne' : bg.negate ≠ bg := fun hh => hne (hneg.trans (hh.trans hu1.symm))
+          have hcls : classify bg values mask n =
+              ⟨.maskAndNoInactiveVals, u0, bg, selectionOf values mask n bg⟩ := by
+            unfold classify; rw [hscan]; simp [hu1, hneg]
+          rw [hcls]
+          simp [decodeAll, decodeCompacted, hbit]
+          by_cases heq : values i = bg
+          · simp [selectionOf_bit_of_eq hn hoff heq, heq]
+          · have hu0 : values i = u0 := by
+              rcases hval with h | h
+              · exact h
+              · exact absurd (h.trans hu1) heq
+            simp [selectionOf_bit_of_ne hn hoff heq, hu0, hneg]
+        · -- code 4 (`u0` and `bg`)
+          have hcls : classify bg values mask n =
+              ⟨.maskAndOneInactiveVal, u0, bg, selectionOf values mask n bg⟩ := by
+            unfold classify; rw [hscan]; simp [hu1, hneg]
+          rw [hcls]
+          simp [decodeAll, decodeCompacted, hbit]
+          by_cases heq : values i = bg
+          · simp [selectionOf_bit_of_eq hn hoff heq, heq]
+          · have hu0 : values i = u0 := by
+              rcases hval with h | h
+              · exact h
+              · exact absurd (h.trans hu1) heq
+            simp [selectionOf_bit_of_ne hn hoff heq, hu0]
+      · by_cases hu0 : u0 = bg
+        · -- the background was seen first: codes 3/4 with `val0 = u1`
+          by_cases hneg : u1 = bg.negate
+          · have hne' : bg.negate ≠ bg := fun hh => hu1 (hneg.trans hh)
+            have hcls : classify bg values mask n =
+                ⟨.maskAndNoInactiveVals, u1, bg, selectionOf values mask n bg⟩ := by
+              unfold classify; rw [hscan]; simp [hu0, hneg, hne']
+            rw [hcls]
+            simp [decodeAll, decodeCompacted, hbit]
+            by_cases heq : values i = bg
+            · simp [selectionOf_bit_of_eq hn hoff heq, heq]
+            · have hu1' : values i = u1 := by
+                rcases hval with h | h
+                · exact absurd (h.trans hu0) heq
+                · exact h
+              simp [selectionOf_bit_of_ne hn hoff heq, hu1', hneg]
+          · have hcls : classify bg values mask n =
+                ⟨.maskAndOneInactiveVal, u1, bg, selectionOf values mask n bg⟩ := by
+              unfold classify; rw [hscan]; simp [hu1, hu0, hneg]
+            rw [hcls]
+            simp [decodeAll, decodeCompacted, hbit]
+            by_cases heq : values i = bg
+            · simp [selectionOf_bit_of_eq hn hoff heq, heq]
+            · have hu1' : values i = u1 := by
+                rcases hval with h | h
+                · exact absurd (h.trans hu0) heq
+                · exact h
+              simp [selectionOf_bit_of_ne hn hoff heq, hu1']
+        · -- code 5: `u0` and `u1`, neither is the background
+          have hcls : classify bg values mask n =
+              ⟨.maskAndTwoInactiveVals, u0, u1, selectionOf values mask n u1⟩ := by
+            unfold classify; rw [hscan]; simp [hu1, hu0]
+          rw [hcls]
+          simp [decodeAll, decodeCompacted, hbit]
+          by_cases heq : values i = u1
+          · simp [selectionOf_bit_of_eq hn hoff heq, heq]
+          · have hu0' : values i = u0 := by
+              rcases hval with h | h
+              · exact h
+              · exact absurd h heq
+            simp [selectionOf_bit_of_ne hn hoff heq, hu0']
+    · -- saturated: code 6 stores every slot
+      have hcls : classify bg values mask n = ⟨.noMaskAndAllVals, bg, bg, 0⟩ := by
+        unfold classify; rw [hscan]; simp
+      rw [hcls]
+      simp [decodeAll, storedValues, getElem?_range_map values hn]
 
 end Vdb
