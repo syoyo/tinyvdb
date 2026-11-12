@@ -52,7 +52,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `pushBytes_eq_append` | `pushBytes bs acc = acc ++ pushBytes bs empty` (exposes every emitter as an append chain) |
 | `putU8_size` … `putI64LE_size` | emitted sizes of every scalar writer, so read offsets are known to `simp`/`omega` |
 | `getBytes?_append`, `getBytes?_prefix`, `getBytes?_putBytes`, `getString?_putString`, `getString?_putString_append`, `putString_size` | string/blob wire round trips and emitted sizes, including reads with trailing bytes |
-| `concatChunks_append`, `concatChunks_size`, `acc_append_concatChunks`, `getU8?_chunk` … `getBytes?_chunk`, `getString?_chunk` | chunk-chain algebra and boundary reads, including VDB strings |
+| `concatChunks_append`, `concatChunks_size`, `concatChunks_append_map`, `concatChunks_triple`, `concatChunks_snoc_size`, `concatChunks_append_size`, `concatChunks_cons_size`, `concatChunks_nil_size`, `acc_append_concatChunks`, `getU8?_chunk` … `getBytes?_chunk`, `getString?_chunk` | chunk-chain algebra and boundary reads, including VDB strings |
 | `Header.parseFrom_emitFrom` | **header round trip**: every canonical header parses back unchanged from its emitted bytes, with the legacy compression byte present only for versions 220–221 |
 | `Vec3d.ofBytes_toBytes`, `Vec3d.toBytes_size`, `Vec3d.parseAt_toBytes`, `parseVecChain_emit` | 24-byte double-vector round trips and the vector-chain parser inverse |
 | `TransformKind.ofName?`, `ofName_uniformScale` … `ofName_affine` | map-name lookup and its six `native_decide` characterisations |
@@ -60,7 +60,8 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `parseValue_bool/int32/int64/f32/f64/vec3i/vec3f/vec3d`, `parseRaw` | the typed value decoders: size chunk, negative-count rejection, exact-width check, then the value chunks |
 | `MetaEntry.parseFrom_emitFrom_bool/int32/int64/f32/f64/vec3i/vec3f/vec3d/str/raw` | **per-kind metadata round trips**: name string, type name, value chunks; raw entries carry an `i32` byte count and opaque bytes |
 | `MetaKind.ofName?_eq_none` | an unknown (non-`string`, non-known) type name has no `MetaKind`, which is what selects the raw decoder |
-| `MetaEntry.parseFrom_emitFrom` | **metadata round trip**: every well-formed entry parses back unchanged from the bytes it emits (`TypeOK` selects the kind, `SizesOK` discharges the length hypotheses) |
+| `MetaEntry.parseFrom_emitFrom` | **metadata round trip**: every well-formed entry parses back unchanged from the bytes it emits (`TypeOK` selects the kind, `SizesOK` discharges the length hypotheses). The per-kind lemmas also return the exact end offset (`acc.size + sum of chunk sizes`), which the list framing needs. |
+| `MetaList`, `parseEntries`, `MetaList.parseFrom` | metadata-list wire model: `i32` count (C bounds `0..4096`), then that many entries. Emit/parse are total; the round trip is the next target (it needs the entry lemmas generalised over trailing bytes, since each entry is followed by the rest of the list). |
 | `Transform.parseFrom_emitFrom` | **transform round trip**: every well-formed transform parses back unchanged; the proof canonicalises the fields the reader does not store and applies the per-kind lemma |
 | `nodeSlot_lt` | an in-box coordinate gives a slot below `2^(3L)` |
 | `exampleTree_lookup_origin/inactive/background` | the worked tree reads the active voxel, an inactive stored value, and the background correctly (checked by `decide`) |

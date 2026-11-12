@@ -1109,4 +1109,48 @@ theorem MetaEntry.parseFrom_emitFrom (e : MetaEntry) (hwf : e.WellFormed) (acc :
     exact MetaEntry.parseFrom_emitFrom_raw name hn s hsl' htn
       (MetaKind.ofName?_eq_none htyk hstr) acc
 
+
+
+/-! ### Metadata lists -/
+
+/-- A metadata list: an `i32` count followed by that many entries. The C
+    reader accepts counts in `0..4096`. -/
+structure MetaList where
+  entries : List MetaEntry
+  deriving Repr
+
+/-- The list's wire chunks. -/
+def MetaList.chunks (m : MetaList) : List Bytes :=
+  putI32LE (Int32.ofNat m.entries.length) ByteArray.empty ::
+    m.entries.flatMap MetaEntry.chunks
+
+/-- Emit a metadata list after `acc`. -/
+def MetaList.emitFrom (m : MetaList) (acc : Bytes) : Bytes :=
+  acc ++ concatChunks m.chunks
+
+/-- Emit a metadata list. -/
+def MetaList.emit (m : MetaList) : Bytes := m.emitFrom ByteArray.empty
+
+/-- Read `n` entries in sequence. -/
+def parseEntries : Nat → Bytes → Nat → Option (List MetaEntry × Nat)
+  | 0, _, off => some ([], off)
+  | n + 1, b, off =>
+    match MetaEntry.parseFrom b off with
+    | none => none
+    | some (e, o) =>
+      match parseEntries n b o with
+      | none => none
+      | some (es, o') => some (e :: es, o')
+
+/-- Parse a metadata list at `off`. -/
+def MetaList.parseFrom (b : Bytes) (off : Nat) : Option (MetaList × Nat) :=
+  match getI32LE b off with
+  | none => none
+  | some count =>
+    if count < 0 then none
+    else
+      match parseEntries count.toNatClampNeg b (off + 4) with
+      | none => none
+      | some (es, o) => some (⟨es⟩, o)
+
 end Vdb

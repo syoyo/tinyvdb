@@ -47,6 +47,16 @@ theorem concatChunks_cons_size (c : Bytes) (l : List Bytes) :
     (concatChunks (c :: l)).size = c.size + (concatChunks l).size := by
   simp [concatChunks, ByteArray.size_append]
 
+/-- The size of a concatenation in terms of the sum of its chunk sizes. -/
+theorem concatChunks_append_map (pre l : List Bytes) :
+    (concatChunks (pre ++ l)).size = (concatChunks pre).size + (l.map (·.size)).sum := by
+  rw [concatChunks_size, List.map_append, List.sum_append, ← concatChunks_size]
+
+/-- Chunk concatenation distributes over a three-way list append. -/
+theorem concatChunks_triple (a b c : List Bytes) :
+    concatChunks (a ++ b ++ c) = concatChunks a ++ concatChunks b ++ concatChunks c := by
+  rw [concatChunks_append, concatChunks_append, ByteArray.append_assoc]
+
 /-- The empty chunk list has size zero. -/
 theorem concatChunks_nil_size : (concatChunks ([] : List Bytes)).size = 0 := rfl
 
