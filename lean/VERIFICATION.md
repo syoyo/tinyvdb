@@ -28,6 +28,10 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `RootTopo.parseFrom_emitFrom` | **root-topology round trip**: background, tile/child counts (`i32`→`u32` count check, children must be 0) and the tile list parse back to the node |
 | `TreeData.parseFrom_emitFrom` | **tree-data round trip**: the tree-base buffer count (`i32` = 1) + root topology parse back to the tree |
 | `RootTopo.parseFrom_emitFrom_empty` | the empty-root specialisation (background + zero counts) |
+| `Vdb/TreeNode.lean` | node topology for the standard `Tree_float_5_4_3` layout: `LeafNode` (log2dim 3, value mask), `Child4` (origin + leaf subtree), `Node4` (child mask + value mask + `ValueRecord` + children). The value-chunk size is a parameter (it depends on compression flags/value size/active count). |
+| `LeafNode.parseFrom_emitFrom`, `Child4.parseFrom_emitFrom` | leaf and level-4 child-slot round trips (origin `i32 x3` + leaf) |
+| `Child4.parseMany_emit` | **child-slot list round trip**: a list of child slots parses back with the following siblings as trailing bytes |
+| `Node4.parseFrom_emitFrom` | **level-4 internal-node topology round trip**: child mask, value mask, compressed value record and the recursive child list, with the child count derived from the child mask (`children.length = popCount childMask`) |
 | `Vdb/NodeRecord.lean` | per-node value records: the `MaskCompress` code byte, the inactive values (full width), the selection mask, and the value chunk (`tvdb__read_mask_values` / `tvdb__write_mask_values`). `ValueRecord.WellFormed` pins the fields each code carries and the stored-payload size. |
 | `parseNat_append/left/chunk`, `parseNat_chunk_serialize` | reading a serialized `NodeMask` at a chunk boundary (prefix size in, exact mask out) |
 | `MaskCode.flag`, `MaskCode.ofNat?_flag` | the wire code byte and its decoder inverse |

@@ -21,6 +21,7 @@ import Vdb.Stable
 import Vdb.Chunks
 import Vdb.Meta
 import Vdb.Topology
+import Vdb.TreeNode
 import Vdb.Transform
 import Vdb.File
 import Vdb.FilePrefix
