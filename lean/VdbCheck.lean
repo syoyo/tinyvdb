@@ -13,6 +13,15 @@ import VdbSpec
 
 open Vdb
 
+/-- C-reader style name for a transform kind. -/
+def transformKindName : TransformKind → String
+  | .uniformScale => "UniformScaleMap"
+  | .scale => "ScaleMap"
+  | .uniformScaleTranslate => "UniformScaleTranslateMap"
+  | .scaleTranslate => "ScaleTranslateMap"
+  | .translation => "TranslationMap"
+  | .affine => "AffineMap"
+
 /-- Printable form of a wire string (names are ASCII in practice). -/
 def byteString (b : Bytes) : String :=
   String.fromUTF8? b |>.getD s!"<{b.size} bytes>"
@@ -43,5 +52,11 @@ def main (args : List String) : IO UInt32 := do
         IO.println s!"grid {i} {byteString gd.uniqueName} {byteString gd.gridType} \
           instance={byteString gd.instanceParent} \
           offsets={gd.gridOffset} {gd.blockOffset} {gd.endOffset}"
+        match GridBody.parseFrom b gd.gridOffset.toNat gd.endOffset.toNat with
+        | none => IO.println s!"  body {i}: invalid"
+        | some (gb, _) =>
+          IO.println s!"  body {i} compression={gb.header.compressionFlags} \
+            transform={transformKindName gb.header.transform.kind} \
+            metadata={gb.header.metadata.entries.length} treebase={gb.bufferCount}"
         o := gd.endOffset.toNat
     return 0

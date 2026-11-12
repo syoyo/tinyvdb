@@ -24,13 +24,18 @@ def lean_dump(exe, path):
     header = dict(version=int(m.group(1)), major=int(m.group(2)),
                   minor=int(m.group(3)), uuid=m.group(5))
     grids = []
+    bodies = {}
     for line in out.stdout.splitlines():
         g = re.match(r"grid (\d+) (\S+) (\S+) instance=(\S*) offsets=", line)
         if g:
             grids.append(dict(name=g.group(2), type=g.group(3),
                               instance="" if g.group(4) == "instance=" else g.group(4)))
+        b = re.match(r"  body (\d+) compression=(\d+) transform=(\S+)", line)
+        if b:
+            bodies[int(b.group(1))] = dict(compression=int(b.group(2)),
+                                           transform=b.group(3))
     count = int(re.search(r"^grids (\d+)$", out.stdout, re.M).group(1))
-    return header, count, grids
+    return header, count, grids, bodies
 
 
 def c_dump(exe, path):
@@ -44,10 +49,21 @@ def c_dump(exe, path):
     header = dict(version=int(m.group(1)), major=int(m.group(2)),
                   minor=int(m.group(3)), uuid=uuid.group(1) if uuid else "")
     grids = []
-    for g in re.finditer(r'Grid\[\d+\]: "([^"]+)"\n\s*Type: (\S+?)(?: \(half\))?\n', text):
-        name, typ = g.group(1), g.group(2)
-        grids.append(dict(name=name, type=typ))
-    return header, int(count.group(1)), grids
+    bodies = {}
+    # split into per-grid blocks
+    parts = re.split(r"Grid\[(\d+)\]: ", text)
+    for k in range(1, len(parts) - 1, 2):
+        idx = int(parts[k])
+        block = parts[k + 1]
+        nm = re.search(r'"([^"]+)"', block)
+        typ = re.search(r"Type: (\S+?)(?: \(half\))?\n", block)
+        tr = re.search(r"Transform: (\S+)", block)
+        co = re.search(r"Compression: [^(]*\(0x([0-9a-fA-F]+)\)", block)
+        grids.append(dict(name=nm.group(1) if nm else "",
+                          type=typ.group(1) if typ else ""))
+        bodies[idx] = dict(transform=tr.group(1) if tr else "",
+                           compression=int(co.group(1), 16) if co else -1)
+    return header, int(count.group(1)), grids, bodies
 
 
 def norm_type(t):
@@ -60,8 +76,8 @@ def main():
     lean_exe, c_exe, files = sys.argv[1], sys.argv[2], sys.argv[3:]
     bad = 0
     for path in files:
-        lh, lc, lg = lean_dump(lean_exe, path)
-        ch, cc, cg = c_dump(c_exe, path)
+        lh, lc, lg, lb = lean_dump(lean_exe, path)
+        ch, cc, cg, cb = c_dump(c_exe, path)
         problems = []
         for key in ("version", "major", "minor", "uuid"):
             if lh[key] != ch[key]:
@@ -75,6 +91,14 @@ def main():
                 problems.append(f"grid {i} name: lean={l['name']} c={c['name']}")
             if norm_type(l["type"]) != norm_type(c["type"]):
                 problems.append(f"grid {i} type: lean={l['type']} c={c['type']}")
+            lbf = lb.get(i)
+            cbf = cb.get(i)
+            if lbf is not None and cbf is not None:
+                if lbf["compression"] != cbf["compression"]:
+                    problems.append(f"grid {i} compression: lean={lbf['compression']} c=0x{cbf['compression']:x}")
+                ltr = lbf["transform"][:-3] if lbf["transform"].endswith("Map") else lbf["transform"]
+                if ltr != cbf["transform"]:
+                    problems.append(f"grid {i} transform: lean={lbf['transform']} c={cbf['transform']}")
         if problems:
             bad += 1
             print(f"FAIL {path}")
