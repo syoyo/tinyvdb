@@ -19,6 +19,24 @@ failure, then run the relevant suite. Documentation-only changes require a
 content review, command/link checks, and whitespace checks; they do not require
 rerunning the full backend matrix.
 
+## Lean formalization (`lean/`)
+
+The Lean 4 package under `lean/` (`VdbSpec`, Lean v4.35.0 + mathlib v4.35.0) is
+the verified model of the `.vdb` format and of the volume operators. It is not
+a proof about the C code: the Lean model is proven and the C code is checked
+against it by differential harnesses. Scope and phase plan live in
+`plan-lean.md`; theorem inventory, boundaries and findings in
+`lean/VERIFICATION.md`.
+
+- Build and check locally (no CI job for now):
+  `cd lean && lake exe cache get && lake build`.
+- No `sorry` in landed modules; `grep -rn '\bsorry\b' lean/Vdb` must be empty.
+  Keep `warningAsError` on.
+- Findings from the model that require a C change are fixed in C with a
+  regression test first (see `lean/VERIFICATION.md`), or documented as an
+  intentional deviation.
+- Do not track `lean/.lake` or generated fixtures.
+
 ## Pre-push procedure
 
 Complete this procedure before publishing commits, including a force push.
