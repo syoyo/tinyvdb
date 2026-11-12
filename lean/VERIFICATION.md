@@ -31,6 +31,9 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vdb/TreeNode.lean` | node topology for the standard `Tree_float_5_4_3` layout: `LeafNode` (log2dim 3, value mask), `Child4` (origin + leaf subtree), `Node4` (child mask + value mask + `ValueRecord` + children). The value-chunk size is a parameter (it depends on compression flags/value size/active count). |
 | `LeafNode.parseFrom_emitFrom`, `Child4.parseFrom_emitFrom` | leaf and level-4 child-slot round trips (origin `i32 x3` + leaf) |
 | `Child4.parseMany_emit` | **child-slot list round trip**: a list of child slots parses back with the following siblings as trailing bytes |
+| `Child5.parseFrom_emitFrom`, `Child5.parseMany_emit` | level-5 child slot (origin + level-4 subtree) and its list round trip |
+| `RootNode.parseFrom_emitFrom` | **root node round trip**: background, tile count, child count, the tile list (reusing `parseTiles_emit`) and the level-5 child subtrees (reusing `Child5.parseMany_emit`) |
+| `TreeData5.parseFrom_emitFrom` | **full tree-data round trip for the 5/4/3 layout**: tree-base buffer count (`i32` = 1) + root with tiles and children (internal level 4, leaves) |
 | `Node4.parseFrom_emitFrom` | **level-4 internal-node topology round trip**: child mask, value mask, compressed value record and the recursive child list, with the child count derived from the child mask (`children.length = popCount childMask`) |
 | `Vdb/NodeRecord.lean` | per-node value records: the `MaskCompress` code byte, the inactive values (full width), the selection mask, and the value chunk (`tvdb__read_mask_values` / `tvdb__write_mask_values`). `ValueRecord.WellFormed` pins the fields each code carries and the stored-payload size. |
 | `parseNat_append/left/chunk`, `parseNat_chunk_serialize` | reading a serialized `NodeMask` at a chunk boundary (prefix size in, exact mask out) |
