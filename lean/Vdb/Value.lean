@@ -116,6 +116,13 @@ def ValueType.halfElemSize (vt : ValueType) : Nat :=
 /-- Types whose values may be saved as half precision. -/
 def ValueType.canBeHalf (vt : ValueType) : Bool := vt.halfComponents != 0
 
+
+/-- Element size as stored in the file: half width when the grid is saved as
+    half precision and the type has a half encoding, full width otherwise
+    (the C `is_half ? 2 * half_comps : vsize`). -/
+def ValueType.fileElemSize (vt : ValueType) (half : Bool) : Nat :=
+  if half && vt.canBeHalf then vt.halfElemSize else vt.size
+
 /-! ### Voxel values -/
 
 /-- A voxel / tile value. Bit patterns are kept raw (no float semantics here):
