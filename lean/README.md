@@ -40,6 +40,9 @@ layer, oracle harness).
   are one induction over a `List UInt8`.
 * Bit patterns are kept raw (`UInt32`/`UInt64` IEEE bits); float semantics live
   only in `Vdb/Half.lean` and the geometry modules.
+* A node mask is a `Nat` whose low `2^(3L)` bits are the slots; the byte
+  serialization is its base-256 little-endian digit expansion, so the round
+  trip follows from `Nat.ofDigits_digits`.
 * Two coordinate conventions must never be conflated: dense grids in
   `src/tinyvdb_*.c` are cell-centred (`o + (i+0.5)h`, x-fastest storage),
   sparse VDB trees are vertex-centred (`M·(i,j,k,1)`, leaf slot

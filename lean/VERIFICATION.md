@@ -12,7 +12,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | --- | --- |
 | `Vdb/Bytes.lean` | Total little-endian readers (`getU8?`, `getU16LE`, `getU32LE`, `getU64LE`, `getI32LE`, `getI64LE`, `getF32Bits`, `getF64Bits`), `Emit` difference lists, `pushBytes`, round trips for every width, in-bounds lemmas (`getU32LE_ibounds`, `getU64LE_ibounds`), push/append read lemmas (`getU8?_push`, `getU8?_pushBytes_add`, `getU8?_append_left/right`, `getU32LE_append_left/right'`, `getU64LE_append_left/right'`, `getU8?_nested`), extract/append lemmas. |
 | `Vdb/Value.lean` | The ten `ValueType`s with on-disk sizes matching `tvdb_value_type_size`, tree-name and metadata-name tables matching the C `strcmp` chains, half-grid component/element-size rules (`tvdb__half_components`), `VoxelValue` (raw bit patterns) and `MetaValue`. |
-| `Vdb/Mask.lean` | `nodeSlots L = 2^(3L)`, serialized byte counts for `L = 3/4/5` (64/512/4096), `NodeMask L = Vector Bool (2^(3L))`, bit accessors, `popCount`, `rank` (C `tvdb_tree_mask_rank`), `rank 0 = 0`, `rank (nodeSlots L) = popCount`, `rank ≤ popCount`, byte-serialization definitions (`byteAt`, `serialize`, `parse`). |
+| `Vdb/Mask.lean` | `nodeSlots L = 2^(3L)`, serialized byte counts for `L = 3/4/5` (64/512/4096), `NodeMask L = Nat` (low `2^(3L)` bits are the slots), bit accessor, `popCount`, `rank` (C `tvdb_tree_mask_rank`), `rank 0 = 0`, `rank (i+1) = rank i + bit i`, `rank (nodeSlots L) = popCount`, `rank ≤ index`, base-256 byte serialization (`serializeNat`, `parseNat`) and the full round trip. |
 | `Vdb/Coord.lean` | `Coord`, box membership, `Layout` + `WellFormed` (root level 0, depth 3–8, per-level `log2dim` bound, total ≤ 31), `spanShift`/`span`, `localIndex` (arithmetic shift), non-negativity and `< 2^L` bounds, `origin + span * localIndex ≤ c`, `slotOf`, `childOrigin`, `rootKey` with floor-division bounds. |
 | `Vdb/Layout.lean` | `Tree_<type>_<L...>` strict parser and printer, the lenient reader model (`parseGridTypeLenient`), `GridType.WellFormed`, checked parse of `Tree_float_5_4_3`. |
 
@@ -30,7 +30,10 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `extract_append_size_head`, `extract_append_right_eq`, `foldl_append_eq_foldr` | extract/fold plumbing for nested parsers |
 | `getU32LE_ibounds`, `getU64LE_ibounds` | successful reads imply the field lies in the buffer |
 | `List.count_take_le` | a prefix never has more set bits than the whole list |
-| `NodeMask.rank_zero`, `NodeMask.rank_full`, `NodeMask.rank_le_popCount` | rank/count invariants |
+| `NodeMask.rank_zero`, `NodeMask.rank_succ`, `NodeMask.rank_full`, `NodeMask.rank_le_index` | rank/count invariants |
+| `paddedDigits_length`, `ofDigits_paddedDigits`, `serializeNat_size` | base-256 digit padding is length `n` and still evaluates to the mask |
+| `nodeMaskBytes_three/four/five`, `nodeSlots_three` | 512 slots; 64/512/4096 mask bytes |
+| `parseNat_serializeNat`, `NodeMask.parse_serialize` | **mask byte round trip**: any mask below `2^(3L)` serializes to `nodeMaskBytes L` bytes and parses back unchanged |
 | `nodeSlots_three`, `nodeMaskBytes_three/four/five` | 512 slots, 64/512/4096 mask bytes |
 | `localIndex_nonneg`, `localIndex_lt`, `origin_add_localIndex` | arithmetic-shift local index bounds |
 | `rootKey_le`, `lt_rootKey_add`, `rootKey_dvd` | root key is the floor-multiple box containing the coordinate |
@@ -45,17 +48,14 @@ by `decide`.
 
 ## Explicitly not yet done (next increments)
 
-1. **Mask byte round trip** (`parse (serialize m) = m` slot-wise, all `L`):
-   definitions exist, proof is the next target. This closes the topology byte
-   layer together with the readers.
-2. **Tree model** (`Root`/`Internal`/`Leaf` with well-formedness matching
+1. **Tree model** (`Root`/`Internal`/`Leaf` with well-formedness matching
    `validate_node`), semantics (`lookup`) and `lookup_eq_treeFind`.
-4. **Mask compression** (the 7 `NO_MASK_*` codes) `encode`/`decode` round trip.
-5. **Half float** bit model (`halfToFloat`, trunc vs round-to-nearest).
-6. **Header/metadata/transform/chunk/grid/file** parse + emit + file round trip.
-7. **Oracle harness**: `VdbCheck`/`VdbGen` executables, C dump program,
+2. **Mask compression** (the 7 `NO_MASK_*` codes) `encode`/`decode` round trip.
+3. **Half float** bit model (`halfToFloat`, trunc vs round-to-nearest).
+4. **Header/metadata/transform/chunk/grid/file** parse + emit + file round trip.
+5. **Oracle harness**: `VdbCheck`/`VdbGen` executables, C dump program,
    differential scripts (`vdb-diff`).
-8. Phase P2–P4 (level sets, MC/DMC, mesh→volume).
+6. Phase P2–P4 (level sets, MC/DMC, mesh→volume).
 
 ## Findings awaiting model confirmation
 
