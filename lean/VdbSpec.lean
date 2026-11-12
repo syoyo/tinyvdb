@@ -13,6 +13,7 @@ import Vdb.Coord
 import Vdb.Layout
 import Vdb.LevelSet
 import Vdb.MarchingCubes
+import Vdb.DualVertex
 import Vdb.Tree
 import Vdb.MaskCompress
 import Vdb.NodeRecord
