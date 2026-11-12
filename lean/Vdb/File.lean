@@ -25,6 +25,9 @@ structure FileGrid where
   body : GridBody
   deriving Repr
 
+def FileGrid.Canon (g : FileGrid) : Prop :=
+  g.uniqueName.size < 2 ^ 32 ∧ g.gridType.size < 2 ^ 32 ∧ g.instanceParent.size < 2 ^ 32
+
 /-- Chunks of a descriptor-like record, used for its size. -/
 def descChunkSizes (u t ip : Bytes) : Nat :=
   ([putString u ByteArray.empty, putString t ByteArray.empty,
@@ -61,7 +64,7 @@ structure VdbFile where
 def VdbFile.Canonical (f : VdbFile) : Prop :=
   f.prologue.Canonical ∧ f.prologue.gridCount = f.grids.length ∧
   221 ≤ f.prologue.header.fileVersion ∧
-  (∀ g ∈ f.grids, g.body.Canonical)
+  (∀ g ∈ f.grids, g.Canon ∧ g.body.Canonical)
 
 def VdbFile.emitFrom (f : VdbFile) (acc : Bytes) : Bytes :=
   emitGrids f.grids (f.prologue.emitFrom acc)
@@ -99,8 +102,6 @@ def VdbFile.parse (b : Bytes) : Option (VdbFile × Nat) := VdbFile.parseFrom b 0
 
 
 
-def FileGrid.Canon (g : FileGrid) : Prop :=
-  g.uniqueName.size < 2 ^ 32 ∧ g.gridType.size < 2 ^ 32 ∧ g.instanceParent.size < 2 ^ 32
 
 theorem FileGrid.descChunks_sum (g : FileGrid) (pos : Nat) :
     ((g.descriptorAt pos).chunks.map (·.size)).sum =
@@ -276,5 +277,77 @@ theorem parseGrid_one (g : FileGrid) (hg : g.Canon) (hgb : g.body.Canonical)
   rw [GridBody.parseFromChunks g.body hgb (acc :: d.chunks) []]
   dsimp only
   simp [parseGrids, FileGrid.descriptorAt, hd]
+
+
+theorem VdbFile.parseFrom_emitFrom_single (f : VdbFile) (g : FileGrid)
+    (hc : f.Canonical) (hg : f.grids = [g]) (acc : Bytes)
+    (hacc : (f.emitFrom acc).size < UInt64.size) :
+    ∃ out, VdbFile.parseFrom (f.emitFrom acc) acc.size = some (f, out) := by
+  obtain ⟨hpc, hcount, hver, hgrids⟩ := hc
+  have hgin : g ∈ f.grids := by rw [hg]; simp
+  have hgcanon : g.Canon := (hgrids g hgin).1
+  have hgbody : g.body.Canonical := (hgrids g hgin).2
+  have hcount1 : f.prologue.gridCount = 1 := by rw [hcount, hg]; rfl
+  set pf := f.prologue.emitFrom acc with hpf
+  have hpfchunks : pf = concatChunks (acc :: f.prologue.chunks) := by
+    rw [hpf]; exact acc_append_concatChunks acc f.prologue.chunks
+  have hbytes : gridsBytesAt [g] pf.size = concatChunks (gridsChunksAt [g] pf.size) := rfl
+  set restC := gridsChunksAt [g] pf.size with hr
+  have hrest_eq : restC = (g.descriptorAt pf.size).chunks ++ g.body.chunks := by
+    rw [hr]
+    simp [gridsChunksAt]
+  have hb : f.emitFrom acc = concatChunks (acc :: (f.prologue.chunks ++ restC)) := by
+    unfold VdbFile.emitFrom
+    rw [hg, emitGrids_acc]
+    rw [← hpf]
+    rw [hbytes]
+    rw [hpfchunks]
+    rw [← concatChunks_append]
+    rw [show acc :: (f.prologue.chunks ++ restC) = (acc :: f.prologue.chunks) ++ restC from by simp]
+  rw [hb]
+  unfold VdbFile.parseFrom
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [show concatChunks (acc :: (f.prologue.chunks ++ restC)) =
+      concatChunks ([acc] ++ f.prologue.chunks ++ restC) from by simp]
+  rw [FilePrefix.parseFromChunks f.prologue hpc [acc] restC]
+  dsimp only
+  rw [hcount1]
+  have hb1 : concatChunks ([acc] ++ f.prologue.chunks ++ restC) =
+      concatChunks (concatChunks (acc :: f.prologue.chunks) :: restC) := by
+    rw [show [acc] ++ f.prologue.chunks ++ restC =
+        (acc :: f.prologue.chunks) ++ restC from by simp]
+    rw [concatChunks_append]
+    rw [acc_append_concatChunks]
+  rw [hb1]
+  rw [show (concatChunks ([acc] ++ f.prologue.chunks)).size = pf.size from by
+    rw [show [acc] ++ f.prologue.chunks = acc :: f.prologue.chunks from by simp]
+    rw [← hpfchunks]]
+  have hbeq : concatChunks (pf :: restC) = f.emitFrom acc := by
+    rw [hb, hpfchunks]
+    rw [← acc_append_concatChunks]
+    rw [← acc_append_concatChunks]
+    rw [show concatChunks (acc :: (f.prologue.chunks ++ restC)) =
+        acc ++ (concatChunks f.prologue.chunks ++ concatChunks restC) from by
+      rw [← acc_append_concatChunks, concatChunks_append]]
+    rw [ByteArray.append_assoc]
+  have hbnd : (concatChunks (pf :: restC)).size < UInt64.size := by
+    rw [hbeq]
+    exact hacc
+  rw [hr]
+  rw [show concatChunks (concatChunks (acc :: f.prologue.chunks) :: gridsChunksAt [g] pf.size) =
+      concatChunks (pf :: gridsChunksAt [g] pf.size) from by rw [← hpfchunks]]
+  rw [parseGrid_one g hgcanon hgbody f.prologue.header.fileVersion hver pf hbnd]
+  dsimp only
+  refine ⟨(concatChunks (pf :: gridsChunksAt [g] pf.size)).size, ?_⟩
+  rw [← hg]
+
+
+/-- The entry-point form for a single-grid file. -/
+theorem VdbFile.parse_emit_single (f : VdbFile) (g : FileGrid)
+    (hc : f.Canonical) (hg : f.grids = [g])
+    (hacc : (f.emit).size < UInt64.size) :
+    ∃ out, VdbFile.parse (f.emit) = some (f, out) := by
+  simpa [VdbFile.parse, VdbFile.emit, ByteArray.size_empty] using
+    VdbFile.parseFrom_emitFrom_single f g hc hg ByteArray.empty hacc
 
 end Vdb
