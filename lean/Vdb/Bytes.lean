@@ -278,6 +278,30 @@ theorem pushBytes_size (bs : List UInt8) (acc : Bytes) :
 
 /-! ### Append / extract lemmas used by the parse-emit round trip -/
 
+@[simp] theorem putU8_size (v : UInt8) (acc : Bytes) : (putU8 v acc).size = acc.size + 1 := by
+  simp [putU8, ByteArray.size_push]
+
+@[simp] theorem putU16LE_size (v : UInt16) (acc : Bytes) : (putU16LE v acc).size = acc.size + 2 := by
+  unfold putU16LE
+  rw [pushBytes_size]
+  rfl
+
+@[simp] theorem putU32LE_size (v : UInt32) (acc : Bytes) : (putU32LE v acc).size = acc.size + 4 := by
+  unfold putU32LE
+  rw [pushBytes_size]
+  rfl
+
+@[simp] theorem putU64LE_size (v : UInt64) (acc : Bytes) : (putU64LE v acc).size = acc.size + 8 := by
+  unfold putU64LE
+  rw [pushBytes_size]
+  rfl
+
+@[simp] theorem putI32LE_size (v : Int32) (acc : Bytes) : (putI32LE v acc).size = acc.size + 4 := by
+  simp [putI32LE]
+
+@[simp] theorem putI64LE_size (v : Int64) (acc : Bytes) : (putI64LE v acc).size = acc.size + 8 := by
+  simp [putI64LE]
+
 /-- A byte read entirely inside the left operand of an append. -/
 theorem getU8?_append_left {a b : Bytes} {i : Nat} (h : i < a.size) :
     getU8? (a ++ b) i = getU8? a i := by
@@ -332,7 +356,6 @@ theorem getU64LE_append_right' {a b : Bytes} (j : Nat) :
   rw [h0, e 1 (by omega), e 2 (by omega), e 3 (by omega),
       e 4 (by omega), e 5 (by omega), e 6 (by omega), e 7 (by omega)]
 
-/-- A 32-bit read entirely inside the left operand of an append. -/
 theorem getU32LE_append_left {a b : Bytes} {i : Nat} (h : i + 4 ≤ a.size) :
     getU32LE (a ++ b) i = getU32LE a i := by
   have e : ∀ k < 4, getU8? (a ++ b) (i + k) = getU8? a (i + k) := by
@@ -356,6 +379,12 @@ theorem getU64LE_append_left {a b : Bytes} {i : Nat} (h : i + 8 ≤ a.size) :
   simp only [Nat.add_zero] at h0
   rw [h0, e 1 (by omega), e 2 (by omega), e 3 (by omega),
       e 4 (by omega), e 5 (by omega), e 6 (by omega), e 7 (by omega)]
+
+/-- A 64-bit read entirely inside the left operand of an append. -/
+theorem getI64LE_append_left {a b : Bytes} {i : Nat} (h : i + 8 ≤ a.size) :
+    getI64LE (a ++ b) i = getI64LE a i := by
+  unfold getI64LE
+  rw [getU64LE_append_left h]
 
 /-- A byte read at an offset past two nested left operands. -/
 theorem getU8?_nested {p s rest : Bytes} (k : Nat) :

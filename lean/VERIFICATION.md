@@ -47,6 +47,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `localOfSlot_slotOf` | component extraction is a two-sided inverse of `slotOf` on the node box |
 | `Layout.standard_wf`, `float543_wellFormed`, `parseGridType_float543` | the standard `5_4_3` float layout parses and validates |
 | `pushBytes_eq_append` | `pushBytes bs acc = acc ++ pushBytes bs empty` (exposes every emitter as an append chain) |
+| `putU8_size` … `putI64LE_size` | emitted sizes of every scalar writer, so read offsets are known to `simp`/`omega` |
 | `getBytes?_append`, `getBytes?_putBytes`, `getString?_putString`, `putString_size` | string/blob wire round trips and emitted sizes |
 | `nodeSlot_lt` | an in-box coordinate gives a slot below `2^(3L)` |
 | `exampleTree_lookup_origin/inactive/background` | the worked tree reads the active voxel, an inactive stored value, and the background correctly (checked by `decide`) |
