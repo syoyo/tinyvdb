@@ -28,6 +28,10 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `RootTopo.parseFrom_emitFrom` | **root-topology round trip**: background, tile/child counts (`i32`→`u32` count check, children must be 0) and the tile list parse back to the node |
 | `TreeData.parseFrom_emitFrom` | **tree-data round trip**: the tree-base buffer count (`i32` = 1) + root topology parse back to the tree |
 | `RootTopo.parseFrom_emitFrom_empty` | the empty-root specialisation (background + zero counts) |
+| `Vdb/NodeRecord.lean` | per-node value records: the `MaskCompress` code byte, the inactive values (full width), the selection mask, and the value chunk (`tvdb__read_mask_values` / `tvdb__write_mask_values`). `ValueRecord.WellFormed` pins the fields each code carries and the stored-payload size. |
+| `parseNat_append/left/chunk`, `parseNat_chunk_serialize` | reading a serialized `NodeMask` at a chunk boundary (prefix size in, exact mask out) |
+| `MaskCode.flag`, `MaskCode.ofNat?_flag` | the wire code byte and its decoder inverse |
+| `ValueRecord.parseFrom_emitFrom` | **mask-compression record round trip**: for every code 0–6 the record (code byte, optional `val0`/`val1`, optional selection mask, raw value chunk) parses back exactly, with the exact end offset |
 | `Vdb/LevelSet.lean` | the geometry layer for the operators: `Point` (ℝ³), `levelSet f c` (the zero/surface set), `IsSDF` (1-Lipschitz scalar field, the definition of a signed *distance* field). Fields: sphere `sdfSphere`, plane `sdfPlane` (unit normal) and the Chebyshev box `sdfBox` (`max_i (|p_i| - h_i)`, exact sign test, L∞ magnitude). |
 | `IsSDF.continuous`, `IsSDF.abs_le_dist_of_eq` | a 1-Lipschitz field is continuous, and `|f p| ≤ dist p q` for every surface point `q`: the lower half of "the field is the distance to the surface" |
 | `sdfSphere_zero_iff/neg_iff/pos_iff`, `sdfSphere_isSDF`, `sdfSphere_levelSet` | the sphere field's zero/negative/positive sets, its 1-Lipschitz property, and `levelSet = {p | ‖p‖ = r}` |

@@ -16,6 +16,7 @@
 import Mathlib.Data.Nat.Digits.Defs
 import Mathlib.Data.Nat.Digits.Lemmas
 import Vdb.Bytes
+import Vdb.Chunks
 
 namespace Vdb
 
@@ -270,5 +271,50 @@ theorem parseNat_serializeNat {m n : Nat} (hm : m < 256 ^ n) :
 theorem NodeMask.parse_serialize {L : Nat} (m : NodeMask L) (hm : m < nodeSlots L) :
     parseNat (NodeMask.serialize m) 0 (nodeMaskBytes L) = m :=
   parseNat_serializeNat (mask_lt_pow m hm)
+
+
+/-! ### Reading a serialized mask at a chunk boundary -/
+
+theorem readByteOrZero_append_right' (a b : Bytes) (j : Nat) :
+    readByteOrZero (a ++ b) a.size j = readByteOrZero b 0 j := by
+  unfold readByteOrZero
+  rw [show a.size + j = a.size + (0 + j) by omega]
+  rw [getU8?_append_right']
+
+theorem parseNat_append (a b : Bytes) (n : Nat) :
+    parseNat (a ++ b) a.size n = parseNat b 0 n := by
+  unfold parseNat
+  congr 1
+  exact List.map_congr_left (fun j _ => readByteOrZero_append_right' a b j)
+
+theorem parseNat_left (a b : Bytes) (n : Nat) (h : n ≤ a.size) :
+    parseNat (a ++ b) 0 n = parseNat a 0 n := by
+  unfold parseNat
+  congr 1
+  apply List.ext_getElem?
+  intro j
+  by_cases hj : j < n
+  · rw [List.getElem?_map, List.getElem?_range hj, List.getElem?_map, List.getElem?_range hj]
+    simp only [Option.map_some]
+    unfold readByteOrZero
+    rw [getU8?_append_left (by omega)]
+  · have hnr : (List.range n).length ≤ j := by simp; omega
+    rw [List.getElem?_map, List.getElem?_eq_none hnr, List.getElem?_map,
+      List.getElem?_eq_none hnr]
+    simp
+
+theorem parseNat_chunk (pre post : List Bytes) (m : Bytes) {n : Nat}
+    (hm : m.size = n) :
+    parseNat (concatChunks (pre ++ m :: post)) (concatChunks pre).size n = parseNat m 0 n := by
+  rw [concatChunks_split]
+  rw [parseNat_append]
+  exact parseNat_left m (concatChunks post) n (by omega)
+
+theorem parseNat_chunk_serialize {L : Nat} (m : NodeMask L) (hm : m < nodeSlots L)
+    (pre post : List Bytes) :
+    parseNat (concatChunks (pre ++ @NodeMask.serialize L m :: post))
+      (concatChunks pre).size (nodeMaskBytes L) = m := by
+  rw [parseNat_chunk pre post (@NodeMask.serialize L m) (@NodeMask.serialize_size L m hm)]
+  exact NodeMask.parse_serialize m hm
 
 end Vdb

@@ -14,6 +14,7 @@ import Vdb.Layout
 import Vdb.LevelSet
 import Vdb.Tree
 import Vdb.MaskCompress
+import Vdb.NodeRecord
 import Vdb.Half
 import Vdb.Chunk
 import Vdb.Stable
