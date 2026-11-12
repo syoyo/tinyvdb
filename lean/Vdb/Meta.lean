@@ -53,7 +53,7 @@ structure MetaEntry where
 
 /-- The entry's value agrees with its type name. Unknown names carry raw
     bytes, and a raw value is only allowed for unknown names. -/
-def MetaEntry.WellFormed (e : MetaEntry) : Prop :=
+def MetaEntry.TypeOK (e : MetaEntry) : Prop :=
   match e.value with
   | .str _ => e.typeName = strTypeName
   | .boolean _ => e.typeName = boolTypeName
@@ -65,6 +65,18 @@ def MetaEntry.WellFormed (e : MetaEntry) : Prop :=
   | .vec3f _ _ _ => e.typeName = vec3sTypeName
   | .vec3d _ _ _ => e.typeName = vec3dTypeName
   | .raw _ => knownTypeName e.typeName = false
+
+/-- The entry's variable-length fields fit the wire lengths. -/
+def MetaEntry.SizesOK (e : MetaEntry) : Prop :=
+  e.name.size < 2 ^ 32 ∧ e.typeName.size < 2 ^ 32 ∧
+  (match e.value with
+   | .str s => s.size < 2 ^ 32
+   | .raw b => b.size < 2 ^ 31
+   | _ => True)
+
+/-- Wire well-formedness of an entry. -/
+def MetaEntry.WellFormed (e : MetaEntry) : Prop :=
+  e.TypeOK ∧ e.SizesOK
 
 /-- The chunks written after the name and type-name strings. -/
 def MetaEntry.valueChunks (e : MetaEntry) : List Bytes :=
@@ -161,5 +173,7 @@ def MetaEntry.parseFrom (b : Bytes) (off : Nat) : Option (MetaEntry × Nat) :=
         (getString? b o2).map fun p => (⟨name, tn, .str p.1⟩, p.2)
       else
         (parseValue tn b o2).map fun p => (⟨name, tn, p.1⟩, p.2)
+
+
 
 end Vdb
