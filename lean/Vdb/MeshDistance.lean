@@ -101,4 +101,81 @@ theorem IsSDF.min {f g : Point → ℝ} (hf : IsSDF f) (hg : IsSDF g) :
   · exact hf p q
   · exact hg p q
 
+
+/-! ### Finite meshes -/
+
+/-- The point set of a finite mesh (a union of segments). -/
+def meshSet (edges : Finset (Point × Point)) : Set Point :=
+  {p | ∃ e ∈ edges, p ∈ segment ℝ e.1 e.2}
+
+theorem meshSet_nonempty {edges : Finset (Point × Point)} (hne : edges.Nonempty) :
+    (meshSet edges).Nonempty := by
+  obtain ⟨e, he⟩ := hne
+  exact ⟨e.1, e, he, left_mem_segment ℝ e.1 e.2⟩
+
+theorem isCompact_meshSet (edges : Finset (Point × Point)) : IsCompact (meshSet edges) := by
+  classical
+  induction edges using Finset.induction_on with
+  | empty => simp [meshSet]
+  | insert e s he ih =>
+    have hsplit : meshSet (insert e s) = segment ℝ e.1 e.2 ∪ meshSet s := by
+      ext p
+      simp only [meshSet, Finset.mem_insert, Set.mem_ofPred_eq, Set.mem_union]
+      constructor
+      · rintro ⟨e', rfl | hmem, hp⟩
+        · exact Or.inl hp
+        · exact Or.inr ⟨e', hmem, hp⟩
+      · rintro (hp | ⟨e', hmem, hp⟩)
+        · exact ⟨e, Or.inl rfl, hp⟩
+        · exact ⟨e', Or.inr hmem, hp⟩
+    rw [hsplit]
+    exact (isCompact_segment' e.1 e.2).union ih
+
+/-- The distance to a finite mesh. -/
+noncomputable def meshDist (edges : Finset (Point × Point)) (p : Point) : ℝ :=
+  Metric.infDist p (meshSet edges)
+
+theorem meshDist_nonneg (edges : Finset (Point × Point)) (p : Point) :
+    0 ≤ meshDist edges p :=
+  Metric.infDist_nonneg
+
+theorem meshDist_abs_sub_le (edges : Finset (Point × Point)) (p q : Point) :
+    |meshDist edges p - meshDist edges q| ≤ dist p q := by
+  have h1 : meshDist edges p ≤ meshDist edges q + dist p q := by
+    simpa [meshDist] using
+      Metric.infDist_le_infDist_add_dist (s := meshSet edges) (x := p) (y := q)
+  have h2 : meshDist edges q ≤ meshDist edges p + dist p q := by
+    have := Metric.infDist_le_infDist_add_dist (s := meshSet edges) (x := q) (y := p)
+    rw [dist_comm] at this
+    simpa [meshDist] using this
+  rw [abs_sub_le_iff]
+  constructor <;> linarith
+
+theorem meshDist_isSDF (edges : Finset (Point × Point)) : IsSDF (meshDist edges) :=
+  fun p q => meshDist_abs_sub_le edges p q
+
+theorem meshDist_exists_nearest (edges : Finset (Point × Point)) (hne : edges.Nonempty)
+    (p : Point) : ∃ q : Point, q ∈ meshSet edges ∧ meshDist edges p = dist p q :=
+  (isCompact_meshSet edges).exists_infDist_eq_dist (meshSet_nonempty hne) p
+
+/-- The mesh band field: the distance to the mesh shifted by `r`. -/
+noncomputable def sdfMesh (edges : Finset (Point × Point)) (r : ℝ) (p : Point) : ℝ :=
+  meshDist edges p - r
+
+theorem sdfMesh_isSDF (edges : Finset (Point × Point)) (r : ℝ) : IsSDF (sdfMesh edges r) := by
+  intro p q
+  unfold sdfMesh
+  have h := meshDist_abs_sub_le edges p q
+  have he : |meshDist edges p - r - (meshDist edges q - r)| =
+      |meshDist edges p - meshDist edges q| := by
+    congr 1
+    ring
+  rw [he]
+  exact h
+
+theorem sdfMesh_zero_iff (edges : Finset (Point × Point)) (r : ℝ) (p : Point) :
+    sdfMesh edges r p = 0 ↔ meshDist edges p = r := by
+  unfold sdfMesh
+  constructor <;> intro h <;> linarith
+
 end Vdb
