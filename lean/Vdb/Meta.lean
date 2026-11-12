@@ -1727,4 +1727,37 @@ theorem MetaList.parseFrom_emitFrom (m : MetaList)
   simp [MetaList.chunks, concatChunks_size, concatChunks_append_size, concatChunks_cons_size,
     concatChunks_singleton, concatChunks_nil_size, putI32LE_size]
 
+
+theorem MetaList.parseFromChunks (m : MetaList)
+    (hcnt : m.entries.length ≤ 4096) (hwf : ∀ e ∈ m.entries, e.WellFormed)
+    (pre rest : List Bytes) :
+    MetaList.parseFrom (concatChunks (pre ++ m.chunks ++ rest)) (concatChunks pre).size =
+      some (m, (concatChunks (pre ++ m.chunks)).size) := by
+  rcases m with ⟨es⟩
+  have hcnt' : es.length ≤ 4096 := hcnt
+  have hlen : es.length < 2 ^ 31 := by omega
+  unfold MetaList.parseFrom MetaList.chunks
+  dsimp only
+  rw [show concatChunks (pre ++ (putI32LE (Int32.ofNat es.length) ByteArray.empty ::
+      es.flatMap MetaEntry.chunks) ++ rest) =
+      concatChunks (pre ++ (putI32LE (Int32.ofNat es.length) ByteArray.empty ::
+        (es.flatMap MetaEntry.chunks ++ rest))) from by simp]
+  rw [getI32LE_chunk]
+  dsimp only
+  rw [ite_eq_right (by
+    rw [Int32.lt_iff_toInt_lt, Int32.toInt_ofNat_of_lt hlen, Int32.toInt_zero]
+    omega)]
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putI32LE (Int32.ofNat es.length) ByteArray.empty])).size from by
+    conv_rhs => rw [concatChunks_size]
+    simp [concatChunks_size, putI32LE_size]]
+  rw [Int32.toNatClampNeg_ofNat_of_lt hlen]
+  rw [show concatChunks (pre ++ putI32LE (Int32.ofNat es.length) ByteArray.empty ::
+      (es.flatMap MetaEntry.chunks ++ rest)) =
+      concatChunks ((pre ++ [putI32LE (Int32.ofNat es.length) ByteArray.empty]) ++
+        es.flatMap MetaEntry.chunks ++ rest) from by simp]
+  rw [parseEntries_emit es hwf (pre ++ [putI32LE (Int32.ofNat es.length) ByteArray.empty]) rest]
+  simp [MetaList.chunks, concatChunks_size, concatChunks_append_size, concatChunks_cons_size,
+    concatChunks_singleton, concatChunks_nil_size, putI32LE_size]
+
 end Vdb

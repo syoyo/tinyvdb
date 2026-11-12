@@ -68,6 +68,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `MetaList`, `parseEntries`, `MetaList.parseFrom` | metadata-list wire model: `i32` count (C bounds `0..4096`), then that many entries. |
 | `MetaEntry.parseFromChunks_bool/…/raw`, `MetaEntry.parseFromChunks` | **entry round trip with trailing bytes**: an entry followed by the rest of the list still parses to itself and its end offset. This is what makes the list induction go through. |
 | `parseEntries_emit`, `MetaList.parseFrom_emitFrom` | **metadata-list round trip**: a list of well-formed entries with length ≤ 4096 parses back unchanged (count chunk, then every entry), with the exact end offset. |
+| `MetaList.parseFromChunks` | the same round trip with arbitrary chunk prefix _and trailing chunk list_, which is what lets the grid body compose the metadata list with the transform and tree data |
 | `Transform.parseFrom_emitFrom` | **transform round trip**: every well-formed transform parses back unchanged; the proof canonicalises the fields the reader does not store and applies the per-kind lemma |
 | `nodeSlot_lt` | an in-box coordinate gives a slot below `2^(3L)` |
 | `exampleTree_lookup_origin/inactive/background` | the worked tree reads the active voxel, an inactive stored value, and the background correctly (checked by `decide`) |
