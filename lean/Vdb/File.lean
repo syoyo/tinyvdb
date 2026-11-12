@@ -350,4 +350,101 @@ theorem VdbFile.parse_emit_single (f : VdbFile) (g : FileGrid)
   simpa [VdbFile.parse, VdbFile.emit, ByteArray.size_empty] using
     VdbFile.parseFrom_emitFrom_single f g hc hg ByteArray.empty hacc
 
+
+theorem parseGrids_emit (gs : List FileGrid)
+    (hgs : ∀ g ∈ gs, g.Canon ∧ g.body.Canonical)
+    (ver : UInt32) (hver : 221 ≤ ver) :
+    ∀ (acc : Bytes),
+      (concatChunks (acc :: gridsChunksAt gs acc.size)).size < UInt64.size →
+      parseGrids ver (concatChunks (acc :: gridsChunksAt gs acc.size)) gs.length acc.size =
+        some (gs, (concatChunks (acc :: gridsChunksAt gs acc.size)).size) := by
+  induction gs with
+  | nil =>
+    intro acc hb
+    simp [parseGrids, gridsChunksAt, concatChunks]
+  | cons g rest ih =>
+    intro acc hb
+    have hg := (hgs g (by simp)).1
+    have hgbody := (hgs g (by simp)).2
+    have hrest : ∀ x ∈ rest, x.Canon ∧ x.body.Canonical := fun x hx => hgs x (by simp [hx])
+    simp only [List.length_cons, parseGrids]
+    set d := g.descriptorAt acc.size with hd
+    set restC := gridsChunksAt rest (acc.size + g.totalSize) with hr
+    have hchunks : gridsChunksAt (g :: rest) acc.size = d.chunks ++ g.body.chunks ++ restC := rfl
+    rw [hchunks]
+    have hb_exp : (concatChunks (acc :: (d.chunks ++ g.body.chunks ++ restC))).size < UInt64.size := by
+      simpa [hchunks] using hb
+    have hsize_eq : (concatChunks (acc :: (d.chunks ++ g.body.chunks ++ restC))).size =
+        acc.size + descChunkSizes g.uniqueName g.gridType g.instanceParent +
+          (g.body.chunks.map (·.size)).sum + (restC.map (·.size)).sum := by
+      rw [desc_prefix_size]
+      simp only [List.map_append, List.sum_append]
+      rw [hd, FileGrid.descChunks_sum]
+      omega
+    have hb_eq : concatChunks (acc :: (d.chunks ++ g.body.chunks ++ restC)) =
+        d.emitFrom acc ++ (concatChunks g.body.chunks ++ concatChunks restC) := by
+      rw [← acc_append_concatChunks]
+      rw [concatChunks_append, concatChunks_append]
+      simp [GridDescriptor.emitFrom, ByteArray.append_assoc]
+    rw [hb_eq]
+    have hexact := GridDescriptor.parseFrom_emitFrom ver hver d
+      (FileGrid.descriptorAt_canonical g hg acc.size) acc
+    rw [GridDescriptor.parseFrom_append ver hexact]
+    dsimp only
+    have hgo : d.gridOffset.toNat = acc.size + descChunkSizes g.uniqueName g.gridType g.instanceParent := by
+      apply FileGrid.gridOffset_toNat
+      have hle : acc.size + descChunkSizes g.uniqueName g.gridType g.instanceParent ≤
+          (concatChunks (acc :: (d.chunks ++ g.body.chunks ++ restC))).size := by
+        rw [hsize_eq]; omega
+      exact Nat.lt_of_le_of_lt hle hb_exp
+    have heo : d.endOffset.toNat = acc.size + g.totalSize := by
+      apply FileGrid.endOffset_toNat
+      have hle : acc.size + g.totalSize ≤
+          (concatChunks (acc :: (d.chunks ++ g.body.chunks ++ restC))).size := by
+        rw [hsize_eq]
+        unfold FileGrid.totalSize
+        omega
+      exact Nat.lt_of_le_of_lt hle hb_exp
+    rw [hgo, heo]
+    have hb_body : d.emitFrom acc ++ (concatChunks g.body.chunks ++ concatChunks restC) =
+        concatChunks ((acc :: d.chunks) ++ g.body.chunks ++ restC) := by
+      rw [show concatChunks ((acc :: d.chunks) ++ g.body.chunks ++ restC) =
+          concatChunks (acc :: (d.chunks ++ (g.body.chunks ++ restC))) from by simp]
+      rw [← acc_append_concatChunks, concatChunks_append]
+      rw [show d.emitFrom acc = acc ++ concatChunks d.chunks from rfl]
+      simp [ByteArray.append_assoc]
+      rw [concatChunks_append]
+    rw [hb_body]
+    have hprefix : (concatChunks (acc :: d.chunks)).size =
+        acc.size + descChunkSizes g.uniqueName g.gridType g.instanceParent := by
+      rw [desc_prefix_size, FileGrid.descChunks_sum]
+    have hend : (concatChunks ((acc :: d.chunks) ++ g.body.chunks)).size =
+        acc.size + g.totalSize := by
+      rw [show (acc :: d.chunks) ++ g.body.chunks = acc :: (d.chunks ++ g.body.chunks) from by simp]
+      rw [desc_prefix_size]
+      simp only [List.map_append, List.sum_append]
+      rw [hd, FileGrid.descChunks_sum]
+      unfold FileGrid.totalSize
+      omega
+    rw [← hprefix, ← hend]
+    rw [show concatChunks (acc :: d.chunks ++ g.body.chunks ++ restC) =
+        concatChunks ((acc :: d.chunks) ++ g.body.chunks ++ restC) from by simp]
+    rw [GridBody.parseFromChunks g.body hgbody (acc :: d.chunks) restC]
+    dsimp only
+    -- tail
+    set X := concatChunks ((acc :: d.chunks) ++ g.body.chunks) with hX
+    have hX_size : X.size = acc.size + g.totalSize := by rw [hX]; exact hend
+    have hrestC : restC = gridsChunksAt rest X.size := by rw [hr, ← hX_size]
+    have hb_tail : concatChunks (acc :: d.chunks ++ g.body.chunks ++ restC) =
+        concatChunks (X :: gridsChunksAt rest X.size) := by
+      rw [hrestC]
+      rw [show concatChunks (acc :: d.chunks ++ g.body.chunks ++ gridsChunksAt rest X.size) =
+          concatChunks (((acc :: d.chunks) ++ g.body.chunks) ++ gridsChunksAt rest X.size) from by simp]
+      rw [concatChunks_append, ← hX, acc_append_concatChunks]
+    rw [hb_tail]
+    have hbnd : (concatChunks (X :: gridsChunksAt rest X.size)).size < UInt64.size := by
+      rw [← hb_tail]
+      exact hb_exp
+    rw [ih hrest X hbnd]
+    simp [hX, FileGrid.descriptorAt, hd]
 end Vdb
