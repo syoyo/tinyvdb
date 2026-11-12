@@ -20,5 +20,6 @@ import Vdb.Meta
 import Vdb.Transform
 import Vdb.FilePrefix
 import Vdb.GridDescriptor
+import Vdb.GridBody
 import Vdb.GridHeader
 import Vdb.Header

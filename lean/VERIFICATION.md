@@ -65,6 +65,9 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `MetaEntry.parseFrom_emitFrom_bool/int32/int64/f32/f64/vec3i/vec3f/vec3d/str/raw` | **per-kind metadata round trips**: name string, type name, value chunks; raw entries carry an `i32` byte count and opaque bytes |
 | `MetaKind.ofName?_eq_none` | an unknown (non-`string`, non-known) type name has no `MetaKind`, which is what selects the raw decoder |
 | `MetaEntry.parseFrom_emitFrom` | **metadata round trip**: every well-formed entry parses back unchanged from the bytes it emits (`TypeOK` selects the kind, `SizesOK` discharges the length hypotheses). The per-kind lemmas also return the exact end offset (`acc.size + sum of chunk sizes`), which the list framing needs. |
+| `GridHeader.parseFromChunks`, `GridHeader.parseFromChunks_exact`, `GridHeader.parseFrom_emitFrom_exact` | the grid header parses with trailing bytes and returns its exact end offset, which the tree-base read needs |
+| `GridBody.parseFrom_emitFrom` | **grid-body round trip**: header + tree-base count + opaque tree bytes in `[off, endOff)` parse back to the body with the exact end offset |
+| `Transform.parseFrom_emitFrom_rest_exact`, `Transform.parseFrom_emitFrom_exact` | exact end offsets for the transform (per-kind and general), needed to chain the tree-base read |
 | `GridHeader.parseFromChunks` | **grid-header round trip with trailing bytes**: flags + metadata list + transform compose with the tree data that follows |
 | `FilePrefix.parseFrom_emitFrom` | **file prologue round trip**: header + file metadata + grid count parse back unchanged, composing `Header.parseFromChunks` with `MetaList.parseFromChunks` |
 | `GridHeader.parseFrom_emitFrom` | **grid-header round trip**: flags + metadata list + transform parse back to the header (the metadata list is composed via `MetaList.parseFromChunks`; the transform contributes its own existential end offset) |

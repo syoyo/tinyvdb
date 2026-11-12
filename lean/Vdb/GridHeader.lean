@@ -124,4 +124,85 @@ theorem GridHeader.parseFromChunks (h : GridHeader) (hc : h.Canonical)
   rw [htout]
   exact ⟨tout, rfl⟩
 
+
+theorem GridHeader.parseFrom_emitFrom_exact (h : GridHeader) (hc : h.Canonical)
+    (acc : Bytes) :
+    GridHeader.parseFrom (h.emitFrom acc) acc.size =
+      some (h, (concatChunks (acc :: h.chunks)).size) := by
+  obtain ⟨hcnt, hwf, htr⟩ := hc
+  rcases h with ⟨fl, md, tr⟩
+  unfold GridHeader.parseFrom GridHeader.emitFrom GridHeader.chunks
+  dsimp only
+  rw [acc_append_concatChunks]
+  rw [show concatChunks (acc :: ([putU32LE fl ByteArray.empty] ++ md.chunks ++ tr.chunks)) =
+      concatChunks ([acc] ++ putU32LE fl ByteArray.empty :: (md.chunks ++ tr.chunks)) from by simp]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getU32LE_chunk]
+  dsimp only
+  rw [show (concatChunks [acc]).size + 4 =
+      (concatChunks [acc, putU32LE fl ByteArray.empty]).size from by
+    conv_rhs => rw [concatChunks_size]
+    simp [concatChunks_size, putU32LE_size]]
+  rw [show concatChunks ([acc] ++ putU32LE fl ByteArray.empty :: (md.chunks ++ tr.chunks)) =
+      concatChunks ([acc, putU32LE fl ByteArray.empty] ++ md.chunks ++ tr.chunks) from by simp]
+  rw [MetaList.parseFromChunks md hcnt hwf [acc, putU32LE fl ByteArray.empty] tr.chunks]
+  dsimp only
+  rw [show concatChunks (([acc, putU32LE fl ByteArray.empty] ++ md.chunks) ++ tr.chunks) =
+      concatChunks ([acc, putU32LE fl ByteArray.empty] ++ md.chunks) ++
+        concatChunks tr.chunks from by
+    rw [concatChunks_append]]
+  rw [show concatChunks ([acc, putU32LE fl ByteArray.empty] ++ md.chunks) ++
+      concatChunks tr.chunks =
+      tr.emitFrom (concatChunks ([acc, putU32LE fl ByteArray.empty] ++ md.chunks)) from rfl]
+  rw [Transform.parseFrom_emitFrom_exact tr htr
+    (concatChunks ([acc, putU32LE fl ByteArray.empty] ++ md.chunks))]
+  simp [GridHeader.chunks, Transform.emitFrom, concatChunks_append, concatChunks_size, concatChunks_append_size,
+    concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size]
+
+
+theorem GridHeader.parseFromChunks_exact (h : GridHeader) (hc : h.Canonical)
+    (pre rest : List Bytes) :
+    GridHeader.parseFrom (concatChunks (pre ++ h.chunks ++ rest))
+      (concatChunks pre).size = some (h, (concatChunks (pre ++ h.chunks)).size) := by
+  obtain ⟨hcnt, hwf, htr⟩ := hc
+  rcases h with ⟨fl, md, tr⟩
+  unfold GridHeader.parseFrom GridHeader.chunks
+  dsimp only
+  rw [show concatChunks (pre ++ ([putU32LE fl ByteArray.empty] ++ md.chunks ++ tr.chunks) ++ rest) =
+      concatChunks (pre ++ putU32LE fl ByteArray.empty ::
+        (md.chunks ++ (tr.chunks ++ rest))) from by simp]
+  rw [getU32LE_chunk]
+  dsimp only
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE fl ByteArray.empty])).size from by
+    conv_lhs => rw [concatChunks_size]
+    conv_rhs => rw [concatChunks_size]
+    simp [putU32LE_size]]
+  rw [show concatChunks (pre ++ putU32LE fl ByteArray.empty ::
+      (md.chunks ++ (tr.chunks ++ rest))) =
+      concatChunks (((pre ++ [putU32LE fl ByteArray.empty]) ++ md.chunks) ++
+        (tr.chunks ++ rest)) from by simp]
+  rw [MetaList.parseFromChunks md hcnt hwf (pre ++ [putU32LE fl ByteArray.empty])
+    (tr.chunks ++ rest)]
+  dsimp only
+  rw [show concatChunks (((pre ++ [putU32LE fl ByteArray.empty]) ++ md.chunks) ++
+      (tr.chunks ++ rest)) =
+      tr.emitFrom (concatChunks ((pre ++ [putU32LE fl ByteArray.empty]) ++ md.chunks))
+        ++ concatChunks rest from by
+    simp only [Transform.emitFrom]
+    rw [show concatChunks (pre ++ [putU32LE fl ByteArray.empty] ++ md.chunks ++
+        (tr.chunks ++ rest)) =
+        concatChunks (pre ++ [putU32LE fl ByteArray.empty] ++ md.chunks) ++
+          concatChunks (tr.chunks ++ rest) from concatChunks_append _ _]
+    rw [show concatChunks (tr.chunks ++ rest) =
+        concatChunks tr.chunks ++ concatChunks rest from concatChunks_append _ _]
+    conv_rhs => rw [ByteArray.append_assoc]]
+  rw [Transform.parseFrom_emitFrom_rest_exact tr htr
+    (concatChunks ((pre ++ [putU32LE fl ByteArray.empty]) ++ md.chunks)) rest]
+  dsimp only
+  simp [GridHeader.chunks, Transform.emitFrom, concatChunks_append, concatChunks_size,
+    concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton,
+    concatChunks_nil_size, putU32LE_size]
+  omega
+
 end Vdb
