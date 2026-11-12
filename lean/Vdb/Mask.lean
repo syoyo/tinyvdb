@@ -55,22 +55,32 @@ abbrev NodeMask (_L : Nat) := Nat
 /-- Bit `i` of a mask. -/
 def NodeMask.bit (m : Nat) (i : Nat) : Bool := m.testBit i
 
+/-- Set slots of a mask below `n`, in increasing order. -/
+def setBits (m : Nat) (n : Nat) : List Nat :=
+  (List.range n).filter (fun i => m.testBit i)
+
 /-- Population count over the node's slots. -/
 def NodeMask.popCount {L : Nat} (m : NodeMask L) : Nat :=
-  (List.range (nodeSlots L)).countP (fun i => m.testBit i)
+  (setBits m (nodeSlots L)).length
 
 /-- Number of set bits strictly below slot `i` (the C `tvdb_tree_mask_rank`). -/
-def NodeMask.rank (m : Nat) (i : Nat) : Nat :=
-  (List.range i).countP (fun j => m.testBit j)
+def NodeMask.rank (m : Nat) (i : Nat) : Nat := (setBits m i).length
 
 @[simp] theorem NodeMask.rank_zero (m : Nat) : NodeMask.rank m 0 = 0 := rfl
+
+/-- Splitting the set-bit list at the next slot. -/
+theorem setBits_succ (m : Nat) (i : Nat) :
+    setBits m (i + 1) = setBits m i ++ (if m.testBit i then [i] else []) := by
+  unfold setBits
+  rw [List.range_succ, List.filter_append]
+  cases h : m.testBit i <;> simp [h]
 
 /-- Adding one slot adds its bit to the rank. -/
 theorem NodeMask.rank_succ (m : Nat) (i : Nat) :
     NodeMask.rank m (i + 1) = NodeMask.rank m i + (if NodeMask.bit m i then 1 else 0) := by
   unfold NodeMask.rank NodeMask.bit
-  rw [List.range_succ, List.countP_append]
-  cases h : m.testBit i <;> simp [h]
+  rw [setBits_succ]
+  cases h : m.testBit i <;> simp
 
 /-- Rank at the end of the node equals the population count. -/
 theorem NodeMask.rank_full {L : Nat} (m : NodeMask L) :
@@ -78,14 +88,55 @@ theorem NodeMask.rank_full {L : Nat} (m : NodeMask L) :
 
 /-- Rank is bounded by the bit index. -/
 theorem NodeMask.rank_le_index (m : Nat) (i : Nat) : NodeMask.rank m i ≤ i := by
-  unfold NodeMask.rank
-  have h : (List.range i).countP (fun j => m.testBit j) ≤ (List.range i).length :=
-    List.countP_le_length
+  unfold NodeMask.rank setBits
+  have h : ((List.range i).filter (fun j => m.testBit j)).length ≤ (List.range i).length :=
+    List.length_filter_le ..
   simpa using h
 
-/-- Child compaction index: the number of set bits below `i`, used to index
-    the compacted `child_indices` array. -/
-def NodeMask.childRank (m : Nat) (i : Nat) : Nat := NodeMask.rank m i
+/-- Rank is monotone in the index. -/
+theorem NodeMask.rank_mono (m : Nat) : ∀ {a b : Nat}, a ≤ b →
+    NodeMask.rank m a ≤ NodeMask.rank m b := by
+  intro a b h
+  induction b with
+  | zero =>
+    have : a = 0 := by omega
+    subst this; exact Nat.le_refl _
+  | succ k ih =>
+    by_cases hk : a ≤ k
+    · have hrec := ih hk
+      rw [NodeMask.rank_succ]
+      cases hb : m.testBit k
+      · simp only [NodeMask.bit, hb]; omega
+      · simp only [NodeMask.bit, hb]; omega
+    · have : a = k + 1 := by omega
+      subst this
+      rw [NodeMask.rank_succ]
+
+/-- The `k`-th set bit of the mask above index `n`; the compaction order used
+    by the value arrays (`values` are stored in increasing active-slot order). -/
+def NodeMask.nthSetBit {L : Nat} (m : NodeMask L) (n k : Nat) : Option Nat :=
+  (setBits m n)[k]?
+
+/-- The `i`-th slot's stored-value index when it is active. -/
+theorem getElem?_setBits_rank {m n i : Nat} (hn : i < n) (hb : m.testBit i = true) :
+    (setBits m n)[NodeMask.rank m i]? = some i := by
+  induction n with
+  | zero => omega
+  | succ k ih =>
+    rw [setBits_succ]
+    by_cases hik : i = k
+    · subst hik
+      rw [hb]
+      simp [NodeMask.rank]
+    · have hlt : i < k := by omega
+      have h : (setBits m k)[NodeMask.rank m i]? = some i := ih hlt
+      rw [List.getElem?_append_left ?_]
+      · exact h
+      · have hmono := NodeMask.rank_mono m (show i + 1 ≤ k by omega)
+        rw [NodeMask.rank_succ] at hmono
+        simp [NodeMask.bit, hb, NodeMask.rank] at hmono
+        simp [NodeMask.rank]
+        omega
 
 /-! ### Serialization
 

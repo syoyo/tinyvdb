@@ -14,6 +14,8 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vdb/Value.lean` | The ten `ValueType`s with on-disk sizes matching `tvdb_value_type_size`, tree-name and metadata-name tables matching the C `strcmp` chains, half-grid component/element-size rules (`tvdb__half_components`), `VoxelValue` (raw bit patterns) and `MetaValue`. |
 | `Vdb/Mask.lean` | `nodeSlots L = 2^(3L)`, serialized byte counts for `L = 3/4/5` (64/512/4096), `NodeMask L = Nat` (low `2^(3L)` bits are the slots), bit accessor, `popCount`, `rank` (C `tvdb_tree_mask_rank`), `rank 0 = 0`, `rank (i+1) = rank i + bit i`, `rank (nodeSlots L) = popCount`, `rank ≤ index`, base-256 byte serialization (`serializeNat`, `parseNat`) and the full round trip. |
 | `Vdb/Coord.lean` | `Coord`, box membership, `Layout` + `WellFormed` (root level 0, depth 3–8, per-level `log2dim` bound, total ≤ 31), `spanShift`/`span`, `localIndex` (arithmetic shift), non-negativity and `< 2^L` bounds, `origin + span * localIndex ≤ c`, `slotOf`, `childOrigin`, `rootKey` with floor-division bounds. |
+| `Vdb/Tree.lean` | sparse tree model (`Node` leaf/internal, `Root` tiles/children, `Tree` with layout), node slot and child-origin geometry, total `lookup` semantics (root key → tile/child → node descent) with fuel `t.depth`, `Equiv`, and the well-formedness predicate `WellFormed`/`NodeWFuel` mirroring `validate_node`; a worked `5_4_3` tree with three checked lookups. |
+| `Vdb/MaskCompress.lean` | the seven `MaskCompress` codes as `MaskCode`, code byte round trip, `readCount`, `VoxelValue.negate` (bit flip for floats, integer negation, bool identity), the `decodeSlot` decoder, and the active-slot correctness lemmas. |
 | `Vdb/Layout.lean` | `Tree_<type>_<L...>` strict parser and printer, the lenient reader model (`parseGridTypeLenient`), `GridType.WellFormed`, checked parse of `Tree_float_5_4_3`. |
 
 ## Theorem inventory (landed)
@@ -42,15 +44,25 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `slotOf_localOfSlot` | `slotOf` of a slot's components is the slot |
 | `localOfSlot_slotOf` | component extraction is a two-sided inverse of `slotOf` on the node box |
 | `Layout.standard_wf`, `float543_wellFormed`, `parseGridType_float543` | the standard `5_4_3` float layout parses and validates |
+| `nodeSlot_lt` | an in-box coordinate gives a slot below `2^(3L)` |
+| `exampleTree_lookup_origin/inactive/background` | the worked tree reads the active voxel, an inactive stored value, and the background correctly (checked by `decide`) |
+| `lookup_outside_children` | no root child and no root tile means the background, inactive |
+| `NodeMask.rank_mono`, `getElem?_setBits_rank` | rank is monotone; the value-mask compaction order maps the `k`-th stored value to the `k`-th set slot |
+| `MaskCode.ofNat?_toNat`, `readCount_le` | code byte round trip and stored-value count bound |
+| `VoxelValue.type_negate`, `negate_negate_float/double/bool` | negation preserves the type and is an involution for float/bool values |
+| `decodeSlot_active`, `decodeSlot_active_stored` | an active slot decodes from the compacted list; with `active = map values (setBits mask n)` it returns exactly `values i` |
 
 Test-level checks: `parseGridType "Tree_float_5_4_3" = some float543` is proven
 by `decide`.
 
 ## Explicitly not yet done (next increments)
 
-1. **Tree model** (`Root`/`Internal`/`Leaf` with well-formedness matching
-   `validate_node`), semantics (`lookup`) and `lookup_eq_treeFind`.
-2. **Mask compression** (the 7 `NO_MASK_*` codes) `encode`/`decode` round trip.
+1. **Indexed lookup equivalence**: prove the spec `lookup` equals the C
+   `tree_find`/accessor model (root hash map, per-level slot descent, rank
+   compaction).
+2. **Mask compression classification**: model `tvdb__write_mask_values`
+   (`classify`) and prove the inactive-slot half of the round trip
+   (code selection, `val0`/`val1`, selection mask). The active half is landed.
 3. **Half float** bit model (`halfToFloat`, trunc vs round-to-nearest).
 4. **Header/metadata/transform/chunk/grid/file** parse + emit + file round trip.
 5. **Oracle harness**: `VdbCheck`/`VdbGen` executables, C dump program,

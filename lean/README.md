@@ -26,7 +26,9 @@ value and mask modules only use Lean core.
 ## Status (this drop)
 
 Landed and building: `Vdb/Bytes.lean`, `Vdb/Value.lean`, `Vdb/Mask.lean`,
-`Vdb/Coord.lean`, `Vdb/Layout.lean`.
+`Vdb/Coord.lean`, `Vdb/Tree.lean`, `Vdb/MaskCompress.lean`, `Vdb/Layout.lean`.
+The tree model reads a worked `5_4_3` tree (three lookups checked by `decide`),
+and the mask-compression decoder is proven correct on active slots.
 
 See `VERIFICATION.md` for the theorem inventory and the explicit list of
 remaining P1 work (mask byte round trip, slot bijection, tree model, format

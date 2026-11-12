@@ -29,7 +29,7 @@ structure Coord where
   x : Int
   y : Int
   z : Int
-  deriving Repr, DecidableEq, Inhabited
+  deriving Repr, DecidableEq, BEq, Inhabited
 
 namespace Coord
 
@@ -294,5 +294,46 @@ theorem localOfSlot_slotOf {L x y z : Nat}
   obtain ⟨e1, e2, e3⟩ := slotOf_inj hb1 hb2 hb3 hx hy hz hre
   unfold localOfSlot
   rw [e1, e2, e3]
+
+/-- Child origin of local index `(x, y, z)` at a node origin. -/
+def childOrigin (o : Coord) (childSpan : Int) (x y z : Int) : Coord :=
+  ⟨o.x + x * childSpan, o.y + y * childSpan, o.z + z * childSpan⟩
+
+theorem childOrigin_at_zero (o : Coord) (h : Int) :
+    childOrigin o h 0 0 0 = o := by
+  simp [childOrigin]
+
+/-- Root key of a coordinate: the origin of the level-1 box containing it.
+    This is `floorDiv c span1 * span1`, matching the C code's
+    `(v >= 0 ? v >> sh : -1 - ((-1 - v) >> sh)) * span`. -/
+def rootKey (span1 : Int) (c : Coord) : Coord :=
+  ⟨c.x / span1 * span1, c.y / span1 * span1, c.z / span1 * span1⟩
+
+theorem rootKey_le {span1 : Int} (hpos : 0 < span1) (c : Coord) :
+    (rootKey span1 c).x ≤ c.x ∧ (rootKey span1 c).y ≤ c.y ∧
+    (rootKey span1 c).z ≤ c.z := by
+  refine ⟨?_, ?_, ?_⟩ <;> unfold rootKey <;> simp <;>
+    exact Int.ediv_mul_le _ hpos.ne'
+
+theorem lt_rootKey_add {span1 : Int} (hpos : 0 < span1) (c : Coord) :
+    c.x < (rootKey span1 c).x + span1 ∧
+    c.y < (rootKey span1 c).y + span1 ∧
+    c.z < (rootKey span1 c).z + span1 := by
+  have key : ∀ a : Int, a < a / span1 * span1 + span1 := by
+    intro a
+    have hmod := Int.emod_lt_of_pos a hpos
+    have hdecomp : a / span1 * span1 + a % span1 = a := by
+      have := Int.mul_ediv_add_emod a span1
+      rwa [mul_comm] at this
+    omega
+  refine ⟨?_, ?_, ?_⟩
+  · have := key c.x; simpa [rootKey] using this
+  · have := key c.y; simpa [rootKey] using this
+  · have := key c.z; simpa [rootKey] using this
+
+/-- The root key is a multiple of the root box span. -/
+theorem rootKey_dvd {span1 : Int} (c : Coord) :
+    ∃ k : Int, (rootKey span1 c).x = k * span1 :=
+  ⟨_, rfl⟩
 
 end Vdb
