@@ -178,4 +178,61 @@ theorem sdfMesh_zero_iff (edges : Finset (Point × Point)) (r : ℝ) (p : Point)
   unfold sdfMesh
   constructor <;> intro h <;> linarith
 
+
+/-! ### Triangles -/
+
+/-- The point set of a triangle (the convex hull of its three vertices). -/
+def triangleSet (v0 v1 v2 : Point) : Set Point :=
+  convexHull ℝ ({v0, v1, v2} : Set Point)
+
+theorem isCompact_triangleSet (v0 v1 v2 : Point) : IsCompact (triangleSet v0 v1 v2) :=
+  (Set.toFinite _).isCompact_convexHull ℝ
+
+theorem triangleSet_nonempty (v0 v1 v2 : Point) : (triangleSet v0 v1 v2).Nonempty :=
+  ⟨v0, subset_convexHull ℝ _ (by simp)⟩
+
+/-- The distance to a triangle: the inf-distance to its convex hull. -/
+noncomputable def triangleDist (v0 v1 v2 p : Point) : ℝ :=
+  Metric.infDist p (triangleSet v0 v1 v2)
+
+theorem triangleDist_abs_sub_le (v0 v1 v2 p q : Point) :
+    |triangleDist v0 v1 v2 p - triangleDist v0 v1 v2 q| ≤ dist p q := by
+  have h1 : triangleDist v0 v1 v2 p ≤ triangleDist v0 v1 v2 q + dist p q := by
+    simpa [triangleDist] using
+      Metric.infDist_le_infDist_add_dist (s := triangleSet v0 v1 v2) (x := p) (y := q)
+  have h2 : triangleDist v0 v1 v2 q ≤ triangleDist v0 v1 v2 p + dist p q := by
+    have := Metric.infDist_le_infDist_add_dist (s := triangleSet v0 v1 v2) (x := q) (y := p)
+    rw [dist_comm] at this
+    simpa [triangleDist] using this
+  rw [abs_sub_le_iff]
+  constructor <;> linarith
+
+theorem triangleDist_isSDF (v0 v1 v2 : Point) : IsSDF (triangleDist v0 v1 v2) :=
+  fun p q => triangleDist_abs_sub_le v0 v1 v2 p q
+
+theorem triangleDist_exists_nearest (v0 v1 v2 p : Point) :
+    ∃ q : Point, q ∈ triangleSet v0 v1 v2 ∧ triangleDist v0 v1 v2 p = dist p q :=
+  (isCompact_triangleSet v0 v1 v2).exists_infDist_eq_dist (triangleSet_nonempty v0 v1 v2) p
+
+/-- The triangle band field: the distance to the triangle shifted by `r`. -/
+noncomputable def sdfTriangle (v0 v1 v2 : Point) (r : ℝ) (p : Point) : ℝ :=
+  triangleDist v0 v1 v2 p - r
+
+theorem sdfTriangle_isSDF (v0 v1 v2 : Point) (r : ℝ) :
+    IsSDF (sdfTriangle v0 v1 v2 r) := by
+  intro p q
+  unfold sdfTriangle
+  have h := triangleDist_abs_sub_le v0 v1 v2 p q
+  have he : |triangleDist v0 v1 v2 p - r - (triangleDist v0 v1 v2 q - r)| =
+      |triangleDist v0 v1 v2 p - triangleDist v0 v1 v2 q| := by
+    congr 1
+    ring
+  rw [he]
+  exact h
+
+theorem sdfTriangle_zero_iff (v0 v1 v2 : Point) (r : ℝ) (p : Point) :
+    sdfTriangle v0 v1 v2 r p = 0 ↔ triangleDist v0 v1 v2 p = r := by
+  unfold sdfTriangle
+  constructor <;> intro h <;> linarith
+
 end Vdb
