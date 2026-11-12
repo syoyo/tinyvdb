@@ -255,4 +255,44 @@ theorem sdfSphere_activeSet_subset (r band : ℝ) :
   rw [sdfSphere_activeSet_eq] at hp
   exact hp.2
 
+
+/-! ### Exact distance: the plane -/
+
+/-- The point of the plane nearest to `p` (the orthogonal projection). -/
+noncomputable def planeProject (n : Point) (d : ℝ) (p : Point) : Point :=
+  p - sdfPlane n d p • n
+
+theorem real_inner_self_unit {n : Point} (hn : ‖n‖ = 1) : ⟪n, n⟫ = 1 := by
+  rw [real_inner_self_eq_norm_sq, hn]
+  norm_num
+
+/-- The projection lies on the plane. -/
+theorem planeProject_mem (n : Point) (d : ℝ) (hn : ‖n‖ = 1) (p : Point) :
+    sdfPlane n d (planeProject n d p) = 0 := by
+  unfold planeProject sdfPlane
+  rw [inner_sub_right, real_inner_smul_right, real_inner_self_unit hn]
+  ring
+
+/-- The projection is at distance exactly the field magnitude. -/
+theorem planeProject_dist (n : Point) (d : ℝ) (hn : ‖n‖ = 1) (p : Point) :
+    dist p (planeProject n d p) = |sdfPlane n d p| := by
+  unfold planeProject
+  rw [dist_eq_norm]
+  have h : p - (p - sdfPlane n d p • n) = sdfPlane n d p • n := by abel
+  rw [h, norm_smul, Real.norm_eq_abs, hn, mul_one]
+
+/-- The field magnitude is a lower bound for the distance to any plane point. -/
+theorem sdfPlane_abs_le_dist {n : Point} (hn : ‖n‖ = 1) (d : ℝ) (p q : Point)
+    (hq : ⟪n, q⟫ = d) : |sdfPlane n d p| ≤ dist p q :=
+  (sdfPlane_isSDF hn d).abs_le_dist_of_eq (by unfold sdfPlane; rw [hq, sub_self])
+
+/-- **Plane field is the exact distance to the plane**: the projection attains
+    the lower bound, so the magnitude of the field equals the distance. -/
+theorem sdfPlane_exact (n : Point) (d : ℝ) (hn : ‖n‖ = 1) (p : Point) :
+    sdfPlane n d (planeProject n d p) = 0 ∧
+      dist p (planeProject n d p) = |sdfPlane n d p| ∧
+      ∀ q : Point, ⟪n, q⟫ = d → |sdfPlane n d p| ≤ dist p q :=
+  ⟨planeProject_mem n d hn p, planeProject_dist n d hn p,
+    fun q hq => sdfPlane_abs_le_dist hn d p q hq⟩
+
 end Vdb
