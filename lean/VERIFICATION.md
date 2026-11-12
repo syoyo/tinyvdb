@@ -56,6 +56,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `putU8_size` … `putI64LE_size` | emitted sizes of every scalar writer, so read offsets are known to `simp`/`omega` |
 | `getBytes?_append`, `getBytes?_prefix`, `getBytes?_putBytes`, `getString?_putString`, `getString?_putString_append`, `putString_size` | string/blob wire round trips and emitted sizes, including reads with trailing bytes |
 | `concatChunks_append`, `concatChunks_size`, `concatChunks_append_map`, `concatChunks_triple`, `concatChunks_snoc_size`, `concatChunks_append_size`, `concatChunks_cons_size`, `concatChunks_nil_size`, `acc_append_concatChunks`, `getU8?_chunk` … `getBytes?_chunk`, `getString?_chunk` | chunk-chain algebra and boundary reads, including VDB strings |
+| `Header.parseFromChunks` | **header round trip with trailing bytes**: the header composes with the file metadata/list and later data |
 | `Header.parseFrom_emitFrom` | **header round trip**: every canonical header parses back unchanged from its emitted bytes, with the legacy compression byte present only for versions 220–221 |
 | `Vec3d.ofBytes_toBytes`, `Vec3d.toBytes_size`, `Vec3d.parseAt_toBytes`, `parseVecChain_emit` | 24-byte double-vector round trips and the vector-chain parser inverse |
 | `TransformKind.ofName?`, `ofName_uniformScale` … `ofName_affine` | map-name lookup and its six `native_decide` characterisations |
@@ -64,6 +65,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `MetaEntry.parseFrom_emitFrom_bool/int32/int64/f32/f64/vec3i/vec3f/vec3d/str/raw` | **per-kind metadata round trips**: name string, type name, value chunks; raw entries carry an `i32` byte count and opaque bytes |
 | `MetaKind.ofName?_eq_none` | an unknown (non-`string`, non-known) type name has no `MetaKind`, which is what selects the raw decoder |
 | `MetaEntry.parseFrom_emitFrom` | **metadata round trip**: every well-formed entry parses back unchanged from the bytes it emits (`TypeOK` selects the kind, `SizesOK` discharges the length hypotheses). The per-kind lemmas also return the exact end offset (`acc.size + sum of chunk sizes`), which the list framing needs. |
+| `FilePrefix.parseFrom_emitFrom` | **file prologue round trip**: header + file metadata + grid count parse back unchanged, composing `Header.parseFromChunks` with `MetaList.parseFromChunks` |
 | `GridHeader.parseFrom_emitFrom` | **grid-header round trip**: flags + metadata list + transform parse back to the header (the metadata list is composed via `MetaList.parseFromChunks`; the transform contributes its own existential end offset) |
 | `GridDescriptor.parseFrom_emitFrom` | **grid-descriptor round trip** for file version ≥ 221: name/type/instance-parent strings plus the three `u64` offsets parse back to the descriptor, with the exact end offset |
 | `Chunk.parse_raw`, `Chunk.parse_compressed` | **chunk framing round trips**: a raw chunk returns its payload and a compressed chunk returns the codec's expansion, both with the exact end offset |
@@ -71,6 +73,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `MetaEntry.parseFromChunks_bool/…/raw`, `MetaEntry.parseFromChunks` | **entry round trip with trailing bytes**: an entry followed by the rest of the list still parses to itself and its end offset. This is what makes the list induction go through. |
 | `parseEntries_emit`, `MetaList.parseFrom_emitFrom` | **metadata-list round trip**: a list of well-formed entries with length ≤ 4096 parses back unchanged (count chunk, then every entry), with the exact end offset. |
 | `MetaList.parseFromChunks` | the same round trip with arbitrary chunk prefix _and trailing chunk list_, which is what lets the grid body compose the metadata list with the transform and tree data |
+| `Transform.parseFrom_emitFrom_rest` | **transform round trip with trailing bytes** (per-kind `_rest` lemmas compose `parseVecChain_emit` with `post := rest`) |
 | `Transform.parseFrom_emitFrom` | **transform round trip**: every well-formed transform parses back unchanged; the proof canonicalises the fields the reader does not store and applies the per-kind lemma |
 | `nodeSlot_lt` | an in-box coordinate gives a slot below `2^(3L)` |
 | `exampleTree_lookup_origin/inactive/background` | the worked tree reads the active voxel, an inactive stored value, and the background correctly (checked by `decide`) |

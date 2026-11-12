@@ -23,6 +23,8 @@ import Mathlib.Tactic
 import Vdb.Chunks
 import Vdb.Value
 
+set_option linter.unusedSimpArgs false
+
 namespace Vdb
 
 /-! ### Header -/
@@ -327,5 +329,162 @@ theorem Header.parseFrom_emitFrom (h : Header) (hc : h.Canonical) (acc : Bytes) 
     have hoffNe : ¬ ((1 : UInt8) = 0) := by decide
     simp only [hmagicNe, hverlt, hoffNe, hcond]
     cases legacy <;> simp <;> omega
+
+
+theorem Header.parseFromChunks (h : Header) (hc : h.Canonical) (pre rest : List Bytes) :
+    Header.parseFrom (concatChunks (pre ++ h.chunks ++ rest)) (concatChunks pre).size =
+      some (h, (concatChunks (pre ++ h.chunks)).size) := by
+  obtain ⟨hv1, hv2, hoff, huuid, hleg⟩ := hc
+  rcases h with ⟨ver, maj, min, hasOff, legacy, uuid⟩
+  simp only at hv1 hv2 hoff huuid hleg ⊢
+  subst hoff
+  cases hb : decide (minFileVersion ≤ ver ∧ ver < 222)
+  · -- no legacy byte
+    have hleg' : legacy = false := by
+      have := hleg hb
+      simpa [Header.hasLegacyByte] using this
+    subst hleg'
+    have hcond : ¬ (220 ≤ ver ∧ ver < 222) := of_decide_eq_false hb
+    unfold Header.parseFrom
+    simp only [Header.chunks, Header.hasLegacyByte, hb, ite_true, ite_false, Bool.false_eq_true]
+    rw [show concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, ByteArray.empty, uuid] ++ rest) =
+        concatChunks (pre ++ (putI64LE headerMagic ByteArray.empty :: ([putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, ByteArray.empty, uuid] ++ rest))) from by simp]
+    rw [getI64LE_chunk]
+    rw [show (concatChunks pre).size + 8 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks (pre ++ (putI64LE headerMagic ByteArray.empty :: ([putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, ByteArray.empty, uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty]) ++ (putU32LE ver ByteArray.empty :: ([putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, ByteArray.empty, uuid] ++ rest))) from by simp]
+    rw [getU32LE_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 12 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty]) ++ (putU32LE ver ByteArray.empty :: ([putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, ByteArray.empty, uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty]) ++ (putU32LE maj ByteArray.empty :: ([putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, ByteArray.empty, uuid] ++ rest))) from by simp]
+    rw [getU32LE_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 16 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty]) ++ (putU32LE maj ByteArray.empty :: ([putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, ByteArray.empty, uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty]) ++ (putU32LE min ByteArray.empty :: ([putU8 1 ByteArray.empty, ByteArray.empty, uuid] ++ rest))) from by simp]
+    rw [getU32LE_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 20 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty]) ++ (putU32LE min ByteArray.empty :: ([putU8 1 ByteArray.empty, ByteArray.empty, uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty]) ++ (putU8 1 ByteArray.empty :: ([ByteArray.empty, uuid] ++ rest))) from by simp]
+    rw [getU8?_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 21 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty]) ++ (putU8 1 ByteArray.empty :: ([ByteArray.empty, uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, ByteArray.empty]) ++ (uuid :: ([] ++ rest))) from by simp]
+    rw [show (36 : Nat) = uuid.size from huuid.symm]
+    rw [getBytes?_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 57 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, ByteArray.empty, uuid])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size, huuid]]
+    have hmagicNe : ¬ (headerMagic ≠ headerMagic) := by simp
+    have hverlt : ¬ (ver < minFileVersion) := by
+      intro hlt
+      have h1 : ver.toNat < minFileVersion.toNat := hlt
+      have h2 : minFileVersion.toNat ≤ ver.toNat := hv1
+      omega
+    have hoffNe : ¬ ((1 : UInt8) = 0) := by decide
+    simp only [hb, Header.hasLegacyByte, Bool.false_eq_true, ite_true, ite_false,
+      hmagicNe, hverlt, hoffNe, hcond]
+  · -- legacy byte present
+    have hcond : 220 ≤ ver ∧ ver < 222 := of_decide_eq_true hb
+    unfold Header.parseFrom
+    simp only [Header.chunks, Header.hasLegacyByte, hb, ite_true]
+    rw [show concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest) =
+        concatChunks (pre ++ (putI64LE headerMagic ByteArray.empty :: ([putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest))) from by simp]
+    rw [getI64LE_chunk]
+    rw [show (concatChunks pre).size + 8 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks (pre ++ (putI64LE headerMagic ByteArray.empty :: ([putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty]) ++ (putU32LE ver ByteArray.empty :: ([putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest))) from by simp]
+    rw [getU32LE_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 12 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty]) ++ (putU32LE ver ByteArray.empty :: ([putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty]) ++ (putU32LE maj ByteArray.empty :: ([putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest))) from by simp]
+    rw [getU32LE_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 16 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty]) ++ (putU32LE maj ByteArray.empty :: ([putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty]) ++ (putU32LE min ByteArray.empty :: ([putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest))) from by simp]
+    rw [getU32LE_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 20 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty]) ++ (putU32LE min ByteArray.empty :: ([putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty]) ++ (putU8 1 ByteArray.empty :: ([putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest))) from by simp]
+    rw [getU8?_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 21 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty]) ++ (putU8 1 ByteArray.empty :: ([putU8 (if legacy then 1 else 0) ByteArray.empty, uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty]) ++ (putU8 (if legacy then 1 else 0) ByteArray.empty :: ([uuid] ++ rest))) from by simp]
+    rw [getU8?_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 22 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size]]
+    rw [show concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty]) ++ (putU8 (if legacy then 1 else 0) ByteArray.empty :: ([uuid] ++ rest))) =
+        concatChunks ((pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty]) ++ (uuid :: ([] ++ rest))) from by simp]
+    rw [show (36 : Nat) = uuid.size from huuid.symm]
+    rw [getBytes?_chunk]
+    dsimp only
+    rw [show (concatChunks pre).size + 58 =
+        (concatChunks (pre ++ [putI64LE headerMagic ByteArray.empty, putU32LE ver ByteArray.empty, putU32LE maj ByteArray.empty, putU32LE min ByteArray.empty, putU8 1 ByteArray.empty, putU8 (if legacy then 1 else 0) ByteArray.empty, uuid])).size from by
+      conv_lhs => rw [concatChunks_size]
+      conv_rhs => rw [concatChunks_size]
+      simp [putI64LE_size, putU32LE_size, putU8_size, huuid]]
+    have hmagicNe : ¬ (headerMagic ≠ headerMagic) := by simp
+    have hverlt : ¬ (ver < minFileVersion) := by
+      intro hlt
+      have h1 : ver.toNat < minFileVersion.toNat := hlt
+      have h2 : minFileVersion.toNat ≤ ver.toNat := hv1
+      omega
+    have hoffNe : ¬ ((1 : UInt8) = 0) := by decide
+    simp only [hb, Header.hasLegacyByte, ite_true, hmagicNe, hverlt, hoffNe, hcond]
+    cases legacy <;> simp
 
 end Vdb
