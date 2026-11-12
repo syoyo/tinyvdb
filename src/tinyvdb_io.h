@@ -849,26 +849,47 @@ static float tvdb__half_to_float(uint16_t h) {
     return result;
 }
 
+/* Round-to-nearest-even right shift (ties to even). `k > 32` always rounds
+   the (at most 24-bit) input down to zero. */
+static uint32_t tvdb__shr_rne(uint32_t x, unsigned k) {
+    uint32_t q, rem, half;
+    if (k == 0) return x;
+    if (k > 32) return 0;
+    q = x >> k;
+    rem = (k == 32) ? x : (x & ((UINT32_C(1) << k) - 1u));
+    half = (k == 32) ? 0x80000000u : (UINT32_C(1) << (k - 1));
+    if (rem > half || (rem == half && (q & 1u))) ++q;
+    return q;
+}
+
+/* Demote float to half with round-to-nearest-even, preserving NaN (quiet)
+   and the sign of zero. This matches the F16C path
+   (`_mm256_cvtps_ph(..., _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)`) and
+   OpenVDB's truncateRealToHalf, so scalar and SIMD builds write identical
+   bytes. */
 static uint16_t tvdb__float_to_half(float f) {
     uint32_t u;
     memcpy(&u, &f, 4);
     uint32_t sign = (u >> 31) & 1u;
-    int32_t  exp  = (int32_t)((u >> 23) & 0xffu) - 127 + 15;
+    uint32_t e = (u >> 23) & 0xffu;
     uint32_t mant = u & 0x7fffffu;
-    uint16_t h;
-    if (exp <= 0) {
-        if (exp < -10) { h = (uint16_t)(sign << 15); }
-        else {
-            mant |= 0x800000u;
-            uint32_t shift = (uint32_t)(1 - exp);
-            h = (uint16_t)((sign << 15) | (mant >> (13 + shift)));
-        }
-    } else if (exp >= 31) {
-        h = (uint16_t)((sign << 15) | 0x7c00u); /* Inf */
-    } else {
-        h = (uint16_t)((sign << 15) | ((uint32_t)exp << 10) | (mant >> 13));
+    uint16_t sign_bit = (uint16_t)(sign << 15);
+    if (e == 0xffu) {
+        if (mant == 0) return (uint16_t)(sign_bit | 0x7c00u); /* Inf */
+        return (uint16_t)(sign_bit | 0x7e00u | (mant >> 13)); /* NaN */
     }
-    return h;
+    if (e >= 143u) return (uint16_t)(sign_bit | 0x7c00u); /* overflow -> Inf */
+    if (e >= 113u) {
+        uint32_t h = tvdb__shr_rne(0x800000u | mant, 13);
+        uint32_t eh = e - 112u;
+        if (h >= 0x800u) return (uint16_t)(sign_bit | ((eh + 1u) << 10));
+        return (uint16_t)(sign_bit | (eh << 10) | (h & 0x3ffu));
+    }
+    {
+        /* Subnormal half (or zero): value in units of 2^-24. */
+        uint32_t h = tvdb__shr_rne(0x800000u | mant, 126u - e);
+        return (uint16_t)(sign_bit | (h & 0x7ffu));
+    }
 }
 
 #if defined(TINYVDB_SIMD) && defined(__F16C__) && defined(__AVX2__)

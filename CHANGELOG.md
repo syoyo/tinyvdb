@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Half-precision float writing is now round-to-nearest-even and NaN-preserving
+  in every build. The scalar `tvdb__float_to_half` used to truncate the
+  mantissa, flush values below 2^-24 to zero and map NaN to Inf, while the
+  F16C path (`_mm256_cvtps_ph`) rounded; the same grid therefore produced
+  different bytes in SIMD and scalar builds. Both paths now agree with each
+  other and with OpenVDB's `truncateRealToHalf`. `tests/test_half_rounding.c`
+  covers rounding, subnormal flushing, signed zero, Inf and NaN round trips
+  and fails on the old scalar encoder when `TINYVDB_SIMD=OFF`.
+
 ## 0.9.1 — 2026-10-28
 
 ### Added

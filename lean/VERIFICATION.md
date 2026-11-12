@@ -16,6 +16,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vdb/Coord.lean` | `Coord`, box membership, `Layout` + `WellFormed` (root level 0, depth 3–8, per-level `log2dim` bound, total ≤ 31), `spanShift`/`span`, `localIndex` (arithmetic shift), non-negativity and `< 2^L` bounds, `origin + span * localIndex ≤ c`, `slotOf`, `childOrigin`, `rootKey` with floor-division bounds. |
 | `Vdb/Tree.lean` | sparse tree model (`Node` leaf/internal, `Root` tiles/children, `Tree` with layout), node slot and child-origin geometry, total `lookup` semantics (root key → tile/child → node descent) with fuel `t.depth`, `Equiv`, and the well-formedness predicate `WellFormed`/`NodeWFuel` mirroring `validate_node`; a worked `5_4_3` tree with three checked lookups. |
 | `Vdb/MaskCompress.lean` | the seven `MaskCompress` codes as `MaskCode`, code byte round trip, `readCount`, `VoxelValue.negate` (bit flip for floats, integer negation, bool identity), the `decodeSlot`/`decodeAll` decoder (active values by rank, code 6 reads the full list), the faithful encoder `classify` (unique-inactive scan seeded with the background, `val0`/`val1`, selection mask, including the background swap), the selection-mask semantics, the scan invariant, and the **general mask-compression round trip** for all seven codes. |
+| `Vdb/Half.lean` | binary16 model: the exact reader bit pattern (`halfToFloatBits`, including the subnormal normalisation loop), the truncating scalar encoder (`floatToHalfTrunc`), the round-to-nearest-even encoder (`floatToHalfRNE`, as used by F16C and OpenVDB), and concrete F1 evidence. |
 | `Vdb/Layout.lean` | `Tree_<type>_<L...>` strict parser and printer, the lenient reader model (`parseGridTypeLenient`), `GridType.WellFormed`, checked parse of `Tree_float_5_4_3`. |
 
 ## Theorem inventory (landed)
@@ -51,6 +52,9 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `MaskCode.ofNat?_toNat`, `readCount_le` | code byte round trip and stored-value count bound |
 | `VoxelValue.type_negate`, `negate_negate_float/double/bool` | negation preserves the type and is an involution for float/bool values |
 | `decodeSlot_active`, `decodeSlot_active_stored` | an active slot decodes from the compacted list; with `active = map values (setBits mask n)` it returns exactly `values i` |
+| `floatToHalfTrunc_nan`, `floatToHalfRNE_nan` | **F1 evidence**: the truncating encoder maps NaN to Inf; the RNE encoder keeps NaN |
+| `trunc_vs_rne_differ`, `floatToHalfTrunc_tiny_flush`, `..._negzero` | truncation vs rounding on a concrete mantissa, subnormal flush, signed-zero preservation |
+| `floatToHalfTrunc_halfToFloat_normal`, `floatToHalfRNE_halfToFloat_normal`, `floatToHalfRNE_halfToFloat_subnormal` | every normal half round trips through both encoders; subnormal halves round trip through RNE (checked over all 65536 halves) |
 | `mem_inactiveSlots`, `inactiveValues_eq_bg` | inactive slot membership and constant-background inactive lists |
 | `fold_const_bg`, `scan_uniform` | the unique-value scan stays at count ≤ 1 with `u0 = bg` for a constant background |
 | `classify_uniform`, `classify_uniform_decode` | mask-compression round trip for a constant-background inactive set (code 0) |
@@ -86,7 +90,7 @@ Each is confirmed or refuted by the corresponding Lean model, then fixed in C
 
 | ID | Hypothesis |
 | --- | --- |
-| F1 | scalar `tvdb__float_to_half` truncates, flushes subnormal to 0, maps NaN→Inf; F16C path rounds, so SIMD/scalar writers differ |
+| F1 | **confirmed and fixed** in C: the scalar encoder truncates, flushes to 0 and maps NaN→Inf while F16C rounds. The scalar path now implements round-to-nearest-even with NaN preservation (matching the Lean `floatToHalfRNE` and OpenVDB); `tests/test_half_rounding.c` fails on the old encoder with `TINYVDB_SIMD=OFF`. |
 | F2 | `tvdb_header_t.half_precision` never set by the reader |
 | F3 | no maximum file-version check; `block_byte_offset` unvalidated; writer duplicates `grid_byte_offset` |
 | F4 | grid-type grammar accepts trailing junk as zero levels |
