@@ -25,3 +25,7 @@ package vdbSpec where
 @[default_target]
 lean_lib VdbSpec where
   globs := #[`VdbSpec, `Vdb.+]
+
+/-- Model-side `.vdb` inspector (differential harness, Lean half). -/
+lean_exe vdbcheck where
+  root := `VdbCheck
