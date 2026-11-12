@@ -15,6 +15,7 @@ import Vdb.Tree
 import Vdb.MaskCompress
 import Vdb.Half
 import Vdb.Chunk
+import Vdb.Stable
 import Vdb.Chunks
 import Vdb.Meta
 import Vdb.Transform

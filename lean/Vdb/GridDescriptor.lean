@@ -23,6 +23,7 @@
 -/
 import Mathlib.Tactic
 import Vdb.Chunks
+import Vdb.Stable
 
 set_option linter.unusedSimpArgs false
 
@@ -198,5 +199,15 @@ theorem GridDescriptor.parseFrom_emitFrom (ver : UInt32) (hver : 221 ≤ ver)
         putString ip ByteArray.empty, putU64LE go ByteArray.empty,
         putU64LE bo ByteArray.empty] ++ [putU64LE eo ByteArray.empty] from by simp]
   rw [getU64LE_chunk]
+
+
+/-- A descriptor parse does not depend on trailing bytes. -/
+theorem GridDescriptor.parseFrom_append (ver : UInt32) {b rest : Bytes} {off : Nat}
+    {p : GridDescriptor × Nat}
+    (h : GridDescriptor.parseFrom ver b off = some p) :
+    GridDescriptor.parseFrom ver (b ++ rest) off = some p := by
+  unfold GridDescriptor.parseFrom at h ⊢
+  repeat' (first | split at h | split)
+  all_goals simp_all [getString?_append_of_some, getU64LE_append_of_some]
 
 end Vdb
