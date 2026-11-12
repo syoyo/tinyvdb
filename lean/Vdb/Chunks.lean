@@ -37,6 +37,24 @@ theorem concatChunks_size (l : List Bytes) :
   | cons c cs ih =>
     simp only [concatChunks, ByteArray.size_append, ih, List.map_cons, List.sum_cons]
 
+/-- Size of a concatenation of chunk lists. -/
+theorem concatChunks_append_size (l₁ l₂ : List Bytes) :
+    (concatChunks (l₁ ++ l₂)).size = (concatChunks l₁).size + (concatChunks l₂).size := by
+  rw [concatChunks_append, ByteArray.size_append]
+
+/-- Size of a chunk list starting with a chunk. -/
+theorem concatChunks_cons_size (c : Bytes) (l : List Bytes) :
+    (concatChunks (c :: l)).size = c.size + (concatChunks l).size := by
+  simp [concatChunks, ByteArray.size_append]
+
+/-- The empty chunk list has size zero. -/
+theorem concatChunks_nil_size : (concatChunks ([] : List Bytes)).size = 0 := rfl
+
+/-- Size of a chunk list with one chunk appended. -/
+theorem concatChunks_snoc_size (l : List Bytes) (c : Bytes) :
+    (concatChunks (l ++ [c])).size = (concatChunks l).size + c.size := by
+  rw [concatChunks_append, concatChunks_singleton, ByteArray.size_append]
+
 /-- Emitting a chunk list after `acc` is the same as concatenating `acc` as
     the first chunk. -/
 theorem acc_append_concatChunks (acc : Bytes) (L : List Bytes) :

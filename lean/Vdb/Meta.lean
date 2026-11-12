@@ -20,6 +20,8 @@ import Mathlib.Tactic
 import Vdb.Chunks
 import Vdb.Value
 
+set_option linter.unusedSimpArgs false
+
 namespace Vdb
 
 /-! ### Type names -/
@@ -109,7 +111,7 @@ def MetaEntry.TypeOK (e : MetaEntry) : Prop :=
   | .vec3i _ _ _ => e.typeName = vec3iTypeName
   | .vec3f _ _ _ => e.typeName = vec3sTypeName
   | .vec3d _ _ _ => e.typeName = vec3dTypeName
-  | .raw _ => knownTypeName e.typeName = false
+  | .raw _ => knownTypeName e.typeName = false ∧ e.typeName ≠ strTypeName
 
 /-- The entry's variable-length fields fit the wire lengths. -/
 def MetaEntry.SizesOK (e : MetaEntry) : Prop :=
@@ -212,6 +214,17 @@ def parseValue (k : MetaKind) (b : Bytes) (off : Nat) : Option (MetaValue × Nat
               (getU64LE b (off + 20)).map fun z => (.vec3d x y z, off + 28)
         else none
 
+/-- Read an unknown-type value at `off`: an `i32` byte count followed by that
+    many opaque bytes (the C reader's fallback). -/
+def parseRaw (b : Bytes) (off : Nat) : Option (MetaValue × Nat) :=
+  match getI32LE b off with
+  | none => none
+  | some sz =>
+    if sz < 0 then none
+    else
+      (getBytes? b (off + 4) sz.toNatClampNeg).map fun raw =>
+        (.raw raw, off + 4 + sz.toNatClampNeg)
+
 /-- Parse an entry at `off`. -/
 def MetaEntry.parseFrom (b : Bytes) (off : Nat) : Option (MetaEntry × Nat) :=
   match getString? b off with
@@ -226,7 +239,7 @@ def MetaEntry.parseFrom (b : Bytes) (off : Nat) : Option (MetaEntry × Nat) :=
       | some k =>
         (parseValue k b o2).map fun p => (⟨name, tn, p.1⟩, p.2)
       | none =>
-        (parseValue .boolean b o2).map fun p => (⟨name, tn, p.1⟩, p.2)
+        (parseRaw b o2).map fun p => (⟨name, tn, p.1⟩, p.2)
 
 
 /-! ### Round trip -/
@@ -238,5 +251,862 @@ theorem getI32LE_chunk (pre : List Bytes) (v : Int32) (post : List Bytes) :
   unfold getI32LE putI32LE
   rw [getU32LE_chunk]
   rfl
+
+theorem pv_bool (pre : List Bytes) (b : Bool) (post : List Bytes) :
+    parseValue .boolean (concatChunks (pre ++ [putU32LE 1 ByteArray.empty,
+        putU8 (if b then 1 else 0) ByteArray.empty] ++ post)) (concatChunks pre).size =
+      some (.boolean b, (concatChunks pre).size + 5) := by
+  unfold parseValue
+  rw [show concatChunks (pre ++ [putU32LE 1 ByteArray.empty,
+      putU8 (if b then 1 else 0) ByteArray.empty] ++ post) =
+      concatChunks (pre ++ putU32LE 1 ByteArray.empty ::
+        (putU8 (if b then 1 else 0) ByteArray.empty :: post)) from by simp]
+  unfold getI32LE
+  rw [getU32LE_chunk]
+  simp only [Option.map_some]
+  rw [show ((1 : UInt32).toInt32) = 1 from rfl]
+  rw [ite_eq_right (by decide : ¬ (1 : Int32) < 0)]
+  rw [ite_eq_left (by decide : ((1 : Int32).toNatClampNeg) = 1)]
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE 1 ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ putU32LE 1 ByteArray.empty ::
+      (putU8 (if b then 1 else 0) ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 1 ByteArray.empty] ++
+        (putU8 (if b then 1 else 0) ByteArray.empty :: post)) from by simp]
+  rw [getU8?_chunk]
+  cases b <;> rfl
+
+theorem pv_int32 (pre : List Bytes) (v : Int32) (post : List Bytes) :
+    parseValue .int32 (concatChunks (pre ++ [putU32LE 4 ByteArray.empty,
+        putI32LE v ByteArray.empty] ++ post)) (concatChunks pre).size =
+      some (.int32 v, (concatChunks pre).size + 8) := by
+  unfold parseValue
+  rw [show concatChunks (pre ++ [putU32LE 4 ByteArray.empty,
+      putI32LE v ByteArray.empty] ++ post) =
+      concatChunks (pre ++ putU32LE 4 ByteArray.empty ::
+        (putI32LE v ByteArray.empty :: post)) from by simp]
+  have hsz : getI32LE (concatChunks (pre ++ putU32LE 4 ByteArray.empty ::
+        (putI32LE v ByteArray.empty :: post))) (concatChunks pre).size = some 4 := by
+    unfold getI32LE
+    rw [getU32LE_chunk]
+    rfl
+  rw [hsz]
+  dsimp only
+  rw [ite_eq_right (by decide : ¬ (4 : Int32) < 0)]
+  rw [ite_eq_left (by decide : ((4 : Int32).toNatClampNeg) = 4)]
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE 4 ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ putU32LE 4 ByteArray.empty ::
+      (putI32LE v ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 4 ByteArray.empty] ++
+        (putI32LE v ByteArray.empty :: post)) from by simp]
+  rw [getI32LE_chunk]
+  simp only [Option.map_some]
+
+theorem pv_f32 (pre : List Bytes) (v : UInt32) (post : List Bytes) :
+    parseValue .float (concatChunks (pre ++ [putU32LE 4 ByteArray.empty,
+        putU32LE v ByteArray.empty] ++ post)) (concatChunks pre).size =
+      some (.f32 v, (concatChunks pre).size + 8) := by
+  unfold parseValue
+  rw [show concatChunks (pre ++ [putU32LE 4 ByteArray.empty,
+      putU32LE v ByteArray.empty] ++ post) =
+      concatChunks (pre ++ putU32LE 4 ByteArray.empty ::
+        (putU32LE v ByteArray.empty :: post)) from by simp]
+  have hsz : getI32LE (concatChunks (pre ++ putU32LE 4 ByteArray.empty ::
+        (putU32LE v ByteArray.empty :: post))) (concatChunks pre).size = some 4 := by
+    unfold getI32LE
+    rw [getU32LE_chunk]
+    rfl
+  rw [hsz]
+  dsimp only
+  rw [ite_eq_right (by decide : ¬ (4 : Int32) < 0)]
+  rw [ite_eq_left (by decide : ((4 : Int32).toNatClampNeg) = 4)]
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE 4 ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ putU32LE 4 ByteArray.empty ::
+      (putU32LE v ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 4 ByteArray.empty] ++
+        (putU32LE v ByteArray.empty :: post)) from by simp]
+  rw [getU32LE_chunk]
+  simp only [Option.map_some]
+
+theorem pv_int64 (pre : List Bytes) (v : Int64) (post : List Bytes) :
+    parseValue .int64 (concatChunks (pre ++ [putU32LE 8 ByteArray.empty,
+        putI64LE v ByteArray.empty] ++ post)) (concatChunks pre).size =
+      some (.int64 v, (concatChunks pre).size + 12) := by
+  unfold parseValue
+  rw [show concatChunks (pre ++ [putU32LE 8 ByteArray.empty,
+      putI64LE v ByteArray.empty] ++ post) =
+      concatChunks (pre ++ putU32LE 8 ByteArray.empty ::
+        (putI64LE v ByteArray.empty :: post)) from by simp]
+  have hsz : getI32LE (concatChunks (pre ++ putU32LE 8 ByteArray.empty ::
+        (putI64LE v ByteArray.empty :: post))) (concatChunks pre).size = some 8 := by
+    unfold getI32LE
+    rw [getU32LE_chunk]
+    rfl
+  rw [hsz]
+  dsimp only
+  rw [ite_eq_right (by decide : ¬ (8 : Int32) < 0)]
+  rw [ite_eq_left (by decide : ((8 : Int32).toNatClampNeg) = 8)]
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE 8 ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ putU32LE 8 ByteArray.empty ::
+      (putI64LE v ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 8 ByteArray.empty] ++
+        (putI64LE v ByteArray.empty :: post)) from by simp]
+  rw [getI64LE_chunk]
+  simp only [Option.map_some]
+
+theorem pv_f64 (pre : List Bytes) (v : UInt64) (post : List Bytes) :
+    parseValue .double (concatChunks (pre ++ [putU32LE 8 ByteArray.empty,
+        putU64LE v ByteArray.empty] ++ post)) (concatChunks pre).size =
+      some (.f64 v, (concatChunks pre).size + 12) := by
+  unfold parseValue
+  rw [show concatChunks (pre ++ [putU32LE 8 ByteArray.empty,
+      putU64LE v ByteArray.empty] ++ post) =
+      concatChunks (pre ++ putU32LE 8 ByteArray.empty ::
+        (putU64LE v ByteArray.empty :: post)) from by simp]
+  have hsz : getI32LE (concatChunks (pre ++ putU32LE 8 ByteArray.empty ::
+        (putU64LE v ByteArray.empty :: post))) (concatChunks pre).size = some 8 := by
+    unfold getI32LE
+    rw [getU32LE_chunk]
+    rfl
+  rw [hsz]
+  dsimp only
+  rw [ite_eq_right (by decide : ¬ (8 : Int32) < 0)]
+  rw [ite_eq_left (by decide : ((8 : Int32).toNatClampNeg) = 8)]
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE 8 ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ putU32LE 8 ByteArray.empty ::
+      (putU64LE v ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 8 ByteArray.empty] ++
+        (putU64LE v ByteArray.empty :: post)) from by simp]
+  rw [getU64LE_chunk]
+  simp only [Option.map_some]
+
+theorem pv_vec3i (pre : List Bytes) (x y z : Int32) (post : List Bytes) :
+    parseValue .vec3i (concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+        putI32LE x ByteArray.empty, putI32LE y ByteArray.empty,
+        putI32LE z ByteArray.empty] ++ post)) (concatChunks pre).size =
+      some (.vec3i x y z, (concatChunks pre).size + 16) := by
+  unfold parseValue
+  rw [show concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+      putI32LE x ByteArray.empty, putI32LE y ByteArray.empty,
+      putI32LE z ByteArray.empty] ++ post) =
+      concatChunks (pre ++ putU32LE 12 ByteArray.empty ::
+        (putI32LE x ByteArray.empty :: putI32LE y ByteArray.empty ::
+          putI32LE z ByteArray.empty :: post)) from by simp]
+  have hsz : getI32LE (concatChunks (pre ++ putU32LE 12 ByteArray.empty ::
+        (putI32LE x ByteArray.empty :: putI32LE y ByteArray.empty ::
+          putI32LE z ByteArray.empty :: post))) (concatChunks pre).size = some 12 := by
+    unfold getI32LE
+    rw [getU32LE_chunk]
+    rfl
+  rw [hsz]
+  dsimp only
+  rw [ite_eq_right (by decide : ¬ (12 : Int32) < 0)]
+  rw [ite_eq_left (by decide : ((12 : Int32).toNatClampNeg) = 12)]
+  -- first component
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE 12 ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ putU32LE 12 ByteArray.empty ::
+      (putI32LE x ByteArray.empty :: putI32LE y ByteArray.empty ::
+        putI32LE z ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 12 ByteArray.empty] ++
+        (putI32LE x ByteArray.empty :: putI32LE y ByteArray.empty ::
+          putI32LE z ByteArray.empty :: post)) from by simp]
+  rw [getI32LE_chunk]
+  simp only [Option.bind_some]
+  -- second component
+  rw [show (concatChunks pre).size + 8 =
+      (concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+        putI32LE x ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ [putU32LE 12 ByteArray.empty] ++
+      (putI32LE x ByteArray.empty :: putI32LE y ByteArray.empty ::
+        putI32LE z ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+        putI32LE x ByteArray.empty] ++
+        (putI32LE y ByteArray.empty :: putI32LE z ByteArray.empty :: post)) from by simp]
+  rw [getI32LE_chunk]
+  simp only [Option.bind_some]
+  -- third component
+  rw [show (concatChunks pre).size + 12 =
+      (concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+        putI32LE x ByteArray.empty, putI32LE y ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+      putI32LE x ByteArray.empty] ++
+      (putI32LE y ByteArray.empty :: putI32LE z ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+        putI32LE x ByteArray.empty, putI32LE y ByteArray.empty] ++
+        (putI32LE z ByteArray.empty :: post)) from by simp]
+  rw [getI32LE_chunk]
+  simp only [Option.map_some]
+
+
+theorem pv_vec3f (pre : List Bytes) (x y z : UInt32) (post : List Bytes) :
+    parseValue .vec3s (concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+        putU32LE x ByteArray.empty, putU32LE y ByteArray.empty,
+        putU32LE z ByteArray.empty] ++ post)) (concatChunks pre).size =
+      some (.vec3f x y z, (concatChunks pre).size + 16) := by
+  unfold parseValue
+  rw [show concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+      putU32LE x ByteArray.empty, putU32LE y ByteArray.empty,
+      putU32LE z ByteArray.empty] ++ post) =
+      concatChunks (pre ++ putU32LE 12 ByteArray.empty ::
+        (putU32LE x ByteArray.empty :: putU32LE y ByteArray.empty ::
+          putU32LE z ByteArray.empty :: post)) from by simp]
+  have hsz : getI32LE (concatChunks (pre ++ putU32LE 12 ByteArray.empty ::
+        (putU32LE x ByteArray.empty :: putU32LE y ByteArray.empty ::
+          putU32LE z ByteArray.empty :: post))) (concatChunks pre).size = some 12 := by
+    unfold getI32LE
+    rw [getU32LE_chunk]
+    rfl
+  rw [hsz]
+  dsimp only
+  rw [ite_eq_right (by decide : ¬ (12 : Int32) < 0)]
+  rw [ite_eq_left (by decide : ((12 : Int32).toNatClampNeg) = 12)]
+  -- first component
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE 12 ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ putU32LE 12 ByteArray.empty ::
+      (putU32LE x ByteArray.empty :: putU32LE y ByteArray.empty ::
+        putU32LE z ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 12 ByteArray.empty] ++
+        (putU32LE x ByteArray.empty :: putU32LE y ByteArray.empty ::
+          putU32LE z ByteArray.empty :: post)) from by simp]
+  rw [getU32LE_chunk]
+  simp only [Option.bind_some]
+  -- second component
+  rw [show (concatChunks pre).size + 8 =
+      (concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+        putU32LE x ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ [putU32LE 12 ByteArray.empty] ++
+      (putU32LE x ByteArray.empty :: putU32LE y ByteArray.empty ::
+        putU32LE z ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+        putU32LE x ByteArray.empty] ++
+        (putU32LE y ByteArray.empty :: putU32LE z ByteArray.empty :: post)) from by simp]
+  rw [getU32LE_chunk]
+  simp only [Option.bind_some]
+  -- third component
+  rw [show (concatChunks pre).size + 12 =
+      (concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+        putU32LE x ByteArray.empty, putU32LE y ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+      putU32LE x ByteArray.empty] ++
+      (putU32LE y ByteArray.empty :: putU32LE z ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 12 ByteArray.empty,
+        putU32LE x ByteArray.empty, putU32LE y ByteArray.empty] ++
+        (putU32LE z ByteArray.empty :: post)) from by simp]
+  rw [getU32LE_chunk]
+  simp only [Option.map_some]
+
+
+theorem pv_vec3d (pre : List Bytes) (x y z : UInt64) (post : List Bytes) :
+    parseValue .vec3d (concatChunks (pre ++ [putU32LE 24 ByteArray.empty,
+        putU64LE x ByteArray.empty, putU64LE y ByteArray.empty,
+        putU64LE z ByteArray.empty] ++ post)) (concatChunks pre).size =
+      some (.vec3d x y z, (concatChunks pre).size + 28) := by
+  unfold parseValue
+  rw [show concatChunks (pre ++ [putU32LE 24 ByteArray.empty,
+      putU64LE x ByteArray.empty, putU64LE y ByteArray.empty,
+      putU64LE z ByteArray.empty] ++ post) =
+      concatChunks (pre ++ putU32LE 24 ByteArray.empty ::
+        (putU64LE x ByteArray.empty :: putU64LE y ByteArray.empty ::
+          putU64LE z ByteArray.empty :: post)) from by simp]
+  have hsz : getI32LE (concatChunks (pre ++ putU32LE 24 ByteArray.empty ::
+        (putU64LE x ByteArray.empty :: putU64LE y ByteArray.empty ::
+          putU64LE z ByteArray.empty :: post))) (concatChunks pre).size = some 24 := by
+    unfold getI32LE
+    rw [getU32LE_chunk]
+    rfl
+  rw [hsz]
+  dsimp only
+  rw [ite_eq_right (by decide : ¬ (24 : Int32) < 0)]
+  rw [ite_eq_left (by decide : ((24 : Int32).toNatClampNeg) = 24)]
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE 24 ByteArray.empty])).size from by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]]
+  rw [show concatChunks (pre ++ putU32LE 24 ByteArray.empty ::
+      (putU64LE x ByteArray.empty :: putU64LE y ByteArray.empty ::
+        putU64LE z ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 24 ByteArray.empty] ++
+        (putU64LE x ByteArray.empty :: putU64LE y ByteArray.empty ::
+          putU64LE z ByteArray.empty :: post)) from by simp]
+  rw [getU64LE_chunk]
+  simp only [Option.bind_some]
+  rw [show (concatChunks pre).size + 12 =
+      (concatChunks (pre ++ [putU32LE 24 ByteArray.empty,
+        putU64LE x ByteArray.empty])).size from by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]]
+  rw [show concatChunks (pre ++ [putU32LE 24 ByteArray.empty] ++
+      (putU64LE x ByteArray.empty :: putU64LE y ByteArray.empty ::
+        putU64LE z ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 24 ByteArray.empty,
+        putU64LE x ByteArray.empty] ++
+        (putU64LE y ByteArray.empty :: putU64LE z ByteArray.empty :: post)) from by simp]
+  rw [getU64LE_chunk]
+  simp only [Option.bind_some]
+  rw [show (concatChunks pre).size + 20 =
+      (concatChunks (pre ++ [putU32LE 24 ByteArray.empty,
+        putU64LE x ByteArray.empty, putU64LE y ByteArray.empty])).size from by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]]
+  rw [show concatChunks (pre ++ [putU32LE 24 ByteArray.empty,
+      putU64LE x ByteArray.empty] ++
+      (putU64LE y ByteArray.empty :: putU64LE z ByteArray.empty :: post)) =
+      concatChunks (pre ++ [putU32LE 24 ByteArray.empty,
+        putU64LE x ByteArray.empty, putU64LE y ByteArray.empty] ++
+        (putU64LE z ByteArray.empty :: post)) from by simp]
+  rw [getU64LE_chunk]
+  simp only [Option.map_some]
+
+theorem MetaEntry.parseFrom_emitFrom_bool (name : Bytes) (hn : name.size < 2 ^ 32)
+    (b : Bool) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom
+        ((⟨name, boolTypeName, .boolean b⟩ : MetaEntry).emitFrom acc) acc.size =
+      some (⟨name, boolTypeName, .boolean b⟩, out) := by
+  constructor
+  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
+  rw [acc_append_concatChunks]
+  rw [show acc :: (putString name ByteArray.empty :: (putString boolTypeName ByteArray.empty ::
+      [putU32LE 1 ByteArray.empty, putU8 (if b then 1 else 0) ByteArray.empty])) =
+      [acc] ++ putString name ByteArray.empty :: (putString boolTypeName ByteArray.empty ::
+        [putU32LE 1 ByteArray.empty, putU8 (if b then 1 else 0) ByteArray.empty]) from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := name)
+    (post := putString boolTypeName ByteArray.empty :: [putU32LE 1 ByteArray.empty, putU8 (if b then 1 else 0) ByteArray.empty]) hn]
+  dsimp only
+  have h1 : (concatChunks [acc]).size + 4 + name.size =
+      (concatChunks [acc, putString name ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h1]
+  rw [show [acc] ++ (putString name ByteArray.empty :: (putString boolTypeName ByteArray.empty ::
+      [putU32LE 1 ByteArray.empty, putU8 (if b then 1 else 0) ByteArray.empty])) =
+      [acc, putString name ByteArray.empty] ++ (putString boolTypeName ByteArray.empty ::
+        [putU32LE 1 ByteArray.empty, putU8 (if b then 1 else 0) ByteArray.empty]) from rfl]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := boolTypeName)
+    (post := [putU32LE 1 ByteArray.empty, putU8 (if b then 1 else 0) ByteArray.empty]) (by decide)]
+  dsimp only
+  have h2 : (concatChunks [acc, putString name ByteArray.empty]).size + 4 + boolTypeName.size =
+      (concatChunks [acc, putString name ByteArray.empty, putString boolTypeName ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h2]
+  rw [MetaKind.ofName_bool]
+  dsimp only
+  rw [show concatChunks ([acc, putString name ByteArray.empty] ++
+      (putString boolTypeName ByteArray.empty :: [putU32LE 1 ByteArray.empty, putU8 (if b then 1 else 0) ByteArray.empty])) =
+      concatChunks ([acc, putString name ByteArray.empty, putString boolTypeName ByteArray.empty] ++
+        [putU32LE 1 ByteArray.empty, putU8 (if b then 1 else 0) ByteArray.empty] ++ []) from by simp]
+  rw [pv_bool]
+  simp only [Option.map_some]
+  rfl
+
+theorem MetaEntry.parseFrom_emitFrom_int32 (name : Bytes) (hn : name.size < 2 ^ 32)
+    (v : Int32) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom
+        ((⟨name, int32TypeName, .int32 v⟩ : MetaEntry).emitFrom acc) acc.size =
+      some (⟨name, int32TypeName, .int32 v⟩, out) := by
+  constructor
+  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
+  rw [acc_append_concatChunks]
+  rw [show acc :: (putString name ByteArray.empty :: (putString int32TypeName ByteArray.empty ::
+      [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty])) =
+      [acc] ++ putString name ByteArray.empty :: (putString int32TypeName ByteArray.empty ::
+        [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty]) from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := name)
+    (post := putString int32TypeName ByteArray.empty :: [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty]) hn]
+  dsimp only
+  have h1 : (concatChunks [acc]).size + 4 + name.size =
+      (concatChunks [acc, putString name ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h1]
+  rw [show [acc] ++ (putString name ByteArray.empty :: (putString int32TypeName ByteArray.empty ::
+      [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty])) =
+      [acc, putString name ByteArray.empty] ++ (putString int32TypeName ByteArray.empty ::
+        [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty]) from rfl]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := int32TypeName)
+    (post := [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty]) (by decide)]
+  dsimp only
+  have h2 : (concatChunks [acc, putString name ByteArray.empty]).size + 4 + int32TypeName.size =
+      (concatChunks [acc, putString name ByteArray.empty, putString int32TypeName ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h2]
+  rw [MetaKind.ofName_int32]
+  dsimp only
+  rw [show concatChunks ([acc, putString name ByteArray.empty] ++
+      (putString int32TypeName ByteArray.empty :: [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty])) =
+      concatChunks ([acc, putString name ByteArray.empty, putString int32TypeName ByteArray.empty] ++
+        [putU32LE 4 ByteArray.empty, putI32LE v ByteArray.empty] ++ []) from by simp]
+  rw [pv_int32]
+  simp only [Option.map_some]
+  rfl
+
+theorem MetaEntry.parseFrom_emitFrom_int64 (name : Bytes) (hn : name.size < 2 ^ 32)
+    (v : Int64) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom
+        ((⟨name, int64TypeName, .int64 v⟩ : MetaEntry).emitFrom acc) acc.size =
+      some (⟨name, int64TypeName, .int64 v⟩, out) := by
+  constructor
+  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
+  rw [acc_append_concatChunks]
+  rw [show acc :: (putString name ByteArray.empty :: (putString int64TypeName ByteArray.empty ::
+      [putU32LE 8 ByteArray.empty, putI64LE v ByteArray.empty])) =
+      [acc] ++ putString name ByteArray.empty :: (putString int64TypeName ByteArray.empty ::
+        [putU32LE 8 ByteArray.empty, putI64LE v ByteArray.empty]) from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := name)
+    (post := putString int64TypeName ByteArray.empty :: [putU32LE 8 ByteArray.empty, putI64LE v ByteArray.empty]) hn]
+  dsimp only
+  have h1 : (concatChunks [acc]).size + 4 + name.size =
+      (concatChunks [acc, putString name ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h1]
+  rw [show [acc] ++ (putString name ByteArray.empty :: (putString int64TypeName ByteArray.empty ::
+      [putU32LE 8 ByteArray.empty, putI64LE v ByteArray.empty])) =
+      [acc, putString name ByteArray.empty] ++ (putString int64TypeName ByteArray.empty ::
+        [putU32LE 8 ByteArray.empty, putI64LE v ByteArray.empty]) from rfl]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := int64TypeName)
+    (post := [putU32LE 8 ByteArray.empty, putI64LE v ByteArray.empty]) (by decide)]
+  dsimp only
+  have h2 : (concatChunks [acc, putString name ByteArray.empty]).size + 4 + int64TypeName.size =
+      (concatChunks [acc, putString name ByteArray.empty, putString int64TypeName ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h2]
+  rw [MetaKind.ofName_int64]
+  dsimp only
+  rw [show concatChunks ([acc, putString name ByteArray.empty] ++
+      (putString int64TypeName ByteArray.empty :: [putU32LE 8 ByteArray.empty, putI64LE v ByteArray.empty])) =
+      concatChunks ([acc, putString name ByteArray.empty, putString int64TypeName ByteArray.empty] ++
+        [putU32LE 8 ByteArray.empty, putI64LE v ByteArray.empty] ++ []) from by simp]
+  rw [pv_int64]
+  simp only [Option.map_some]
+  rfl
+
+theorem MetaEntry.parseFrom_emitFrom_f32 (name : Bytes) (hn : name.size < 2 ^ 32)
+    (v : UInt32) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom
+        ((⟨name, floatTypeName, .f32 v⟩ : MetaEntry).emitFrom acc) acc.size =
+      some (⟨name, floatTypeName, .f32 v⟩, out) := by
+  constructor
+  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
+  rw [acc_append_concatChunks]
+  rw [show acc :: (putString name ByteArray.empty :: (putString floatTypeName ByteArray.empty ::
+      [putU32LE 4 ByteArray.empty, putU32LE v ByteArray.empty])) =
+      [acc] ++ putString name ByteArray.empty :: (putString floatTypeName ByteArray.empty ::
+        [putU32LE 4 ByteArray.empty, putU32LE v ByteArray.empty]) from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := name)
+    (post := putString floatTypeName ByteArray.empty :: [putU32LE 4 ByteArray.empty, putU32LE v ByteArray.empty]) hn]
+  dsimp only
+  have h1 : (concatChunks [acc]).size + 4 + name.size =
+      (concatChunks [acc, putString name ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h1]
+  rw [show [acc] ++ (putString name ByteArray.empty :: (putString floatTypeName ByteArray.empty ::
+      [putU32LE 4 ByteArray.empty, putU32LE v ByteArray.empty])) =
+      [acc, putString name ByteArray.empty] ++ (putString floatTypeName ByteArray.empty ::
+        [putU32LE 4 ByteArray.empty, putU32LE v ByteArray.empty]) from rfl]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := floatTypeName)
+    (post := [putU32LE 4 ByteArray.empty, putU32LE v ByteArray.empty]) (by decide)]
+  dsimp only
+  have h2 : (concatChunks [acc, putString name ByteArray.empty]).size + 4 + floatTypeName.size =
+      (concatChunks [acc, putString name ByteArray.empty, putString floatTypeName ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h2]
+  rw [MetaKind.ofName_float]
+  dsimp only
+  rw [show concatChunks ([acc, putString name ByteArray.empty] ++
+      (putString floatTypeName ByteArray.empty :: [putU32LE 4 ByteArray.empty, putU32LE v ByteArray.empty])) =
+      concatChunks ([acc, putString name ByteArray.empty, putString floatTypeName ByteArray.empty] ++
+        [putU32LE 4 ByteArray.empty, putU32LE v ByteArray.empty] ++ []) from by simp]
+  rw [pv_f32]
+  simp only [Option.map_some]
+  rfl
+
+theorem MetaEntry.parseFrom_emitFrom_f64 (name : Bytes) (hn : name.size < 2 ^ 32)
+    (v : UInt64) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom
+        ((⟨name, doubleTypeName, .f64 v⟩ : MetaEntry).emitFrom acc) acc.size =
+      some (⟨name, doubleTypeName, .f64 v⟩, out) := by
+  constructor
+  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
+  rw [acc_append_concatChunks]
+  rw [show acc :: (putString name ByteArray.empty :: (putString doubleTypeName ByteArray.empty ::
+      [putU32LE 8 ByteArray.empty, putU64LE v ByteArray.empty])) =
+      [acc] ++ putString name ByteArray.empty :: (putString doubleTypeName ByteArray.empty ::
+        [putU32LE 8 ByteArray.empty, putU64LE v ByteArray.empty]) from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := name)
+    (post := putString doubleTypeName ByteArray.empty :: [putU32LE 8 ByteArray.empty, putU64LE v ByteArray.empty]) hn]
+  dsimp only
+  have h1 : (concatChunks [acc]).size + 4 + name.size =
+      (concatChunks [acc, putString name ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h1]
+  rw [show [acc] ++ (putString name ByteArray.empty :: (putString doubleTypeName ByteArray.empty ::
+      [putU32LE 8 ByteArray.empty, putU64LE v ByteArray.empty])) =
+      [acc, putString name ByteArray.empty] ++ (putString doubleTypeName ByteArray.empty ::
+        [putU32LE 8 ByteArray.empty, putU64LE v ByteArray.empty]) from rfl]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := doubleTypeName)
+    (post := [putU32LE 8 ByteArray.empty, putU64LE v ByteArray.empty]) (by decide)]
+  dsimp only
+  have h2 : (concatChunks [acc, putString name ByteArray.empty]).size + 4 + doubleTypeName.size =
+      (concatChunks [acc, putString name ByteArray.empty, putString doubleTypeName ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h2]
+  rw [MetaKind.ofName_double]
+  dsimp only
+  rw [show concatChunks ([acc, putString name ByteArray.empty] ++
+      (putString doubleTypeName ByteArray.empty :: [putU32LE 8 ByteArray.empty, putU64LE v ByteArray.empty])) =
+      concatChunks ([acc, putString name ByteArray.empty, putString doubleTypeName ByteArray.empty] ++
+        [putU32LE 8 ByteArray.empty, putU64LE v ByteArray.empty] ++ []) from by simp]
+  rw [pv_f64]
+  simp only [Option.map_some]
+  rfl
+
+theorem MetaEntry.parseFrom_emitFrom_vec3i (name : Bytes) (hn : name.size < 2 ^ 32)
+    (x y z : Int32) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom
+        ((⟨name, vec3iTypeName, .vec3i x y z⟩ : MetaEntry).emitFrom acc) acc.size =
+      some (⟨name, vec3iTypeName, .vec3i x y z⟩, out) := by
+  constructor
+  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
+  rw [acc_append_concatChunks]
+  rw [show acc :: (putString name ByteArray.empty :: (putString vec3iTypeName ByteArray.empty ::
+      [putU32LE 12 ByteArray.empty, putI32LE x ByteArray.empty, putI32LE y ByteArray.empty, putI32LE z ByteArray.empty])) =
+      [acc] ++ putString name ByteArray.empty :: (putString vec3iTypeName ByteArray.empty ::
+        [putU32LE 12 ByteArray.empty, putI32LE x ByteArray.empty, putI32LE y ByteArray.empty, putI32LE z ByteArray.empty]) from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := name)
+    (post := putString vec3iTypeName ByteArray.empty :: [putU32LE 12 ByteArray.empty, putI32LE x ByteArray.empty, putI32LE y ByteArray.empty, putI32LE z ByteArray.empty]) hn]
+  dsimp only
+  have h1 : (concatChunks [acc]).size + 4 + name.size =
+      (concatChunks [acc, putString name ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h1]
+  rw [show [acc] ++ (putString name ByteArray.empty :: (putString vec3iTypeName ByteArray.empty ::
+      [putU32LE 12 ByteArray.empty, putI32LE x ByteArray.empty, putI32LE y ByteArray.empty, putI32LE z ByteArray.empty])) =
+      [acc, putString name ByteArray.empty] ++ (putString vec3iTypeName ByteArray.empty ::
+        [putU32LE 12 ByteArray.empty, putI32LE x ByteArray.empty, putI32LE y ByteArray.empty, putI32LE z ByteArray.empty]) from rfl]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := vec3iTypeName)
+    (post := [putU32LE 12 ByteArray.empty, putI32LE x ByteArray.empty, putI32LE y ByteArray.empty, putI32LE z ByteArray.empty]) (by decide)]
+  dsimp only
+  have h2 : (concatChunks [acc, putString name ByteArray.empty]).size + 4 + vec3iTypeName.size =
+      (concatChunks [acc, putString name ByteArray.empty, putString vec3iTypeName ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h2]
+  rw [MetaKind.ofName_vec3i]
+  dsimp only
+  rw [show concatChunks ([acc, putString name ByteArray.empty] ++
+      (putString vec3iTypeName ByteArray.empty :: [putU32LE 12 ByteArray.empty, putI32LE x ByteArray.empty, putI32LE y ByteArray.empty, putI32LE z ByteArray.empty])) =
+      concatChunks ([acc, putString name ByteArray.empty, putString vec3iTypeName ByteArray.empty] ++
+        [putU32LE 12 ByteArray.empty, putI32LE x ByteArray.empty, putI32LE y ByteArray.empty, putI32LE z ByteArray.empty] ++ []) from by simp]
+  rw [pv_vec3i]
+  simp only [Option.map_some]
+  rfl
+
+theorem MetaEntry.parseFrom_emitFrom_vec3f (name : Bytes) (hn : name.size < 2 ^ 32)
+    (x y z : UInt32) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom
+        ((⟨name, vec3sTypeName, .vec3f x y z⟩ : MetaEntry).emitFrom acc) acc.size =
+      some (⟨name, vec3sTypeName, .vec3f x y z⟩, out) := by
+  constructor
+  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
+  rw [acc_append_concatChunks]
+  rw [show acc :: (putString name ByteArray.empty :: (putString vec3sTypeName ByteArray.empty ::
+      [putU32LE 12 ByteArray.empty, putU32LE x ByteArray.empty, putU32LE y ByteArray.empty, putU32LE z ByteArray.empty])) =
+      [acc] ++ putString name ByteArray.empty :: (putString vec3sTypeName ByteArray.empty ::
+        [putU32LE 12 ByteArray.empty, putU32LE x ByteArray.empty, putU32LE y ByteArray.empty, putU32LE z ByteArray.empty]) from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := name)
+    (post := putString vec3sTypeName ByteArray.empty :: [putU32LE 12 ByteArray.empty, putU32LE x ByteArray.empty, putU32LE y ByteArray.empty, putU32LE z ByteArray.empty]) hn]
+  dsimp only
+  have h1 : (concatChunks [acc]).size + 4 + name.size =
+      (concatChunks [acc, putString name ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h1]
+  rw [show [acc] ++ (putString name ByteArray.empty :: (putString vec3sTypeName ByteArray.empty ::
+      [putU32LE 12 ByteArray.empty, putU32LE x ByteArray.empty, putU32LE y ByteArray.empty, putU32LE z ByteArray.empty])) =
+      [acc, putString name ByteArray.empty] ++ (putString vec3sTypeName ByteArray.empty ::
+        [putU32LE 12 ByteArray.empty, putU32LE x ByteArray.empty, putU32LE y ByteArray.empty, putU32LE z ByteArray.empty]) from rfl]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := vec3sTypeName)
+    (post := [putU32LE 12 ByteArray.empty, putU32LE x ByteArray.empty, putU32LE y ByteArray.empty, putU32LE z ByteArray.empty]) (by decide)]
+  dsimp only
+  have h2 : (concatChunks [acc, putString name ByteArray.empty]).size + 4 + vec3sTypeName.size =
+      (concatChunks [acc, putString name ByteArray.empty, putString vec3sTypeName ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h2]
+  rw [MetaKind.ofName_vec3s]
+  dsimp only
+  rw [show concatChunks ([acc, putString name ByteArray.empty] ++
+      (putString vec3sTypeName ByteArray.empty :: [putU32LE 12 ByteArray.empty, putU32LE x ByteArray.empty, putU32LE y ByteArray.empty, putU32LE z ByteArray.empty])) =
+      concatChunks ([acc, putString name ByteArray.empty, putString vec3sTypeName ByteArray.empty] ++
+        [putU32LE 12 ByteArray.empty, putU32LE x ByteArray.empty, putU32LE y ByteArray.empty, putU32LE z ByteArray.empty] ++ []) from by simp]
+  rw [pv_vec3f]
+  simp only [Option.map_some]
+  rfl
+
+theorem MetaEntry.parseFrom_emitFrom_vec3d (name : Bytes) (hn : name.size < 2 ^ 32)
+    (x y z : UInt64) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom
+        ((⟨name, vec3dTypeName, .vec3d x y z⟩ : MetaEntry).emitFrom acc) acc.size =
+      some (⟨name, vec3dTypeName, .vec3d x y z⟩, out) := by
+  constructor
+  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
+  rw [acc_append_concatChunks]
+  rw [show acc :: (putString name ByteArray.empty :: (putString vec3dTypeName ByteArray.empty ::
+      [putU32LE 24 ByteArray.empty, putU64LE x ByteArray.empty, putU64LE y ByteArray.empty, putU64LE z ByteArray.empty])) =
+      [acc] ++ putString name ByteArray.empty :: (putString vec3dTypeName ByteArray.empty ::
+        [putU32LE 24 ByteArray.empty, putU64LE x ByteArray.empty, putU64LE y ByteArray.empty, putU64LE z ByteArray.empty]) from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := name)
+    (post := putString vec3dTypeName ByteArray.empty :: [putU32LE 24 ByteArray.empty, putU64LE x ByteArray.empty, putU64LE y ByteArray.empty, putU64LE z ByteArray.empty]) hn]
+  dsimp only
+  have h1 : (concatChunks [acc]).size + 4 + name.size =
+      (concatChunks [acc, putString name ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h1]
+  rw [show [acc] ++ (putString name ByteArray.empty :: (putString vec3dTypeName ByteArray.empty ::
+      [putU32LE 24 ByteArray.empty, putU64LE x ByteArray.empty, putU64LE y ByteArray.empty, putU64LE z ByteArray.empty])) =
+      [acc, putString name ByteArray.empty] ++ (putString vec3dTypeName ByteArray.empty ::
+        [putU32LE 24 ByteArray.empty, putU64LE x ByteArray.empty, putU64LE y ByteArray.empty, putU64LE z ByteArray.empty]) from rfl]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := vec3dTypeName)
+    (post := [putU32LE 24 ByteArray.empty, putU64LE x ByteArray.empty, putU64LE y ByteArray.empty, putU64LE z ByteArray.empty]) (by decide)]
+  dsimp only
+  have h2 : (concatChunks [acc, putString name ByteArray.empty]).size + 4 + vec3dTypeName.size =
+      (concatChunks [acc, putString name ByteArray.empty, putString vec3dTypeName ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h2]
+  rw [MetaKind.ofName_vec3d]
+  dsimp only
+  rw [show concatChunks ([acc, putString name ByteArray.empty] ++
+      (putString vec3dTypeName ByteArray.empty :: [putU32LE 24 ByteArray.empty, putU64LE x ByteArray.empty, putU64LE y ByteArray.empty, putU64LE z ByteArray.empty])) =
+      concatChunks ([acc, putString name ByteArray.empty, putString vec3dTypeName ByteArray.empty] ++
+        [putU32LE 24 ByteArray.empty, putU64LE x ByteArray.empty, putU64LE y ByteArray.empty, putU64LE z ByteArray.empty] ++ []) from by simp]
+  rw [pv_vec3d]
+  simp only [Option.map_some]
+  rfl
+
+theorem MetaEntry.parseFrom_emitFrom_str (name : Bytes) (hn : name.size < 2 ^ 32)
+    (payload : Bytes) (hp : payload.size < 2 ^ 32) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom
+        ((⟨name, strTypeName, .str payload⟩ : MetaEntry).emitFrom acc) acc.size =
+      some (⟨name, strTypeName, .str payload⟩, out) := by
+  constructor
+  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
+  rw [acc_append_concatChunks]
+  rw [show acc :: (putString name ByteArray.empty :: (putString strTypeName ByteArray.empty ::
+      [putString payload ByteArray.empty])) =
+      [acc] ++ putString name ByteArray.empty :: (putString strTypeName ByteArray.empty ::
+        [putString payload ByteArray.empty]) from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := name)
+    (post := putString strTypeName ByteArray.empty :: [putString payload ByteArray.empty]) hn]
+  dsimp only
+  have h1 : (concatChunks [acc]).size + 4 + name.size =
+      (concatChunks [acc, putString name ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h1]
+  rw [show [acc] ++ (putString name ByteArray.empty :: (putString strTypeName ByteArray.empty ::
+      [putString payload ByteArray.empty])) =
+      [acc, putString name ByteArray.empty] ++ (putString strTypeName ByteArray.empty ::
+        [putString payload ByteArray.empty]) from rfl]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := strTypeName)
+    (post := [putString payload ByteArray.empty]) (by decide)]
+  dsimp only
+  have h2 : (concatChunks [acc, putString name ByteArray.empty]).size + 4 + strTypeName.size =
+      (concatChunks [acc, putString name ByteArray.empty, putString strTypeName ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h2]
+  rw [MetaKind.ofName_str]
+  dsimp only
+  rw [show concatChunks ([acc, putString name ByteArray.empty] ++
+      (putString strTypeName ByteArray.empty :: [putString payload ByteArray.empty])) =
+      concatChunks ([acc, putString name ByteArray.empty, putString strTypeName ByteArray.empty] ++
+        putString payload ByteArray.empty :: []) from by simp]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty,
+      putString strTypeName ByteArray.empty]) (s := payload) (post := []) hp]
+  simp only [Option.map_some]
+  rfl
+
+theorem pv_raw (pre : List Bytes) (s : Bytes) (hb : s.size < 2 ^ 31) (post : List Bytes) :
+    parseRaw (concatChunks (pre ++ [putU32LE (UInt32.ofNat s.size) ByteArray.empty, s] ++ post))
+      (concatChunks pre).size = some (.raw s, (concatChunks pre).size + 4 + s.size) := by
+  unfold parseRaw
+  rw [show concatChunks (pre ++ [putU32LE (UInt32.ofNat s.size) ByteArray.empty, s] ++ post) =
+      concatChunks (pre ++ putU32LE (UInt32.ofNat s.size) ByteArray.empty :: (s :: post)) from by simp]
+  have hsz : getI32LE (concatChunks (pre ++ putU32LE (UInt32.ofNat s.size) ByteArray.empty ::
+        (s :: post))) (concatChunks pre).size = some (UInt32.ofNat s.size).toInt32 := by
+    unfold getI32LE
+    rw [getU32LE_chunk]
+    rfl
+  rw [hsz]
+  dsimp only
+  rw [show ((UInt32.ofNat s.size).toInt32) = Int32.ofNat s.size from by
+    simp [UInt32.toInt32_ofNat']]
+  rw [ite_eq_right (by
+    rw [Int32.lt_iff_toInt_lt, Int32.toInt_ofNat_of_lt hb, Int32.toInt_zero]
+    omega)]
+  rw [Int32.toNatClampNeg_ofNat_of_lt hb]
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putU32LE (UInt32.ofNat s.size) ByteArray.empty])).size from by
+    simp [concatChunks_size]]
+  rw [show concatChunks (pre ++ putU32LE (UInt32.ofNat s.size) ByteArray.empty :: (s :: post)) =
+      concatChunks (pre ++ [putU32LE (UInt32.ofNat s.size) ByteArray.empty] ++ (s :: post)) from by
+    simp]
+  rw [getBytes?_chunk]
+  rw [show (concatChunks (pre ++ [putU32LE (UInt32.ofNat s.size) ByteArray.empty])).size + s.size =
+      (concatChunks pre).size + 4 + s.size from by
+    rw [concatChunks_snoc_size]
+    simp]
+  simp only [Option.map_some]
+
+theorem MetaEntry.parseFrom_emitFrom_raw (name : Bytes) (hn : name.size < 2 ^ 32)
+    (s : Bytes) (hb : s.size < 2 ^ 31) (htn : tn.size < 2 ^ 32)
+    (hunk : MetaKind.ofName? tn = none) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom
+        ((⟨name, tn, .raw s⟩ : MetaEntry).emitFrom acc) acc.size =
+      some (⟨name, tn, .raw s⟩, out) := by
+  constructor
+  unfold MetaEntry.parseFrom MetaEntry.emitFrom MetaEntry.chunks MetaEntry.valueChunks
+  rw [acc_append_concatChunks]
+  rw [show acc :: (putString name ByteArray.empty :: (putString tn ByteArray.empty ::
+      [putU32LE (UInt32.ofNat s.size) ByteArray.empty, s])) =
+      [acc] ++ putString name ByteArray.empty :: (putString tn ByteArray.empty ::
+        [putU32LE (UInt32.ofNat s.size) ByteArray.empty, s]) from rfl]
+  rw [show acc.size = (concatChunks [acc]).size from by simp [concatChunks]]
+  rw [getString?_chunk (pre := [acc]) (s := name)
+    (post := putString tn ByteArray.empty :: [putU32LE (UInt32.ofNat s.size) ByteArray.empty, s]) hn]
+  dsimp only
+  have h1 : (concatChunks [acc]).size + 4 + name.size =
+      (concatChunks [acc, putString name ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h1]
+  rw [show [acc] ++ (putString name ByteArray.empty :: (putString tn ByteArray.empty ::
+      [putU32LE (UInt32.ofNat s.size) ByteArray.empty, s])) =
+      [acc, putString name ByteArray.empty] ++ (putString tn ByteArray.empty ::
+        [putU32LE (UInt32.ofNat s.size) ByteArray.empty, s]) from rfl]
+  rw [getString?_chunk (pre := [acc, putString name ByteArray.empty]) (s := tn)
+    (post := [putU32LE (UInt32.ofNat s.size) ByteArray.empty, s]) htn]
+  dsimp only
+  have h2 : (concatChunks [acc, putString name ByteArray.empty]).size + 4 + tn.size =
+      (concatChunks [acc, putString name ByteArray.empty, putString tn ByteArray.empty]).size := by
+    simp [concatChunks_append_size, concatChunks_cons_size, concatChunks_singleton, concatChunks_nil_size, putU32LE_size, putU64LE_size, putString_size]
+    omega
+  rw [h2]
+  rw [hunk]
+  dsimp only
+  rw [show concatChunks ([acc, putString name ByteArray.empty] ++
+      (putString tn ByteArray.empty :: [putU32LE (UInt32.ofNat s.size) ByteArray.empty, s])) =
+      concatChunks ([acc, putString name ByteArray.empty, putString tn ByteArray.empty] ++
+        [putU32LE (UInt32.ofNat s.size) ByteArray.empty, s] ++ []) from by simp]
+  rw [pv_raw (hb := hb)]
+  simp only [Option.map_some]
+  rfl
+
+
+theorem MetaKind.ofName?_eq_none {tn : Bytes} (h : knownTypeName tn = false)
+    (hs : tn ≠ strTypeName) : MetaKind.ofName? tn = none := by
+  unfold MetaKind.ofName?
+  unfold knownTypeName at h
+  by_cases h1 : tn = strTypeName
+  · subst h1; exact absurd rfl hs
+  · by_cases h2 : tn = boolTypeName
+    · subst h2; simp_all
+    · by_cases h3 : tn = floatTypeName
+      · subst h3; simp_all
+      · by_cases h4 : tn = doubleTypeName
+        · subst h4; simp_all
+        · by_cases h5 : tn = int32TypeName
+          · subst h5; simp_all
+          · by_cases h6 : tn = int64TypeName
+            · subst h6; simp_all
+            · by_cases h7 : tn = vec3iTypeName
+              · subst h7; simp_all
+              · by_cases h8 : tn = vec3sTypeName
+                · subst h8; simp_all
+                · by_cases h9 : tn = vec3dTypeName
+                  · subst h9; simp_all
+                  · simp [h1, h2, h3, h4, h5, h6, h7, h8, h9]
+
+theorem MetaEntry.parseFrom_emitFrom (e : MetaEntry) (hwf : e.WellFormed) (acc : Bytes) :
+    ∃ out, MetaEntry.parseFrom (e.emitFrom acc) acc.size = some (e, out) := by
+  obtain ⟨hty, hsz⟩ := hwf
+  obtain ⟨hn, htn, hsl⟩ := hsz
+  rcases e with ⟨name, tn, val⟩
+  cases val with
+  | «str» s =>
+    simp only [MetaEntry.TypeOK] at hty
+    subst hty
+    exact MetaEntry.parseFrom_emitFrom_str name hn s hsl acc
+  | boolean b =>
+    simp only [MetaEntry.TypeOK] at hty
+    subst hty
+    exact MetaEntry.parseFrom_emitFrom_bool name hn b acc
+  | int32 v =>
+    simp only [MetaEntry.TypeOK] at hty
+    subst hty
+    exact MetaEntry.parseFrom_emitFrom_int32 name hn v acc
+  | int64 v =>
+    simp only [MetaEntry.TypeOK] at hty
+    subst hty
+    exact MetaEntry.parseFrom_emitFrom_int64 name hn v acc
+  | f32 v =>
+    simp only [MetaEntry.TypeOK] at hty
+    subst hty
+    exact MetaEntry.parseFrom_emitFrom_f32 name hn v acc
+  | f64 v =>
+    simp only [MetaEntry.TypeOK] at hty
+    subst hty
+    exact MetaEntry.parseFrom_emitFrom_f64 name hn v acc
+  | vec3i x y z =>
+    simp only [MetaEntry.TypeOK] at hty
+    subst hty
+    exact MetaEntry.parseFrom_emitFrom_vec3i name hn x y z acc
+  | vec3f x y z =>
+    simp only [MetaEntry.TypeOK] at hty
+    subst hty
+    exact MetaEntry.parseFrom_emitFrom_vec3f name hn x y z acc
+  | vec3d x y z =>
+    simp only [MetaEntry.TypeOK] at hty
+    subst hty
+    exact MetaEntry.parseFrom_emitFrom_vec3d name hn x y z acc
+  | raw s =>
+    simp only [MetaEntry.TypeOK] at hty
+    obtain ⟨htyk, hstr⟩ := hty
+    have hsl' : s.size < 2 ^ 31 := hsl
+    exact MetaEntry.parseFrom_emitFrom_raw name hn s hsl' htn
+      (MetaKind.ofName?_eq_none htyk hstr) acc
 
 end Vdb
