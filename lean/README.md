@@ -30,7 +30,7 @@ Landed and building: `Vdb/Bytes.lean`, `Vdb/Value.lean`, `Vdb/Mask.lean`,
 `Vdb/Header.lean`, `Vdb/Chunks.lean`, `Vdb/Meta.lean`, `Vdb/Transform.lean`,
 `Vdb/Layout.lean`. The file header round trip is proven; metadata and
 transform encodings are modelled with their vector-chain round trips; metadata
-entries round trip for every type.
+entries and metadata lists round trip for every type.
 The tree model reads a worked `5_4_3` tree (three lookups checked by `decide`),
 the **general mask-compression round trip is proven** (all seven codes,
 including the background swap and the code-6 full-list path).

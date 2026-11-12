@@ -61,7 +61,9 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `MetaEntry.parseFrom_emitFrom_bool/int32/int64/f32/f64/vec3i/vec3f/vec3d/str/raw` | **per-kind metadata round trips**: name string, type name, value chunks; raw entries carry an `i32` byte count and opaque bytes |
 | `MetaKind.ofName?_eq_none` | an unknown (non-`string`, non-known) type name has no `MetaKind`, which is what selects the raw decoder |
 | `MetaEntry.parseFrom_emitFrom` | **metadata round trip**: every well-formed entry parses back unchanged from the bytes it emits (`TypeOK` selects the kind, `SizesOK` discharges the length hypotheses). The per-kind lemmas also return the exact end offset (`acc.size + sum of chunk sizes`), which the list framing needs. |
-| `MetaList`, `parseEntries`, `MetaList.parseFrom` | metadata-list wire model: `i32` count (C bounds `0..4096`), then that many entries. Emit/parse are total; the round trip is the next target (it needs the entry lemmas generalised over trailing bytes, since each entry is followed by the rest of the list). |
+| `MetaList`, `parseEntries`, `MetaList.parseFrom` | metadata-list wire model: `i32` count (C bounds `0..4096`), then that many entries. |
+| `MetaEntry.parseFromChunks_bool/…/raw`, `MetaEntry.parseFromChunks` | **entry round trip with trailing bytes**: an entry followed by the rest of the list still parses to itself and its end offset. This is what makes the list induction go through. |
+| `parseEntries_emit`, `MetaList.parseFrom_emitFrom` | **metadata-list round trip**: a list of well-formed entries with length ≤ 4096 parses back unchanged (count chunk, then every entry), with the exact end offset. |
 | `Transform.parseFrom_emitFrom` | **transform round trip**: every well-formed transform parses back unchanged; the proof canonicalises the fields the reader does not store and applies the per-kind lemma |
 | `nodeSlot_lt` | an in-box coordinate gives a slot below `2^(3L)` |
 | `exampleTree_lookup_origin/inactive/background` | the worked tree reads the active voxel, an inactive stored value, and the background correctly (checked by `decide`) |
