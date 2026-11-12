@@ -23,12 +23,12 @@ namespace Vdb
 structure GridBody5 where
   header : GridHeader
   tree : TreeData5
-  buffers : List (List LeafBuffer)
+  buffers : List (List (List LeafBuffer))
 
 def GridBody5.Canonical (vsize expected : Nat) (g : GridBody5) : Prop :=
   g.header.Canonical ∧ g.tree.WellFormed vsize expected ∧
-  BufMatch g.tree.root.children g.buffers ∧
-  (∀ bs ∈ g.buffers, ∀ b ∈ bs, b.WellFormed vsize expected)
+  BufMatchRoot g.tree.root.children g.buffers ∧
+  (∀ bss ∈ g.buffers, ∀ bs ∈ bss, ∀ b ∈ bs, b.WellFormed vsize expected)
 
 def GridBody5.chunks (g : GridBody5) : List Bytes :=
   g.header.chunks ++ g.tree.fullChunks g.buffers

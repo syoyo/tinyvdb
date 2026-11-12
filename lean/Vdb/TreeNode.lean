@@ -23,9 +23,11 @@ import Vdb.Topology
 
 set_option linter.unusedSimpArgs false
 set_option maxHeartbeats 800000
+set_option maxRecDepth 10000
 
 set_option linter.unusedSimpArgs false
 set_option maxHeartbeats 800000
+set_option maxRecDepth 10000
 open Vdb
 
 namespace Vdb
@@ -392,15 +394,230 @@ theorem Child5.parseMany_emit (vsize expected : Nat) (decompress : Bytes → Nat
     simp [List.append_assoc]
 
 /-- A root node with tiles and level-5 child subtrees. -/
+structure Node5 where
+  childMask : NodeMask 5
+  valueMask : NodeMask 5
+  record : ValueRecord 5
+  children : List Child5
+
+def Node5.chunks (n : Node5) : List Bytes :=
+  [@NodeMask.serialize 5 n.childMask, @NodeMask.serialize 5 n.valueMask] ++
+    n.record.chunks ++ n.children.flatMap Child5.chunks
+
+def Node5.childCount (n : Node5) : Nat := (setBits n.childMask (nodeSlots 5)).length
+
+def Node5.WellFormed (vsize expected : Nat) (n : Node5) : Prop :=
+  n.childMask < nodeSlots 5 ∧ n.valueMask < nodeSlots 5 ∧
+  n.children.length = n.childCount ∧
+  n.record.WellFormed vsize expected ∧
+  (∀ c ∈ n.children, c.WellFormed vsize expected)
+
+def Node5.parseFrom (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
+    (b : Bytes) (off : Nat) : Option (Node5 × Nat) :=
+  let cm : NodeMask 5 := parseNat b off (nodeMaskBytes 5)
+  let vm : NodeMask 5 := parseNat b (off + nodeMaskBytes 5) (nodeMaskBytes 5)
+  match ValueRecord.parseFrom vsize expected decompress b
+      (off + nodeMaskBytes 5 + nodeMaskBytes 5) with
+  | none => none
+  | some (r, o1) =>
+    match Child5.parseMany vsize expected decompress b (setBits cm (nodeSlots 5)).length o1 with
+    | none => none
+    | some (cs, o2) => some (⟨cm, vm, r, cs⟩, o2)
+
+theorem Node5.parseFrom_emitFrom (n : Node5) (vsize expected : Nat)
+    (decompress : Bytes → Nat → Option Bytes)
+    (h : n.WellFormed vsize expected) (pre post : List Bytes) :
+    Node5.parseFrom vsize expected decompress
+        (concatChunks (pre ++ n.chunks ++ post)) (concatChunks pre).size =
+      some (n, (concatChunks (pre ++ n.chunks)).size) := by
+  obtain ⟨hcm, hvm, hcnt, hrec, hch⟩ := h
+  rcases n with ⟨cm, vm, r, cs⟩
+  simp only [Node5.WellFormed] at hcm hvm hcnt hrec hch
+  unfold Node5.parseFrom Node5.chunks Node5.childCount at *
+  rw [show pre ++ ([@NodeMask.serialize 5 cm, @NodeMask.serialize 5 vm] ++ r.chunks ++
+      cs.flatMap Child5.chunks) ++ post =
+      pre ++ ((@NodeMask.serialize 5 cm) :: ((@NodeMask.serialize 5 vm) ::
+        (r.chunks ++ (cs.flatMap Child5.chunks ++ post)))) from by simp]
+  -- first mask
+  rw [parseNat_chunk_serialize (L := 5) cm hcm pre ((@NodeMask.serialize 5 vm) ::
+    (r.chunks ++ (cs.flatMap Child5.chunks ++ post)))]
+  have e1 : (concatChunks (pre ++ [@NodeMask.serialize 5 cm])).size =
+      (concatChunks pre).size + nodeMaskBytes 5 := by
+    rw [concatChunks_append_map]
+    simp [@NodeMask.serialize_size 5 cm hcm]
+  rw [show (concatChunks pre).size + nodeMaskBytes 5 =
+      (concatChunks (pre ++ [@NodeMask.serialize 5 cm])).size from e1.symm]
+  rw [peel1 pre (@NodeMask.serialize 5 cm) ((@NodeMask.serialize 5 vm) ::
+    (r.chunks ++ (cs.flatMap Child5.chunks ++ post)))]
+  -- second mask
+  rw [parseNat_chunk_serialize (L := 5) vm hvm (pre ++ [@NodeMask.serialize 5 cm])
+    (r.chunks ++ (cs.flatMap Child5.chunks ++ post))]
+  have e2 : (concatChunks ((pre ++ [@NodeMask.serialize 5 cm]) ++
+      [@NodeMask.serialize 5 vm])).size =
+      (concatChunks (pre ++ [@NodeMask.serialize 5 cm])).size + nodeMaskBytes 5 := by
+    rw [concatChunks_snoc_size]
+    rw [@NodeMask.serialize_size 5 vm hvm]
+  rw [show (concatChunks (pre ++ [@NodeMask.serialize 5 cm])).size + nodeMaskBytes 5 =
+      (concatChunks ((pre ++ [@NodeMask.serialize 5 cm]) ++
+        [@NodeMask.serialize 5 vm])).size from e2.symm]
+  rw [peel1 (pre ++ [@NodeMask.serialize 5 cm]) (@NodeMask.serialize 5 vm)
+    (r.chunks ++ (cs.flatMap Child5.chunks ++ post))]
+  -- value record
+  rw [show concatChunks (((pre ++ [@NodeMask.serialize 5 cm]) ++ [@NodeMask.serialize 5 vm]) ++
+      (r.chunks ++ (cs.flatMap Child5.chunks ++ post))) =
+      concatChunks (((pre ++ [@NodeMask.serialize 5 cm]) ++ [@NodeMask.serialize 5 vm]) ++
+        r.chunks ++ (cs.flatMap Child5.chunks ++ post)) from by simp]
+  rw [ValueRecord.parseFrom_emitFrom r vsize expected decompress hrec
+    (((pre ++ [@NodeMask.serialize 5 cm]) ++ [@NodeMask.serialize 5 vm])) (cs.flatMap Child5.chunks ++ post)]
+  dsimp only
+  -- children
+  rw [show (concatChunks (((pre ++ [@NodeMask.serialize 5 cm]) ++ [@NodeMask.serialize 5 vm]) ++
+      r.chunks)).size = (concatChunks ((((pre ++ [@NodeMask.serialize 5 cm]) ++
+      [@NodeMask.serialize 5 vm]) ++ r.chunks))).size from rfl]
+  rw [show concatChunks ((((pre ++ [@NodeMask.serialize 5 cm]) ++ [@NodeMask.serialize 5 vm]) ++
+      r.chunks) ++ (cs.flatMap Child5.chunks ++ post)) =
+      concatChunks ((((pre ++ [@NodeMask.serialize 5 cm]) ++ [@NodeMask.serialize 5 vm]) ++
+        r.chunks) ++ cs.flatMap Child5.chunks ++ post) from by simp]
+  rw [← hcnt]
+  rw [Child5.parseMany_emit vsize expected decompress cs hch (((pre ++ [@NodeMask.serialize 5 cm]) ++
+    [@NodeMask.serialize 5 vm]) ++ r.chunks) post]
+  simp [Node5.chunks, List.append_assoc]
+
+end Vdb
+
+namespace Vdb
+
+/-- A level-5 child slot: its origin and the level-4 subtree. -/
+
+
+structure ChildRoot where
+  ox : Int32
+  oy : Int32
+  oz : Int32
+  node : Node5
+
+def ChildRoot.chunks (c : ChildRoot) : List Bytes :=
+  [putI32LE c.ox ByteArray.empty, putI32LE c.oy ByteArray.empty,
+   putI32LE c.oz ByteArray.empty] ++ c.node.chunks
+
+def ChildRoot.WellFormed (vsize expected : Nat) (c : ChildRoot) : Prop :=
+  c.node.WellFormed vsize expected
+
+def ChildRoot.parseFrom (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
+    (b : Bytes) (off : Nat) : Option (ChildRoot × Nat) :=
+  match getI32LE b off with
+  | none => none
+  | some ox =>
+    match getI32LE b (off + 4) with
+    | none => none
+    | some oy =>
+      match getI32LE b (off + 8) with
+      | none => none
+      | some oz =>
+        match Node5.parseFrom vsize expected decompress b (off + 12) with
+        | none => none
+        | some (n, o) => some (⟨ox, oy, oz, n⟩, o)
+
+theorem ChildRoot.parseFrom_emitFrom (c : ChildRoot) (vsize expected : Nat)
+    (decompress : Bytes → Nat → Option Bytes)
+    (h : c.WellFormed vsize expected) (pre post : List Bytes) :
+    ChildRoot.parseFrom vsize expected decompress
+        (concatChunks (pre ++ c.chunks ++ post)) (concatChunks pre).size =
+      some (c, (concatChunks (pre ++ c.chunks)).size) := by
+  rcases c with ⟨ox, oy, oz, n⟩
+  simp only [ChildRoot.WellFormed] at h
+  unfold ChildRoot.parseFrom ChildRoot.chunks
+  rw [show pre ++ ([putI32LE ox ByteArray.empty, putI32LE oy ByteArray.empty,
+      putI32LE oz ByteArray.empty] ++ n.chunks) ++ post =
+      pre ++ (putI32LE ox ByteArray.empty :: (putI32LE oy ByteArray.empty ::
+        (putI32LE oz ByteArray.empty :: (n.chunks ++ post)))) from by simp]
+  rw [getI32LE_chunk]
+  dsimp only
+  rw [show (concatChunks pre).size + 4 =
+      (concatChunks (pre ++ [putI32LE ox ByteArray.empty])).size from by
+    conv_rhs => rw [concatChunks_snoc_size]
+    simp [putI32LE_size]]
+  rw [peel1 pre (putI32LE ox ByteArray.empty) (putI32LE oy ByteArray.empty ::
+    (putI32LE oz ByteArray.empty :: (n.chunks ++ post)))]
+  rw [getI32LE_chunk]
+  dsimp only
+  rw [show (concatChunks pre).size + 8 =
+      (concatChunks ((pre ++ [putI32LE ox ByteArray.empty]) ++
+        [putI32LE oy ByteArray.empty])).size from by
+    conv_rhs => rw [concatChunks_snoc_size]
+    conv_rhs => rw [concatChunks_snoc_size]
+    simp [putI32LE_size]]
+  rw [peel1 (pre ++ [putI32LE ox ByteArray.empty]) (putI32LE oy ByteArray.empty)
+    (putI32LE oz ByteArray.empty :: (n.chunks ++ post))]
+  rw [getI32LE_chunk]
+  dsimp only
+  rw [show (concatChunks pre).size + 12 =
+      (concatChunks (((pre ++ [putI32LE ox ByteArray.empty]) ++
+        [putI32LE oy ByteArray.empty]) ++ [putI32LE oz ByteArray.empty])).size from by
+    conv_rhs => rw [concatChunks_snoc_size]
+    conv_rhs => rw [concatChunks_snoc_size]
+    conv_rhs => rw [concatChunks_snoc_size]
+    simp [putI32LE_size]]
+  rw [peel1 ((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty])
+    (putI32LE oz ByteArray.empty) (n.chunks ++ post)]
+  rw [show concatChunks ((((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
+      [putI32LE oz ByteArray.empty]) ++ (n.chunks ++ post)) =
+      concatChunks ((((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
+        [putI32LE oz ByteArray.empty]) ++ n.chunks ++ post) from by simp]
+  rw [Node5.parseFrom_emitFrom n vsize expected decompress h
+    (((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
+      [putI32LE oz ByteArray.empty]) post]
+  simp [ChildRoot.chunks, List.append_assoc]
+
+
+
+def ChildRoot.parseMany (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
+    (b : Bytes) : Nat → Nat → Option (List ChildRoot × Nat)
+  | 0, off => some ([], off)
+  | n + 1, off =>
+    match ChildRoot.parseFrom vsize expected decompress b off with
+    | none => none
+    | some (c, o) =>
+      match ChildRoot.parseMany vsize expected decompress b n o with
+      | none => none
+      | some (cs, o') => some (c :: cs, o')
+
+theorem ChildRoot.parseMany_emit (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
+    (cs : List ChildRoot) (hwf : ∀ c ∈ cs, c.WellFormed vsize expected) :
+    ∀ (pre post : List Bytes),
+      ChildRoot.parseMany vsize expected decompress
+        (concatChunks (pre ++ cs.flatMap ChildRoot.chunks ++ post)) cs.length (concatChunks pre).size =
+      some (cs, (concatChunks (pre ++ cs.flatMap ChildRoot.chunks)).size) := by
+  induction cs with
+  | nil =>
+    intro pre post
+    simp [ChildRoot.parseMany, concatChunks]
+  | cons c cs ih =>
+    intro pre post
+    have hc := hwf c (by simp)
+    have hcs : ∀ x ∈ cs, x.WellFormed vsize expected := fun x hx => hwf x (by simp [hx])
+    simp only [List.length_cons, List.flatMap_cons]
+    rw [show pre ++ (c.chunks ++ cs.flatMap ChildRoot.chunks) ++ post =
+        pre ++ c.chunks ++ (cs.flatMap ChildRoot.chunks ++ post) from by simp]
+    rw [ChildRoot.parseMany]
+    rw [ChildRoot.parseFrom_emitFrom c vsize expected decompress hc pre (cs.flatMap ChildRoot.chunks ++ post)]
+    dsimp only
+    rw [show concatChunks (pre ++ c.chunks ++ (cs.flatMap ChildRoot.chunks ++ post)) =
+        concatChunks ((pre ++ c.chunks) ++ cs.flatMap ChildRoot.chunks ++ post) from by simp]
+    rw [ih hcs (pre ++ c.chunks) post]
+    simp [List.append_assoc]
+
+/-- A root node with tiles and level-5 child subtrees. -/
+
 structure RootNode where
   background : Bytes
   tiles : List RootTile
-  children : List Child5
+  children : List ChildRoot
 
 def RootNode.chunks (r : RootNode) : List Bytes :=
   [r.background, putU32LE (UInt32.ofNat r.tiles.length) ByteArray.empty,
    putU32LE (UInt32.ofNat r.children.length) ByteArray.empty] ++
-    r.tiles.flatMap RootTile.chunks ++ r.children.flatMap Child5.chunks
+    r.tiles.flatMap RootTile.chunks ++ r.children.flatMap ChildRoot.chunks
 
 def RootNode.WellFormed (vsize expected : Nat) (r : RootNode) : Prop :=
   r.background.size = vsize ∧
@@ -422,7 +639,7 @@ def RootNode.parseFrom (vsize expected : Nat) (decompress : Bytes → Nat → Op
         match parseTiles vsize b nt.toNat (off + vsize + 8) with
         | none => none
         | some (ts, o1) =>
-          match Child5.parseMany vsize expected decompress b nc.toNat o1 with
+          match ChildRoot.parseMany vsize expected decompress b nc.toNat o1 with
           | none => none
           | some (cs, o2) => some (⟨bg, ts, cs⟩, o2)
 
@@ -440,15 +657,15 @@ theorem RootNode.parseFrom_emitFrom (r : RootNode) (vsize expected : Nat)
   unfold RootNode.parseFrom RootNode.chunks
   rw [show pre ++ ([bg, putU32LE (UInt32.ofNat ts.length) ByteArray.empty,
       putU32LE (UInt32.ofNat cs.length) ByteArray.empty] ++
-      ts.flatMap RootTile.chunks ++ cs.flatMap Child5.chunks) ++ post =
+      ts.flatMap RootTile.chunks ++ cs.flatMap ChildRoot.chunks) ++ post =
       pre ++ (bg :: (putU32LE (UInt32.ofNat ts.length) ByteArray.empty ::
         (putU32LE (UInt32.ofNat cs.length) ByteArray.empty ::
-          (ts.flatMap RootTile.chunks ++ (cs.flatMap Child5.chunks ++ post))))) from by simp]
+          (ts.flatMap RootTile.chunks ++ (cs.flatMap ChildRoot.chunks ++ post))))) from by simp]
   -- background
   rw [show vsize = bg.size from hbg.symm]
   rw [getBytes?_chunk pre bg (putU32LE (UInt32.ofNat ts.length) ByteArray.empty ::
     (putU32LE (UInt32.ofNat cs.length) ByteArray.empty ::
-      (ts.flatMap RootTile.chunks ++ (cs.flatMap Child5.chunks ++ post))))]
+      (ts.flatMap RootTile.chunks ++ (cs.flatMap ChildRoot.chunks ++ post))))]
   dsimp only
   have e1 : (concatChunks (pre ++ [bg])).size = (concatChunks pre).size + bg.size := by
     rw [concatChunks_append_map]
@@ -457,7 +674,7 @@ theorem RootNode.parseFrom_emitFrom (r : RootNode) (vsize expected : Nat)
       (concatChunks (pre ++ [bg])).size from e1.symm]
   rw [peel1 pre bg (putU32LE (UInt32.ofNat ts.length) ByteArray.empty ::
     (putU32LE (UInt32.ofNat cs.length) ByteArray.empty ::
-      (ts.flatMap RootTile.chunks ++ (cs.flatMap Child5.chunks ++ post))))]
+      (ts.flatMap RootTile.chunks ++ (cs.flatMap ChildRoot.chunks ++ post))))]
   -- tile count
   rw [getU32LE_chunk]
   dsimp only
@@ -471,13 +688,13 @@ theorem RootNode.parseFrom_emitFrom (r : RootNode) (vsize expected : Nat)
       from e2.symm]
   rw [peel1 (pre ++ [bg]) (putU32LE (UInt32.ofNat ts.length) ByteArray.empty)
     (putU32LE (UInt32.ofNat cs.length) ByteArray.empty ::
-      (ts.flatMap RootTile.chunks ++ (cs.flatMap Child5.chunks ++ post)))]
+      (ts.flatMap RootTile.chunks ++ (cs.flatMap ChildRoot.chunks ++ post)))]
   -- child count
   rw [getU32LE_chunk]
   dsimp only
   rw [peel1 ((pre ++ [bg]) ++ [putU32LE (UInt32.ofNat ts.length) ByteArray.empty])
     (putU32LE (UInt32.ofNat cs.length) ByteArray.empty)
-    (ts.flatMap RootTile.chunks ++ (cs.flatMap Child5.chunks ++ post))]
+    (ts.flatMap RootTile.chunks ++ (cs.flatMap ChildRoot.chunks ++ post))]
   -- counts to Nat
   rw [show (UInt32.ofNat ts.length).toNat = ts.length from by
     rw [show (UInt32.ofNat ts.length).toNat = ts.length % UInt32.size from rfl]
@@ -496,16 +713,16 @@ theorem RootNode.parseFrom_emitFrom (r : RootNode) (vsize expected : Nat)
         [putU32LE (UInt32.ofNat cs.length) ByteArray.empty])).size from e4.symm]
   rw [show concatChunks ((((pre ++ [bg]) ++ [putU32LE (UInt32.ofNat ts.length) ByteArray.empty]) ++
         [putU32LE (UInt32.ofNat cs.length) ByteArray.empty]) ++
-        (ts.flatMap RootTile.chunks ++ (cs.flatMap Child5.chunks ++ post))) =
+        (ts.flatMap RootTile.chunks ++ (cs.flatMap ChildRoot.chunks ++ post))) =
       concatChunks (((((pre ++ [bg]) ++ [putU32LE (UInt32.ofNat ts.length) ByteArray.empty]) ++
         [putU32LE (UInt32.ofNat cs.length) ByteArray.empty]) ++ ts.flatMap RootTile.chunks) ++
-        (cs.flatMap Child5.chunks ++ post)) from by simp]
+        (cs.flatMap ChildRoot.chunks ++ post)) from by simp]
   have htv' : ∀ t ∈ ts, t.value.size = bg.size := by
     intro t ht
     rw [htv t ht, hbg]
   rw [parseTiles_emit (bg.size) ts htv'
     (((pre ++ [bg]) ++ [putU32LE (UInt32.ofNat ts.length) ByteArray.empty]) ++
-      [putU32LE (UInt32.ofNat cs.length) ByteArray.empty]) (cs.flatMap Child5.chunks ++ post)]
+      [putU32LE (UInt32.ofNat cs.length) ByteArray.empty]) (cs.flatMap ChildRoot.chunks ++ post)]
   dsimp only
   -- children
   have hch' : ∀ c ∈ cs, c.WellFormed bg.size expected := by
@@ -514,11 +731,11 @@ theorem RootNode.parseFrom_emitFrom (r : RootNode) (vsize expected : Nat)
     exact hch c hc
   rw [show concatChunks (((((pre ++ [bg]) ++ [putU32LE (UInt32.ofNat ts.length) ByteArray.empty]) ++
         [putU32LE (UInt32.ofNat cs.length) ByteArray.empty]) ++ ts.flatMap RootTile.chunks) ++
-        (cs.flatMap Child5.chunks ++ post)) =
+        (cs.flatMap ChildRoot.chunks ++ post)) =
       concatChunks ((((((pre ++ [bg]) ++ [putU32LE (UInt32.ofNat ts.length) ByteArray.empty]) ++
         [putU32LE (UInt32.ofNat cs.length) ByteArray.empty]) ++ ts.flatMap RootTile.chunks) ++
-        cs.flatMap Child5.chunks) ++ post) from by simp]
-  rw [Child5.parseMany_emit (bg.size) expected decompress cs hch'
+        cs.flatMap ChildRoot.chunks) ++ post) from by simp]
+  rw [ChildRoot.parseMany_emit (bg.size) expected decompress cs hch'
     ((((pre ++ [bg]) ++ [putU32LE (UInt32.ofNat ts.length) ByteArray.empty]) ++
       [putU32LE (UInt32.ofNat cs.length) ByteArray.empty]) ++ ts.flatMap RootTile.chunks) post]
   simp [RootNode.chunks, List.append_assoc]

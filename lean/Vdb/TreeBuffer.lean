@@ -194,61 +194,138 @@ theorem parseChild5Buffers_emit (vsize expected : Nat) (decompress : Bytes → N
       rw [ih bss hm' hbss (pre ++ Node4.bufferChunks bs) post]
       simp [Child5Buffers.chunks, Node4.bufferChunks, List.append_assoc]
 
-/-- The buffer pass of a root node: the buffers of its child subtrees. -/
-def RootNode.bufferChunks (_r : RootNode) (bss : List (List LeafBuffer)) : List Bytes :=
+/-- The buffer pass of a level-5 node: the buffers of its level-4 children. -/
+def Node5.bufferChunks (bss : List (List LeafBuffer)) : List Bytes :=
   Child5Buffers.chunks bss
+
+def Node5.parseBuffers (n : Node5) (vsize expected : Nat)
+    (decompress : Bytes → Nat → Option Bytes) (b : Bytes) (off : Nat) :
+    Option (List (List LeafBuffer) × Nat) :=
+  parseChild5Buffers vsize expected decompress b n.children off
+
+theorem Node5.parseBuffers_emit (n : Node5) (bss : List (List LeafBuffer))
+    (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
+    (hm : BufMatch n.children bss)
+    (hwf : ∀ bs ∈ bss, ∀ b ∈ bs, b.WellFormed vsize expected)
+    (pre post : List Bytes) :
+    Node5.parseBuffers n vsize expected decompress
+        (concatChunks (pre ++ Node5.bufferChunks bss ++ post)) (concatChunks pre).size =
+      some (bss, (concatChunks (pre ++ Node5.bufferChunks bss)).size) := by
+  unfold Node5.parseBuffers Node5.bufferChunks
+  exact parseChild5Buffers_emit vsize expected decompress n.children bss hm hwf pre post
+
+/-- The buffer chunks of the root's child subtrees. -/
+def RootBuffers.chunks (bsss : List (List (List LeafBuffer))) : List Bytes :=
+  bsss.flatMap Child5Buffers.chunks
+
+/-- The nested buffer lists match the root's child subtrees and their
+    level-4 children. -/
+def BufMatchRoot : List ChildRoot → List (List (List LeafBuffer)) → Prop
+  | [], [] => True
+  | c :: cs, bss :: bsss => BufMatch c.node.children bss ∧ BufMatchRoot cs bsss
+  | _, _ => False
+
+def parseChildRootBuffers (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
+    (b : Bytes) : List ChildRoot → Nat → Option (List (List (List LeafBuffer)) × Nat)
+  | [], off => some ([], off)
+  | c :: cs, off =>
+    match Node5.parseBuffers c.node vsize expected decompress b off with
+    | none => none
+    | some (bss, o) =>
+      match parseChildRootBuffers vsize expected decompress b cs o with
+      | none => none
+      | some (bsss, o') => some (bss :: bsss, o')
+
+theorem parseChildRootBuffers_emit (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
+    (cs : List ChildRoot) (bsss : List (List (List LeafBuffer)))
+    (hm : BufMatchRoot cs bsss)
+    (hwf : ∀ bss ∈ bsss, ∀ bs ∈ bss, ∀ b ∈ bs, b.WellFormed vsize expected) :
+    ∀ (pre post : List Bytes),
+      parseChildRootBuffers vsize expected decompress
+        (concatChunks (pre ++ RootBuffers.chunks bsss ++ post)) cs
+        (concatChunks pre).size =
+      some (bsss, (concatChunks (pre ++ RootBuffers.chunks bsss)).size) := by
+  induction cs generalizing bsss with
+  | nil =>
+    intro pre post
+    cases bsss with
+    | nil => simp [parseChildRootBuffers, concatChunks, RootBuffers.chunks]
+    | cons bss bsss => simp [BufMatchRoot] at hm
+  | cons c cs ih =>
+    cases bsss with
+    | nil => simp [BufMatchRoot] at hm
+    | cons bss bsss =>
+      simp only [BufMatchRoot] at hm
+      obtain ⟨hm1, hm2⟩ := hm
+      intro pre post
+      have hbss : ∀ bs ∈ bss, ∀ b ∈ bs, b.WellFormed vsize expected := hwf bss (by simp)
+      have hbsss : ∀ bss' ∈ bsss, ∀ bs ∈ bss', ∀ b ∈ bs, b.WellFormed vsize expected :=
+        fun bss' hb' => hwf bss' (by simp [hb'])
+      rw [show RootBuffers.chunks (bss :: bsss) =
+          Child5Buffers.chunks bss ++ RootBuffers.chunks bsss from rfl]
+      rw [show pre ++ (Child5Buffers.chunks bss ++ RootBuffers.chunks bsss) ++ post =
+          pre ++ Node5.bufferChunks bss ++ (RootBuffers.chunks bsss ++ post) from by
+        simp [Node5.bufferChunks]]
+      rw [parseChildRootBuffers]
+      rw [Node5.parseBuffers_emit c.node bss vsize expected decompress hm1 hbss pre
+        (RootBuffers.chunks bsss ++ post)]
+      dsimp only
+      rw [show concatChunks (pre ++ Node5.bufferChunks bss ++ (RootBuffers.chunks bsss ++ post)) =
+          concatChunks ((pre ++ Node5.bufferChunks bss) ++ RootBuffers.chunks bsss ++ post) from by simp]
+      rw [ih bsss hm2 hbsss (pre ++ Node5.bufferChunks bss) post]
+      simp [RootBuffers.chunks, Node5.bufferChunks, Child5Buffers.chunks, List.append_assoc]
+
+/-- The buffer pass of a root node: the buffers of its child subtrees. -/
+def RootNode.bufferChunks (_r : RootNode) (bsss : List (List (List LeafBuffer))) : List Bytes :=
+  RootBuffers.chunks bsss
 
 def RootNode.parseBuffers (r : RootNode) (vsize expected : Nat)
     (decompress : Bytes → Nat → Option Bytes) (b : Bytes) (off : Nat) :
-    Option (List (List LeafBuffer) × Nat) :=
-  parseChild5Buffers vsize expected decompress b r.children off
+    Option (List (List (List LeafBuffer)) × Nat) :=
+  parseChildRootBuffers vsize expected decompress b r.children off
 
-theorem RootNode.parseBuffers_emit (r : RootNode) (bss : List (List LeafBuffer))
+theorem RootNode.parseBuffers_emit (r : RootNode) (bsss : List (List (List LeafBuffer)))
     (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
-    (hm : BufMatch r.children bss)
-    (hwf : ∀ bs ∈ bss, ∀ b ∈ bs, b.WellFormed vsize expected)
+    (hm : BufMatchRoot r.children bsss)
+    (hwf : ∀ bss ∈ bsss, ∀ bs ∈ bss, ∀ b ∈ bs, b.WellFormed vsize expected)
     (pre post : List Bytes) :
     RootNode.parseBuffers r vsize expected decompress
-        (concatChunks (pre ++ r.bufferChunks bss ++ post)) (concatChunks pre).size =
-      some (bss, (concatChunks (pre ++ r.bufferChunks bss)).size) := by
+        (concatChunks (pre ++ r.bufferChunks bsss ++ post)) (concatChunks pre).size =
+      some (bsss, (concatChunks (pre ++ r.bufferChunks bsss)).size) := by
   unfold RootNode.parseBuffers RootNode.bufferChunks
-  exact parseChild5Buffers_emit vsize expected decompress r.children bss hm hwf pre post
-
-end Vdb
-
-namespace Vdb
+  exact parseChildRootBuffers_emit vsize expected decompress r.children bsss hm hwf pre post
 
 /-- The tree data as stored: topology chunks followed by the buffer chunks. -/
-def TreeData5.fullChunks (t : TreeData5) (bss : List (List LeafBuffer)) : List Bytes :=
-  t.chunks ++ RootNode.bufferChunks t.root bss
+def TreeData5.fullChunks (t : TreeData5) (bsss : List (List (List LeafBuffer))) : List Bytes :=
+  t.chunks ++ RootNode.bufferChunks t.root bsss
 
 def TreeData5.parseFull (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
-    (b : Bytes) (off : Nat) : Option (TreeData5 × List (List LeafBuffer) × Nat) :=
+    (b : Bytes) (off : Nat) : Option (TreeData5 × List (List (List LeafBuffer)) × Nat) :=
   match TreeData5.parseFrom vsize expected decompress b off with
   | none => none
   | some (t, o) =>
     match RootNode.parseBuffers t.root vsize expected decompress b o with
     | none => none
-    | some (bss, o') => some (t, bss, o')
+    | some (bsss, o') => some (t, bsss, o')
 
-theorem TreeData5.parseFull_emit (t : TreeData5) (bss : List (List LeafBuffer))
+theorem TreeData5.parseFull_emit (t : TreeData5) (bsss : List (List (List LeafBuffer)))
     (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
     (h : t.WellFormed vsize expected)
-    (hm : BufMatch t.root.children bss)
-    (hwf : ∀ bs ∈ bss, ∀ b ∈ bs, b.WellFormed vsize expected)
+    (hm : BufMatchRoot t.root.children bsss)
+    (hwf : ∀ bss ∈ bsss, ∀ bs ∈ bss, ∀ b ∈ bs, b.WellFormed vsize expected)
     (pre post : List Bytes) :
     TreeData5.parseFull vsize expected decompress
-        (concatChunks (pre ++ t.fullChunks bss ++ post)) (concatChunks pre).size =
-      some (t, bss, (concatChunks (pre ++ t.fullChunks bss)).size) := by
+        (concatChunks (pre ++ t.fullChunks bsss ++ post)) (concatChunks pre).size =
+      some (t, bsss, (concatChunks (pre ++ t.fullChunks bsss)).size) := by
   unfold TreeData5.parseFull TreeData5.fullChunks
-  rw [show concatChunks (pre ++ (t.chunks ++ RootNode.bufferChunks t.root bss) ++ post) =
-      concatChunks (pre ++ t.chunks ++ (RootNode.bufferChunks t.root bss ++ post)) from by simp]
+  rw [show concatChunks (pre ++ (t.chunks ++ RootNode.bufferChunks t.root bsss) ++ post) =
+      concatChunks (pre ++ t.chunks ++ (RootNode.bufferChunks t.root bsss ++ post)) from by simp]
   rw [TreeData5.parseFrom_emitFrom t vsize expected decompress h pre
-    (RootNode.bufferChunks t.root bss ++ post)]
+    (RootNode.bufferChunks t.root bsss ++ post)]
   dsimp only
-  rw [show concatChunks (pre ++ t.chunks ++ (RootNode.bufferChunks t.root bss ++ post)) =
-      concatChunks ((pre ++ t.chunks) ++ RootNode.bufferChunks t.root bss ++ post) from by simp]
-  rw [RootNode.parseBuffers_emit t.root bss vsize expected decompress hm hwf (pre ++ t.chunks) post]
+  rw [show concatChunks (pre ++ t.chunks ++ (RootNode.bufferChunks t.root bsss ++ post)) =
+      concatChunks ((pre ++ t.chunks) ++ RootNode.bufferChunks t.root bsss ++ post) from by simp]
+  rw [RootNode.parseBuffers_emit t.root bsss vsize expected decompress hm hwf (pre ++ t.chunks) post]
   simp [TreeData5.fullChunks, List.append_assoc]
 
 end Vdb
