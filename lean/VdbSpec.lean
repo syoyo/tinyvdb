@@ -14,8 +14,10 @@ import Vdb.Layout
 import Vdb.Tree
 import Vdb.MaskCompress
 import Vdb.Half
+import Vdb.Chunk
 import Vdb.Chunks
 import Vdb.Meta
 import Vdb.Transform
 import Vdb.GridDescriptor
+import Vdb.GridHeader
 import Vdb.Header
