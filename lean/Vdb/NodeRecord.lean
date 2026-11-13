@@ -667,4 +667,46 @@ theorem ValueRecord.parseM_emitFrom {L : Nat} (r : ValueRecord L) (vsize expecte
     simp only [ValueRecord.chunksM, hz, ValueRecord.parseM, hz']
     exact ValueRecord.parseFrom_emitFrom r vsize expected decompress ⟨hcls, hsize, hbound⟩ pre post
 
+
+/-! ### Raw (uncompressed) record framing (F14) -/
+
+/-- Raw-framed record chunks (no BLOSC/ZIP): the payload follows the extras
+    directly, with no size word. -/
+def ValueRecord.chunksRaw {L : Nat} (r : ValueRecord L) : List Bytes :=
+  r.chunksNoChunk ++ [r.stored]
+
+/-- The raw-framed record parser: extras, then exactly `expected` payload
+    bytes. -/
+def ValueRecord.parseRaw {L : Nat} (vsize expected : Nat) (b : Bytes) (off : Nat) :
+    Option (ValueRecord L × Nat) :=
+  match ValueRecord.parseNoChunk vsize b off with
+  | none => none
+  | some (r, o1) =>
+    (getBytes? b o1 expected).map fun d =>
+      (⟨r.code, r.val0, r.val1, r.selection, d⟩, o1 + expected)
+
+theorem ValueRecord.parseRaw_emit {L : Nat} (r : ValueRecord L) (vsize expected : Nat)
+    (h : r.WellFormed vsize expected) (pre post : List Bytes) :
+    ValueRecord.parseRaw vsize expected
+        (concatChunks (pre ++ r.chunksRaw ++ post)) (concatChunks pre).size =
+      some (r, (concatChunks (pre ++ r.chunksRaw)).size) := by
+  obtain ⟨hcls, hsize, hbound⟩ := h
+  let r0 : ValueRecord L := ⟨r.code, r.val0, r.val1, r.selection, ByteArray.empty⟩
+  have h0 : r0.WellFormed vsize 0 := ⟨hcls, rfl, by norm_num⟩
+  have hch : r.chunksRaw = r0.chunksNoChunk ++ [r.stored] := rfl
+  unfold ValueRecord.parseRaw
+  rw [show concatChunks (pre ++ r.chunksRaw ++ post) =
+      concatChunks (pre ++ r0.chunksNoChunk ++ (r.stored :: post)) from by
+    rw [hch]; simp]
+  rw [ValueRecord.parseNoChunk_emit r0 vsize h0 rfl pre (r.stored :: post)]
+  dsimp only
+  rw [show expected = r.stored.size from hsize.symm]
+  rw [getBytes?_chunk_size (pre ++ r0.chunksNoChunk) r.stored post (h := rfl)]
+  rw [show (concatChunks (pre ++ r.chunksRaw)).size =
+      (concatChunks (pre ++ r0.chunksNoChunk)).size + r.stored.size from by
+    rw [show pre ++ r.chunksRaw = (pre ++ r0.chunksNoChunk) ++ [r.stored] from by
+      rw [hch]; simp]
+    rw [concatChunks_snoc_size]]
+  rfl
+
 end Vdb

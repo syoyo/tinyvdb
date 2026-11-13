@@ -47,7 +47,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `MaskCode.flag`, `MaskCode.ofNat?_flag` | the wire code byte and its decoder inverse |
 | `ValueRecord.parseFrom_emitFrom` | **mask-compression record round trip**: for every code 0–6 the record (code byte, optional `val0`/`val1`, optional selection mask, raw value chunk) parses back exactly, with the exact end offset |
 | `Vdb/ValueCount.lean` | the stored-value count rule (`tvdb__read_mask_values`): every slot for the all-values code / non-mask-compressed grids / pre-222 files, the value mask's active count otherwise (`storedCount`, `storedCount_le`), and `ValueRecord.parseFromCount` which derives the value-chunk size from the code instead of an external `expected`. |
-| `Vdb/TreeHalf.lean` | the count-derived tree cascade with the F6 half mode threaded through: `chunksH`/`bufferChunksH`/`fullChunksH`, and half-aware `parseFromCount`/`parseManyCount`/buffer parsers for `Node4/Node5/Child5/ChildRoot/RootNode/TreeData5/LeafBuffer`. The value record is `ValueRecord.parseFromCountM`/`chunksM`, and every topology and buffer round trip is re-proven for arbitrary `half` (`parseFromCountH_emit`, `parseManyCountH_emit`, `parseBuffersCountH_emit`, `parseFullCountH_emit`). |
+| `Vdb/TreeHalf.lean` | the count-derived tree cascade with the F6 half mode and the F14 framing mode threaded through: `chunksH`/`bufferChunksH`/`fullChunksH`, and half/framing-aware `parseFromCount`/`parseManyCount`/buffer parsers for `Node4/Node5/Child5/ChildRoot/RootNode/TreeData5/LeafBuffer`. The value record is the framing-dispatching `ValueRecord.parseFromCountF`/`chunksF`, and every topology and buffer round trip is re-proven for arbitrary `half` and framing (`parseFromCountH_emit`, `parseManyCountH_emit`, `parseBuffersCountH_emit`, `parseFullCountH_emit`). |
 | `Vdb/TreeDerived.lean` | the tree parsers with the value-chunk size derived from the mask/code (`storedCount`): `Node4/Node5/Child5/ChildRoot/RootNode/TreeData5/GridBody5` and the buffer pass (`LeafBuffer`, `parseLeafBuffers`, node/root buffers) count variants, all with their round trips. `WellFormedCount`/`CanonicalCount` carry `record.stored.size = storedCount … * elemSize`, so `GridBody5.parseFromCount` needs only `elemSize`, the active-mask flag and the file version. |
 | `Vdb/GlobalSurface.lean` | global dual-surface assembly: `IxQuad` (a quad by vertex *indices*), `ixSurfaceEdges`, `IxWatertight` (every directed index edge appears with its reverse) and **`watertight_of_ix`** — a combinatorially watertight index mesh is watertight under *any* vertex placement (`IxQuad.mem_edges_of_mem_map_edges`/`mem_map_edges_of_mem_edges` handle the collisions). `boxFaces` is the six outward faces of the unit box, `boxFaces_ixWatertight` verifies it exhaustively over the 64 corner pairs, and `watertight_box` places it anywhere. The DMC assembly therefore reduces to establishing the primal edge/face pairing. |
 | `Vdb/Reconstruct.lean` | planar reconstruction (the composition half of the operators) over exact `Q3 = Fin 3 → ℚ`: `dot`, `planeF` (the rational plane field), `dot_lerpQ`/`planeF_lerpQ` (affine under edge interpolation), **`planeF_crossing`** and **`planeF_cube_crossings`** (a marching-cubes crossing of a plane sampled at the cube corners lands exactly on the plane), `triWeight` with `triWeight_sum`/`triWeight_moment`, and **`trilinear_planeF`**/**`trilinear_planeF_offset`** (trilinear interpolation of the corner values reproduces the plane field at every point of any cube). **`plane_level_set_rebuild`** bundles both: for a grid sampling a linear field, both halves of the rebuild composition are exact. The dual-vertex bridge: `fin3_sum_list_sum`, `dot_avgQ` (the inner product commutes with the average) and `planeF_avgQ` (a nonempty list of plane points averages onto the plane), giving **`planeF_dualVertex`** — the DMC dual vertex of a sampled plane lies exactly on the plane. |
@@ -170,14 +170,13 @@ the chunk framing (the `i64` size word), which is part of the model. Raw chunks
 a wrong value-count rule is caught.
 
 Coverage: **all 13** files are checked (root tiles/children, internal/leaf
-counts, active voxels, exact end offset). That includes all six half grids
-their `read_count == 0` nodes omit the chunk header (F6): the harness calls the
-proven half cascade `TreeData5.parseFullCountH` (dragon, utahteapot) and, for
-grids without BLOSC/ZIP compression (F14: raw payloads have no size word), the
-`halfParse` walk built on the proven `ValueRecord.parseFromCountM`/`parseNoChunk`
-(cube, bunny, smoke). `Tree_ptdataidx32_5_4_3` is parsed at the topology level
-only, mirroring the C reader, which skips point-data buffers and jumps to the
-grid's end marker; its node counts and leaf masks still match.
+counts, active voxels, exact end offset). All six half grids go through the
+proven `TreeData5.parseFullCountH`, in the grid's framing mode: BLOSC/ZIP for
+dragon and utahteapot, raw payloads (F14) for cube, bunny and smoke. The
+`mode=proven-half framed=...` line records which combination was used.
+`Tree_ptdataidx32_5_4_3` is parsed at the topology level only, mirroring the C
+reader, which skips point-data buffers and jumps to the grid's end marker; its
+node counts and leaf masks still match.
 
 The model fixes that this harness forced: internal-node children carry **no**
 serialized origins (only the root's children do), and half grids omit the value
@@ -222,4 +221,4 @@ Each is confirmed or refuted by the corresponding Lean model, then fixed in C
 | F11 | dense mesh→SDF sign uses the closest face normal (not pseudonormals) |
 | F12 | dense CSG silences dimension/origin/voxel-size mismatches |
 | F13 | `tvdb_gradient` boundary divides the clamped difference by `2h` |
-| F14 | **confirmed** by the tree differential harness: when the grid's compression flags contain neither BLOSC nor ZIP (`compression=0/2`), value buffers are raw payloads with **no** `i64` size word (`read_and_decompress`'s no-compression branch). `Vdb/Chunk.lean` models only the compressed framing; the harness's raw-record path (`skipRawRecord`, built on `parseNoChunk`) handles it, but the library model has no raw-framing record. |
+| F14 | **confirmed and modelled**: when the grid's compression flags contain neither BLOSC nor ZIP (`compression=0/2`), value buffers are raw payloads with **no** `i64` size word (`read_and_decompress`'s no-compression branch). `ValueRecord.chunksRaw`/`parseRaw`/`parseRaw_emit` model the raw framing (the round trip composes with the proven `parseNoChunk_emit`), and `chunksF`/`parseF`/`parseFromCountF` dispatch between the two framings with a proven round trip. |

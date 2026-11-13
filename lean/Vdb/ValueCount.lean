@@ -129,4 +129,67 @@ theorem ValueRecord.parseFromCountM_emit {L : Nat} (r : ValueRecord L)
   dsimp only
   exact ValueRecord.parseM_emitFrom r vsize (countOf r.code * elemSize) decompress half h pre post
 
+
+/-! ### Framing dispatch (BLOSC/ZIP vs raw) -/
+
+/-- Mode-aware record emit: BLOSC/ZIP framing (with the half/zero chunk rule)
+    or raw framing (payload directly, no size word). -/
+def ValueRecord.chunksF {L : Nat} (framed : Bool) (half : Bool) (r : ValueRecord L) : List Bytes :=
+  if framed then r.chunksM half else r.chunksRaw
+
+def ValueRecord.parseF {L : Nat} (framed : Bool) (vsize expected : Nat)
+    (decompress : Bytes → Nat → Option Bytes) (half : Bool) (b : Bytes) (off : Nat) :
+    Option (ValueRecord L × Nat) :=
+  if framed then ValueRecord.parseM vsize expected decompress half b off
+  else ValueRecord.parseRaw vsize expected b off
+
+theorem ValueRecord.getU8?_chunksF {L : Nat} (r : ValueRecord L) (framed half : Bool)
+    (pre post : List Bytes) :
+    getU8? (concatChunks (pre ++ r.chunksF framed half ++ post)) (concatChunks pre).size =
+      some r.code.flag := by
+  unfold ValueRecord.chunksF
+  split
+  · exact ValueRecord.getU8?_chunksM r half pre post
+  · unfold ValueRecord.chunksRaw
+    rw [show pre ++ (r.chunksNoChunk ++ [r.stored]) ++ post =
+        pre ++ r.chunksNoChunk ++ (r.stored :: post) from by simp]
+    unfold ValueRecord.chunksNoChunk
+    rw [show pre ++ (putU8 r.code.flag ByteArray.empty :: r.extras) ++ (r.stored :: post) =
+        pre ++ (putU8 r.code.flag ByteArray.empty :: (r.extras ++ (r.stored :: post))) from by simp]
+    exact getU8?_chunk pre _ _
+
+def ValueRecord.parseFromCountF {L : Nat} (framed : Bool := true)
+    (vsize elemSize : Nat) (countOf : MaskCode → Nat)
+    (decompress : Bytes → Nat → Option Bytes) (b : Bytes) (off : Nat) (half : Bool := false) :
+    Option (ValueRecord L × Nat) :=
+  match getU8? b off with
+  | none => none
+  | some fl =>
+    match MaskCode.ofNat? fl.toNat with
+    | none => none
+    | some code =>
+      ValueRecord.parseF framed vsize (countOf code * elemSize) decompress half b off
+
+theorem ValueRecord.parseFromCountF_emit {L : Nat} (r : ValueRecord L)
+    (vsize elemSize : Nat) (countOf : MaskCode → Nat)
+    (decompress : Bytes → Nat → Option Bytes)
+    (h : r.WellFormed vsize (countOf r.code * elemSize))
+    (pre post : List Bytes) (framed : Bool := true) (half : Bool := false) :
+    ValueRecord.parseFromCountF framed vsize elemSize countOf decompress
+        (concatChunks (pre ++ r.chunksF framed half ++ post)) (concatChunks pre).size
+        (half := half) =
+      some (r, (concatChunks (pre ++ r.chunksF framed half)).size) := by
+  unfold ValueRecord.parseFromCountF
+  rw [ValueRecord.getU8?_chunksF]
+  dsimp only
+  rw [MaskCode.ofNat?_flag]
+  dsimp only
+  by_cases hf : framed = true
+  · simp only [ValueRecord.parseF, ValueRecord.chunksF, hf, ite_true]
+    exact ValueRecord.parseM_emitFrom r vsize (countOf r.code * elemSize) decompress half h pre post
+  · have hf' : framed = false := by
+      cases framed <;> simp_all
+    simp only [ValueRecord.parseF, ValueRecord.chunksF, hf', ite_false]
+    exact ValueRecord.parseRaw_emit r vsize (countOf r.code * elemSize) h pre post
+
 end Vdb

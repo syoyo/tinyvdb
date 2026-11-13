@@ -65,102 +65,11 @@ def treeStats (t : TreeData5) : TreeStats :=
     and the buffer order) does not depend on the decoded bytes. -/
 def skipDecompress : Bytes → Nat → Option Bytes := fun _ _ => some ByteArray.empty
 
-/-- Skip an *uncompressed* record payload: the extras (flag, inactive values,
-    selection mask) followed by `expected` raw bytes with no chunk header
-    (`read_and_decompress`'s no-compression branch). The extras parser is the
-    proven `ValueRecord.parseNoChunk`. -/
-def skipRawRecord (L : Nat) (vsize expected : Nat) (b : Bytes) (off : Nat) : Option Nat := do
-  let (_, o1) ← ValueRecord.parseNoChunk (L := L) vsize b off
-  let _ ← getBytes? b o1 expected
-  pure (o1 + expected)
-
-/-- The per-node compression code byte. -/
-def codeAt (b : Bytes) (off : Nat) : MaskCode :=
-  (MaskCode.ofNat? (readByteOrZero b off 0)).getD .noMaskAndAllVals
-
 /-- `log2dim` of the tree level (0 is the root). -/
 def log2dimOfLevel : Nat → Nat
   | 1 => 5
   | 2 => 4
   | _ => 3
-
-/- Half-grid structural pass (F6). The `read_count == 0` nodes of a half grid
-    carry no chunk header, which the proven tree cascade does not branch on
-    yet; this walk mirrors the layout but delegates every value record to the
-    proven `ValueRecord.parseFromCountM`. Returns the node counts, the leaf
-    value masks in depth-first order, and the end offset. -/
-mutual
-partial def halfTopo (vsize elemSize : Nat) (compressed : Bool) (ver : Nat) (framed : Bool)
-    (b : Bytes) (level : Nat) (off : Nat) :
-    Option (TreeStats × List Nat × Nat) := do
-  let L := log2dimOfLevel level
-  let mb := nodeMaskBytes L
-  let cm := parseNat b off mb
-  if level = 3 then
-    pure (⟨0, 1, (setBits cm (nodeSlots 3)).length⟩, [cm], off + mb)
-  else
-    let vm := parseNat b (off + mb) mb
-    let countOf := fun code => storedCount (L := L) compressed ver vm code
-    let o1 ←
-      if framed then do
-        let (_, o) ← ValueRecord.parseFromCountM (L := L) vsize elemSize countOf
-          skipDecompress b (off + mb + mb) (half := true)
-        pure o
-      else
-        skipRawRecord L vsize (countOf (codeAt b (off + mb + mb)) * elemSize)
-          b (off + mb + mb)
-    let nc := (setBits cm (nodeSlots L)).length
-    let (s, ms, o2) ← halfChildren vsize elemSize compressed ver framed b (level + 1) nc o1
-    pure ({ s with internal := s.internal + 1 }, ms, o2)
-
-partial def halfChildren (vsize elemSize : Nat) (compressed : Bool) (ver : Nat) (framed : Bool)
-    (b : Bytes) (level : Nat) : Nat → Nat → Option (TreeStats × List Nat × Nat)
-  | 0, off => some (TreeStats.zero, [], off)
-  | k + 1, off => do
-    let (s, ms, o1) ← halfTopo vsize elemSize compressed ver framed b level off
-    let (s', ms', o2) ← halfChildren vsize elemSize compressed ver framed b level k o1
-    pure (s.add s', ms ++ ms', o2)
-end
-
-/-- The root's children carry explicit `i32 x3` origins. -/
-partial def halfRoots (vsize elemSize : Nat) (compressed : Bool) (ver : Nat) (framed : Bool)
-    (b : Bytes) : Nat → Nat → Option (TreeStats × List Nat × Nat)
-  | 0, off => some (TreeStats.zero, [], off)
-  | k + 1, off => do
-    let (s, ms, o1) ← halfTopo vsize elemSize compressed ver framed b 1 (off + 12)
-    let (s', ms', o2) ← halfRoots vsize elemSize compressed ver framed b k o1
-    pure (s.add s', ms ++ ms', o2)
-
-/-- Consume the leaf buffers: value mask, then the (possibly chunk-less)
-    mask-compression record. -/
-def halfBuffers (vsize elemSize : Nat) (compressed : Bool) (ver : Nat) (framed : Bool)
-    (b : Bytes) (masks : List Nat) (off : Nat) : Option Nat :=
-  match masks with
-  | [] => some off
-  | vm :: rest => do
-    let countOf := fun code => storedCount (L := 3) compressed ver vm code
-    let o1 ←
-      if framed then do
-        let (_, o) ← ValueRecord.parseFromCountM (L := 3) vsize elemSize countOf
-          skipDecompress b (off + nodeMaskBytes 3) (half := true)
-        pure o
-      else
-        skipRawRecord 3 vsize
-          (countOf (codeAt b (off + nodeMaskBytes 3)) * elemSize)
-          b (off + nodeMaskBytes 3)
-    halfBuffers vsize elemSize compressed ver framed b rest o1
-
-/-- Parse the half-grid tree and check it ends at `endOff`. -/
-def halfParse (vsize elemSize : Nat) (compressed : Bool) (ver : Nat) (framed : Bool)
-    (b : Bytes) (ho endOff : Nat) : Option (TreeStats × Bool) := do
-  let _bc ← getI32LE b ho
-  let bgOff := ho + 4
-  let nt ← getU32LE b (bgOff + vsize)
-  let nc ← getU32LE b (bgOff + vsize + 4)
-  let o := bgOff + vsize + 8 + nt.toNat * (12 + vsize + 1)
-  let (s, ms, oTop) ← halfRoots vsize elemSize compressed ver framed b nc.toNat o
-  let oEnd ← halfBuffers vsize elemSize compressed ver framed b ms oTop
-  pure (s, oEnd == endOff)
 
 /-- Root tile count, for the half-grid printout. -/
 def treeTiles (b : Bytes) (ho vsize : Nat) : Nat :=
@@ -199,27 +108,18 @@ def printTree (b : Bytes) (ver : UInt32) (gd : GridDescriptor) : IO Unit := do
           IO.println s!"  tree end-ok={decide (topEnd <= gd.endOffset.toNat)}"
       else if half then
         let framed := (h.compressionFlags &&& 5) != 0
-        if framed then
-          -- F6: the proven half-aware count cascade (BLOSC/ZIP framing).
-          match TreeData5.parseFullCountH true vsize elemSize compressed ver.toNat
-              skipDecompress b ho with
-          | none => IO.println s!"  tree invalid (half cascade, vsize={vsize} elem={elemSize})"
-          | some (t, _, endOff) =>
-            let s := treeStats t
-            IO.println s!"  tree mode=proven-half"
-            IO.println s!"  tree tiles={t.root.tiles.length} children={t.root.children.length}"
-            IO.println s!"  tree nodes internal={s.internal} leaf={s.leaves} active={s.active}"
-            IO.println s!"  tree end={endOff} expected={gd.endOffset.toNat} \
-              ok={endOff == gd.endOffset.toNat}"
-        else
-          -- F14: grids without BLOSC/ZIP store raw payloads (no size word), which
-          -- the proven cascade does not model yet; walk the layout instead.
-          match halfParse vsize elemSize compressed ver.toNat framed b ho gd.endOffset.toNat with
-          | none => IO.println s!"  tree invalid (half walk, vsize={vsize} elem={elemSize})"
-          | some (s, ok) =>
-            IO.println s!"  tree tiles={treeTiles b ho vsize} children={treeChildren b ho vsize}"
-            IO.println s!"  tree nodes internal={s.internal} leaf={s.leaves} active={s.active}"
-            IO.println s!"  tree end-ok={ok}"
+        -- F6/F14: the proven half-aware count cascade, in the grid's framing
+        -- mode (BLOSC/ZIP chunks vs raw payloads).
+        match TreeData5.parseFullCountH true framed vsize elemSize compressed ver.toNat
+            skipDecompress b ho with
+        | none => IO.println s!"  tree invalid (half cascade, vsize={vsize} elem={elemSize})"
+        | some (t, _, endOff) =>
+          let s := treeStats t
+          IO.println s!"  tree mode=proven-half framed={framed}"
+          IO.println s!"  tree tiles={t.root.tiles.length} children={t.root.children.length}"
+          IO.println s!"  tree nodes internal={s.internal} leaf={s.leaves} active={s.active}"
+          IO.println s!"  tree end={endOff} expected={gd.endOffset.toNat} \
+            ok={endOff == gd.endOffset.toNat}"
       else
         match TreeData5.parseFullCount vsize elemSize compressed ver.toNat
             skipDecompress b ho with
