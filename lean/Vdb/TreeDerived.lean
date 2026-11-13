@@ -112,18 +112,9 @@ def Child5.WellFormedCount (vsize elemSize : Nat) (compressed : Bool) (ver : Nat
 
 def Child5.parseFromCount (vsize elemSize : Nat) (compressed : Bool) (ver : Nat)
     (decompress : Bytes → Nat → Option Bytes) (b : Bytes) (off : Nat) : Option (Child5 × Nat) :=
-  match getI32LE b off with
+  match Node4.parseFromCount vsize elemSize compressed ver decompress b off with
   | none => none
-  | some ox =>
-    match getI32LE b (off + 4) with
-    | none => none
-    | some oy =>
-      match getI32LE b (off + 8) with
-      | none => none
-      | some oz =>
-        match Node4.parseFromCount vsize elemSize compressed ver decompress b (off + 12) with
-        | none => none
-        | some (n, o) => some (⟨ox, oy, oz, n⟩, o)
+  | some (n, o) => some (⟨n⟩, o)
 
 theorem Child5.parseFromCount_emit (c : Child5) (vsize elemSize : Nat) (compressed : Bool) (ver : Nat)
     (decompress : Bytes → Nat → Option Bytes)
@@ -131,50 +122,10 @@ theorem Child5.parseFromCount_emit (c : Child5) (vsize elemSize : Nat) (compress
     Child5.parseFromCount vsize elemSize compressed ver decompress
         (concatChunks (pre ++ c.chunks ++ post)) (concatChunks pre).size =
       some (c, (concatChunks (pre ++ c.chunks)).size) := by
-  rcases c with ⟨ox, oy, oz, n⟩
+  rcases c with ⟨n⟩
   simp only [Child5.WellFormedCount] at h
   unfold Child5.parseFromCount Child5.chunks
-  rw [show pre ++ ([putI32LE ox ByteArray.empty, putI32LE oy ByteArray.empty,
-      putI32LE oz ByteArray.empty] ++ n.chunks) ++ post =
-      pre ++ (putI32LE ox ByteArray.empty :: (putI32LE oy ByteArray.empty ::
-        (putI32LE oz ByteArray.empty :: (n.chunks ++ post)))) from by simp]
-  rw [getI32LE_chunk]
-  dsimp only
-  rw [show (concatChunks pre).size + 4 =
-      (concatChunks (pre ++ [putI32LE ox ByteArray.empty])).size from by
-    conv_rhs => rw [concatChunks_snoc_size]
-    simp [putI32LE_size]]
-  rw [peel1 pre (putI32LE ox ByteArray.empty) (putI32LE oy ByteArray.empty ::
-    (putI32LE oz ByteArray.empty :: (n.chunks ++ post)))]
-  rw [getI32LE_chunk]
-  dsimp only
-  rw [show (concatChunks pre).size + 8 =
-      (concatChunks ((pre ++ [putI32LE ox ByteArray.empty]) ++
-        [putI32LE oy ByteArray.empty])).size from by
-    conv_rhs => rw [concatChunks_snoc_size]
-    conv_rhs => rw [concatChunks_snoc_size]
-    simp [putI32LE_size]]
-  rw [peel1 (pre ++ [putI32LE ox ByteArray.empty]) (putI32LE oy ByteArray.empty)
-    (putI32LE oz ByteArray.empty :: (n.chunks ++ post))]
-  rw [getI32LE_chunk]
-  dsimp only
-  rw [show (concatChunks pre).size + 12 =
-      (concatChunks (((pre ++ [putI32LE ox ByteArray.empty]) ++
-        [putI32LE oy ByteArray.empty]) ++ [putI32LE oz ByteArray.empty])).size from by
-    conv_rhs => rw [concatChunks_snoc_size]
-    conv_rhs => rw [concatChunks_snoc_size]
-    conv_rhs => rw [concatChunks_snoc_size]
-    simp [putI32LE_size]]
-  rw [peel1 ((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty])
-    (putI32LE oz ByteArray.empty) (n.chunks ++ post)]
-  rw [show concatChunks ((((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
-      [putI32LE oz ByteArray.empty]) ++ (n.chunks ++ post)) =
-      concatChunks ((((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
-        [putI32LE oz ByteArray.empty]) ++ n.chunks ++ post) from by simp]
-  rw [Node4.parseFromCount_emit n vsize elemSize compressed ver decompress h
-    (((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
-      [putI32LE oz ByteArray.empty]) post]
-  simp [Child5.chunks, List.append_assoc]
+  rw [Node4.parseFromCount_emit n vsize elemSize compressed ver decompress h pre post]
 
 def Child5.parseManyCount (vsize elemSize : Nat) (compressed : Bool) (ver : Nat)
     (decompress : Bytes → Nat → Option Bytes) (b : Bytes) : Nat → Nat → Option (List Child5 × Nat)

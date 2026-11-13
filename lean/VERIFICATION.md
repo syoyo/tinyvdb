@@ -34,11 +34,11 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `LeafBuffer.parseFrom_emitFrom`, `parseLeafBuffers_emit` | leaf-buffer and leaf-buffer-list round trips |
 | `Node4.parseBuffers_emit`, `parseChild5Buffers_emit`, `Node5.parseBuffers_emit`, `parseChildRootBuffers_emit`, `RootNode.parseBuffers_emit` | level-4 node, level-5 node, root child list and root buffer round trips (`BufMatch`/`BufMatchRoot` tie the nested list lengths to the topology child counts) |
 | `TreeData5.parseFull_emit` | **full tree payload round trip**: topology parse followed by the buffer parse at its end offset; the grid body's tree region is `TreeData5.fullChunks` |
-| `Vdb/TreeNode.lean` | node topology for the standard `Tree_float_5_4_3` layout: `LeafNode` (log2dim 3, value mask), `Child4` (origin + leaf), `Node4` (log2dim 4: masks + `ValueRecord` + leaves), `Child5` (origin + `Node4`), `Node5` (log2dim 5: masks + `ValueRecord` + `Child5`s), `ChildRoot` (origin + `Node5`) and `RootNode` (tiles + `ChildRoot`s). The value-chunk size is a parameter (it depends on compression flags/value size/active count). |
-| `LeafNode.parseFrom_emitFrom`, `Child4.parseFrom_emitFrom` | leaf and level-4 child-slot round trips (origin `i32 x3` + leaf) |
+| `Vdb/TreeNode.lean` | node topology for the standard `Tree_float_5_4_3` layout: `LeafNode` (log2dim 3, value mask), `Child4` (leaf slot, **no serialized origin** — the origin is implicit in the child-mask slot index), `Node4` (log2dim 4: masks + `ValueRecord` + leaves), `Child5` (`Node4` slot, **no serialized origin**), `Node5` (log2dim 5: masks + `ValueRecord` + `Child5`s), `ChildRoot` (origin + `Node5`) and `RootNode` (tiles + `ChildRoot`s). Only the root's children carry explicit `i32 x3` origins, matching `tvdb__read_root_topology` versus `tvdb__read_internal_topology`. The value-chunk size is a parameter (it depends on compression flags/value size/active count). |
+| `LeafNode.parseFrom_emitFrom`, `Child4.parseFrom_emitFrom` | leaf and level-4 child-slot round trips (the slot is just the leaf: internal children have no origins) |
 | `Node5.parseFrom_emitFrom`, `Child5.parseFrom_emitFrom`, `Child5.parseMany_emit`, `ChildRoot.parseFrom_emitFrom`, `ChildRoot.parseMany_emit` | level-5 internal node, its child slots and the root's child slots (the full root → L5 → L4 → leaf topology) |
 | `Child4.parseMany_emit` | **child-slot list round trip**: a list of child slots parses back with the following siblings as trailing bytes |
-| `Child5.parseFrom_emitFrom`, `Child5.parseMany_emit` | level-5 child slot (origin + level-4 subtree) and its list round trip |
+| `Child5.parseFrom_emitFrom`, `Child5.parseMany_emit` | level-5 child slot (just the level-4 subtree) and its list round trip |
 | `RootNode.parseFrom_emitFrom` | **root node round trip**: background, tile count, child count, the tile list (reusing `parseTiles_emit`) and the level-5 child subtrees (reusing `Child5.parseMany_emit`) |
 | `TreeData5.parseFrom_emitFrom` | **full tree-data round trip for the 5/4/3 layout**: tree-base buffer count (`i32` = 1) + root with tiles and children (internal level 4, leaves) |
 | `Node4.parseFrom_emitFrom` | **level-4 internal-node topology round trip**: child mask, value mask, compressed value record and the recursive child list, with the child count derived from the child mask (`children.length = popCount childMask`) |
@@ -147,6 +147,36 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 
 Test-level checks: `parseGridType "Tree_float_5_4_3" = some float543` is proven
 by `decide`.
+
+## Differential harness: tree structure
+
+`VdbCheck` (Lean model) and `vdbdump` (C reader) are compared on the 13 sample
+files by `lean/scripts/diff_vdbdump.py`. Beyond the prologue, descriptors and
+grid-body header, the harness now parses the **structured tree** with
+`TreeData5.parseFullCount` and compares it against the C reader:
+
+* `Root: N tiles, M children` — root tile and child counts;
+* `Nodes: T total (I internal, L leaf)` — node counts (the C reader counts the
+  root as total-only, so `I + L + 1 = T`);
+* `Active voxels` — the sum of the leaf value-mask popcounts, compared through
+  the C reader's `format_count` rendering;
+* the tree pass must end exactly at the descriptor's `endOffset`
+  (`tree end=… expected=… ok=true`).
+
+The value payload is decoded by a codec stub: the structural pass only needs
+the chunk framing (the `i64` size word), which is part of the model. Raw chunks
+(`-N`) still have `N` checked against the derived `storedCount * elemSize`, so
+a wrong value-count rule is caught.
+
+Coverage: the non-half `5_4_3` grids (sphere, suzanne, sphere-div1,
+bunny_bgcolor, bunny_cloud, the float grid of explosion) are checked node for
+node. Half grids and `ptdataidx32` grids are reported as `tree unsupported`:
+half grids hit finding **F6** (no chunk header when the active count is zero,
+which the current `ValueRecord` framing does not yet branch on), and
+point-index leaves append an index-count payload the tree model does not cover.
+The model fix that this harness forced: internal-node children carry **no**
+serialized origins (only the root's children do); the earlier model wrote and
+read `i32 x3` origins at every level, which never matched a real file.
 
 ## Explicitly not yet done (next increments)
 

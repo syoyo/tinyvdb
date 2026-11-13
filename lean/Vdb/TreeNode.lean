@@ -66,81 +66,29 @@ theorem LeafNode.parseFrom_emitFrom (l : LeafNode) (h : l.WellFormed)
 theorem peel1 (pre : List Bytes) (c : Bytes) (tail : List Bytes) :
     concatChunks (pre ++ (c :: tail)) = concatChunks ((pre ++ [c]) ++ tail) := by simp
 
-/-- A level-4 child slot: its origin and the leaf subtree. -/
+/-- A level-4 child slot. Its origin is implicit in the child-mask slot index,
+    so only the leaf subtree is serialized (contrast `ChildRoot`). -/
 structure Child4 where
-  ox : Int32
-  oy : Int32
-  oz : Int32
   leaf : LeafNode
   deriving Repr
 
-def Child4.chunks (c : Child4) : List Bytes :=
-  [putI32LE c.ox ByteArray.empty, putI32LE c.oy ByteArray.empty,
-   putI32LE c.oz ByteArray.empty] ++ c.leaf.chunks
+def Child4.chunks (c : Child4) : List Bytes := c.leaf.chunks
 
 def Child4.WellFormed (c : Child4) : Prop := c.leaf.WellFormed
 
 def Child4.parseFrom (b : Bytes) (off : Nat) : Option (Child4 × Nat) :=
-  match getI32LE b off with
+  match LeafNode.parseFrom b off with
   | none => none
-  | some ox =>
-    match getI32LE b (off + 4) with
-    | none => none
-    | some oy =>
-      match getI32LE b (off + 8) with
-      | none => none
-      | some oz =>
-        match LeafNode.parseFrom b (off + 12) with
-        | none => none
-        | some (l, o) => some (⟨ox, oy, oz, l⟩, o)
+  | some (l, o) => some (⟨l⟩, o)
 
 theorem Child4.parseFrom_emitFrom (c : Child4) (h : c.WellFormed)
     (pre post : List Bytes) :
     Child4.parseFrom (concatChunks (pre ++ c.chunks ++ post)) (concatChunks pre).size =
       some (c, (concatChunks (pre ++ c.chunks)).size) := by
-  rcases c with ⟨ox, oy, oz, l⟩
+  rcases c with ⟨l⟩
   simp only [Child4.WellFormed] at h
   unfold Child4.parseFrom Child4.chunks
-  rw [show pre ++ ([putI32LE ox ByteArray.empty, putI32LE oy ByteArray.empty,
-      putI32LE oz ByteArray.empty] ++ l.chunks) ++ post =
-      pre ++ (putI32LE ox ByteArray.empty :: (putI32LE oy ByteArray.empty ::
-        (putI32LE oz ByteArray.empty :: (l.chunks ++ post)))) from by simp]
-  rw [getI32LE_chunk]
-  dsimp only
-  rw [show (concatChunks pre).size + 4 =
-      (concatChunks (pre ++ [putI32LE ox ByteArray.empty])).size from by
-    conv_rhs => rw [concatChunks_snoc_size]
-    simp [putI32LE_size]]
-  rw [peel1 pre (putI32LE ox ByteArray.empty) (putI32LE oy ByteArray.empty ::
-    (putI32LE oz ByteArray.empty :: (l.chunks ++ post)))]
-  rw [getI32LE_chunk]
-  dsimp only
-  rw [show (concatChunks pre).size + 8 =
-      (concatChunks ((pre ++ [putI32LE ox ByteArray.empty]) ++
-        [putI32LE oy ByteArray.empty])).size from by
-    conv_rhs => rw [concatChunks_snoc_size]
-    conv_rhs => rw [concatChunks_snoc_size]
-    simp [putI32LE_size]]
-  rw [peel1 (pre ++ [putI32LE ox ByteArray.empty]) (putI32LE oy ByteArray.empty)
-    (putI32LE oz ByteArray.empty :: (l.chunks ++ post))]
-  rw [getI32LE_chunk]
-  dsimp only
-  rw [show (concatChunks pre).size + 12 =
-      (concatChunks (((pre ++ [putI32LE ox ByteArray.empty]) ++
-        [putI32LE oy ByteArray.empty]) ++ [putI32LE oz ByteArray.empty])).size from by
-    conv_rhs => rw [concatChunks_snoc_size]
-    conv_rhs => rw [concatChunks_snoc_size]
-    conv_rhs => rw [concatChunks_snoc_size]
-    simp [putI32LE_size]]
-  rw [peel1 ((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty])
-    (putI32LE oz ByteArray.empty) (l.chunks ++ post)]
-  rw [show concatChunks ((((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
-      [putI32LE oz ByteArray.empty]) ++ (l.chunks ++ post)) =
-      concatChunks ((((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
-        [putI32LE oz ByteArray.empty]) ++ l.chunks ++ post) from by simp]
-  rw [LeafNode.parseFrom_emitFrom l h (((pre ++ [putI32LE ox ByteArray.empty]) ++
-    [putI32LE oy ByteArray.empty]) ++ [putI32LE oz ByteArray.empty]) post]
-  simp [Child4.chunks, List.append_assoc]
+  rw [LeafNode.parseFrom_emitFrom l h pre post]
 
 end Vdb
 
@@ -275,34 +223,21 @@ end Vdb
 
 namespace Vdb
 
-/-- A level-5 child slot: its origin and the level-4 subtree. -/
+/-- A level-5 child slot: its origin is implicit in the child-mask slot index,
+    so only the level-4 subtree is serialized. -/
 structure Child5 where
-  ox : Int32
-  oy : Int32
-  oz : Int32
   node : Node4
 
-def Child5.chunks (c : Child5) : List Bytes :=
-  [putI32LE c.ox ByteArray.empty, putI32LE c.oy ByteArray.empty,
-   putI32LE c.oz ByteArray.empty] ++ c.node.chunks
+def Child5.chunks (c : Child5) : List Bytes := c.node.chunks
 
 def Child5.WellFormed (vsize expected : Nat) (c : Child5) : Prop :=
   c.node.WellFormed vsize expected
 
 def Child5.parseFrom (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
     (b : Bytes) (off : Nat) : Option (Child5 × Nat) :=
-  match getI32LE b off with
+  match Node4.parseFrom vsize expected decompress b off with
   | none => none
-  | some ox =>
-    match getI32LE b (off + 4) with
-    | none => none
-    | some oy =>
-      match getI32LE b (off + 8) with
-      | none => none
-      | some oz =>
-        match Node4.parseFrom vsize expected decompress b (off + 12) with
-        | none => none
-        | some (n, o) => some (⟨ox, oy, oz, n⟩, o)
+  | some (n, o) => some (⟨n⟩, o)
 
 theorem Child5.parseFrom_emitFrom (c : Child5) (vsize expected : Nat)
     (decompress : Bytes → Nat → Option Bytes)
@@ -310,52 +245,10 @@ theorem Child5.parseFrom_emitFrom (c : Child5) (vsize expected : Nat)
     Child5.parseFrom vsize expected decompress
         (concatChunks (pre ++ c.chunks ++ post)) (concatChunks pre).size =
       some (c, (concatChunks (pre ++ c.chunks)).size) := by
-  rcases c with ⟨ox, oy, oz, n⟩
+  rcases c with ⟨n⟩
   simp only [Child5.WellFormed] at h
   unfold Child5.parseFrom Child5.chunks
-  rw [show pre ++ ([putI32LE ox ByteArray.empty, putI32LE oy ByteArray.empty,
-      putI32LE oz ByteArray.empty] ++ n.chunks) ++ post =
-      pre ++ (putI32LE ox ByteArray.empty :: (putI32LE oy ByteArray.empty ::
-        (putI32LE oz ByteArray.empty :: (n.chunks ++ post)))) from by simp]
-  rw [getI32LE_chunk]
-  dsimp only
-  rw [show (concatChunks pre).size + 4 =
-      (concatChunks (pre ++ [putI32LE ox ByteArray.empty])).size from by
-    conv_rhs => rw [concatChunks_snoc_size]
-    simp [putI32LE_size]]
-  rw [peel1 pre (putI32LE ox ByteArray.empty) (putI32LE oy ByteArray.empty ::
-    (putI32LE oz ByteArray.empty :: (n.chunks ++ post)))]
-  rw [getI32LE_chunk]
-  dsimp only
-  rw [show (concatChunks pre).size + 8 =
-      (concatChunks ((pre ++ [putI32LE ox ByteArray.empty]) ++
-        [putI32LE oy ByteArray.empty])).size from by
-    conv_rhs => rw [concatChunks_snoc_size]
-    conv_rhs => rw [concatChunks_snoc_size]
-    simp [putI32LE_size]]
-  rw [peel1 (pre ++ [putI32LE ox ByteArray.empty]) (putI32LE oy ByteArray.empty)
-    (putI32LE oz ByteArray.empty :: (n.chunks ++ post))]
-  rw [getI32LE_chunk]
-  dsimp only
-  rw [show (concatChunks pre).size + 12 =
-      (concatChunks (((pre ++ [putI32LE ox ByteArray.empty]) ++
-        [putI32LE oy ByteArray.empty]) ++ [putI32LE oz ByteArray.empty])).size from by
-    conv_rhs => rw [concatChunks_snoc_size]
-    conv_rhs => rw [concatChunks_snoc_size]
-    conv_rhs => rw [concatChunks_snoc_size]
-    simp [putI32LE_size]]
-  rw [peel1 ((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty])
-    (putI32LE oz ByteArray.empty) (n.chunks ++ post)]
-  rw [show concatChunks ((((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
-      [putI32LE oz ByteArray.empty]) ++ (n.chunks ++ post)) =
-      concatChunks ((((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
-        [putI32LE oz ByteArray.empty]) ++ n.chunks ++ post) from by simp]
-  rw [Node4.parseFrom_emitFrom n vsize expected decompress h
-    (((pre ++ [putI32LE ox ByteArray.empty]) ++ [putI32LE oy ByteArray.empty]) ++
-      [putI32LE oz ByteArray.empty]) post]
-  simp [Child5.chunks, List.append_assoc]
-
-
+  rw [Node4.parseFrom_emitFrom n vsize expected decompress h pre post]
 
 def Child5.parseMany (vsize expected : Nat) (decompress : Bytes → Nat → Option Bytes)
     (b : Bytes) : Nat → Nat → Option (List Child5 × Nat)
