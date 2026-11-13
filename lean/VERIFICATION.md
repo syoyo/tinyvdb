@@ -15,6 +15,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vdb/Mask.lean` | `nodeSlots L = 2^(3L)`, serialized byte counts for `L = 3/4/5` (64/512/4096), `NodeMask L = Nat` (low `2^(3L)` bits are the slots), bit accessor, `popCount`, `rank` (C `tvdb_tree_mask_rank`), `rank 0 = 0`, `rank (i+1) = rank i + bit i`, `rank (nodeSlots L) = popCount`, `rank ≤ index`, base-256 byte serialization (`serializeNat`, `parseNat`) and the full round trip. |
 | `Vdb/Coord.lean` | `Coord`, box membership, `Layout` + `WellFormed` (root level 0, depth 3–8, per-level `log2dim` bound, total ≤ 31), `spanShift`/`span`, `localIndex` (arithmetic shift), non-negativity and `< 2^L` bounds, `origin + span * localIndex ≤ c`, `slotOf`, `childOrigin`, `rootKey` with floor-division bounds. |
 | `Vdb/Tree.lean` | sparse tree model (`Node` leaf/internal, `Root` tiles/children, `Tree` with layout), node slot and child-origin geometry, total `lookup` semantics (root key → tile/child → node descent) with fuel `t.depth`, `Equiv`, and the well-formedness predicate `WellFormed`/`NodeWFuel` mirroring `validate_node`; a worked `5_4_3` tree with three checked lookups. |
+| `Vdb/IndexedTree.lean` | the C-style indexed lookup: `IndexedNode` (`leaf`/`internal` with rank-ordered children list), `toNode`/`toNodeList` erasure, `Tree.descend` (fuel-guarded rank-compacted descent), **`descend_eq_lookupNode`** (compact descent = spec descent, no well-formedness needed), `IndexedRoot`/`IndexedTree` (combined tile/child root table, the C hash map; open addressing modelled away), `IndexedRoot.probe`/`KeysNodup` key uniqueness, and **`lookup_eq_toTree_lookup`** (the C-style lookup equals the spec lookup, root probe plus descent, under key uniqueness). `rank_lt_popCount` bounds a set slot's rank below the popcount (in-bounds compact array access). |
 | `Vdb/MaskCompress.lean` | the seven `MaskCompress` codes as `MaskCode`, code byte round trip, `readCount`, `VoxelValue.negate` (bit flip for floats, integer negation, bool identity), the `decodeSlot`/`decodeAll` decoder (active values by rank, code 6 reads the full list), the faithful encoder `classify` (unique-inactive scan seeded with the background, `val0`/`val1`, selection mask, including the background swap), the selection-mask semantics, the scan invariant, and the **general mask-compression round trip** for all seven codes. |
 | `Vdb/GridHeader.lean` | the grid body prefix: per-grid compression flags (v222+), the metadata list and the transform, with total emit/parse. `Canonical` bundles the metadata-list bounds and the transform's well-formedness. |
 | `Vdb/File.lean` | a full `.vdb` file: the prologue and the interleaved grid entries. `FileGrid.descriptorAt` derives the descriptor's `gridOffset`/`blockOffset`/`endOffset` from the emitted position and the body size; `VdbFile.emitFrom` folds the grids; `VdbFile.parseFrom` follows the descriptor offsets like the C reader. |
@@ -193,24 +194,21 @@ real file.
 
 ## Explicitly not yet done (next increments)
 
-1. **Indexed lookup equivalence**: prove the spec `lookup` equals the C
-   `tree_find`/accessor model (root hash map, per-level slot descent, rank
-   compaction).
-2. **Mask compression vs. the C writer**: the model now proves the
+1. **Mask compression vs. the C writer**: the model now proves the
    round trip; the next step is a differential check that `classify` picks the
    same code/`val0`/`val1`/selection as `tvdb__write_mask_values` (needed for
    byte-identical output, not for correctness).
-3. **Half float exhaustive vectors vs C**: the bit model and the
+2. **Half float exhaustive vectors vs C**: the bit model and the
    round trips are proven (`halfToFloatBits`, `floatToHalfTrunc`,
    `floatToHalfRNE`, all checked over `Fin 65536`); still needed is a
    differential run of the encoders against the C writer, which needs the
    generator (`VdbGen`) below.
-4. **VdbGen**: a seeded generator for well-formed `.vdb` files (the other half
+3. **VdbGen**: a seeded generator for well-formed `.vdb` files (the other half
    of the oracle harness). The checking half is landed: `vdbcheck` (in-tree
    binary from `VdbCheck.lean`/`VdbSpec`) vs the C `vdbdump` reader over the
    13 sample files via `lean/scripts/diff_vdbdump.py`, wired into CTest as the
    opt-in `lean_diff` target (`TINYVDB_BUILD_LEAN_DIFF=ON`).
-5. Phase P2–P4, remainder: the sphere/plane/box SDFs with exact-distance
+4. Phase P2–P4, remainder: the sphere/plane/box SDFs with exact-distance
    and band theorems, the capsule/mesh/triangle distance fields, the MC
    consistent face rule and its dihedral invariance, the DMC assembly
    (`Assembly`/`CubeGrid`/`CubeField`) and the non-planar reconstruction all
