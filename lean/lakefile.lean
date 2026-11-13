@@ -39,3 +39,7 @@ lean_exe maskcheck where
     driven by `scripts/check_half.sh`). -/
 lean_exe halfcheck where
   root := `HalfCheck
+
+/-- Seeded well-formed `.vdb` generator (differential harness, model half). -/
+lean_exe vdbgen where
+  root := `VdbGen
