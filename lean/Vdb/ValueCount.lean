@@ -83,4 +83,50 @@ theorem ValueRecord.parseFromCount_emit {L : Nat} (r : ValueRecord L)
       concatChunks (pre ++ r.chunks ++ post) from by simp [ValueRecord.chunks]]
   exact ValueRecord.parseFrom_emitFrom r vsize (countOf r.code * elemSize) decompress h pre post
 
+
+
+/-- The half/full-aware count-derived record parser. `half` selects the
+    half-grid chunk omission (F6). -/
+def ValueRecord.parseFromCountM {L : Nat} (vsize elemSize : Nat)
+    (countOf : MaskCode → Nat) (decompress : Bytes → Nat → Option Bytes)
+    (b : Bytes) (off : Nat) (half : Bool := false) : Option (ValueRecord L × Nat) :=
+  match getU8? b off with
+  | none => none
+  | some fl =>
+    match MaskCode.ofNat? fl.toNat with
+    | none => none
+    | some code =>
+      ValueRecord.parseM vsize (countOf code * elemSize) decompress half b off
+
+/-- Both branches of `chunksM` start with the code byte. -/
+theorem ValueRecord.getU8?_chunksM {L : Nat} (r : ValueRecord L) (half : Bool)
+    (pre post : List Bytes) :
+    getU8? (concatChunks (pre ++ r.chunksM half ++ post)) (concatChunks pre).size =
+      some r.code.flag := by
+  unfold ValueRecord.chunksM
+  split
+  · unfold ValueRecord.chunksNoChunk
+    rw [show pre ++ (putU8 r.code.flag ByteArray.empty :: r.extras) ++ post =
+        pre ++ (putU8 r.code.flag ByteArray.empty :: (r.extras ++ post)) from by simp]
+    exact getU8?_chunk pre _ (r.extras ++ post)
+  · unfold ValueRecord.chunks
+    rw [show pre ++ (putU8 r.code.flag ByteArray.empty :: r.tailChunks) ++ post =
+        pre ++ (putU8 r.code.flag ByteArray.empty :: (r.tailChunks ++ post)) from by simp]
+    exact getU8?_chunk pre _ (r.tailChunks ++ post)
+
+theorem ValueRecord.parseFromCountM_emit {L : Nat} (r : ValueRecord L)
+    (vsize elemSize : Nat) (countOf : MaskCode → Nat)
+    (decompress : Bytes → Nat → Option Bytes)
+    (h : r.WellFormed vsize (countOf r.code * elemSize))
+    (pre post : List Bytes) (half : Bool := false) :
+    ValueRecord.parseFromCountM vsize elemSize countOf decompress
+        (concatChunks (pre ++ r.chunksM half ++ post)) (concatChunks pre).size (half := half) =
+      some (r, (concatChunks (pre ++ r.chunksM half)).size) := by
+  unfold ValueRecord.parseFromCountM
+  rw [ValueRecord.getU8?_chunksM]
+  dsimp only
+  rw [MaskCode.ofNat?_flag]
+  dsimp only
+  exact ValueRecord.parseM_emitFrom r vsize (countOf r.code * elemSize) decompress half h pre post
+
 end Vdb

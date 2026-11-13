@@ -365,4 +365,307 @@ theorem ValueRecord.parseFrom_emitFrom {L : Nat} (r : ValueRecord L) (vsize expe
     rw [parse_chunk_after decompress (pre ++ [putU8 (MaskCode.flag .noMaskAndAllVals) ByteArray.empty]) stored post (by simpa [hsize] using hbound)]
     simp [ValueRecord.chunks, ValueRecord.tailChunks]
 
+
+/-! ### Half-precision chunk omission (F6) -/
+
+theorem bytes_eq_empty_of_size_zero (b : Bytes) (h : b.size = 0) : b = ByteArray.empty := by
+  apply ByteArray.ext
+  have h' : b.data.size = 0 := h
+  rw [Array.eq_empty_of_size_eq_zero h']
+  rfl
+
+
+/-- Peel a scalars chunk off the front of a cons chain (chunk list spelled
+    cons-wise). -/
+theorem peel_cons' (pre : List Bytes) (c d : Bytes) (rest : List Bytes) :
+    concatChunks (pre ++ c :: (d :: rest)) =
+      concatChunks ((pre ++ [c]) ++ (d :: rest)) := by simp
+
+/-- Peel the last scalars chunk off the front of a cons chain. -/
+theorem peel_last' (pre : List Bytes) (c : Bytes) (post : List Bytes) :
+    concatChunks (pre ++ c :: post) = concatChunks ((pre ++ [c]) ++ post) := by simp
+
+/-- The chunks after the code byte, without the value chunk. -/
+def ValueRecord.extras {L : Nat} (r : ValueRecord L) : List Bytes :=
+  match r.code with
+  | .noMaskOrInactiveVals => []
+  | .noMaskAndMinusBg => []
+  | .noMaskAndOneInactiveVal => [r.val0]
+  | .maskAndNoInactiveVals => [@NodeMask.serialize L r.selection]
+  | .maskAndOneInactiveVal => [r.val0, @NodeMask.serialize L r.selection]
+  | .maskAndTwoInactiveVals => [r.val0, r.val1, @NodeMask.serialize L r.selection]
+  | .noMaskAndAllVals => []
+
+/-- The code byte plus the inactive values and selection mask, with no value
+    chunk. Half grids write exactly this when the stored count is zero
+    (`HalfWriter`: `if (count < 1) return`). -/
+def ValueRecord.chunksNoChunk {L : Nat} (r : ValueRecord L) : List Bytes :=
+  putU8 r.code.flag ByteArray.empty :: r.extras
+
+/-- The record parser for the zero-count half case: the same dispatch as
+    `parseFrom`, but it stops after the inactive values and selection mask. -/
+def ValueRecord.parseNoChunk {L : Nat} (vsize : Nat) (b : Bytes) (off : Nat) :
+    Option (ValueRecord L × Nat) :=
+  match getU8? b off with
+  | none => none
+  | some fl =>
+    match MaskCode.ofNat? fl.toNat with
+    | none => none
+    | some code =>
+      match code with
+      | .noMaskOrInactiveVals =>
+        some (⟨.noMaskOrInactiveVals, ByteArray.empty, ByteArray.empty, 0,
+          ByteArray.empty⟩, off + 1)
+      | .noMaskAndMinusBg =>
+        some (⟨.noMaskAndMinusBg, ByteArray.empty, ByteArray.empty, 0,
+          ByteArray.empty⟩, off + 1)
+      | .noMaskAndAllVals =>
+        some (⟨.noMaskAndAllVals, ByteArray.empty, ByteArray.empty, 0,
+          ByteArray.empty⟩, off + 1)
+      | .noMaskAndOneInactiveVal =>
+        match getBytes? b (off + 1) vsize with
+        | none => none
+        | some v0 =>
+          some (⟨.noMaskAndOneInactiveVal, v0, ByteArray.empty, 0, ByteArray.empty⟩,
+            off + 1 + vsize)
+      | .maskAndNoInactiveVals =>
+        let sel : NodeMask L := parseNat b (off + 1) (nodeMaskBytes L)
+        some (⟨.maskAndNoInactiveVals, ByteArray.empty, ByteArray.empty, sel,
+          ByteArray.empty⟩, off + 1 + nodeMaskBytes L)
+      | .maskAndOneInactiveVal =>
+        match getBytes? b (off + 1) vsize with
+        | none => none
+        | some v0 =>
+          let sel : NodeMask L := parseNat b (off + 1 + vsize) (nodeMaskBytes L)
+          some (⟨.maskAndOneInactiveVal, v0, ByteArray.empty, sel, ByteArray.empty⟩,
+            off + 1 + vsize + nodeMaskBytes L)
+      | .maskAndTwoInactiveVals =>
+        match getBytes? b (off + 1) vsize with
+        | none => none
+        | some v0 =>
+          match getBytes? b (off + 1 + vsize) vsize with
+          | none => none
+          | some v1 =>
+            let sel : NodeMask L := parseNat b (off + 1 + vsize + vsize) (nodeMaskBytes L)
+            some (⟨.maskAndTwoInactiveVals, v0, v1, sel, ByteArray.empty⟩,
+              off + 1 + vsize + vsize + nodeMaskBytes L)
+
+/-- Emit a record, omitting the value chunk in half mode when the stored
+    payload is empty (`expected = 0`). -/
+def ValueRecord.chunksM {L : Nat} (half : Bool) (r : ValueRecord L) : List Bytes :=
+  if half && r.stored.size = 0 then r.chunksNoChunk else r.chunks
+
+/-- Parse a record in either mode. Half grids with an empty payload carry no
+    chunk header, so they use `parseNoChunk`. -/
+def ValueRecord.parseM {L : Nat} (vsize expected : Nat)
+    (decompress : Bytes → Nat → Option Bytes) (half : Bool) (b : Bytes) (off : Nat) :
+    Option (ValueRecord L × Nat) :=
+  if half && expected = 0 then ValueRecord.parseNoChunk vsize b off
+  else ValueRecord.parseFrom vsize expected decompress b off
+
+
+theorem ValueRecord.parseNoChunk_emit {L : Nat} (r : ValueRecord L) (vsize : Nat)
+    (hwf : r.WellFormed vsize 0) (hst : r.stored = ByteArray.empty)
+    (pre post : List Bytes) :
+    ValueRecord.parseNoChunk vsize
+        (concatChunks (pre ++ r.chunksNoChunk ++ post)) (concatChunks pre).size =
+      some (r, (concatChunks (pre ++ r.chunksNoChunk)).size) := by
+  obtain ⟨hcls, hsize, hbound⟩ := hwf
+  rcases r with ⟨code, v0, v1, sel, stored⟩
+  cases code
+  · -- noMaskOrInactiveVals
+    simp only [ValueRecord.WellFormed] at hcls
+    obtain ⟨hv0, hv1, hsel⟩ := hcls
+    subst hv0 hv1 hsel
+    subst hst
+    unfold ValueRecord.parseNoChunk ValueRecord.chunksNoChunk ValueRecord.extras
+    rw [show pre ++ (putU8 (MaskCode.flag .noMaskOrInactiveVals) ByteArray.empty :: []) ++ post =
+        pre ++ (putU8 (MaskCode.flag .noMaskOrInactiveVals) ByteArray.empty :: ([] ++ post)) from by simp]
+    simp only [List.cons_append, List.singleton_append, List.nil_append]
+    rw [getU8?_chunk]
+    dsimp only
+    rw [MaskCode.ofNat?_flag]
+    dsimp only
+    rw [show (concatChunks pre).size + 1 =
+        (concatChunks (pre ++ [putU8 (MaskCode.flag .noMaskOrInactiveVals) ByteArray.empty])).size from by
+      rw [show (1 : Nat) = (putU8 (MaskCode.flag .noMaskOrInactiveVals) ByteArray.empty).size from by simp [putU8_size]]
+      conv_rhs => rw [concatChunks_snoc_size]]
+  · -- noMaskAndMinusBg
+    simp only [ValueRecord.WellFormed] at hcls
+    obtain ⟨hv0, hv1, hsel⟩ := hcls
+    subst hv0 hv1 hsel
+    subst hst
+    unfold ValueRecord.parseNoChunk ValueRecord.chunksNoChunk ValueRecord.extras
+    rw [show pre ++ (putU8 (MaskCode.flag .noMaskAndMinusBg) ByteArray.empty :: []) ++ post =
+        pre ++ (putU8 (MaskCode.flag .noMaskAndMinusBg) ByteArray.empty :: ([] ++ post)) from by simp]
+    simp only [List.cons_append, List.singleton_append, List.nil_append]
+    rw [getU8?_chunk]
+    dsimp only
+    rw [MaskCode.ofNat?_flag]
+    dsimp only
+    rw [show (concatChunks pre).size + 1 =
+        (concatChunks (pre ++ [putU8 (MaskCode.flag .noMaskAndMinusBg) ByteArray.empty])).size from by
+      rw [show (1 : Nat) = (putU8 (MaskCode.flag .noMaskAndMinusBg) ByteArray.empty).size from by simp [putU8_size]]
+      conv_rhs => rw [concatChunks_snoc_size]]
+  · -- noMaskAndOneInactiveVal
+    simp only [ValueRecord.WellFormed] at hcls
+    obtain ⟨hv0, hv1, hsel⟩ := hcls
+    subst hv1 hsel
+    subst hst
+    unfold ValueRecord.parseNoChunk ValueRecord.chunksNoChunk ValueRecord.extras
+    rw [show pre ++ (putU8 (MaskCode.flag .noMaskAndOneInactiveVal) ByteArray.empty :: (v0 :: [])) ++ post =
+        pre ++ (putU8 (MaskCode.flag .noMaskAndOneInactiveVal) ByteArray.empty :: ((v0 :: []) ++ post)) from by simp]
+    simp only [List.cons_append, List.singleton_append, List.nil_append]
+    rw [getU8?_chunk]
+    dsimp only
+    rw [MaskCode.ofNat?_flag]
+    dsimp only
+    rw [show (concatChunks pre).size + 1 =
+        (concatChunks (pre ++ [putU8 (MaskCode.flag .noMaskAndOneInactiveVal) ByteArray.empty])).size from by
+      rw [show (1 : Nat) = (putU8 (MaskCode.flag .noMaskAndOneInactiveVal) ByteArray.empty).size from by simp [putU8_size]]
+      conv_rhs => rw [concatChunks_snoc_size]]
+    rw [peel_last' pre (putU8 (MaskCode.flag .noMaskAndOneInactiveVal) ByteArray.empty) ((v0 :: post))]
+    rw [getBytes?_chunk_size (pre ++ [putU8 (MaskCode.flag .noMaskAndOneInactiveVal) ByteArray.empty]) (v0) (post) (h := hv0)]
+    dsimp only
+    rw [show (concatChunks (pre ++ [putU8 (MaskCode.flag .noMaskAndOneInactiveVal) ByteArray.empty])).size + vsize =
+        (concatChunks ((pre ++ [putU8 (MaskCode.flag .noMaskAndOneInactiveVal) ByteArray.empty]) ++ [v0])).size from by
+      conv_rhs => rw [concatChunks_snoc_size]
+      rw [hv0]]
+    simp [List.append_assoc]
+  · -- maskAndNoInactiveVals
+    simp only [ValueRecord.WellFormed] at hcls
+    obtain ⟨hv0, hv1, hsel⟩ := hcls
+    subst hv0 hv1
+    subst hst
+    unfold ValueRecord.parseNoChunk ValueRecord.chunksNoChunk ValueRecord.extras
+    rw [show pre ++ (putU8 (MaskCode.flag .maskAndNoInactiveVals) ByteArray.empty :: (@NodeMask.serialize L sel :: [])) ++ post =
+        pre ++ (putU8 (MaskCode.flag .maskAndNoInactiveVals) ByteArray.empty :: ((@NodeMask.serialize L sel :: []) ++ post)) from by simp]
+    simp only [List.cons_append, List.singleton_append, List.nil_append]
+    rw [getU8?_chunk]
+    dsimp only
+    rw [MaskCode.ofNat?_flag]
+    dsimp only
+    rw [show (concatChunks pre).size + 1 =
+        (concatChunks (pre ++ [putU8 (MaskCode.flag .maskAndNoInactiveVals) ByteArray.empty])).size from by
+      rw [show (1 : Nat) = (putU8 (MaskCode.flag .maskAndNoInactiveVals) ByteArray.empty).size from by simp [putU8_size]]
+      conv_rhs => rw [concatChunks_snoc_size]]
+    rw [peel_last' pre (putU8 (MaskCode.flag .maskAndNoInactiveVals) ByteArray.empty) ((@NodeMask.serialize L sel :: post))]
+    rw [parseNat_chunk_serialize sel hsel (pre ++ [putU8 (MaskCode.flag .maskAndNoInactiveVals) ByteArray.empty]) (post)]
+    rw [show (concatChunks (pre ++ [putU8 (MaskCode.flag .maskAndNoInactiveVals) ByteArray.empty])).size + nodeMaskBytes L =
+        (concatChunks ((pre ++ [putU8 (MaskCode.flag .maskAndNoInactiveVals) ByteArray.empty]) ++ [@NodeMask.serialize L sel])).size from by
+      conv_rhs => rw [concatChunks_snoc_size]
+      rw [@NodeMask.serialize_size L sel hsel]]
+    simp [List.append_assoc]
+  · -- maskAndOneInactiveVal
+    simp only [ValueRecord.WellFormed] at hcls
+    obtain ⟨hv0, hv1, hsel⟩ := hcls
+    subst hv1
+    subst hst
+    unfold ValueRecord.parseNoChunk ValueRecord.chunksNoChunk ValueRecord.extras
+    rw [show pre ++ (putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty :: (v0 :: (@NodeMask.serialize L sel :: []))) ++ post =
+        pre ++ (putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty :: ((v0 :: (@NodeMask.serialize L sel :: [])) ++ post)) from by simp]
+    simp only [List.cons_append, List.singleton_append, List.nil_append]
+    rw [getU8?_chunk]
+    dsimp only
+    rw [MaskCode.ofNat?_flag]
+    dsimp only
+    rw [show (concatChunks pre).size + 1 =
+        (concatChunks (pre ++ [putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty])).size from by
+      rw [show (1 : Nat) = (putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty).size from by simp [putU8_size]]
+      conv_rhs => rw [concatChunks_snoc_size]]
+    rw [peel_last' pre (putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty) ((v0 :: (@NodeMask.serialize L sel :: post)))]
+    rw [getBytes?_chunk_size (pre ++ [putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty]) (v0) ((@NodeMask.serialize L sel :: post)) (h := hv0)]
+    dsimp only
+    rw [show (concatChunks (pre ++ [putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty])).size + vsize =
+        (concatChunks ((pre ++ [putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty]) ++ [v0])).size from by
+      conv_rhs => rw [concatChunks_snoc_size]
+      rw [hv0]]
+    rw [peel_cons' (pre ++ [putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty]) (v0) (@NodeMask.serialize L sel) (post)]
+    rw [parseNat_chunk_serialize sel hsel ((pre ++ [putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty]) ++ [v0]) (post)]
+    rw [show (concatChunks ((pre ++ [putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty]) ++ [v0])).size + nodeMaskBytes L =
+        (concatChunks (((pre ++ [putU8 (MaskCode.flag .maskAndOneInactiveVal) ByteArray.empty]) ++ [v0]) ++ [@NodeMask.serialize L sel])).size from by
+      conv_rhs => rw [concatChunks_snoc_size]
+      rw [@NodeMask.serialize_size L sel hsel]]
+    simp [List.append_assoc]
+  · -- maskAndTwoInactiveVals
+    simp only [ValueRecord.WellFormed] at hcls
+    obtain ⟨hv0, hv1, hsel⟩ := hcls
+    subst hst
+    unfold ValueRecord.parseNoChunk ValueRecord.chunksNoChunk ValueRecord.extras
+    rw [show pre ++ (putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty :: (v0 :: (v1 :: (@NodeMask.serialize L sel :: [])))) ++ post =
+        pre ++ (putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty :: ((v0 :: (v1 :: (@NodeMask.serialize L sel :: []))) ++ post)) from by simp]
+    simp only [List.cons_append, List.singleton_append, List.nil_append]
+    rw [getU8?_chunk]
+    dsimp only
+    rw [MaskCode.ofNat?_flag]
+    dsimp only
+    rw [show (concatChunks pre).size + 1 =
+        (concatChunks (pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty])).size from by
+      rw [show (1 : Nat) = (putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty).size from by simp [putU8_size]]
+      conv_rhs => rw [concatChunks_snoc_size]]
+    rw [peel_last' pre (putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty) ((v0 :: (v1 :: (@NodeMask.serialize L sel :: post))))]
+    rw [getBytes?_chunk_size (pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty]) (v0) ((v1 :: (@NodeMask.serialize L sel :: post))) (h := hv0)]
+    dsimp only
+    rw [show (concatChunks (pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty])).size + vsize =
+        (concatChunks ((pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty]) ++ [v0])).size from by
+      conv_rhs => rw [concatChunks_snoc_size]
+      rw [hv0]]
+    rw [peel_cons' (pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty]) (v0) (v1) ((@NodeMask.serialize L sel :: post))]
+    rw [getBytes?_chunk_size ((pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty]) ++ [v0]) (v1) ((@NodeMask.serialize L sel :: post)) (h := hv1)]
+    dsimp only
+    rw [show (concatChunks ((pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty]) ++ [v0])).size + vsize =
+        (concatChunks (((pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty]) ++ [v0]) ++ [v1])).size from by
+      conv_rhs => rw [concatChunks_snoc_size]
+      rw [hv1]]
+    rw [peel_cons' ((pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty]) ++ [v0]) (v1) (@NodeMask.serialize L sel) (post)]
+    rw [parseNat_chunk_serialize sel hsel (((pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty]) ++ [v0]) ++ [v1]) (post)]
+    rw [show (concatChunks (((pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty]) ++ [v0]) ++ [v1])).size + nodeMaskBytes L =
+        (concatChunks ((((pre ++ [putU8 (MaskCode.flag .maskAndTwoInactiveVals) ByteArray.empty]) ++ [v0]) ++ [v1]) ++ [@NodeMask.serialize L sel])).size from by
+      conv_rhs => rw [concatChunks_snoc_size]
+      rw [@NodeMask.serialize_size L sel hsel]]
+    simp [List.append_assoc]
+  · -- noMaskAndAllVals
+    simp only [ValueRecord.WellFormed] at hcls
+    obtain ⟨hv0, hv1, hsel⟩ := hcls
+    subst hv0 hv1 hsel
+    subst hst
+    unfold ValueRecord.parseNoChunk ValueRecord.chunksNoChunk ValueRecord.extras
+    rw [show pre ++ (putU8 (MaskCode.flag .noMaskAndAllVals) ByteArray.empty :: []) ++ post =
+        pre ++ (putU8 (MaskCode.flag .noMaskAndAllVals) ByteArray.empty :: ([] ++ post)) from by simp]
+    simp only [List.cons_append, List.singleton_append, List.nil_append]
+    rw [getU8?_chunk]
+    dsimp only
+    rw [MaskCode.ofNat?_flag]
+    dsimp only
+    rw [show (concatChunks pre).size + 1 =
+        (concatChunks (pre ++ [putU8 (MaskCode.flag .noMaskAndAllVals) ByteArray.empty])).size from by
+      rw [show (1 : Nat) = (putU8 (MaskCode.flag .noMaskAndAllVals) ByteArray.empty).size from by simp [putU8_size]]
+      conv_rhs => rw [concatChunks_snoc_size]]
+
+
+theorem ValueRecord.parseM_emitFrom {L : Nat} (r : ValueRecord L) (vsize expected : Nat)
+    (decompress : Bytes → Nat → Option Bytes) (half : Bool)
+    (hwf : r.WellFormed vsize expected) (pre post : List Bytes) :
+    ValueRecord.parseM vsize expected decompress half
+        (concatChunks (pre ++ r.chunksM half ++ post)) (concatChunks pre).size =
+      some (r, (concatChunks (pre ++ r.chunksM half)).size) := by
+  obtain ⟨hcls, hsize, hbound⟩ := hwf
+  by_cases hz : half && r.stored.size = 0
+  · have hsize0 : r.stored.size = 0 := by
+      have := (Bool.and_eq_true _ _).mp hz
+      simpa using this.2
+    have hexp : expected = 0 := by rw [← hsize]; exact hsize0
+    have hst : r.stored = ByteArray.empty := bytes_eq_empty_of_size_zero _ hsize0
+    have hz' : half && expected = 0 := by rw [← hsize]; exact hz
+    have h0 : r.WellFormed vsize 0 := ⟨hcls, by simpa [hexp], by simp [hexp]⟩
+    simp only [ValueRecord.chunksM, hz, ValueRecord.parseM, hz']
+    exact ValueRecord.parseNoChunk_emit r vsize h0 hst pre post
+  · have hz' : ¬ (half && expected = 0) := by
+      intro h'
+      apply hz
+      rw [hsize]
+      exact h'
+    simp only [ValueRecord.chunksM, hz, ValueRecord.parseM, hz']
+    exact ValueRecord.parseFrom_emitFrom r vsize expected decompress ⟨hcls, hsize, hbound⟩ pre post
+
 end Vdb

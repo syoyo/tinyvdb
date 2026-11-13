@@ -49,6 +49,9 @@ def lean_dump(exe, path):
         t = re.match(r"  tree end=(\d+) expected=(\d+) ok=(\w+)", line)
         if t and cur >= 0:
             trees[cur]["end_ok"] = t.group(3) == "true"
+        t = re.match(r"  tree end-ok=(\w+)", line)
+        if t and cur >= 0:
+            trees[cur]["end_ok"] = t.group(1) == "true"
     count = int(re.search(r"^grids (\d+)$", out.stdout, re.M).group(1))
     return header, count, grids, bodies, trees
 

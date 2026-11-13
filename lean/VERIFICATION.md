@@ -168,15 +168,21 @@ the chunk framing (the `i64` size word), which is part of the model. Raw chunks
 (`-N`) still have `N` checked against the derived `storedCount * elemSize`, so
 a wrong value-count rule is caught.
 
-Coverage: the non-half `5_4_3` grids (sphere, suzanne, sphere-div1,
-bunny_bgcolor, bunny_cloud, the float grid of explosion) are checked node for
-node. Half grids and `ptdataidx32` grids are reported as `tree unsupported`:
-half grids hit finding **F6** (no chunk header when the active count is zero,
-which the current `ValueRecord` framing does not yet branch on), and
-point-index leaves append an index-count payload the tree model does not cover.
-The model fix that this harness forced: internal-node children carry **no**
-serialized origins (only the root's children do); the earlier model wrote and
-read `i32 x3` origins at every level, which never matched a real file.
+Coverage: **12 of 13** files are now checked node for node (root tiles/children,
+internal/leaf counts, active voxels, exact end offset). That includes all six
+half grids: their `read_count == 0` nodes omit the chunk header (F6), so the
+harness walks the layout with `halfParse`, delegating every value record to the
+proven `ValueRecord.parseFromCountM`. Grids without BLOSC/ZIP compression store
+raw payloads without a size word (F14), handled by `skipRawRecord` on top of the
+proven `parseNoChunk`. Only `ptdataidx32` (`Tree_ptdataidx32_5_4_3`) remains
+`tree unsupported`, because point-index leaves append an index-count payload the
+tree model does not cover.
+
+The model fixes that this harness forced: internal-node children carry **no**
+serialized origins (only the root's children do), and half grids omit the value
+chunk when the stored count is zero. The earlier model wrote and read `i32 x3`
+origins at every level and always framed a chunk, neither of which matches a
+real file.
 
 ## Explicitly not yet done (next increments)
 
@@ -207,7 +213,7 @@ Each is confirmed or refuted by the corresponding Lean model, then fixed in C
 | F3 | no maximum file-version check; `block_byte_offset` unvalidated; writer duplicates `grid_byte_offset` |
 | F4 | grid-type grammar accepts trailing junk as zero levels |
 | F5 | `log2dim ≤ 10` allows huge internal allocations before byte-count checks; tree read not bounded by `end_byte_offset` |
-| F6 | **confirmed** by the tree differential harness: half grids whose node has `read_count == 0` carry no chunk header at all, while non-half grids carry the `i64` size word. The sample half files fail at the first zero-count internal node when parsed with the non-half framing, so the harness reports those grids as `tree unsupported`; this is the remaining record-framing gap. |
+| F6 | **confirmed and modelled at the record level**: half grids whose node has `read_count == 0` carry no chunk header at all. `ValueRecord.chunksM`/`parseM` and `parseM_emitFrom` implement the omission, and `ValueRecord.parseFromCountM`/`parseFromCountM_emit` lift it to the derived-count record. The proven tree cascade still uses the full-width framing, so half-grid tree validation uses a harness walk (`halfParse`) built on the proven record parser; all six half sample files now match `vdbdump` node for node. |
 | F7 | bool-leaf writer emits `node->origin` (zeros for reader-produced trees) |
 | F8 | instance grids are not resolved from the parent (stay empty) |
 | F9 | `tvdb_grid_to_nanovdb` trusts `child_indices`/node types |
@@ -215,3 +221,4 @@ Each is confirmed or refuted by the corresponding Lean model, then fixed in C
 | F11 | dense mesh→SDF sign uses the closest face normal (not pseudonormals) |
 | F12 | dense CSG silences dimension/origin/voxel-size mismatches |
 | F13 | `tvdb_gradient` boundary divides the clamped difference by `2h` |
+| F14 | **confirmed** by the tree differential harness: when the grid's compression flags contain neither BLOSC nor ZIP (`compression=0/2`), value buffers are raw payloads with **no** `i64` size word (`read_and_decompress`'s no-compression branch). `Vdb/Chunk.lean` models only the compressed framing; the harness's raw-record path (`skipRawRecord`, built on `parseNoChunk`) handles it, but the library model has no raw-framing record. |
