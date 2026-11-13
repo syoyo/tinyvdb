@@ -200,18 +200,31 @@ real file.
    round trip; the next step is a differential check that `classify` picks the
    same code/`val0`/`val1`/selection as `tvdb__write_mask_values` (needed for
    byte-identical output, not for correctness).
-3. **Half float** bit model (`halfToFloat`, trunc vs round-to-nearest).
-4. **Metadata round trip** (typed entries, strings and raw blobs), then the
-   transform, chunk framing, grid body and the file round trip.
-5. **Oracle harness**: `VdbCheck`/`VdbGen` executables, C dump program,
-   differential scripts (`vdb-diff`).
-6. Phase P2–P4 (level sets, MC/DMC, mesh→volume).
+3. **Half float exhaustive vectors vs C**: the bit model and the
+   round trips are proven (`halfToFloatBits`, `floatToHalfTrunc`,
+   `floatToHalfRNE`, all checked over `Fin 65536`); still needed is a
+   differential run of the encoders against the C writer, which needs the
+   generator (`VdbGen`) below.
+4. **VdbGen**: a seeded generator for well-formed `.vdb` files (the other half
+   of the oracle harness). The checking half is landed: `vdbcheck` (in-tree
+   binary from `VdbCheck.lean`/`VdbSpec`) vs the C `vdbdump` reader over the
+   13 sample files via `lean/scripts/diff_vdbdump.py`, wired into CTest as the
+   opt-in `lean_diff` target (`TINYVDB_BUILD_LEAN_DIFF=ON`).
+5. Phase P2–P4, remainder: the sphere/plane/box SDFs with exact-distance
+   and band theorems, the capsule/mesh/triangle distance fields, the MC
+   consistent face rule and its dihedral invariance, the DMC assembly
+   (`Assembly`/`CubeGrid`/`CubeField`) and the non-planar reconstruction all
+   landed; still open are the torus SDF, CSG set semantics, flood fill /
+   fast sweeping, the Euler-characteristic measure, F10 (MC ambiguous-face
+   consistency), DMC-1 (the manifold theorem) and the P4 BVH/band
+   completeness work.
 
 ## Findings awaiting model confirmation
 
 These are hypotheses from the C survey (details in `../plan-lean.md` §0.2).
 Each is confirmed or refuted by the corresponding Lean model, then fixed in C
-(or documented). None is resolved yet.
+(or documented). F1 is confirmed and fixed in C; F6 and F14 are confirmed and
+modelled in the Lean layer. The rest are still open.
 
 | ID | Hypothesis |
 | --- | --- |
