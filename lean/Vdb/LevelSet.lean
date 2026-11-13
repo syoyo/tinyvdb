@@ -371,4 +371,64 @@ theorem IsSDF.exists_nearest_levelSet {f : Point → ℝ} (hf : IsSDF f) {c : �
     ∃ q : Point, q ∈ levelSet f c ∧ Metric.infDist p (levelSet f c) = dist p q :=
   (hf.isClosed_levelSet c).exists_infDist_eq_dist hne p
 
+
+/-! ### Plane bands and the box surface -/
+
+/-- The plane band is the slab between the two offset planes. -/
+theorem sdfPlane_activeSet_eq (n : Point) (d band : ℝ) :
+    activeSet (sdfPlane n d) band =
+      {p : Point | d - band < ⟪n, p⟫ ∧ ⟪n, p⟫ < d + band} := by
+  ext p
+  simp only [mem_activeSet, sdfPlane, Set.mem_ofPred_eq, abs_lt]
+  constructor
+  · rintro ⟨h1, h2⟩
+    constructor <;> linarith
+  · rintro ⟨h1, h2⟩
+    constructor <;> linarith
+
+/-- **The box surface**: `sdfBox` vanishes exactly on the boundary of the box,
+    i.e. inside-or-on the box with at least one coordinate on a face. -/
+theorem sdfBox_eq_zero_iff (h p : Point) :
+    sdfBox h p = 0 ↔ (∀ i : Fin 3, |p i| ≤ h i) ∧ ∃ i : Fin 3, |p i| = h i := by
+  constructor
+  · intro h0
+    obtain ⟨hb0, hb1, hb2⟩ := (sdfBox_le_zero_iff h p).mp (le_of_eq h0)
+    have hle : ∀ i : Fin 3, |p i| ≤ h i := by
+      intro i
+      fin_cases i
+      · exact hb0
+      · exact hb1
+      · exact hb2
+    have hge : 0 ≤ sdfBox h p := le_of_eq h0.symm
+    unfold sdfBox at hge
+    rcases le_max_iff.mp hge with hA | hBC
+    · refine ⟨hle, 0, ?_⟩
+      have : |p 0| - h 0 = 0 := le_antisymm (by linarith [hle 0]) hA
+      linarith
+    · rcases le_max_iff.mp hBC with hB | hC
+      · refine ⟨hle, 1, ?_⟩
+        have : |p 1| - h 1 = 0 := le_antisymm (by linarith [hle 1]) hB
+        linarith
+      · refine ⟨hle, 2, ?_⟩
+        have : |p 2| - h 2 = 0 := le_antisymm (by linarith [hle 2]) hC
+        linarith
+  · rintro ⟨hle, i, hi⟩
+    refine le_antisymm ((sdfBox_le_zero_iff h p).mpr ⟨hle 0, hle 1, hle 2⟩) ?_
+    unfold sdfBox
+    fin_cases i
+    · have hi0 : |p 0| = h 0 := by simpa using hi
+      have h0 : |p 0| - h 0 = 0 := by linarith
+      calc (0 : ℝ) = |p 0| - h 0 := h0.symm
+        _ ≤ max (|p 0| - h 0) (max (|p 1| - h 1) (|p 2| - h 2)) := le_max_left _ _
+    · have hi1 : |p 1| = h 1 := by simpa using hi
+      have h1 : |p 1| - h 1 = 0 := by linarith
+      calc (0 : ℝ) = |p 1| - h 1 := h1.symm
+        _ ≤ max (|p 1| - h 1) (|p 2| - h 2) := le_max_left _ _
+        _ ≤ max (|p 0| - h 0) (max (|p 1| - h 1) (|p 2| - h 2)) := le_max_right _ _
+    · have hi2 : |p 2| = h 2 := by simpa using hi
+      have h2 : |p 2| - h 2 = 0 := by linarith
+      calc (0 : ℝ) = |p 2| - h 2 := h2.symm
+        _ ≤ max (|p 1| - h 1) (|p 2| - h 2) := le_max_right _ _
+        _ ≤ max (|p 0| - h 0) (max (|p 1| - h 1) (|p 2| - h 2)) := le_max_right _ _
+
 end Vdb
