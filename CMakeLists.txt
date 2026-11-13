@@ -20,6 +20,7 @@ set(TINYVDB_THREAD_BACKEND "AUTO" CACHE STRING "Task backend: AUTO, C11, GCD, PT
 set_property(CACHE TINYVDB_THREAD_BACKEND PROPERTY STRINGS AUTO C11 GCD PTHREAD NONE)
 option(TINYVDB_SIMD "Enable SSE2/AVX2/F16C SIMD paths (x86-64 only; scalar fallback otherwise)" ON)
 option(TINYVDB_BUILD_GPU "Build optional runtime-loaded GPU backend (Vulkan first, CUDA via Driver API + NVRTC)" ON)
+option(TINYVDB_BUILD_LEAN_DIFF "Run the Lean differential checks against vdbdump (opt-in; needs the Lean toolchain)" OFF)
 
 # cmake modules
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
@@ -533,6 +534,11 @@ if(TINYVDB_BUILD_TESTS)
   add_executable(test_half_rounding tests/test_half_rounding.c)
   target_link_libraries(test_half_rounding PRIVATE tinyvdb_mesh_ops)
   add_test(NAME test_half_rounding COMMAND test_half_rounding ${TINYVDB_TEST_FIXTURE})
+
+  if(TINYVDB_BUILD_LEAN_DIFF)
+    add_test(NAME lean_diff
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_samples.sh)
+  endif()
 
   add_executable(test_graded_refine tests/test_graded_refine.c)
   target_link_libraries(test_graded_refine PRIVATE tinyvdb_mesh_ops)
