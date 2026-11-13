@@ -17,6 +17,7 @@ import Vdb.MarchingCubes
 import Vdb.DualVertex
 import Vdb.Reconstruct
 import Vdb.DualSurface
+import Vdb.GlobalSurface
 import Vdb.Tree
 import Vdb.MaskCompress
 import Vdb.NodeRecord
