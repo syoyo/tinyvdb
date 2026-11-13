@@ -15,6 +15,7 @@ import Vdb.LevelSet
 import Vdb.MeshDistance
 import Vdb.MarchingCubes
 import Vdb.DualVertex
+import Vdb.DualSurface
 import Vdb.Tree
 import Vdb.MaskCompress
 import Vdb.NodeRecord
