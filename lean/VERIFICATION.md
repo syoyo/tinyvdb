@@ -186,6 +186,28 @@ dragon and utahteapot, raw payloads (F14) for cube, bunny and smoke. The
 reader, which skips point-data buffers and jumps to the grid's end marker; its
 node counts and leaf masks still match.
 
+## Differential harness: mask-compression classification
+
+`MaskClassify` (Lean model, `Vdb.MaskCompress.classify`) and the C writer
+(`tvdb__write_mask_values`, captured at its classification prefix — the chunk
+framing and packed values are not compared, those are covered by the
+record-level round trips) are compared exhaustively by
+`lean/scripts/check_mask_classify.sh` over every synthetic 8-slot node:
+
+* all 256 value masks, and for each mask every assignment of the five-symbol
+  alphabet `{bg, -bg, 2.5f, 3.5f, 4.5f}` (bg = 1.5f) to the inactive slots —
+  `sum_j C(8,j) 5^j = 6^8 = 1,679,616` nodes;
+* each side prints `mask assign code v0 v1 sel` (the wire code byte 0–6, the
+  stored inactive value(s) at full precision as little-endian hex, and the
+  selection-mask byte), compared byte-wise;
+* coverage is non-vacuous: every code is exercised (code 0: 256 nodes,
+  code 1: 255, code 2: 765, code 3: 6050, code 4: 18,150, code 5: 36,300,
+  code 6: 1,617,840) and selection bytes range over the full inactive set.
+
+Result: **all 1,679,616 nodes are byte-identical.** The check needs the Lean
+toolchain and a C11 compiler only; it is not wired into CTest (run it
+directly).
+
 The model fixes that this harness forced: internal-node children carry **no**
 serialized origins (only the root's children do), and half grids omit the value
 chunk when the stored count is zero. The earlier model wrote and read `i32 x3`
@@ -194,21 +216,17 @@ real file.
 
 ## Explicitly not yet done (next increments)
 
-1. **Mask compression vs. the C writer**: the model now proves the
-   round trip; the next step is a differential check that `classify` picks the
-   same code/`val0`/`val1`/selection as `tvdb__write_mask_values` (needed for
-   byte-identical output, not for correctness).
-2. **Half float exhaustive vectors vs C**: the bit model and the
+1. **Half float exhaustive vectors vs C**: the bit model and the
    round trips are proven (`halfToFloatBits`, `floatToHalfTrunc`,
    `floatToHalfRNE`, all checked over `Fin 65536`); still needed is a
    differential run of the encoders against the C writer, which needs the
    generator (`VdbGen`) below.
-3. **VdbGen**: a seeded generator for well-formed `.vdb` files (the other half
+2. **VdbGen**: a seeded generator for well-formed `.vdb` files (the other half
    of the oracle harness). The checking half is landed: `vdbcheck` (in-tree
    binary from `VdbCheck.lean`/`VdbSpec`) vs the C `vdbdump` reader over the
    13 sample files via `lean/scripts/diff_vdbdump.py`, wired into CTest as the
    opt-in `lean_diff` target (`TINYVDB_BUILD_LEAN_DIFF=ON`).
-4. Phase P2–P4, remainder: the sphere/plane/box SDFs with exact-distance
+3. Phase P2–P4, remainder: the sphere/plane/box SDFs with exact-distance
    and band theorems, the capsule/mesh/triangle distance fields, the MC
    consistent face rule and its dihedral invariance, the DMC assembly
    (`Assembly`/`CubeGrid`/`CubeField`) and the non-planar reconstruction all

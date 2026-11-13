@@ -29,3 +29,8 @@ lean_lib VdbSpec where
 /-- Model-side `.vdb` inspector (differential harness, Lean half). -/
 lean_exe vdbcheck where
   root := `VdbCheck
+
+/-- Model-side mask-compression enumeration (differential harness, Lean half,
+    driven by `scripts/check_mask_classify.sh`). -/
+lean_exe maskcheck where
+  root := `MaskClassify
