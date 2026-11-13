@@ -321,10 +321,10 @@ real file.
 
 ## Final tally
 
-* Landed Lean modules: 57 (51 under `Vdb/` + `VdbGen`, `VdbCheck`,
-  `VdbSpec`, `HalfCheck`, `MaskClassify`, `VdbDumpGen` if present) — the
-  library, the oracle generator and the two differential tools, all with
-  `warningAsError` on and **0 `sorry`/`admit`** in landed modules.
+* Landed Lean modules: 56 (51 under `Vdb/` + `VdbGen`, `VdbCheck`,
+  `VdbSpec`, `HalfCheck`, `MaskClassify`) — the library, the oracle
+  generator and the differential tools, all with `warningAsError` on and
+  **0 `sorry`/`admit`** in landed modules.
 * `lake build` green (≈9,100 jobs); `./lean/scripts/check_samples.sh`
   **13/13**; `check_mask_classify.sh` **1,679,616/1,679,616** byte-exact;
   `check_half.sh`: **65,536/65,536** `h2f` + **192,940/192,940** `f2h`
