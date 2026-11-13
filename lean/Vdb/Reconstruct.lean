@@ -161,4 +161,78 @@ theorem plane_level_set_rebuild (n : Q3) (d : ℚ) (o : Q3) (i j : Fin 8)
           planeF n d (fun j' => o j' + p j')) :=
   ⟨planeF_cube_crossings n d o i j h, fun p => trilinear_planeF_offset n d o p⟩
 
+
+/-! ### The dual vertex of a sampled plane -/
+
+theorem fin3_sum_list_sum (l : List Q3) (g : Fin 3 → Q3 → ℚ) :
+    (∑ i : Fin 3, (l.map (fun p => g i p)).sum) =
+      (l.map (fun p => ∑ i : Fin 3, g i p)).sum := by
+  induction l with
+  | nil => simp
+  | cons p ps ih =>
+    simp only [List.map_cons, List.sum_cons, Finset.sum_add_distrib, ih]
+
+/-- The inner product commutes with the average. -/
+theorem dot_avgQ (n : Q3) (l : List Q3) :
+    dot n (avgQ l) =
+      ((l.map (fun p => dot n p)).sum) / (l.length : ℚ) := by
+  unfold dot avgQ
+  have h1 : ∀ i : Fin 3, n i * ((l.map (fun p => p i)).sum / (l.length : ℚ)) =
+      (n i * (l.map (fun p => p i)).sum) / (l.length : ℚ) := fun i => by ring
+  simp only [h1]
+  rw [← Finset.sum_div]
+  congr 1
+  calc (∑ i : Fin 3, n i * (l.map (fun p => p i)).sum)
+      = ∑ i : Fin 3, (l.map (fun p => n i * p i)).sum := by
+        apply Finset.sum_congr rfl
+        intro i _
+        rw [List.sum_map_mul_left]
+    _ = (l.map (fun p => ∑ i : Fin 3, n i * p i)).sum :=
+        fin3_sum_list_sum l (fun i p => n i * p i)
+
+/-- A nonempty list of zeros averages to zero. -/
+theorem planeF_avgQ {n : Q3} {d : ℚ} {l : List Q3} (hne : l ≠ [])
+    (h : ∀ p ∈ l, planeF n d p = 0) : planeF n d (avgQ l) = 0 := by
+  unfold planeF at *
+  rw [dot_avgQ]
+  have hlen : (0 : ℚ) < l.length := by
+    have hpos : 0 < l.length := by
+      cases l with
+      | nil => exact absurd rfl hne
+      | cons p ps => simp
+    exact_mod_cast hpos
+  have hconst : ∀ (m : List Q3), (m.map (fun _ => d)).sum = (m.length : ℚ) * d := by
+    intro m
+    induction m with
+    | nil => simp
+    | cons p ps ih => simp [ih]; ring
+  have hsum : (l.map (fun p => dot n p)).sum = (l.length : ℚ) * d := by
+    have hmap : l.map (fun p => dot n p) = l.map (fun _ => d) := by
+      apply List.map_congr_left
+      intro p hp
+      have := h p hp
+      linarith
+    rw [hmap, hconst]
+  rw [hsum]
+  field_simp
+  ring
+
+/-- **The DMC dual vertex of a sampled plane lies on the plane**: a crossing on
+    a plane edge is on the plane, and the plane field is affine, so their
+    average is too. -/
+theorem planeF_dualVertex {n : Q3} {d : ℚ} {o : Q3} {edges : List (Fin 8 × Fin 8)}
+    (hne : edges ≠ [])
+    (h : ∀ e ∈ edges, planeF n d (fun k => o k + cornerPos e.1 k) ≠
+      planeF n d (fun k => o k + cornerPos e.2 k)) :
+    planeF n d (avgQ (edges.map (fun e =>
+      lerpQ (fun k => o k + cornerPos e.1 k) (fun k => o k + cornerPos e.2 k)
+        (edgeParam (planeF n d (fun k => o k + cornerPos e.1 k))
+          (planeF n d (fun k => o k + cornerPos e.2 k)))))) = 0 := by
+  apply planeF_avgQ
+  · obtain ⟨e, he⟩ := List.exists_mem_of_ne_nil edges hne
+    exact List.ne_nil_of_mem (List.mem_map.mpr ⟨e, he, rfl⟩)
+  · intro p hp
+    obtain ⟨e, he, rfl⟩ := List.mem_map.mp hp
+    exact planeF_cube_crossings n d o e.1 e.2 (h e he)
+
 end Vdb
