@@ -236,10 +236,13 @@ structure Cube where
   c : Fin 8 → ℚ
 
 /-- The twelve cube edges, as unordered corner pairs. -/
-def Cube.edges (_q : Cube) : List (Fin 8 × Fin 8) :=
+def cubeEdges : List (Fin 8 × Fin 8) :=
   [(0, 1), (1, 3), (3, 2), (2, 0),
    (4, 5), (5, 7), (7, 6), (6, 4),
    (0, 4), (1, 5), (2, 6), (3, 7)]
+
+/-- The twelve cube edges (bit 0 = x, bit 1 = y, bit 2 = z). -/
+def Cube.edges (_q : Cube) : List (Fin 8 × Fin 8) := cubeEdges
 
 /-- Does the surface cross this edge? -/
 def Cube.crosses (q : Cube) (e : Fin 8 × Fin 8) : Bool :=
@@ -251,7 +254,9 @@ def Cube.crossedEdges (q : Cube) : List (Fin 8 × Fin 8) :=
 
 theorem Cube.length_crossedEdges_le (q : Cube) : q.crossedEdges.length ≤ 12 := by
   unfold Cube.crossedEdges
-  exact le_trans (List.length_filter_le _ _) (by unfold Cube.edges; simp)
+  refine le_trans (List.length_filter_le _ _) ?_
+  rw [Cube.edges]
+  decide
 
 /-- A cube with all corners inside has no crossed edges (nothing to mesh). -/
 theorem Cube.crossedEdges_nil_of_all_neg (q : Cube) (h : ∀ k, q.c k < 0) :

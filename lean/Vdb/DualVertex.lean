@@ -17,6 +17,7 @@ import Vdb.MarchingCubes
 
 set_option linter.unusedSimpArgs false
 set_option maxHeartbeats 800000
+set_option maxRecDepth 100000
 
 namespace Vdb
 
@@ -161,5 +162,84 @@ theorem Cube.dualVertex_mem_cube (q : Cube) (hne : q.dualEdges ≠ [])
     exact ⟨le_of_lt ht.1, le_of_lt ht.2⟩
   · have ht := edgeParam_mem_Ioo' hb ha
     exact ⟨le_of_lt ht.1, le_of_lt ht.2⟩
+
+
+/-! ### Existence of the dual vertex (mixed cubes) -/
+
+def Cube.signs (q : Cube) : Fin 8 → Bool := fun k => isInside (q.c k)
+
+theorem cube_signs_connected :
+    ∀ (s : Fin 8 → Bool), (∀ e : Fin 8 × Fin 8, e ∈ cubeEdges → s e.1 = s e.2) →
+      ∀ k, s k = s 0 := by
+  decide
+
+theorem Cube.dualEdges_ne_nil_of_mixed (q : Cube) {i j : Fin 8}
+    (hij : isInside (q.c i) ≠ isInside (q.c j)) : q.dualEdges ≠ [] := by
+  intro hnil
+  have hall : ∀ e ∈ q.edges, q.crosses e = false := by
+    unfold Cube.dualEdges at hnil
+    intro e he
+    have hc : q.crosses e ≠ true := List.filter_eq_nil_iff.mp hnil e he
+    unfold Cube.crosses at hc ⊢
+    cases hb : edgeCrosses (q.c e.1) (q.c e.2) <;> simp_all
+  have hsign : ∀ e ∈ q.edges, isInside (q.c e.1) = isInside (q.c e.2) := by
+    intro e he
+    have hc := hall e he
+    unfold Cube.crosses edgeCrosses at hc
+    cases ha : isInside (q.c e.1) <;> cases hb : isInside (q.c e.2) <;> simp_all
+  have hconn : ∀ k, q.signs k = q.signs 0 :=
+    cube_signs_connected q.signs (fun e he => hsign e (by simpa [Cube.edges] using he))
+  exact hij (by
+    have hi := hconn i
+    have hj := hconn j
+    simp only [Cube.signs] at hi hj
+    rw [hi, hj])
+
+
+
+/-- A crossed edge with nonzero endpoints has one negative and one positive
+    endpoint (in some order). -/
+theorem edgeCrosses_signs {u v : ℚ} (h : edgeCrosses u v = true)
+    (hu : u ≠ 0) (hv : v ≠ 0) :
+    (u < 0 ∧ 0 < v) ∨ (v < 0 ∧ 0 < u) := by
+  have key : ∀ {a b : ℚ}, a ≠ 0 → b ≠ 0 → isInside a ≠ isInside b →
+      (a < 0 ∧ 0 < b) ∨ (b < 0 ∧ 0 < a) := by
+    intro a b ha hb hne
+    cases hi : isInside a
+    · have hb' : isInside b = true := by
+        cases hb2 : isInside b
+        · exact absurd (by rw [hi, hb2]) hne
+        · rfl
+      have h1 : ¬ a < 0 := isInside_false_iff.mp hi
+      have h2 : b < 0 := isInside_iff.mp hb'
+      exact Or.inr ⟨h2, lt_of_le_of_ne (not_lt.mp h1) (Ne.symm ha)⟩
+    · have ha' : a < 0 := isInside_iff.mp hi
+      have hb' : isInside b = false := by
+        cases hb2 : isInside b
+        · rfl
+        · exact absurd (by rw [hi, hb2]) hne
+      have h2 : ¬ b < 0 := isInside_false_iff.mp hb'
+      exact Or.inl ⟨ha', lt_of_le_of_ne (not_lt.mp h2) (Ne.symm hb)⟩
+  unfold edgeCrosses at h
+  by_cases he : isInside u = isInside v
+  · rw [he] at h
+    simp at h
+  · exact key hu hv he
+
+/-- **Every mixed cube has a dual vertex inside it**: a cube with both an
+    inside and an outside corner has a crossed edge, and the crossings of its
+    crossed (nonzero) edges give the in-cube average. -/
+theorem Cube.dualVertex_mem_cube_of_mixed (q : Cube) {i j : Fin 8}
+    (hij : isInside (q.c i) ≠ isInside (q.c j))
+    (hnz : ∀ e ∈ q.dualEdges, q.c e.1 ≠ 0 ∧ q.c e.2 ≠ 0)
+    (k : Fin 3) :
+    0 ≤ Vdb.Cube.dualVertex q (q.dualEdges_ne_nil_of_mixed hij) k ∧
+      Vdb.Cube.dualVertex q (q.dualEdges_ne_nil_of_mixed hij) k ≤ 1 := by
+  refine q.dualVertex_mem_cube _ ?_ k
+  intro e he
+  have hc : edgeCrosses (q.c e.1) (q.c e.2) = true := by
+    unfold Cube.dualEdges at he
+    exact (List.mem_filter.mp he).2
+  exact edgeCrosses_signs hc (hnz e he).1 (hnz e he).2
 
 end Vdb
