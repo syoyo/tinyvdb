@@ -235,4 +235,75 @@ theorem sdfTriangle_zero_iff (v0 v1 v2 : Point) (r : ℝ) (p : Point) :
   unfold sdfTriangle
   constructor <;> intro h <;> linarith
 
+
+/-! ### Zero sets and field algebra -/
+
+theorem segDist_eq_zero_iff (a b p : Point) :
+    segDist a b p = 0 ↔ p ∈ segment ℝ a b := by
+  unfold segDist
+  rw [← (isCompact_segment' a b).isClosed.mem_iff_infDist_zero
+    ⟨a, left_mem_segment ℝ a b⟩]
+
+theorem segDist_pos_iff_notMem (a b p : Point) :
+    0 < segDist a b p ↔ p ∉ segment ℝ a b := by
+  constructor
+  · intro h hp
+    exact absurd ((segDist_eq_zero_iff a b p).mpr hp) (ne_of_gt h)
+  · intro hp
+    refine lt_of_le_of_ne (segDist_nonneg a b p) ?_
+    intro h0
+    exact hp ((segDist_eq_zero_iff a b p).mp h0.symm)
+
+theorem meshDist_eq_zero_iff {edges : Finset (Point × Point)} (hne : edges.Nonempty)
+    (p : Point) : meshDist edges p = 0 ↔ p ∈ meshSet edges := by
+  unfold meshDist
+  rw [← (isCompact_meshSet edges).isClosed.mem_iff_infDist_zero (meshSet_nonempty hne)]
+
+theorem meshDist_pos_iff_notMem {edges : Finset (Point × Point)} (hne : edges.Nonempty)
+    (p : Point) : 0 < meshDist edges p ↔ p ∉ meshSet edges := by
+  constructor
+  · intro h hp
+    exact absurd ((meshDist_eq_zero_iff hne p).mpr hp) (ne_of_gt h)
+  · intro hp
+    refine lt_of_le_of_ne (meshDist_nonneg edges p) ?_
+    intro h0
+    exact hp ((meshDist_eq_zero_iff hne p).mp h0.symm)
+
+theorem triangleDist_eq_zero_iff (v0 v1 v2 p : Point) :
+    triangleDist v0 v1 v2 p = 0 ↔ p ∈ triangleSet v0 v1 v2 := by
+  unfold triangleDist
+  rw [← (isCompact_triangleSet v0 v1 v2).isClosed.mem_iff_infDist_zero
+    (triangleSet_nonempty v0 v1 v2)]
+
+theorem triangleDist_pos_iff_notMem (v0 v1 v2 p : Point) :
+    0 < triangleDist v0 v1 v2 p ↔ p ∉ triangleSet v0 v1 v2 := by
+  constructor
+  · intro h hp
+    exact absurd ((triangleDist_eq_zero_iff v0 v1 v2 p).mpr hp) (ne_of_gt h)
+  · intro hp
+    refine lt_of_le_of_ne ?_ ?_
+    · unfold triangleDist
+      exact Metric.infDist_nonneg
+    · intro h0
+      exact hp ((triangleDist_eq_zero_iff v0 v1 v2 p).mp h0.symm)
+
+/-- Adding a constant to a signed distance field keeps it one. -/
+theorem IsSDF.sub_const {f : Point → ℝ} (hf : IsSDF f) (r : ℝ) :
+    IsSDF (fun p => f p - r) := by
+  intro p q
+  have h := hf p q
+  have he : |f p - r - (f q - r)| = |f p - f q| := by
+    congr 1; ring
+  rw [he]
+  exact h
+
+/-- The maximum of two signed distance fields is a signed distance field
+    (the intersection of the two surfaces). -/
+theorem IsSDF.max {f g : Point → ℝ} (hf : IsSDF f) (hg : IsSDF g) :
+    IsSDF (fun p => max (f p) (g p)) := by
+  intro p q
+  refine le_trans (abs_max_sub_max_le_max (f p) (g p) (f q) (g q)) (max_le ?_ ?_)
+  · exact hf p q
+  · exact hg p q
+
 end Vdb
