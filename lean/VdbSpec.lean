@@ -24,6 +24,7 @@ import Vdb.CubeGrid
 import Vdb.CubeField
 import Vdb.Winding
 import Vdb.BoxInside
+import Vdb.MeshRay
 import Vdb.Tree
 import Vdb.MaskCompress
 import Vdb.NodeRecord
