@@ -198,15 +198,28 @@ def printTree (b : Bytes) (ver : UInt32) (gd : GridDescriptor) : IO Unit := do
           IO.println s!"  tree nodes internal={s.internal} leaf={s.leaves} active={s.active}"
           IO.println s!"  tree end-ok={decide (topEnd <= gd.endOffset.toNat)}"
       else if half then
-        -- F6: the half-grid layout is walked directly (the record parser it
-        -- uses is the proven `ValueRecord.parseFromCountM`).
         let framed := (h.compressionFlags &&& 5) != 0
-        match halfParse vsize elemSize compressed ver.toNat framed b ho gd.endOffset.toNat with
-        | none => IO.println s!"  tree invalid (half walk, vsize={vsize} elem={elemSize})"
-        | some (s, ok) =>
-          IO.println s!"  tree tiles={treeTiles b ho vsize} children={treeChildren b ho vsize}"
-          IO.println s!"  tree nodes internal={s.internal} leaf={s.leaves} active={s.active}"
-          IO.println s!"  tree end-ok={ok}"
+        if framed then
+          -- F6: the proven half-aware count cascade (BLOSC/ZIP framing).
+          match TreeData5.parseFullCountH true vsize elemSize compressed ver.toNat
+              skipDecompress b ho with
+          | none => IO.println s!"  tree invalid (half cascade, vsize={vsize} elem={elemSize})"
+          | some (t, _, endOff) =>
+            let s := treeStats t
+            IO.println s!"  tree mode=proven-half"
+            IO.println s!"  tree tiles={t.root.tiles.length} children={t.root.children.length}"
+            IO.println s!"  tree nodes internal={s.internal} leaf={s.leaves} active={s.active}"
+            IO.println s!"  tree end={endOff} expected={gd.endOffset.toNat} \
+              ok={endOff == gd.endOffset.toNat}"
+        else
+          -- F14: grids without BLOSC/ZIP store raw payloads (no size word), which
+          -- the proven cascade does not model yet; walk the layout instead.
+          match halfParse vsize elemSize compressed ver.toNat framed b ho gd.endOffset.toNat with
+          | none => IO.println s!"  tree invalid (half walk, vsize={vsize} elem={elemSize})"
+          | some (s, ok) =>
+            IO.println s!"  tree tiles={treeTiles b ho vsize} children={treeChildren b ho vsize}"
+            IO.println s!"  tree nodes internal={s.internal} leaf={s.leaves} active={s.active}"
+            IO.println s!"  tree end-ok={ok}"
       else
         match TreeData5.parseFullCount vsize elemSize compressed ver.toNat
             skipDecompress b ho with

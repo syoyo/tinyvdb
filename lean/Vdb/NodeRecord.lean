@@ -366,7 +366,6 @@ theorem ValueRecord.parseFrom_emitFrom {L : Nat} (r : ValueRecord L) (vsize expe
     simp [ValueRecord.chunks, ValueRecord.tailChunks]
 
 
-/-! ### Half-precision chunk omission (F6) -/
 
 theorem bytes_eq_empty_of_size_zero (b : Bytes) (h : b.size = 0) : b = ByteArray.empty := by
   apply ByteArray.ext

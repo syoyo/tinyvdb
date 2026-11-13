@@ -31,6 +31,7 @@ import Vdb.Topology
 import Vdb.TreeNode
 import Vdb.TreeBuffer
 import Vdb.TreeDerived
+import Vdb.TreeHalf
 import Vdb.Transform
 import Vdb.File
 import Vdb.FilePrefix
