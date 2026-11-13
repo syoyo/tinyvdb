@@ -256,39 +256,84 @@ real file.
 
 ## Explicitly not yet done (next increments)
 
-1. **VdbGen**: a seeded generator for well-formed `.vdb` files (the other half
-   of the oracle harness). The checking half is landed: `vdbcheck` (in-tree
-   binary from `VdbCheck.lean`/`VdbSpec`) vs the C `vdbdump` reader over the
-   13 sample files via `lean/scripts/diff_vdbdump.py`, wired into CTest as the
-   opt-in `lean_diff` target (`TINYVDB_BUILD_LEAN_DIFF=ON`).
+1. **VdbGen — LANDED.** The generator is `VdbGen.lean` (`lean_exe vdbgen`,
+   `lakefile.lean`): a seeded generator of well-formed `.vdb` files across
+   five kinds (`empty tiles sparse half multi`), checked against the C
+   reader (`vdbdump`) by `lean/scripts/check_vdbgen.sh`: 500 seeds × 5 kinds,
+   **2,500/2,500 files match** `vdbcheck` vs `vdbdump` (all nodes/counts/end
+   offsets). The checking half also exists: `vdbcheck` (in-tree binary from
+   `VdbCheck.lean`/`VdbSpec`) vs the C `vdbdump` reader over the 13 sample
+   files (`lean/scripts/diff_vdbdump.py`), wired into CTest as the opt-in
+   `lean_diff` target (`TINYVDB_BUILD_LEAN_DIFF=ON`).
+2. **Phase P2–P4 — landed in this goal, plus what remains honestly open.**
+   Landed: the non-planar reconstruction (`Vdb/Reconstruct.lean`), the DMC
+   assembly (`Assembly`/`CubeGrid`/`CubeField` — watertight from balanced
+   primal incidence), the MC consistent face rule and its dihedral
+   invariance (`Vdb/MarchingCubes.lean`), the torus SDF (exact distance,
+   zero set, sign, 1-Lipschitz — `Vdb/TorusSdf.lean`), CSG set semantics
+   (`Vdb/Csg.lean`), the Godunov local solver (`Vdb/Godunov.lean`, spec +
+   discriminants + `a + h/√3 ≤ x ≤ a + h` + monotonicity in the grid size),
+   the abstract fast-sweeping theory (`Vdb/FastSweep.lean`,
+   T-FS-MONO/FIX/SIGN/TERM), the flood-fill module (`Vdb/FloodFill.lean`,
+   BFS/spec equality, per-component sign constancy, volume split), the
+   cubical Euler characteristic (`Vdb/Euler.lean`, `chiOf_union` additivity,
+   machine-checked 2×2×2 and 3³-shell instances, Poincaré–Lefschetz on both
+   solids), F10 (decided: face-consistent, documented), the DMC-1 manifold
+   facts (`Vdb/DmcManifold.lean`: even sign changes on 4-cycles, every face
+   evenly crossed, bump field closed and edge-manifold, triangle vertex
+   belts; general padded-grid theorem remains open), the BVH
+   closest-triangle traversal (`Vdb/Bvh.lean`, **`search_eq_brute`**) and the
+   narrow-band mesh→level-set covering bound (`Vdb/NarrowBand.lean`,
+   **`band_complete`**).
 
-   The half-float encoders are now also differential-checked (see
-   "Differential harness: half-float conversions" in this file); it does not
-   depend on `VdbGen` after all, because the check is structured as a
-   fiber-exhaustive bit-level comparison of the encoders themselves.
-2. Phase P2–P4, remainder: the sphere/plane/box SDFs with exact-distance
-   and band theorems, the capsule/mesh/triangle distance fields, the MC
-   consistent face rule and its dihedral invariance, the DMC assembly
-   (`Assembly`/`CubeGrid`/`CubeField`) and the non-planar reconstruction all
-   landed, the torus SDF (exact distance, zero set, sign, 1-Lipschitz —
-   `Vdb/TorusSdf.lean`), CSG set semantics (`Vdb/Csg.lean`) and the Godunov local
-   solver (`Vdb/Godunov.lean`, spec + discriminants + `a + h/√3 ≤ x ≤ a + h` +
-   monotonicity in the grid size), the abstract fast-sweeping theory
-   (`Vdb/FastSweep.lean`, T-FS-MONO/FIX/SIGN/TERM), the flood-fill module
-   (`Vdb/FloodFill.lean`, BFS/spec equality, per-component sign constancy,
-   volume split), the cubical Euler characteristic (`Vdb/Euler.lean`,
-   `chiOf_union` additivity, machine-checked 2×2×2 and 3³-shell instances,
-   Poincaré–Lefschetz on both solids), F10 (decided: face-consistent,
-   documented) and the DMC-1 manifold facts (`Vdb/DmcManifold.lean`: even
-   sign changes on 4-cycles, every face evenly crossed, bump field closed
-   and edge-manifold, triangle vertex belts; general padded-grid theorem
-   remains open) and the BVH closest-triangle traversal (`Vdb/Bvh.lean`:
-   the AABB bound `boxDist_le_of_mem`, monotonicity `boxDist_mono`, and
-   **`search_eq_brute`** — the pruned traversal returns exactly the
-   brute-force candidate, including the tie-break) and the narrow-band
-   mesh→level-set covering bound (`Vdb/NarrowBand.lean`,
-   **`band_complete`**). The P4 remainder is landed: BVH soundness and
-   narrow-band completeness.
+   Honestly open from the P2–P4 plan (never attempted):
+   * the dense-grid geometry base (`Ops/Dense`/`Ops/Sample`): trilinear
+     sampling, partition of unity, the sample/splat adjoint identity, the
+     x-fastest index bijection;
+   * platonic-solid SDFs, the narrow-band clamp as a 1-Lipschitz lemma, the
+     grid-sizing theorems;
+   * NaN asymmetry of `<`/`>` as an executable Float model (F12-adjacent);
+   * Godunov monotone in each argument, the tree-variant of the Godunov and
+     fast-sweeping theorems, T-FS-FIX (the fixed point solves the discrete
+     Eikonal system), the full 8-direction convergence (Zhao 2005);
+   * flood-fill `staircaseFaces` consistency (it is *not* a consistent
+     estimator — only the definition was recorded);
+   * Poincaré–Lefschetz as a general theorem (checked only on two concrete
+     solids), homology machinery;
+   * MC welding (`T-MC-WELD`), tree MC partition (`T-OWN-PART`), MC
+     adaptivity bounds;
+   * DMC-0 full theory (open-edge handling), general padded-grid DMC-1
+     manifold theorem (the 2×2×2 `Fin 2` torus double-covers and cannot host
+     it), T-DMC1-DUAL (explicitly not landable on the Fin 2 torus — MC 16
+     triangles vs DMC 6 quads; needs a padded-grid model);
+   * generalized winding number (orientation flip, additivity, invariance)
+     and the Barnes–Hut dipole first-order term + error bound;
+   * the narrow-band composition theorem (`denote = clamp(signedDist, …)`),
+     the tree-variant band completeness, sphere-band shell evaluation;
+   * the P2–P4 differential tests versus the C binaries (`OpsGen`-style
+     random testing).
+3. **Findings.** F1 (scalar encoder truncates/flushes) and F15 (`x >> 32`
+   UB) are **confirmed and fixed in C** (see "Differential harness: half-float
+   conversions"); F6 (half-grid zero-count chunks), F14 (raw framing for
+   `compression = 0/2`) and F10 (MC table face-consistent) are **confirmed
+   and modelled/decided** in Lean. F2–F5, F7–F9, F11–F13 remain hypotheses
+   (not yet checked against a Lean model — see the findings table below).
+
+## Final tally
+
+* Landed Lean modules: 57 (51 under `Vdb/` + `VdbGen`, `VdbCheck`,
+  `VdbSpec`, `HalfCheck`, `MaskClassify`, `VdbDumpGen` if present) — the
+  library, the oracle generator and the two differential tools, all with
+  `warningAsError` on and **0 `sorry`/`admit`** in landed modules.
+* `lake build` green (≈9,100 jobs); `./lean/scripts/check_samples.sh`
+  **13/13**; `check_mask_classify.sh` **1,679,616/1,679,616** byte-exact;
+  `check_half.sh`: **65,536/65,536** `h2f` + **192,940/192,940** `f2h`
+  witnesses byte-exact (fiber audit clean over all 2³² inputs);
+  `check_vdbgen.sh`: **2,500/2,500**; `check_mc_face.py`: face-consistent
+  (exit 0).
+* Findings fixed in C: F1, F15 (both regression-tested). Modelled/decided:
+  F6, F10, F14. Open hypotheses: F2–F5, F7–F9, F11–F13.
+* Not pushed anywhere; everything is local commits on `main`.
 
 ## Findings awaiting model confirmation
 
