@@ -168,15 +168,15 @@ the chunk framing (the `i64` size word), which is part of the model. Raw chunks
 (`-N`) still have `N` checked against the derived `storedCount * elemSize`, so
 a wrong value-count rule is caught.
 
-Coverage: **12 of 13** files are now checked node for node (root tiles/children,
-internal/leaf counts, active voxels, exact end offset). That includes all six
-half grids: their `read_count == 0` nodes omit the chunk header (F6), so the
-harness walks the layout with `halfParse`, delegating every value record to the
-proven `ValueRecord.parseFromCountM`. Grids without BLOSC/ZIP compression store
-raw payloads without a size word (F14), handled by `skipRawRecord` on top of the
-proven `parseNoChunk`. Only `ptdataidx32` (`Tree_ptdataidx32_5_4_3`) remains
-`tree unsupported`, because point-index leaves append an index-count payload the
-tree model does not cover.
+Coverage: **all 13** files are checked (root tiles/children, internal/leaf
+counts, active voxels, exact end offset). That includes all six half grids:
+their `read_count == 0` nodes omit the chunk header (F6), so the harness walks
+the layout with `halfParse`, delegating every value record to the proven
+`ValueRecord.parseFromCountM`. Grids without BLOSC/ZIP compression store raw
+payloads without a size word (F14), handled by `skipRawRecord` on top of the
+proven `parseNoChunk`. `Tree_ptdataidx32_5_4_3` is parsed at the topology level
+only, mirroring the C reader, which skips point-data buffers and jumps to the
+grid's end marker; its node counts and leaf masks still match.
 
 The model fixes that this harness forced: internal-node children carry **no**
 serialized origins (only the root's children do), and half grids omit the value

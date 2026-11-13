@@ -15,6 +15,14 @@ def transformKindName : TransformKind → String
 def byteString (b : Bytes) : String :=
   String.fromUTF8? b |>.getD s!"<{b.size} bytes>"
 
+/-- Does the wire grid type contain a literal substring? -/
+def containsSub (s sub : String) : Bool :=
+  let subL := sub.toList
+  let rec go : List Char → Bool
+    | [] => subL.isEmpty
+    | c :: cs => subL.isPrefixOf (c :: cs) || go cs
+  go s.toList
+
 /-- Strip a literal UTF-8/ASCII suffix. -/
 def trimSuffix (s suf : String) : Option String :=
   if s.endsWith suf then some ((s.take (s.length - suf.length)).toString) else none
@@ -178,7 +186,18 @@ def printTree (b : Bytes) (ver : UInt32) (gd : GridDescriptor) : IO Unit := do
       let compressed := (h.compressionFlags &&& 2) != 0
       let vsize := vt.size
       let elemSize := vt.fileElemSize half
-      if half then
+      if containsSub ty "ptdataidx" then
+        -- PointDataGrid: the C reader parses topology only, then jumps to the
+        -- grid's end marker (leaf buffers are AttributeSet blobs).
+        match TreeData5.parseFromCount vsize elemSize compressed ver.toNat
+            skipDecompress b ho with
+        | none => IO.println s!"  tree invalid (point-data topology, vsize={vsize} elem={elemSize})"
+        | some (t, topEnd) =>
+          let s := treeStats t
+          IO.println s!"  tree tiles={t.root.tiles.length} children={t.root.children.length}"
+          IO.println s!"  tree nodes internal={s.internal} leaf={s.leaves} active={s.active}"
+          IO.println s!"  tree end-ok={decide (topEnd <= gd.endOffset.toNat)}"
+      else if half then
         -- F6: the half-grid layout is walked directly (the record parser it
         -- uses is the proven `ValueRecord.parseFromCountM`).
         let framed := (h.compressionFlags &&& 5) != 0
