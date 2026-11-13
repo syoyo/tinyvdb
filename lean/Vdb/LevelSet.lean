@@ -338,4 +338,37 @@ theorem sdfSphere_exact (r : ℝ) (hr : 0 ≤ r) (p : Point) :
   · intro q hq
     exact sdfSphere_abs_le_dist r hq
 
+
+/-! ### Level sets of signed distance fields -/
+
+/-- The zero set (or any level set) of a signed distance field is closed. -/
+theorem IsSDF.isClosed_levelSet {f : Point → ℝ} (hf : IsSDF f) (c : ℝ) :
+    IsClosed (levelSet f c) :=
+  isClosed_eq hf.continuous continuous_const
+
+/-- A 1-Lipschitz field's value bounds the distance to every point of its
+    level set. -/
+theorem IsSDF.abs_sub_le_dist_of_level {f : Point → ℝ} (hf : IsSDF f) {c : ℝ}
+    {p q : Point} (hq : q ∈ levelSet f c) : |f p - c| ≤ dist p q := by
+  have h := hf p q
+  rw [levelSet] at hq
+  rw [hq] at h
+  exact h
+
+/-- **The field value bounds the distance to the level set**: for every point,
+    `|f p - c|` is at most the infimum distance to the level set. This is the
+    lower half of "the field is the distance to the surface". -/
+theorem IsSDF.abs_sub_le_infDist {f : Point → ℝ} (hf : IsSDF f) {c : ℝ}
+    (hne : (levelSet f c).Nonempty) (p : Point) :
+    |f p - c| ≤ Metric.infDist p (levelSet f c) := by
+  rw [Metric.le_infDist hne]
+  intro q hq
+  exact hf.abs_sub_le_dist_of_level hq
+
+/-- In a proper space the nearest level-set point is attained. -/
+theorem IsSDF.exists_nearest_levelSet {f : Point → ℝ} (hf : IsSDF f) {c : ℝ}
+    (hne : (levelSet f c).Nonempty) (p : Point) :
+    ∃ q : Point, q ∈ levelSet f c ∧ Metric.infDist p (levelSet f c) = dist p q :=
+  (hf.isClosed_levelSet c).exists_infDist_eq_dist hne p
+
 end Vdb
