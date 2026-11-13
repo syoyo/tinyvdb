@@ -224,4 +224,79 @@ theorem bumpFieldQ_inside_point : bumpFieldQ (pt 1 (3 / 4) (5 / 4)) < 0 := by
   intro i
   fin_cases i <;> norm_num [pt]
 
+
+/-! ### Face-level all-points parity and the triangle identification -/
+
+/-- The x-interval parity for the cube `[1/6, 11/6]`: the `+x` ray crosses
+    the two `x` faces, and the crossing parity is 1 exactly inside the slab. -/
+theorem xFaceParity_iff (x : ℚ) (_h1 : x ≠ 1/6) (h2 : x ≠ 11/6) :
+    (((1/6 < x) != (11/6 < x)) = true) ↔ |x - 1| < 5/6 := by
+  constructor
+  · intro hpar
+    by_cases hA : 1/6 < x
+    · by_cases hB : 11/6 < x
+      · simp [hA, hB] at hpar
+        linarith
+      · have hxlt : x < 11/6 := lt_of_le_of_ne (not_lt.mp hB) h2
+        rw [abs_lt]; constructor <;> linarith
+    · have hB : ¬ 11/6 < x := by linarith
+      simp [hA, hB] at hpar
+      linarith
+  · intro hin
+    rw [abs_lt] at hin
+    have hx1 : 1/6 < x := by linarith [hin.1]
+    have hx2 : ¬ 11/6 < x := by linarith [hin.2]
+    simp [hx1, hx2]
+    linarith
+
+/-- The face-level x-ray parity of the cube `[1/6, 11/6]^3`: crosses only when
+    the other two coordinates are within the cube. -/
+def boxFaceParity (p : RQ3) : Bool :=
+  (decide (|p 1 - 1| ≤ 5/6) && decide (|p 2 - 1| ≤ 5/6)) &&
+    ((1/6 < p 0) != (11/6 < p 0))
+
+/-- **All-points inside test for the closed cube surface**: for a point off the
+    boundary, the face-level ray parity is true exactly inside. -/
+theorem boxFaceParity_iff (p : RQ3)
+    (hbd : p 0 ≠ 1/6 ∧ p 0 ≠ 11/6 ∧ ∀ i : Fin 3, |p i - 1| ≠ 5/6) :
+    boxFaceParity p = true ↔ bumpInside p := by
+  unfold boxFaceParity bumpInside
+  by_cases hy : |p 1 - 1| ≤ 5/6
+  · by_cases hz : |p 2 - 1| ≤ 5/6
+    · have hy' : |p 1 - 1| < 5/6 := lt_of_le_of_ne hy (hbd.2.2 1)
+      have hz' : |p 2 - 1| < 5/6 := lt_of_le_of_ne hz (hbd.2.2 2)
+      have hx := xFaceParity_iff (p 0) hbd.1 hbd.2.1
+      simp only [hy, hz, decide_eq_true_eq, Bool.true_and]
+      constructor
+      · intro hpar i
+        fin_cases i
+        · simpa using hx.mp hpar
+        · exact hy'
+        · exact hz'
+      · intro hall
+        exact hx.mpr (by simpa using hall 0)
+    · have hz' : 5/6 < |p 2 - 1| := lt_of_not_ge hz
+      simp [hy, hz]
+      exact ⟨2, le_of_lt hz'⟩
+  · have hy' : 5/6 < |p 1 - 1| := lt_of_not_ge hy
+    simp [hy]
+    exact ⟨1, le_of_lt hy'⟩
+
+/-- A rational point is one of the eight cube corners. -/
+def isCubeCorner (v : RQ3) : Bool :=
+  (decide (v 0 = 1/6) || decide (v 0 = 11/6)) &&
+    ((decide (v 1 = 1/6) || decide (v 1 = 11/6)) &&
+      (decide (v 2 = 1/6) || decide (v 2 = 11/6)))
+
+/-- Every vertex of every triangle is a cube corner `{1/6, 11/6}^3`. -/
+theorem meshTris_vertices_cube :
+    (meshTris.all fun t =>
+      isCubeCorner t.1 && isCubeCorner t.2.1 && isCubeCorner t.2.2) = true := by
+  native_decide
+
+/-- The concrete triangle parity agrees with the face parity at the inside
+    sample point. -/
+theorem parity_inside_face : parity (pt 1 (3/4) (5/4)) = boxFaceParity (pt 1 (3/4) (5/4)) := by
+  native_decide
+
 end Vdb
