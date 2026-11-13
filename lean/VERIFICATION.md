@@ -269,10 +269,12 @@ real file.
    landed, the torus SDF (exact distance, zero set, sign, 1-Lipschitz —
    `Vdb/TorusSdf.lean`), CSG set semantics (`Vdb/Csg.lean`) and the Godunov local
    solver (`Vdb/Godunov.lean`, spec + discriminants + `a + h/√3 ≤ x ≤ a + h` +
-   monotonicity in the grid size) and the abstract fast-sweeping theory
-   (`Vdb/FastSweep.lean`, T-FS-MONO/FIX/SIGN/TERM); still open is flood fill, the
-   Euler-characteristic measure, F10 (MC ambiguous-face consistency), DMC-1
-   (the manifold theorem) and the P4 BVH/band completeness work.
+   monotonicity in the grid size), the abstract fast-sweeping theory
+   (`Vdb/FastSweep.lean`, T-FS-MONO/FIX/SIGN/TERM) and the flood-fill module
+   (`Vdb/FloodFill.lean`, BFS/spec equality, per-component sign constancy,
+   volume split); still open are the Euler-characteristic measure, F10 (MC
+   ambiguous-face consistency), DMC-1 (the manifold theorem) and the P4
+   BVH/band completeness work.
 
 ## Findings awaiting model confirmation
 
