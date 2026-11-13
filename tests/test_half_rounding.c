@@ -10,6 +10,7 @@
  * writes and re-reads it, then checks the promoted values:
  *   1 + 2^-12 + 2^-23  ->  1 + 2^-10        (round up, not truncate)
  *   2^-30              ->  +0               (flush)
+ *   (1 + 2^-23) * 2^-33 ->  +0              (exponent 94: shr_rne(x, 32))
  *   -0.0f              ->  -0.0f            (sign preserved)
  *   +Inf               ->  +Inf
  *   NaN                ->  NaN
@@ -51,17 +52,18 @@ static int round_trip(const char *fixture) {
   CHECK(src.num_grids > 0);
 
   /* Sample voxels: one per behaviour under test, spread over three leaves. */
-  tvdb_vec3i coords[5] = {
-      {0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {9, 0, 0}, {10, 0, 0}};
-  float values[5];
+  tvdb_vec3i coords[6] = {
+      {0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {9, 0, 0}, {10, 0, 0}, {11, 0, 0}};
+  float values[6];
   values[0] = 1.0f + 0x1p-11f + 0x1p-23f; /* mantissa 0x000801 */
   values[1] = 0x1p-30f;                   /* below half's smallest normal */
   values[2] = -0.0f;
   values[3] = INFINITY;
   values[4] = NAN;
+  values[5] = 0x1.000002p-33f;            /* e == 94, low mantissa bit set */
 
   CHECK(tvdb_grid_from_sparse_typed_using_template(
-      &src.grids[0], coords, values, 5, TVDB_VALUE_FLOAT, &values[2] /* bg +0 */
+      &src.grids[0], coords, values, 6, TVDB_VALUE_FLOAT, &values[2] /* bg +0 */
       , "half_round", &grid));
   grid.descriptor.save_float_as_half = 1;
 
@@ -101,6 +103,9 @@ static int round_trip(const char *fixture) {
 
     float v4 = tvdb_tree_get(&idx, (const int32_t *)&coords[4], NULL);
     CHECK(isnan(v4));
+
+    float v5 = tvdb_tree_get(&idx, (const int32_t *)&coords[5], NULL);
+    CHECK(v5 == 0.0f && !signbit(v5));
   }
 
   rc = 0;

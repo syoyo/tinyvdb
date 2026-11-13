@@ -854,10 +854,13 @@ static float tvdb__half_to_float(uint16_t h) {
 static uint32_t tvdb__shr_rne(uint32_t x, unsigned k) {
     uint32_t q, rem, half;
     if (k == 0) return x;
-    if (k > 32) return 0;
+    /* For k >= 32 the RNE shift cannot keep a bit (x < 2^24 and
+       half = 2^(k-1) >= 2^31 >= x), and k == 32 used to run `x >> 32`,
+       which is undefined for a 32-bit type. */
+    if (k >= 32) return 0;
     q = x >> k;
-    rem = (k == 32) ? x : (x & ((UINT32_C(1) << k) - 1u));
-    half = (k == 32) ? 0x80000000u : (UINT32_C(1) << (k - 1));
+    rem = x & ((UINT32_C(1) << k) - 1u);
+    half = UINT32_C(1) << (k - 1);
     if (rem > half || (rem == half && (q & 1u))) ++q;
     return q;
 }

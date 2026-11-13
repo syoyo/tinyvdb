@@ -34,3 +34,8 @@ lean_exe vdbcheck where
     driven by `scripts/check_mask_classify.sh`). -/
 lean_exe maskcheck where
   root := `MaskClassify
+
+/-- Model-side half-float differential check (differential harness, Lean half,
+    driven by `scripts/check_half.sh`). -/
+lean_exe halfcheck where
+  root := `HalfCheck

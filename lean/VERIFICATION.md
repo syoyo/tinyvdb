@@ -208,6 +208,36 @@ Result: **all 1,679,616 nodes are byte-identical.** The check needs the Lean
 toolchain and a C11 compiler only; it is not wired into CTest (run it
 directly).
 
+## Differential harness: half-float conversions
+
+`HalfCheck` (Lean model, `Vdb.Half.halfToFloatBits` and
+`Vdb.Half.floatToHalfRNE`) and the C encoders (`tvdb__half_to_float`,
+`tvdb__float_to_half`) are compared by
+`lean/scripts/check_half.sh`:
+
+* `h2f`: all 65,536 half bit patterns, `halfToFloatBits` vs
+  `tvdb__half_to_float`, byte-identical dumps;
+* `f2h`: one witness per rounding fiber of `float -> half` RNE. The plan
+  was a full 2^32 comparison, but the Lean interpreter/compiled code is
+  ~4M/s, so the check is structured instead as a fiber comparison: two
+  inputs in the same fiber produce the same half, and `HalfCheck`/
+  `half_check_c.c` emit exactly one witness per fiber (192,940 cases:
+  2,050 Inf/NaN fibers, 224 overflow-to-Inf, 184,320 normal-half fibers
+  (`30 exp × 2 sign × 1024 q × 3 residue classes`), ~6k subnormal fibers
+  and 204 flush-to-zero fibers). Dumps compare byte-wise;
+* the fiber partition itself is machine-validated on the C side by
+  `half_check_c.c audit`: it brute-forces all 2^32 inputs and checks
+  constancy of the output within every fiber (`audit: 192940 fibers,
+  0 mismatches`). The witness count must equal the audited fiber count,
+  so no fiber is ever left out of the differential comparison.
+
+Result: **`h2f` 65,536 patterns identical; `f2h` 192,940 witnesses
+identical; audit clean over 2^32 inputs.** This harness immediately found
+F15 (the exponent-94 scalar-encoder bug above); the Lean model was correct.
+The truncating encoder `floatToHalfTrunc` is not compared: the C writer no
+longer uses it (F1). The check needs the Lean toolchain and a C11 compiler
+only; it is not wired into CTest (run it directly). The audit takes ~16 s.
+
 The model fixes that this harness forced: internal-node children carry **no**
 serialized origins (only the root's children do), and half grids omit the value
 chunk when the stored count is zero. The earlier model wrote and read `i32 x3`
@@ -216,17 +246,17 @@ real file.
 
 ## Explicitly not yet done (next increments)
 
-1. **Half float exhaustive vectors vs C**: the bit model and the
-   round trips are proven (`halfToFloatBits`, `floatToHalfTrunc`,
-   `floatToHalfRNE`, all checked over `Fin 65536`); still needed is a
-   differential run of the encoders against the C writer, which needs the
-   generator (`VdbGen`) below.
-2. **VdbGen**: a seeded generator for well-formed `.vdb` files (the other half
+1. **VdbGen**: a seeded generator for well-formed `.vdb` files (the other half
    of the oracle harness). The checking half is landed: `vdbcheck` (in-tree
    binary from `VdbCheck.lean`/`VdbSpec`) vs the C `vdbdump` reader over the
    13 sample files via `lean/scripts/diff_vdbdump.py`, wired into CTest as the
    opt-in `lean_diff` target (`TINYVDB_BUILD_LEAN_DIFF=ON`).
-3. Phase P2–P4, remainder: the sphere/plane/box SDFs with exact-distance
+
+   The half-float encoders are now also differential-checked (see
+   "Differential harness: half-float conversions" in this file); it does not
+   depend on `VdbGen` after all, because the check is structured as a
+   fiber-exhaustive bit-level comparison of the encoders themselves.
+2. Phase P2–P4, remainder: the sphere/plane/box SDFs with exact-distance
    and band theorems, the capsule/mesh/triangle distance fields, the MC
    consistent face rule and its dihedral invariance, the DMC assembly
    (`Assembly`/`CubeGrid`/`CubeField`) and the non-planar reconstruction all
@@ -239,7 +269,7 @@ real file.
 
 These are hypotheses from the C survey (details in `../plan-lean.md` §0.2).
 Each is confirmed or refuted by the corresponding Lean model, then fixed in C
-(or documented). F1 is confirmed and fixed in C; F6 and F14 are confirmed and
+(or documented). F1 and F15 are confirmed and fixed in C; F6 and F14 are confirmed and
 modelled in the Lean layer. The rest are still open.
 
 | ID | Hypothesis |
@@ -257,4 +287,5 @@ modelled in the Lean layer. The rest are still open.
 | F11 | dense mesh→SDF sign uses the closest face normal (not pseudonormals) |
 | F12 | dense CSG silences dimension/origin/voxel-size mismatches |
 | F13 | `tvdb_gradient` boundary divides the clamped difference by `2h` |
+| F15 | **confirmed and fixed** in C: the scalar float→half RNE encoder evaluated `x >> 32` for every float with exponent 94 (`k = 126 - 94 == 32`) — undefined behaviour for a 32-bit type. On x86-64 the shift count wraps mod 32 and the encoder emitted `mant & 0x7ff` as a nonzero half (up to a bogus max subnormal) for every exponent-94 input, instead of `+0` (the whole of `[2^-33, 2^-32)` is far below half's smallest subnormal's half-weight). Found by the exhaustive fiber audit (`lean/scripts/half_check_c.c audit`, which brute-forces all 2^32 inputs); fixed in `tvdb__shr_rne` (`k >= 32` returns 0); `tests/test_half_rounding.c` gains an exponent-94 sample (fails on the old code with `TINYVDB_SIMD=OFF`); `Vdb.Half.floatToHalfRNE` already produced the correct result via natural-number shifts. |
 | F14 | **confirmed and modelled**: when the grid's compression flags contain neither BLOSC nor ZIP (`compression=0/2`), value buffers are raw payloads with **no** `i64` size word (`read_and_decompress`'s no-compression branch). `ValueRecord.chunksRaw`/`parseRaw`/`parseRaw_emit` model the raw framing (the round trip composes with the proven `parseNoChunk_emit`), and `chunksF`/`parseF`/`parseFromCountF` dispatch between the two framings with a proven round trip. |
