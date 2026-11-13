@@ -275,9 +275,9 @@ real file.
    (`Vdb/FloodFill.lean`, BFS/spec equality, per-component sign constancy,
    volume split) and the cubical Euler characteristic (`Vdb/Euler.lean`,
    `chiOf_union` additivity, machine-checked 2×2×2 and 3³-shell instances,
-   Poincaré–Lefschetz on both solids); still open are F10 (MC
-   ambiguous-face consistency), DMC-1 (the manifold theorem) and the P4
-   BVH/band completeness work.
+   Poincaré–Lefschetz on both solids) and F10 (decided, documented:
+   face-consistent, no crack — see findings); still open are DMC-1 (the
+   manifold theorem) and the P4 BVH/band completeness work.
 
 ## Findings awaiting model confirmation
 
@@ -297,7 +297,7 @@ modelled in the Lean layer. The rest are still open.
 | F7 | bool-leaf writer emits `node->origin` (zeros for reader-produced trees) |
 | F8 | instance grids are not resolved from the parent (stay empty) |
 | F9 | `tvdb_grid_to_nanovdb` trusts `child_indices`/node types |
-| F10 | classic MC table may not be crack-free on ambiguous faces |
+| F10 | **decided: face-consistent, does not crack.** Machine check (`lean/scripts/check_mc_face.py`, exits 0): on every ambiguous face instance in all 256 cases (192 instances, 6 faces × 2 checkerboard patterns), the shipped table pairs the four boundary crossing points by the **inside corner pair**, uniformly; the pairing depends only on the face's four sign bits, so the two cubes sharing a checkerboard face always agree — there is no diagonal crack on 2×1×1 grids. The table does **not** implement the asymptotic decider (pairing by the face *mean* sign, the textbook rule and the one modelled and proven in `Vdb/MarchingCubes.lean`/`Vdb/DualSurface.lean`); it also cannot, since it is sign-only. Deviation documented; no C change needed. The classical-asymptotic-decider alternative is modelled in Lean (`Face.negConnected` with dihedral invariance proven). |
 | F11 | dense mesh→SDF sign uses the closest face normal (not pseudonormals) |
 | F12 | dense CSG silences dimension/origin/voxel-size mismatches |
 | F13 | `tvdb_gradient` boundary divides the clamped difference by `2h` |
