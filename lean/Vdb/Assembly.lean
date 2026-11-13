@@ -179,4 +179,48 @@ theorem beltQuads_edgeClosed {ι : Type} (ends : Fin 4 → ι × ι) :
     EdgeClosed (asmSurface ends beltQuads) :=
   watertight_of_balanced beltQuads_balanced
 
+/-- A directed edge list of a closed oriented surface has zero net displacement sum. -/
+def flip (e : Point × Point) : Point × Point := (e.2, e.1)
+
+def sumEdges (es : List (Point × Point)) : Point :=
+  match es with
+  | [] => 0
+  | e :: t => (e.2 - e.1) + sumEdges t
+
+theorem sumEdges_nil : sumEdges [] = 0 := rfl
+
+theorem sumEdges_cons (a b : Point) (t : List (Point × Point)) :
+    sumEdges ((a, b) :: t) = (b - a) + sumEdges t := rfl
+
+theorem sumEdges_map_flip : ∀ (es : List (Point × Point)),
+    sumEdges (es.map flip) = - sumEdges es := by
+  intro es
+  induction es with
+  | nil => simp [sumEdges]
+  | cons e t ih =>
+      obtain ⟨a, b⟩ := e
+      simp only [List.map_cons, sumEdges_cons, flip]
+      rw [ih]
+      calc
+        (a - b : Point) + (- sumEdges t : Point)
+            = (-(b - a : Point)) + (- sumEdges t) := by
+                rw [neg_sub (a := b) (b := a)]
+        _ = -((b - a : Point) + sumEdges t) := by rw [neg_add]
+
+def ClosedSurface (es : List (Point × Point)) : Prop :=
+  es = es.map flip
+
+theorem sumEdges_eq_zero_of_closed {es : List (Point × Point)}
+    (h : ClosedSurface es) : sumEdges es = 0 := by
+  have h1 : sumEdges es = -sumEdges es := by
+    conv_lhs => rw [h]
+    rw [sumEdges_map_flip]
+  have h2 : sumEdges es + sumEdges es = 0 := by
+    nth_rewrite 2 [h1]
+    exact add_neg_cancel _
+  have h3 : (2 : ℝ) • (sumEdges es) = 0 := by
+    rw [two_smul]
+    exact h2
+  exact (smul_eq_zero.mp h3).resolve_left (by norm_num)
+
 end Vdb

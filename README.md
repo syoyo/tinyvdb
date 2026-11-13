@@ -1,6 +1,6 @@
 # TinyVDB, lightweight C/C++ VDB library
 
-[![PyPI](https://img.shields.io/pypi/v/tinyvdb)](https://pypi.org/project/tinyvdb/)
+[![PyPI version](https://img.shields.io/pypi/v/tinyvdb?label=PyPI%20version)](https://pypi.org/project/tinyvdb/)
 
 TinyVDB provides lightweight C/C++ libraries for working with OpenVDB data. It includes VDB file I/O, mesh-to-SDF conversion, grid operations, and more — without depending on the full OpenVDB library.
 
