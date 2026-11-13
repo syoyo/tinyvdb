@@ -23,6 +23,7 @@ import Vdb.Assembly
 import Vdb.CubeGrid
 import Vdb.CubeField
 import Vdb.Winding
+import Vdb.BoxInside
 import Vdb.Tree
 import Vdb.MaskCompress
 import Vdb.NodeRecord
