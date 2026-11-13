@@ -80,4 +80,66 @@ theorem cubeDual_watertight :
     Watertight (stencilQuads.map (IxQuad.map cubeDual)) :=
   cubeStencil_watertight cubeDual
 
+
+/-! ### Arbitrary sampled fields and a non-planar instance -/
+
+/-- The sign-changing cube edges for an arbitrary sampled field. -/
+def fieldCrossings (f : C3 → ℚ) (c : C3) : List (Fin 8 × Fin 8) :=
+  cubeEdges.filter (fun e => edgeCrosses (f (cornerOf c e.1)) (f (cornerOf c e.2)))
+
+def fieldDualQ (f : C3 → ℚ) (c : C3) : Q3 :=
+  Vdb.dualVertex (fun k => f (cornerOf c k)) (fieldCrossings f c)
+
+noncomputable def fieldDual (f : C3 → ℚ) (c : C3) : Point :=
+  toPoint (fun i => cubeAnchor c i + fieldDualQ f c i)
+
+/-- The index quads of a sign field's assembly. -/
+def stencilQuadsOf (s : C3 → Bool) : List (IxQuad C3) :=
+  (crossedEdges s).map fun e => edgeQuad e.1 e.2 (s e.1)
+
+theorem edgeQuad_edges_agree : ∀ (p : C3) (d : Dir3) (flip : Bool),
+    (edgeQuad p d flip).edges = (edgeLabels p d flip).map (dirEdge faceEnds) := by
+  decide
+
+theorem stencilQuadsOf_edges (s : C3 → Bool) :
+    ixSurfaceEdges (stencilQuadsOf s) = (cubeStencil s).mesh := by
+  unfold stencilQuadsOf ixSurfaceEdges StencilComplex.mesh StencilComplex.quads
+    asmSurface cubeStencil
+  induction crossedEdges s with
+  | nil => rfl
+  | cons e l ih => simp [ih, edgeQuad_edges_agree]
+
+/-- A non-planar sampled field: one inside corner. -/
+def bumpField : C3 → ℚ
+  | (0, 0, 0) => -1
+  | _ => 1
+
+def bumpSign : C3 → Bool
+  | (0, 0, 0) => true
+  | _ => false
+
+theorem bumpSign_iff : ∀ p : C3, bumpSign p = true ↔ bumpField p < 0 := by
+  intro p
+  obtain ⟨x, y, z⟩ := p
+  fin_cases x <;> fin_cases y <;> fin_cases z <;> simp [bumpSign, bumpField]
+
+theorem bump_not_affine :
+    bumpField (0, 0, 0) + bumpField (1, 1, 0) ≠
+      bumpField (1, 0, 0) + bumpField (0, 1, 0) := by
+  simp [bumpField]
+  norm_num
+
+theorem bumpStencil_balanced : (cubeStencil bumpSign).Balanced := by
+  unfold StencilComplex.Balanced Vdb.Balanced faceUses StencilComplex.quads
+    cubeStencil crossedEdges bumpSign
+  decide
+
+theorem bumpStencil_edgeClosed : EdgeClosed (cubeStencil bumpSign).mesh :=
+  (cubeStencil bumpSign).watertight bumpStencil_balanced
+
+theorem bumpDual_watertight :
+    Watertight ((stencilQuadsOf bumpSign).map (IxQuad.map (fieldDual bumpField))) :=
+  watertight_concrete_of_edges (by rw [stencilQuadsOf_edges]; exact bumpStencil_edgeClosed)
+    (fieldDual bumpField)
+
 end Vdb

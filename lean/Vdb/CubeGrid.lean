@@ -64,22 +64,24 @@ def nextDir2 : Dir3 → Dir3
 def faceEnds (f : FaceIdx) : C3 × C3 := (f.1, step f.1 f.2)
 
 /-- The four labeled faces around a primal edge, in the cyclic order in which
-    the dual quad visits them. -/
-def edgeLabels (p : C3) (d : Dir3) : List (LabeledEdge FaceIdx) :=
-  let i := nextDir d
-  let j := nextDir2 d
+    the dual quad visits them. `flip` swaps the perpendicular directions,
+    which reverses the cycle: the quad is oriented counter-clockwise around
+    the edge direction when `flip` is set (the edge starts inside). -/
+def edgeLabels (p : C3) (d : Dir3) (flip : Bool) : List (LabeledEdge FaceIdx) :=
+  let i := if flip then nextDir2 d else nextDir d
+  let j := if flip then nextDir d else nextDir2 d
   [⟨(step p j, i), false⟩, ⟨(p, j), false⟩, ⟨(p, i), true⟩,
    ⟨(step p i, j), true⟩]
 
 /-- The four cubes around a primal edge, in the same cyclic order. -/
-def edgeCubes (p : C3) (d : Dir3) : C3 × C3 × C3 × C3 :=
-  let i := nextDir d
-  let j := nextDir2 d
+def edgeCubes (p : C3) (d : Dir3) (flip : Bool) : C3 × C3 × C3 × C3 :=
+  let i := if flip then nextDir2 d else nextDir d
+  let j := if flip then nextDir d else nextDir2 d
   (step (step p i) j, step p j, p, step p i)
 
 /-- The dual quad of a primal edge as an index quad. -/
-def edgeQuad (p : C3) (d : Dir3) : IxQuad C3 :=
-  let c := edgeCubes p d
+def edgeQuad (p : C3) (d : Dir3) (flip : Bool) : IxQuad C3 :=
+  let c := edgeCubes p d flip
   ⟨c.1, c.2.1, c.2.2.1, c.2.2.2⟩
 
 /-- All eight lattice points. -/
@@ -97,7 +99,7 @@ def crossedEdges (s : C3 → Bool) : List EdgeIdx :=
 /-- The concrete stencil complex of the grid. -/
 def cubeStencil (s : C3 → Bool) : StencilComplex C3 FaceIdx EdgeIdx :=
   { ends := faceEnds
-    edgeFaces := fun e => edgeLabels e.1 e.2
+    edgeFaces := fun e => edgeLabels e.1 e.2 (s e.1)
     crossedEdges := crossedEdges s }
 
 /-- The plane sign field `x = 0`. -/
@@ -118,13 +120,13 @@ theorem cubeStencil_edgeClosed :
 
 /-- The emitted quads as index quads. -/
 def stencilQuads : List (IxQuad C3) :=
-  (crossedEdges signX).map fun e => edgeQuad e.1 e.2
+  (crossedEdges signX).map fun e => edgeQuad e.1 e.2 (signX e.1)
 
 /-- The index quads have exactly the assembled edge set. -/
 theorem stencilQuads_edges :
     ixSurfaceEdges stencilQuads = (cubeStencil signX).mesh := by
   unfold stencilQuads ixSurfaceEdges StencilComplex.mesh StencilComplex.quads
-    asmSurface crossedEdges cubeStencil
+    asmSurface crossedEdges cubeStencil edgeQuad edgeLabels edgeCubes faceEnds dirEdge
   decide
 
 /-- **The concrete dual surface is watertight** under any placement of the
