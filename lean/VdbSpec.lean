@@ -21,6 +21,7 @@ import Vdb.DualSurface
 import Vdb.GlobalSurface
 import Vdb.Assembly
 import Vdb.CubeGrid
+import Vdb.CubeField
 import Vdb.Tree
 import Vdb.MaskCompress
 import Vdb.NodeRecord
