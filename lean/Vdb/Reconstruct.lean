@@ -235,4 +235,136 @@ theorem planeF_dualVertex {n : Q3} {d : ℚ} {o : Q3} {edges : List (Fin 8 × Fi
     obtain ⟨e, he, rfl⟩ := List.mem_map.mp hp
     exact planeF_cube_crossings n d o e.1 e.2 (h e he)
 
+
+/-! ### Non-planar reconstruction: trilinear interpolation of arbitrary samples -/
+
+/-- The trilinear interpolant of the eight sampled corner values. -/
+def trilinear (v : Fin 8 → ℚ) (p : Q3) : ℚ :=
+  ∑ k : Fin 8, triWeight p k * v k
+
+/-- **Trilinear interpolation along a cube edge is linear interpolation** of
+    the two endpoint samples. This holds for *arbitrary* corner values, so it
+    is not a planar statement. -/
+theorem trilinear_edge (v : Fin 8 → ℚ) {e : Fin 8 × Fin 8} (he : e ∈ cubeEdges) (t : ℚ) :
+    trilinear v (lerpQ (cornerPos e.1) (cornerPos e.2) t) =
+      (1 - t) * v e.1 + t * v e.2 := by
+  obtain ⟨a, b⟩ := e
+  fin_cases a <;> fin_cases b <;>
+    simp_all [trilinear, triWeight, lerpQ, cornerPos, cubeEdges, Fin.sum_univ_eight] <;>
+    ring
+
+/-- The reconstruction interpolates its own samples: at a corner it returns
+    the sampled value. -/
+theorem trilinear_corner (v : Fin 8 → ℚ) (k : Fin 8) :
+    trilinear v (cornerPos k) = v k := by
+  fin_cases k <;> simp [trilinear, triWeight, cornerPos, Fin.sum_univ_eight]
+
+/-- **The trilinear reconstruction vanishes at every marching-cubes edge
+    crossing**, for arbitrary (non-planar) corner samples. This is the
+    "marching cubes places its vertices on the reconstructed zero set" half
+    of `level_set_rebuild`, and unlike `trilinear_planeF` it needs no
+    linearity of the field. -/
+theorem trilinear_at_crossing (v : Fin 8 → ℚ) {e : Fin 8 × Fin 8}
+    (he : e ∈ cubeEdges) (h : v e.1 ≠ v e.2) :
+    trilinear v (crossing v e.1 e.2) = 0 := by
+  unfold crossing
+  rw [trilinear_edge v he]
+  have hz := lerp_zero h
+  unfold lerp at hz
+  linarith
+
+/-- The same statement for a cube sampled by an arbitrary rational field at
+    offset `o` (the cube's world position). -/
+theorem trilinear_at_crossing_offset (f : Q3 → ℚ) (o : Q3) {e : Fin 8 × Fin 8}
+    (he : e ∈ cubeEdges)
+    (h : f (fun i => o i + cornerPos e.1 i) ≠ f (fun i => o i + cornerPos e.2 i)) :
+    trilinear (fun k => f (fun i => o i + cornerPos k i))
+        (crossing (fun k => f (fun i => o i + cornerPos k i)) e.1 e.2) = 0 :=
+  trilinear_at_crossing (v := fun k => f (fun i => o i + cornerPos k i)) he h
+
+/-- **Sign separation along a crossed edge**: for a negative-to-positive edge
+    the reconstructed field is negative exactly before the marching-cubes
+    crossing and non-negative after it. So the crossing is the unique sign
+    change of the reconstructed field on the edge. -/
+theorem trilinear_edge_neg_iff (v : Fin 8 → ℚ) {e : Fin 8 × Fin 8} (he : e ∈ cubeEdges)
+    (ha : v e.1 < 0) (hb : 0 < v e.2) (t : ℚ) :
+    trilinear v (lerpQ (cornerPos e.1) (cornerPos e.2) t) < 0 ↔
+      t < edgeParam (v e.1) (v e.2) := by
+  rw [trilinear_edge v he, edgeParam]
+  have hba : (0:ℚ) < v e.2 - v e.1 := by linarith
+  have hdiv : v e.1 / (v e.1 - v e.2) = (-v e.1) / (v e.2 - v e.1) := by
+    rw [show v e.1 - v e.2 = -(v e.2 - v e.1) by ring]
+    rw [div_neg, neg_div]
+  rw [hdiv, lt_div_iff₀ hba]
+  constructor <;> intro h <;> linarith
+
+
+/-- **The marching-cubes crossing is the *unique* zero of the trilinear
+    reconstruction on the edge**, for arbitrary endpoint samples. Together
+    with `trilinear_corner` this pins the reconstruction to the samples at
+    the corners and to the crossing in between: the non-planar
+    `level_set_rebuild` composition. -/
+theorem trilinear_edge_eq_zero_iff (v : Fin 8 → ℚ) {e : Fin 8 × Fin 8}
+    (he : e ∈ cubeEdges) (h : v e.1 ≠ v e.2) (t : ℚ) :
+    trilinear v (lerpQ (cornerPos e.1) (cornerPos e.2) t) = 0 ↔
+      t = edgeParam (v e.1) (v e.2) := by
+  rw [trilinear_edge v he, edgeParam]
+  have hba : v e.2 - v e.1 ≠ 0 := by
+    intro hh; apply h; linarith
+  have key : v e.1 / (v e.1 - v e.2) = (-v e.1) / (v e.2 - v e.1) := by
+    rw [show v e.1 - v e.2 = -(v e.2 - v e.1) by ring, div_neg, neg_div]
+  rw [key]
+  constructor
+  · intro h0
+    rw [eq_div_iff hba]
+    linarith
+  · intro h0
+    rw [h0]
+    field_simp
+    ring
+
+/-- **Non-planar `level_set_rebuild`**: for any sampled field (no linearity
+    assumed), the reconstruction reproduces the samples at the corners, and
+    the marching-cubes crossing is the unique zero of the reconstruction on
+    each crossed edge. -/
+theorem level_set_rebuild_nonplanar (v : Fin 8 → ℚ) {e : Fin 8 × Fin 8}
+    (he : e ∈ cubeEdges) (h : v e.1 ≠ v e.2) :
+    (∀ k : Fin 8, trilinear v (cornerPos k) = v k) ∧
+      trilinear v (crossing v e.1 e.2) = 0 ∧
+      (∀ t : ℚ, trilinear v (lerpQ (cornerPos e.1) (cornerPos e.2) t) = 0 ↔
+        t = edgeParam (v e.1) (v e.2)) :=
+  ⟨fun k => trilinear_corner v k, trilinear_at_crossing v he h,
+    fun t => trilinear_edge_eq_zero_iff v he h t⟩
+
+/-! ### A concrete non-planar sample -/
+
+/-- A non-planar sample vector: the `x`-face values are `-1, 2, 0, 0`, so the
+    bilinear identity `v0 + v3 = v1 + v2` fails (an affine field would obey
+    it). -/
+def npV : Fin 8 → ℚ := ![-1, 2, 0, 0, 0, 0, 0, 0]
+
+/-- The sample is genuinely non-planar. -/
+theorem npV_not_affine : npV 0 + npV 3 ≠ npV 1 + npV 2 := by
+  norm_num [npV]
+
+/-- The edge `(0, 1)` is a cube edge with a sign change. -/
+theorem npV_crossing_zero :
+    trilinear npV (crossing npV 0 1) = 0 :=
+  trilinear_at_crossing npV (e := (0, 1)) (by decide) (by norm_num [npV])
+
+/-- The reconstructed field is negative before the crossing and positive
+    after it (sign separation on the concrete non-planar sample). -/
+theorem npV_sign_separation :
+    trilinear npV (lerpQ (cornerPos 0) (cornerPos 1) (1/4)) < 0 ∧
+      0 < trilinear npV (lerpQ (cornerPos 0) (cornerPos 1) (1/2)) := by
+  have h1 : trilinear npV (lerpQ (cornerPos 0) (cornerPos 1) (1/4)) =
+      (1 - 1/4) * npV 0 + (1/4) * npV 1 :=
+    trilinear_edge npV (e := (0, 1)) (by decide) (1/4)
+  have h2 : trilinear npV (lerpQ (cornerPos 0) (cornerPos 1) (1/2)) =
+      (1 - 1/2) * npV 0 + (1/2) * npV 1 :=
+    trilinear_edge npV (e := (0, 1)) (by decide) (1/2)
+  rw [h1, h2]
+  norm_num [npV]
+
+
 end Vdb
