@@ -60,6 +60,11 @@ lean_exe fastsweepcheck where
 lean_exe csgcheck where
   root := `Vdb.CsgCheck
 
+/-- Model-side dense mesh→SDF differential harness (driven by
+    `scripts/check_meshsdf.sh`). -/
+lean_exe meshsdfcheck where
+  root := `Vdb.MeshSdfCheck
+
 /-- Seeded well-formed `.vdb` generator (differential harness, model half). -/
 lean_exe vdbgen where
   root := `VdbGen

@@ -312,9 +312,12 @@ re-read the C drivers' `%.17e` dumps exactly enough for the tolerances,
 
 These harnesses complement (and reuse the LCG/seeding of) the existing
 `MaskClassify`/`HalfCheck`/`VdbGen` gates; none of them are wired into
-CTest — run them directly. All four float checks rely on the C and Lean
-halves using the *same* LCG and value mapping; the C drivers are
-self-contained (built with `cc -O2` against `src/*.c`).
+CTest — run them directly. All the float checks rely on the C drivers and
+Lean twins sharing the same inputs (the Godunov/fill/Euler/fast-sweep/CSG
+harnesses share the same seeded LCG and value mapping on both sides; the
+mesh→SDF harness dumps the generated mesh and grid and the twin recomputes
+from the dump). The C drivers are self-contained (built with `cc -O2`
+against `src/*.c`).
 
 ## Differential harness: dense CSG (bit-exact, F12-adjacent)
 
@@ -332,10 +335,39 @@ compares bits — **bit-exact, no tolerance**: **614,400/614,400 op outputs
 identical** (negative control verified: corrupt one voxel pattern to
 `deadbeef` → `bad=1`, exit 1; the script additionally asserts the exact
 `cases=400 ops=3 voxels=614400 bad=0` counters so dropped lines fail the
-gate). The mesh→SDF arm of the full-pipeline harness remains **open**
-(the C path's distance/BVH machinery is not mirrored — the per-component
-mesh→SDF coverage comes from the CPU unit tests and the `test_mesh_pseudo_normal`
-regression test instead).
+harness).
+
+## Differential harness: dense mesh→SDF arm (bit-exact)
+
+`lean/Vdb/MeshSdfCheck.lean` (`lean_exe meshsdfcheck`, driven by
+`scripts/check_meshsdf.sh`) compares the real C `tvdb_mesh_to_sdf_ex`
+(`scripts/meshsdf_c.c`) against a Float32 Lean twin that mirrors the whole
+dense mesh→SDF path: the generated lattice (the twin reads the dumped
+`nx/ny/nz/ox/oy/oz` and computes voxel centers as `ox + (i + 0.5f)·h`), the
+per-face normals (`mesh_normal`), the closest-triangle closest point with the
+same tie-break (*lowest face index on an exact squared-distance tie* — the
+rule the BVH preserves, so the twin's brute-force scan selects the same
+winner), the closest-feature **pseudo-normal** (vertex features sum the
+normals of all incident faces; edge features sum the incident faces on that
+edge; face interiors keep the face normal; non-finite/non-positive sums fall
+back to the face normal) and the ±band clamp — all in `Float32` end to end.
+The C driver builds three closed meshes (a cube, the 20-face outward
+icosahedron, and a per-vertex radial LCG-jittered icosahedron, orientation
+re-checked and fixed), generates the grids with `h = 0.3f`, `band = 0.4f`
+(10³, 14³, 14³ voxels) and prints the meshes, the lattice and every grid
+value as float **bit patterns**. The twin recomputes all voxels from the
+dumped mesh alone — **bit-exact, no tolerance: 6,488/6,488 voxel values
+identical** (negative control verified: flipping one voxel's bit pattern
+`3eccbc2b` → `3eccbc2a` makes the twin report `bad=1` at that voxel and exit
+1; the script additionally asserts the exact
+`voxels=6488 bad=0 fallback_hits=0` counters so dropped lines fail the
+gate). Not mirrored: the C `mesh_triangle_double` double-precision closest-
+point fallback, which needs double→float32 rounding that core Lean lacks.
+Every branch that takes it is detected as a Float32 predicate (`!isFinite`,
+or an exact equality such as `d1 == d3`); hitting one increments
+`fallback_hits` and skips comparison for that voxel, so it is a loud
+failure, never a silent pass. The gate asserts `fallback_hits=0`
+(unreachable for these finite, non-degenerate meshes).
 
 ## Explicitly not yet done (next increments)
 
@@ -438,14 +470,16 @@ regression test instead).
    * the tree-variant Godunov/sweep and the inactive=∞ tree Eikonal solve
      remain open (different operator; no convergence proof); the P2–P4
      harnesses listed in "Differential harness: Godunov, flood fill, Euler,
-     fast sweeping" and "Differential harness: dense CSG (bit-exact)" above
-     are **LANDED** (random seeded grids: Godunov 200,000/200,000,
+     fast sweeping", "Differential harness: dense CSG (bit-exact)" and
+     "Differential harness: dense mesh→SDF arm (bit-exact)" above are
+     **LANDED** (random seeded grids: Godunov 200,000/200,000,
      flood fill 400/400 byte-exact, Euler 400/400, fast sweeping
-     102,400/102,400, CSG 614,400/614,400 bit-exact). Still open: a
-     differential harness for the **mesh→SDF arm** of the dense pipeline
-     (the BVH/closest-point machinery is not mirrored in Lean); the mesh
-     path's coverage today is the CPU unit tests plus the
-     `test_mesh_pseudo_normal` regression.
+     102,400/102,400, CSG 614,400/614,400 bit-exact,
+     mesh→SDF 6,488/6,488 bit-exact over three closed meshes). The
+     mesh→SDF harness deliberately does not mirror the BVH (the brute-force
+     twin selects the same winner under the shared lowest-face-index tie
+     rule) nor the `mesh_triangle_double` double fallback (`fallback_hits`
+     counter, asserted 0).
 3. **Findings.** F1 (scalar encoder truncates/flushes) and F15 (`x >> 32`
    UB) are **confirmed and fixed in C** (see "Differential harness: half-float
    conversions"); F6 (half-grid zero-count chunks), F14 (raw framing for
@@ -456,7 +490,7 @@ regression test instead).
 
 ## Final tally
 
-* Landed Lean modules: 73 (68 under `Vdb/` + `VdbGen`, `VdbCheck`,
+* Landed Lean modules: 74 (69 under `Vdb/` + `VdbGen`, `VdbCheck`,
   `VdbSpec`, `HalfCheck`, `MaskClassify`) — the library, the oracle
   generator and the differential tools, all with `warningAsError` on and
   **0 `sorry`/`admit`** in landed modules.
@@ -468,7 +502,9 @@ regression test instead).
   (exit 0); `check_godunov.sh`: **200,000/200,000** (1e-12); `check_fill.sh`:
   **400/400** byte-exact; `check_euler.sh`: **400/400** (`c == 2·χ`);
   `check_fastsweep.sh`: **102,400/102,400** voxels (1e-5·h, exact sign);
-  `check_csg.sh`: **614,400/614,400** voxel comparisons bit-exact.
+  `check_csg.sh`: **614,400/614,400** voxel comparisons bit-exact;
+  `check_meshsdf.sh`: **6,488/6,488** voxels bit-exact (3 closed meshes,
+  mesh→SDF arm; `fallback_hits=0`).
 * Scalar sanitizer CTest (`-fsanitize=address,undefined,float-cast-overflow`, SIMD and OpenMP off): **52/52 tests pass**.
 * Findings fixed in C: F1, F15, F2, F3, F4, F5, F7, F9, F11, F12, F13
   (all regression-tested). Modelled/decided: F6, F10, F14. Documented
