@@ -50,4 +50,5 @@ import Vdb.Header
 import Vdb.PseudoNormal
 import Vdb.EikonalTop
 import Vdb.Cuberille
+import Vdb.StaircaseRatio
 import Vdb.TreeSweep

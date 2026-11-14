@@ -18,11 +18,12 @@
   to lists of triangles, and `cluster_triNum_residual_bound` bounds the
   total residual by `Σ ε_f³`.
 
-  What is *not* proved: that the residual is the *optimal* approximation
-  constant (it is not — the exact constant depends on the query direction),
-  or the arc-tangent tail (`|atan x − x| ≤ |x|³/3` machinery is deliberately
-  out of scope). The `atan2'` solid-angle machinery lives in
-  `Vdb/WindingNumber.lean`.
+  The arc-tangent tail bound `abs_atan_sub_id_le` (`|atan x − x| ≤ |x|³/3`)
+  lives here too, together with its **sharpness**: `(x − atan x) / x³ → 1/3`
+  as `x → 0` on the punctured neighbourhood (`tendsto_atan_cubic_tail`),
+  via `arctan_sub_self_integral` and the signed fourth-order remainder
+  `abs_sub_atan_sub_cube_div_three_le_pow` (`|x − atan x − x³/3| ≤ |x|⁵/5`).
+  The `atan2'` solid-angle machinery lives in `Vdb/WindingNumber.lean`.
 
   Copyright (c) 2026 Syoyo Fujita and TinyVDB authors
   SPDX-License-Identifier: Apache-2.0
@@ -31,6 +32,8 @@ import Vdb.WindingNumber
 import Mathlib.Tactic
 import Mathlib.Analysis.SpecialFunctions.Integrals.Basic
 import Mathlib.Analysis.SpecialFunctions.Trigonometric.ArctanDeriv
+
+open Topology Filter
 
 namespace Vdb
 namespace V3
@@ -275,33 +278,31 @@ theorem cluster_triNum_residual_bound (fs : List (V3 × V3 × V3)) (p : V3)
 
 /-! ## The arc-tangent tail bound -/
 
-/-- Remainder estimate for `atan`: `|atan x − x| ≤ |x|³ / 3`. The cubic
-    Taylor tail the C solid-angle computation relies on (its
-    `atan2(num, den)` for small ratios). -/
-theorem abs_atan_sub_id_le_aux {x : ℝ} (hx : 0 ≤ x) :
-    |Real.arctan x - x| ≤ x ^ 3 / 3 := by
+/-- The integral identity the arc-tangent remainder estimates factor through:
+    `arctan x − x = -∫₀ˣ t²/(1+t²) dt`, for all `x` (not just `x ≥ 0`). -/
+theorem arctan_sub_self_integral (x : ℝ) :
+    Real.arctan x - x = -∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2) := by
   have h1 : Continuous fun u : ℝ => 1 + u ^ 2 := by fun_prop
   have h1' : ∀ u : ℝ, 1 + u ^ 2 ≠ 0 := fun u => by nlinarith [sq_nonneg u]
   have hcont : Continuous fun t : ℝ => ((1:ℝ) + t ^ 2)⁻¹ := Continuous.inv₀ h1 h1'
-  have key : Real.arctan x - x = - ∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2) := by
-    have h0 : (∫ t in (0:ℝ)..x, ((1:ℝ) + t ^ 2)⁻¹) = Real.arctan x := by
-      rw [integral_inv_one_add_sq]
-      simp [Real.arctan_zero]
-    have h1x : (∫ t in (0:ℝ)..x, (1:ℝ)) = x := by
-      simp
-    have hsub : ∫ t in (0:ℝ)..x, (((1:ℝ) + t ^ 2)⁻¹ - 1)
-        = (∫ t in (0:ℝ)..x, ((1:ℝ) + t ^ 2)⁻¹) - ∫ t in (0:ℝ)..x, 1 :=
-      intervalIntegral.integral_sub (Continuous.intervalIntegrable hcont 0 x)
-        intervalIntegrable_const
-    have hpt : (fun t : ℝ => ((1:ℝ) + t ^ 2)⁻¹ - 1)
-        = (fun t : ℝ => -(t ^ 2 / (1 + t ^ 2))) := by
-      funext t
-      have h : (1:ℝ) + t ^ 2 ≠ 0 := h1' t
-      rw [inv_eq_one_div]
-      field_simp
-      ring
-    calc Real.arctan x - x
-        = (∫ t in (0:ℝ)..x, ((1:ℝ) + t ^ 2)⁻¹) - ∫ t in (0:ℝ)..x, 1 := by
+  have h0 : (∫ t in (0:ℝ)..x, ((1:ℝ) + t ^ 2)⁻¹) = Real.arctan x := by
+    rw [integral_inv_one_add_sq]
+    simp [Real.arctan_zero]
+  have h1x : (∫ t in (0:ℝ)..x, (1:ℝ)) = x := by
+    simp
+  have hsub : ∫ t in (0:ℝ)..x, (((1:ℝ) + t ^ 2)⁻¹ - 1)
+      = (∫ t in (0:ℝ)..x, ((1:ℝ) + t ^ 2)⁻¹) - ∫ t in (0:ℝ)..x, 1 :=
+    intervalIntegral.integral_sub (Continuous.intervalIntegrable hcont 0 x)
+      intervalIntegrable_const
+  have hpt : (fun t : ℝ => ((1:ℝ) + t ^ 2)⁻¹ - 1)
+      = (fun t : ℝ => -(t ^ 2 / (1 + t ^ 2))) := by
+    funext t
+    have h : (1:ℝ) + t ^ 2 ≠ 0 := h1' t
+    rw [inv_eq_one_div]
+    field_simp
+    ring
+  calc Real.arctan x - x
+      = (∫ t in (0:ℝ)..x, ((1:ℝ) + t ^ 2)⁻¹) - ∫ t in (0:ℝ)..x, 1 := by
             rw [h0, h1x]
       _ = ∫ t in (0:ℝ)..x, (((1:ℝ) + t ^ 2)⁻¹ - 1) := by
             rw [hsub]
@@ -309,7 +310,15 @@ theorem abs_atan_sub_id_le_aux {x : ℝ} (hx : 0 ≤ x) :
             rw [hpt]
       _ = - ∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2) := by
             rw [← intervalIntegral.integral_neg]
-  rw [key]
+
+/-- Remainder estimate for `atan`: `|atan x − x| ≤ |x|³ / 3`. The cubic
+    Taylor tail the C solid-angle computation relies on (its
+    `atan2(num, den)` for small ratios). -/
+theorem abs_atan_sub_id_le_aux {x : ℝ} (hx : 0 ≤ x) :
+    |Real.arctan x - x| ≤ x ^ 3 / 3 := by
+  have h1 : Continuous fun u : ℝ => 1 + u ^ 2 := by fun_prop
+  have h1' : ∀ u : ℝ, 1 + u ^ 2 ≠ 0 := fun u => by nlinarith [sq_nonneg u]
+  rw [arctan_sub_self_integral x]
   have hpos : 0 ≤ ∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2) := by
     apply intervalIntegral.integral_nonneg hx
     intro t _
@@ -346,6 +355,133 @@ theorem abs_atan_sub_id_le (x : ℝ) : |Real.arctan x - x| ≤ |x| ^ 3 / 3 := by
   · have h2 := abs_atan_sub_id_le_aux hx.le
     rw [abs_of_pos hx]
     exact h2
+
+/-! ## Sharpness of the arc-tangent cubic tail
+
+The bundled `abs_atan_sub_id_le` claims `|atan x − x| ≤ |x|³ / 3`. The
+constant `1/3` cannot be improved: `(x − atan x) / x³ → 1/3` as `x → 0`.
+Proved by the integral form: `x − atan x = ∫₀ˣ t²/(1+t²) dt`, so
+`x − atan x − x³/3 = −∫₀ˣ t⁴/(1+t²) dt` and `|·| ≤ x⁵/5` (`x ≥ 0`);
+otherwise `x²/5 → 0`. -/
+
+/-- The signed fourth-order remainder: `x − arctan x − x³/3 = −∫₀ˣ t⁴/(1+t²) dt`. -/
+theorem sub_atan_sub_cube_div_three_eq_integral (x : ℝ) :
+    x - Real.arctan x - x ^ 3 / 3 = -∫ t in (0:ℝ)..x, t ^ 4 / (1 + t ^ 2) := by
+  have h1 : Continuous fun u : ℝ => 1 + u ^ 2 := by fun_prop
+  have h1' : ∀ u : ℝ, 1 + u ^ 2 ≠ 0 := fun u => by nlinarith [sq_nonneg u]
+  have h2 : Continuous fun t : ℝ => t ^ 2 := by continuity
+  have h3 : Continuous fun t : ℝ => t ^ 2 / (1 + t ^ 2) :=
+    Continuous.div₀ h2 h1 h1'
+  have hx' : x - Real.arctan x = ∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2) := by
+    have := arctan_sub_self_integral x
+    linarith [this]
+  have hcube : ∫ t in (0:ℝ)..x, t ^ 2 = x ^ 3 / 3 := by
+    rw [integral_pow]
+    norm_num
+  have hpt : (fun t : ℝ => t ^ 2 - t ^ 2 / (1 + t ^ 2))
+      = (fun t : ℝ => t ^ 4 / (1 + t ^ 2)) := by
+    funext t
+    have h : (1:ℝ) + t ^ 2 ≠ 0 := h1' t
+    field_simp
+    ring
+  have hsub1 : (∫ t in (0:ℝ)..x, t ^ 2) - (∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2))
+      = ∫ t in (0:ℝ)..x, (t ^ 2 - t ^ 2 / (1 + t ^ 2)) := by
+    rw [intervalIntegral.integral_sub
+      (Continuous.intervalIntegrable h2 0 x)
+      (Continuous.intervalIntegrable h3 0 x)]
+  have e1 : (∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2)) - x ^ 3 / 3
+      = -((∫ t in (0:ℝ)..x, t ^ 2) - (∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2))) := by
+    rw [hcube]
+    ring
+  rw [hx', e1, hsub1, hpt]
+
+/-- For `x ≥ 0`, the remainder is bounded by `x⁵/5`. -/
+theorem abs_sub_atan_sub_cube_div_three_le_pow {x : ℝ} (hx : 0 ≤ x) :
+    |x - Real.arctan x - x ^ 3 / 3| ≤ x ^ 5 / 5 := by
+  rw [sub_atan_sub_cube_div_three_eq_integral x, abs_neg]
+  have h1 : Continuous fun u : ℝ => 1 + u ^ 2 := by fun_prop
+  have h1' : ∀ u : ℝ, 1 + u ^ 2 ≠ 0 := fun u => by nlinarith [sq_nonneg u]
+  have h4 : Continuous fun t : ℝ => t ^ 4 := by continuity
+  have h5 : Continuous fun t : ℝ => t ^ 4 / (1 + t ^ 2) :=
+    Continuous.div₀ h4 h1 h1'
+  have hnn : 0 ≤ ∫ t in (0:ℝ)..x, t ^ 4 / (1 + t ^ 2) := by
+    apply intervalIntegral.integral_nonneg hx
+    intro t _
+    have ht : (0:ℝ) < 1 + t ^ 2 := by nlinarith [sq_nonneg t]
+    exact div_nonneg (by positivity : (0:ℝ) ≤ t ^ 4) (le_of_lt ht)
+  rw [abs_of_nonneg hnn]
+  calc ∫ t in (0:ℝ)..x, t ^ 4 / (1 + t ^ 2)
+      ≤ ∫ t in (0:ℝ)..x, t ^ 4 := by
+        apply intervalIntegral.integral_mono_on hx
+          (Continuous.intervalIntegrable h5 0 x)
+          (Continuous.intervalIntegrable h4 0 x)
+        intro t _
+        have ht : (0:ℝ) ≤ 1 + t ^ 2 := by nlinarith [sq_nonneg t]
+        have h6 : (1:ℝ) ≤ 1 + t ^ 2 := by nlinarith [sq_nonneg t]
+        have h7 : t ^ 4 / (1 + t ^ 2) ≤ t ^ 4 / 1 :=
+          div_le_div_of_nonneg_left (by positivity : (0:ℝ) ≤ t ^ 4) zero_lt_one h6
+        simpa using h7
+    _ = x ^ 5 / 5 := by
+        rw [integral_pow]
+        norm_num
+
+/-- The `1/3` in the arc-tangent tail bound is sharp: `|x − atan x − x³/3| ≤ |x|⁵/5`
+    for all `x`. -/
+theorem abs_sub_atan_sub_cube_div_three_le_pow_abs (x : ℝ) :
+    |x - Real.arctan x - x ^ 3 / 3| ≤ |x| ^ 5 / 5 := by
+  by_cases hx : 0 ≤ x
+  · have habs : |x| = x := abs_of_nonneg hx
+    rw [habs]
+    exact abs_sub_atan_sub_cube_div_three_le_pow hx
+  · have hx' : x < 0 := not_le.mp hx
+    have habs : |x| = -x := abs_of_neg hx'
+    rw [habs]
+    have hneg : x - Real.arctan x - x ^ 3 / 3
+        = -((-x) - Real.arctan (-x) - (-x) ^ 3 / 3) := by
+      rw [Real.arctan_neg]
+      ring
+    rw [hneg, abs_neg]
+    exact abs_sub_atan_sub_cube_div_three_le_pow (le_of_lt (neg_pos.mpr hx'))
+
+/-- The quotient converges to `1/3` — the constant in the tail bound cannot
+    be improved (stated on the punctured neighbourhood, where the quotient is
+    defined). -/
+theorem tendsto_atan_cubic_tail :
+    Filter.Tendsto (fun x : ℝ => (x - Real.arctan x) / x ^ 3) (𝓝[≠] 0) (𝓝 (1 / 3)) := by
+  rw [tendsto_iff_dist_tendsto_zero]
+  have hset : {x : ℝ | x ≠ 0} ∈ 𝓝[≠] (0 : ℝ) := self_mem_nhdsWithin
+  have hbound : ∀ᶠ x in 𝓝[≠] (0 : ℝ),
+      dist ((x - Real.arctan x) / x ^ 3) (1 / 3) ≤ x ^ 2 / 5 := by
+    filter_upwards [hset] with x hx
+    have hx' : x ≠ 0 := hx
+    have hodd : x - Real.arctan x - x ^ 3 / 3
+        = x ^ 3 * ((x - Real.arctan x) / x ^ 3 - 1 / 3) := by
+      field_simp
+    have h1 := abs_sub_atan_sub_cube_div_three_le_pow_abs x
+    rw [hodd, abs_mul, abs_pow] at h1
+    -- h1 : |x| ^ 3 * |(x - arctan x) / x ^ 3 - 1 / 3| ≤ |x| ^ 5 / 5
+    have hpos : (0:ℝ) < |x| ^ 3 := pow_pos (abs_pos.mpr hx') 3
+    have hmul : |(x - Real.arctan x) / x ^ 3 - 1 / 3| * |x| ^ 3 ≤ |x| ^ 5 / 5 := by
+      have h1' : |(x - Real.arctan x) / x ^ 3 - 1 / 3| * |x| ^ 3 =
+          |x| ^ 3 * |(x - Real.arctan x) / x ^ 3 - 1 / 3| := by
+        rw [mul_comm]
+      rw [h1']
+      exact h1
+    have hdiv : |(x - Real.arctan x) / x ^ 3 - 1 / 3| ≤ |x| ^ 5 / 5 / |x| ^ 3 := by
+      rw [le_div_iff₀ hpos]
+      exact hmul
+    have hcancel : |x| ^ 5 / 5 / |x| ^ 3 = |x| ^ 2 / 5 := by
+      field_simp
+    rw [hcancel] at hdiv
+    have h6 : |x| ^ 2 / 5 = x ^ 2 / 5 := by rw [sq_abs]
+    rw [h6] at hdiv
+    rw [Real.dist_eq]
+    exact hdiv
+  refine squeeze_zero' (g := fun x : ℝ => x ^ 2 / 5) ?_ ?_ ?_
+  · filter_upwards [hset] with x _
+    exact dist_nonneg
+  · exact hbound
+  · simpa using ((tendsto_id (x := 𝓝 (0 : ℝ))).pow 2).div_const 5 |>.mono_left nhdsWithin_le_nhds
 
 /-! ## The net dipole of a closed oriented mesh is zero -/
 
