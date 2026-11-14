@@ -203,7 +203,6 @@ typedef struct tvdb_header {
     uint32_t minor_version;
     uint32_t compression_flags;
     int      has_grid_offsets;
-    int      half_precision;
     char     uuid[37]; /* 36 chars + NUL */
     uint64_t offset_to_data;
 } tvdb_header_t;

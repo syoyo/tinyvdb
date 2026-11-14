@@ -2205,7 +2205,6 @@ static PyObject *VDBFile_get_header(PyObject *self, void *c) {
     SET_INT("minor_version", h->minor_version);
     SET_INT("compression_flags", h->compression_flags);
     SET_BOOL("has_grid_offsets", h->has_grid_offsets);
-    SET_BOOL("half_precision", h->half_precision);
     v = PyUnicode_FromString(h->uuid); PyDict_SetItemString(d, "uuid", v); Py_DECREF(v);
 #undef SET_INT
 #undef SET_BOOL

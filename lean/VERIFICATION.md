@@ -346,7 +346,7 @@ modelled in the Lean layer. The rest are still open.
 | ID | Hypothesis |
 | --- | --- |
 | F1 | **confirmed and fixed** in C: the scalar encoder truncates, flushes to 0 and maps NaN→Inf while F16C rounds. The scalar path now implements round-to-nearest-even with NaN preservation (matching the Lean `floatToHalfRNE` and OpenVDB); `tests/test_half_rounding.c` fails on the old encoder with `TINYVDB_SIMD=OFF`. |
-| F2 | `tvdb_header_t.half_precision` never set by the reader |
+| F2 | **confirmed and fixed**: `tvdb_header_t.half_precision` was a dead field — never set on read *or* write (the file header has no such byte at any version; the backport `tinyvdbio.h` treats it the same and never sets it either), and the Python `header` dict exposed it as a constant `False`. The field also had no consumers: half precision is per-grid in the format (`_HalfFloat` grid-type suffix + `is_saved_as_half_float` metadata), read/written via `save_float_as_half` (grid descriptor), not from the header. Fix: removed the dead `half_precision` member from `tvdb_header_t` in `src/tinyvdb_io.h` and its exposure in `python/src/_tinyvdb.c` (`f.header` dict no longer carries it). Scalar sanitizer CTest 49/49 green; Python binding builds (`TINYVDB_BUILD_PYTHON=ON`) and `python/tests/test_tinyvdb.py` 22/22 green. |
 | F3 | no maximum file-version check; `block_byte_offset` unvalidated; writer duplicates `grid_byte_offset` |
 | F4 | grid-type grammar accepts trailing junk as zero levels |
 | F5 | `log2dim ≤ 10` allows huge internal allocations before byte-count checks; tree read not bounded by `end_byte_offset` |
