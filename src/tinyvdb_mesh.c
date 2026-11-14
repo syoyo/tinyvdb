@@ -124,13 +124,16 @@ const int* tvdb_mc_tri_table_flat(void) { return (const int*)MC_TRI_TABLE; }
 static tvdb_status_t mesh_validate(const tvdb_triangle_mesh *, tvdb_error_t *);
 
 // -------------------------------------------------------------------------
-// Mesh -> SDF (closest-triangle, signed via face normal)
+// Mesh -> SDF (closest-triangle, signed via closest-feature pseudo-normal)
 // -------------------------------------------------------------------------
 //
 // For each voxel, compute distance to nearest triangle; sign comes from
-// dot((voxel - closest_point), triangle_normal). This is the classic
-// "pseudo-normal-free" approach: simple, robust for moderately well-formed
-// closed meshes, but can have sign artifacts at sharp edges/vertices.
+// dot(voxel - closest_point, pseudo_normal), where the pseudo-normal is the
+// sum of the face normals incident on the closest feature (face interior:
+// the face normal; edge or vertex: sum over incident faces). This repairs
+// the classic sign artifacts at sharp edges/vertices of convex meshes (a
+// lone closest-face normal can point into the solid there) and subsumes the
+// old closest-face-normal rule.
 //
 // Distance is clamped to ±band_width.
 
@@ -202,20 +205,29 @@ static tvdb_vec3f mesh_triangle_double(tvdb_vec3f p, tvdb_vec3f a, tvdb_vec3f b,
     return (tvdb_vec3f){(float)(a.x + v * ab[0] + w * ac[0]), (float)(a.y + v * ab[1] + w * ac[1]),
                         (float)(a.z + v * ab[2] + w * ac[2])};
 }
-static tvdb_vec3f tri_closest_point_c(tvdb_vec3f p, tvdb_vec3f a, tvdb_vec3f b, tvdb_vec3f c) {
+static tvdb_vec3f tri_closest_point_c(tvdb_vec3f p, tvdb_vec3f a, tvdb_vec3f b, tvdb_vec3f c,
+                                      int *out_feature) {
     // Same case analysis as point_triangle_dist_sq_c, but returning the point.
+    // out_feature tags the closest feature: 0..2 = vertex a/b/c, 3..5 = edge
+    // ab/ac/bc, 6 = face interior (or degenerate, where the face normal is
+    // the best available direction).
     tvdb_vec3f ab = sub_c(b, a), ac = sub_c(c, a), ap = sub_c(p, a);
     float d1 = dot_c(ab, ap), d2 = dot_c(ac, ap);
+    if (out_feature) *out_feature = 6; /* degenerate fallbacks keep the face normal */
     if (!isfinite(d1) || !isfinite(d2))
         return mesh_triangle_double(p, a, b, c);
-    if (d1 <= 0.0f && d2 <= 0.0f)
+    if (d1 <= 0.0f && d2 <= 0.0f) {
+        if (out_feature) *out_feature = 0;
         return a;
+    }
     tvdb_vec3f bp = sub_c(p, b);
     float d3 = dot_c(ab, bp), d4 = dot_c(ac, bp);
     if (!isfinite(d3) || !isfinite(d4))
         return mesh_triangle_double(p, a, b, c);
-    if (d3 >= 0.0f && d4 <= d3)
+    if (d3 >= 0.0f && d4 <= d3) {
+        if (out_feature) *out_feature = 1;
         return b;
+    }
     float vc = d1 * d4 - d3 * d2;
     if (!isfinite(vc))
         return mesh_triangle_double(p, a, b, c);
@@ -223,14 +235,17 @@ static tvdb_vec3f tri_closest_point_c(tvdb_vec3f p, tvdb_vec3f a, tvdb_vec3f b, 
         if (d1 == d3)
             return mesh_triangle_double(p, a, b, c);
         float v = d1 / (d1 - d3);
+        if (out_feature) *out_feature = 3;
         return add_c(a, mul_c(ab, v));
     }
     tvdb_vec3f cp = sub_c(p, c);
     float d5 = dot_c(ab, cp), d6 = dot_c(ac, cp);
     if (!isfinite(d5) || !isfinite(d6))
         return mesh_triangle_double(p, a, b, c);
-    if (d6 >= 0.0f && d5 <= d6)
+    if (d6 >= 0.0f && d5 <= d6) {
+        if (out_feature) *out_feature = 2;
         return c;
+    }
     float vb = d5 * d2 - d1 * d6;
     if (!isfinite(vb))
         return mesh_triangle_double(p, a, b, c);
@@ -238,6 +253,7 @@ static tvdb_vec3f tri_closest_point_c(tvdb_vec3f p, tvdb_vec3f a, tvdb_vec3f b, 
         if (d2 == d6)
             return mesh_triangle_double(p, a, b, c);
         float w = d2 / (d2 - d6);
+        if (out_feature) *out_feature = 4;
         return add_c(a, mul_c(ac, w));
     }
     float va = d3 * d6 - d5 * d4;
@@ -247,11 +263,13 @@ static tvdb_vec3f tri_closest_point_c(tvdb_vec3f p, tvdb_vec3f a, tvdb_vec3f b, 
         if ((d4 - d3) + (d5 - d6) == 0)
             return mesh_triangle_double(p, a, b, c);
         float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        if (out_feature) *out_feature = 5;
         return add_c(b, mul_c(sub_c(c, b), w));
     }
     if (!isfinite(va + vb + vc) || va + vb + vc <= 0)
         return mesh_triangle_double(p, a, b, c);
     float denom = 1.0f / (va + vb + vc);
+    if (out_feature) *out_feature = 6;
     return add_c(add_c(a, mul_c(ab, vb * denom)), mul_c(ac, vc * denom));
 }
 
@@ -549,9 +567,10 @@ static float tvdb_bvh_closest(const tvdb_bvh_t *b,
                               tvdb_vec3f p,
                               float seed_dsq, int32_t seed_face,
                               tvdb_vec3f *out_cp, tvdb_vec3f *out_n,
-                              int32_t *out_face) {
+                              int32_t *out_face, int *out_feature) {
     float best_dsq = seed_dsq;
     int32_t best_face = seed_face;
+    int best_feature = 6;
     tvdb_vec3f best_cp = { 0, 0, 0 };
     tvdb_vec3f best_n  = { 0, 0, 0 };
     /* Materialize the seed as a real candidate at *this* voxel's position, not
@@ -563,7 +582,8 @@ static float tvdb_bvh_closest(const tvdb_bvh_t *b,
     if (seed_face >= 0 && seed_face < (int32_t)b->prim_count) {
         const tvdb_triangle *sf = &mesh->faces[seed_face];
         best_cp = tri_closest_point_c(p, mesh->vertices[sf->v0],
-                                      mesh->vertices[sf->v1], mesh->vertices[sf->v2]);
+                                      mesh->vertices[sf->v1],
+                                      mesh->vertices[sf->v2], &best_feature);
         best_n = tri_n[seed_face];
         /* Re-measure the seed at *this* position. seed_dsq is the previous voxel's
          * distance to this face, which is not an answer for this voxel: if the
@@ -626,7 +646,8 @@ static float tvdb_bvh_closest(const tvdb_bvh_t *b,
                 tvdb_vec3f a = mesh->vertices[face->v0];
                 tvdb_vec3f bv = mesh->vertices[face->v1];
                 tvdb_vec3f c = mesh->vertices[face->v2];
-                tvdb_vec3f cp = tri_closest_point_c(p, a, bv, c);
+                int cand_feature = 6;
+                tvdb_vec3f cp = tri_closest_point_c(p, a, bv, c, &cand_feature);
                 tvdb_vec3f d = sub_c(p, cp);
                 float dsq = dot_c(d, d);
                 /* Strict `<` mirrors the original loop; the index tie-break
@@ -636,6 +657,7 @@ static float tvdb_bvh_closest(const tvdb_bvh_t *b,
                     best_face = f;
                     best_cp = cp;
                     best_n = tri_n[f];
+                    best_feature = cand_feature;
                 }
             }
         } else {
@@ -665,6 +687,7 @@ static float tvdb_bvh_closest(const tvdb_bvh_t *b,
     *out_cp = best_cp;
     *out_n = best_n;
     if (out_face) *out_face = best_face;
+    if (out_feature) *out_feature = best_feature;
     return best_dsq;
 }
 

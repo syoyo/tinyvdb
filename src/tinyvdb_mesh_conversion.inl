@@ -85,6 +85,15 @@ struct tvdb_mesh_sdf {
     tvdb_vec3f *normals;
     tvdb_bvh_t bvh;
     tvdb_vec3f low, high;
+    /* Feature adjacency for pseudo-normal sign evaluation (Bærentzen &
+     * Aanæs): CSR by vertex, CSR by sorted unique edge. NULL when the mesh
+     * has no faces (impossible: mesh_validate rejects face_count == 0). */
+    size_t *vertex_face_begin;   /* vertex_count + 1 */
+    int32_t *vertex_faces;       /* 3 * face_count */
+    uint32_t *edge_a, *edge_b;   /* n_unique_edges each */
+    size_t n_unique_edges;
+    size_t *edge_begin;          /* n_unique_edges + 1 */
+    int32_t *edge_faces;         /* 3 * face_count */
 };
 static tvdb_vec3f mesh_normal(tvdb_vec3f a, tvdb_vec3f b, tvdb_vec3f c) {
     tvdb_vec3f cross = cross_c(sub_c(b, a), sub_c(c, a));
@@ -100,6 +109,164 @@ static tvdb_vec3f mesh_normal(tvdb_vec3f a, tvdb_vec3f b, tvdb_vec3f c) {
         return (tvdb_vec3f){0, 0, 0};
     return (tvdb_vec3f){(float)(n[0] / length), (float)(n[1] / length), (float)(n[2] / length)};
 }
+/* Edge record used while building the edge CSR. */
+typedef struct {
+    uint32_t a, b;   /* min, max vertex index */
+    int32_t face;
+} edge_ref_t;
+static int edge_ref_cmp(const void *pa, const void *pb) {
+    const edge_ref_t *x = pa, *y = pb;
+    if (x->a != y->a) return x->a < y->a ? -1 : 1;
+    if (x->b != y->b) return x->b < y->b ? -1 : 1;
+    if (x->face != y->face) return x->face < y->face ? -1 : 1;
+    return 0;
+}
+
+/* Builds the vertex and edge CSR adjacency from an indexed mesh. */
+static int mesh_feature_adjacency_build(tvdb_mesh_sdf_t *p) {
+    size_t V = p->vertex_count, F = p->face_count;
+    p->vertex_face_begin = calloc(V + 1, sizeof(size_t));
+    if (!p->vertex_face_begin) return 0;
+    for (size_t i = 0; i < F; ++i) {
+        const tvdb_triangle *f = &p->faces[i];
+        p->vertex_face_begin[f->v0 + 1]++;
+        p->vertex_face_begin[f->v1 + 1]++;
+        p->vertex_face_begin[f->v2 + 1]++;
+    }
+    for (size_t v = 0; v < V; ++v)
+        p->vertex_face_begin[v + 1] += p->vertex_face_begin[v];
+    p->vertex_faces = malloc(3 * F * sizeof(int32_t));
+    if (!p->vertex_faces) return 0;
+    {
+        size_t *cursor = malloc((V + 1) * sizeof(size_t));
+        if (!cursor) return 0;
+        memcpy(cursor, p->vertex_face_begin, (V + 1) * sizeof(size_t));
+        for (size_t i = 0; i < F; ++i) {
+            const tvdb_triangle *f = &p->faces[i];
+            p->vertex_faces[cursor[f->v0]++] = (int32_t)i;
+            p->vertex_faces[cursor[f->v1]++] = (int32_t)i;
+            p->vertex_faces[cursor[f->v2]++] = (int32_t)i;
+        }
+        free(cursor);
+    }
+    /* Edge CSR: collect all 3F edge references, sort, dedupe. */
+    edge_ref_t *refs = malloc(3 * F * sizeof(edge_ref_t));
+    if (!refs) return 0;
+    for (size_t i = 0; i < F; ++i) {
+        const tvdb_triangle *f = &p->faces[i];
+        uint32_t vs[3] = {f->v0, f->v1, f->v2};
+        const uint32_t local[3][2] = {{0, 1}, {0, 2}, {1, 2}};
+        for (int e = 0; e < 3; ++e) {
+            uint32_t x = vs[local[e][0]], y = vs[local[e][1]];
+            if (x > y) {
+                uint32_t t = x;
+                x = y;
+                y = t;
+            }
+            refs[3 * i + (size_t)e] = (edge_ref_t){x, y, (int32_t)i};
+        }
+    }
+    qsort(refs, 3 * F, sizeof(edge_ref_t), edge_ref_cmp);
+    /* Count unique edges. */
+    size_t nE = 0;
+    for (size_t i = 0; i < 3 * F;) {
+        size_t j = i + 1;
+        while (j < 3 * F && refs[j].a == refs[i].a && refs[j].b == refs[i].b) ++j;
+        ++nE;
+        i = j;
+    }
+    p->n_unique_edges = nE;
+    p->edge_a = malloc(nE * sizeof(uint32_t));
+    p->edge_b = malloc(nE * sizeof(uint32_t));
+    p->edge_begin = malloc((nE + 1) * sizeof(size_t));
+    p->edge_faces = malloc(3 * F * sizeof(int32_t));
+    if (!p->edge_a || !p->edge_b || !p->edge_begin || !p->edge_faces) {
+        free(refs);
+        return 0;
+    }
+    size_t w = 0;
+    p->edge_begin[0] = 0;
+    for (size_t i = 0, e = 0; i < 3 * F;) {
+        size_t j = i + 1;
+        while (j < 3 * F && refs[j].a == refs[i].a && refs[j].b == refs[i].b) ++j;
+        p->edge_a[e] = refs[i].a;
+        p->edge_b[e] = refs[i].b;
+        for (size_t k = i; k < j; ++k) p->edge_faces[w++] = refs[k].face;
+        p->edge_begin[e + 1] = w;
+        ++e;
+        i = j;
+    }
+    free(refs);
+    return 1;
+}
+
+static void mesh_feature_adjacency_free(tvdb_mesh_sdf_t *p) {
+    free(p->vertex_face_begin);
+    free(p->vertex_faces);
+    free(p->edge_a);
+    free(p->edge_b);
+    free(p->edge_begin);
+    free(p->edge_faces);
+    p->vertex_face_begin = NULL;
+    p->vertex_faces = NULL;
+    p->edge_a = p->edge_b = NULL;
+    p->edge_begin = NULL;
+    p->edge_faces = NULL;
+}
+
+/* Pseudo-normal (Bærentzen & Aanæs): the direction used for the inside/
+ * outside test when the closest feature is not the face interior. Sums the
+ * face normals of the faces sharing the closest feature (edge or vertex);
+ * falls back to the face normal for the face-interior case or a zero/invalid
+ * sum. Returns a unit vector (or the face normal verbatim). */
+static tvdb_vec3f mesh_pseudo_normal(const tvdb_mesh_sdf_t *p, int32_t face,
+                                     int feature) {
+    if (feature == 6 || feature > 6) return p->normals[face];
+    const tvdb_triangle *f = &p->faces[face];
+    tvdb_vec3f sum = {0.0f, 0.0f, 0.0f};
+    if (feature < 3) {
+        /* Vertex feature: local vertex index 0..2. */
+        uint32_t vid = feature == 0 ? f->v0 : feature == 1 ? f->v1 : f->v2;
+        size_t b = p->vertex_face_begin[vid], e = p->vertex_face_begin[vid + 1];
+        for (size_t k = b; k < e; ++k) sum = add_c(sum, p->normals[p->vertex_faces[k]]);
+    } else {
+        /* Edge feature: local edge 3=ab, 4=ac, 5=bc. */
+        uint32_t x, y;
+        if (feature == 3) {
+            x = f->v0;
+            y = f->v1;
+        } else if (feature == 4) {
+            x = f->v0;
+            y = f->v2;
+        } else {
+            x = f->v1;
+            y = f->v2;
+        }
+        if (x > y) {
+            uint32_t t = x;
+            x = y;
+            y = t;
+        }
+        /* Binary search the unique-edge arrays for (x, y). */
+        size_t lo = 0, hi = p->n_unique_edges;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            uint32_t ma = p->edge_a[mid], mb = p->edge_b[mid];
+            if (ma < x || (ma == x && mb < y)) lo = mid + 1;
+            else hi = mid;
+        }
+        if (lo < p->n_unique_edges && p->edge_a[lo] == x && p->edge_b[lo] == y) {
+            for (size_t k = p->edge_begin[lo]; k < p->edge_begin[lo + 1]; ++k)
+                sum = add_c(sum, p->normals[p->edge_faces[k]]);
+        } else {
+            sum = p->normals[face]; /* not found (shouldn't happen): face normal */
+        }
+    }
+    float len2 = dot_c(sum, sum);
+    if (!isfinite(len2) || len2 <= 0.0f) return p->normals[face];
+    return normalize_c(sum);
+}
+
 tvdb_status_t tvdb_mesh_sdf_create(const tvdb_triangle_mesh *mesh, tvdb_mesh_sdf_t **out,
                                    tvdb_error_t *err) {
     if (!out)
@@ -136,6 +303,8 @@ tvdb_status_t tvdb_mesh_sdf_create(const tvdb_triangle_mesh *mesh, tvdb_mesh_sdf
     }
     if (tvdb_bvh_init(&p->bvh, mesh, mesh->face_count) != 0)
         goto oom;
+    if (!mesh_feature_adjacency_build(p))
+        goto oom;
     *out = p;
     return TVDB_OK;
 oom:
@@ -145,6 +314,7 @@ oom:
 void tvdb_mesh_sdf_destroy(tvdb_mesh_sdf_t *p) {
     if (p) {
         tvdb_bvh_free(&p->bvh);
+        mesh_feature_adjacency_free(p);
         free(p->normals);
         free(p);
     }
@@ -169,7 +339,9 @@ tvdb_status_t tvdb_mesh_sdf_distance(const tvdb_mesh_sdf_t *p, const double poin
             return mesh_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid distance point");
     tvdb_vec3f q = {(float)point[0], (float)point[1], (float)point[2]}, cp, normal;
     int32_t face;
-    tvdb_bvh_closest(&p->bvh, p->mesh, p->normals, q, INFINITY, -1, &cp, &normal, &face);
+    int feature = 6;
+    tvdb_bvh_closest(&p->bvh, p->mesh, p->normals, q, INFINITY, -1, &cp, &normal, &face,
+                     &feature);
     double d = hypot(hypot(point[0] - cp.x, point[1] - cp.y), point[2] - cp.z);
     if (face < 0 || !isfinite(d))
         return mesh_error(err, TVDB_ERROR_INVALID_DATA, "distance query failed");
@@ -220,11 +392,16 @@ static void mesh_fill_rows(size_t begin, size_t end, void *user) {
         for (int x = 0; x < g->nx; ++x) {
             tvdb_vec3f point = mesh_position(g, x, y, z), cp, n;
             int32_t face;
+            int feature = 6;
             float dsq =
-                tvdb_bvh_closest(&p->bvh, mesh, p->normals, point, seed, seed_face, &cp, &n, &face);
+                tvdb_bvh_closest(&p->bvh, mesh, p->normals, point, seed, seed_face, &cp, &n, &face,
+                                 &feature);
             seed = dsq;
             seed_face = face;
-            float direction = dot_c(sub_c(point, cp), n);
+            /* Sign from the closest feature's pseudo-normal (sum of the face
+             * normals incident on the feature): correct at convex edges and
+             * vertices where the closest face's normal flips the sign. */
+            float direction = dot_c(sub_c(point, cp), mesh_pseudo_normal(p, face, feature));
             if (face < 0 || !isfinite(dsq) || !isfinite(direction))
                 atomic_store_explicit(&j->bad, 1, memory_order_relaxed);
             float distance = sqrtf(dsq), sign = direction >= 0 ? 1 : -1;

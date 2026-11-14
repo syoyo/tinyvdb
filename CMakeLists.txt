@@ -609,6 +609,10 @@ if(TINYVDB_BUILD_TESTS)
   add_test(NAME test_to_nanovdb_validation
            COMMAND test_to_nanovdb_validation ${TINYVDB_TEST_FIXTURE})
 
+  add_executable(test_mesh_pseudo_normal ${PROJECT_SOURCE_DIR}/tests/test_mesh_pseudo_normal.c)
+  target_link_libraries(test_mesh_pseudo_normal PRIVATE tinyvdb_mesh_ops tinyvdb)
+  add_test(NAME test_mesh_pseudo_normal COMMAND test_mesh_pseudo_normal)
+
   add_executable(test_simd ${PROJECT_SOURCE_DIR}/tests/test_simd.c)
   target_link_libraries(test_simd PRIVATE tinyvdb_mesh_ops)
   # Inherit the SIMD compile flags from tinyvdb_mesh_ops via PUBLIC define;

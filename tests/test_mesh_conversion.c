@@ -215,9 +215,12 @@ static int analytic_box(const tvdb_dense_grid *g, float band) {
                 float d = outside + fminf(fmaxf(a, fmaxf(b, c)), 0),
                       v = g->data[index3(g, x, y, z)];
                 CHECK(isfinite(v) && fabsf(fabsf(v) - fminf(fabsf(d), band)) < 2e-5f);
-                /* Closest-face sign is ambiguous outside sharp corners. Interior is unambiguous. */
-                if (a < -.01f && b < -.01f && c < -.01f)
-                    CHECK(v < 0);
+                /* Pseudo-normals keep the sign exact even at sharp corners. */
+                float m = .5f * g->voxel_size;
+                if (a > m || b > m || c > m)
+                    CHECK(v >= 0);   /* strictly outside: non-negative */
+                if (a < -m && b < -m && c < -m)
+                    CHECK(v <= 0);   /* strictly inside: non-positive */
             }
     return 0;
 }
