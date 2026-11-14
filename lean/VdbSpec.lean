@@ -49,4 +49,5 @@ import Vdb.GridHeader
 import Vdb.Header
 import Vdb.PseudoNormal
 import Vdb.EikonalTop
+import Vdb.Cuberille
 import Vdb.TreeSweep
