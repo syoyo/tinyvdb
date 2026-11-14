@@ -979,6 +979,8 @@ size_t tvdb_value_type_size(tvdb_value_type_t type) {
     }
 }
 
+
+
 /* ========================================================================== */
 /*  Stream reader                                                             */
 /* ========================================================================== */
@@ -987,6 +989,7 @@ typedef struct tvdb__sr {
     const uint8_t *data;
     uint64_t       length;
     uint64_t       pos;
+    uint64_t       limit;
     int            swap_endian;
 } tvdb__sr_t;
 
@@ -995,7 +998,21 @@ static void tvdb__sr_init(tvdb__sr_t *sr, const uint8_t *data, uint64_t length,
     sr->data = data;
     sr->length = length;
     sr->pos = 0;
+    sr->limit = length;
     sr->swap_endian = swap_endian;
+}
+
+static uint64_t tvdb__sr_remaining(const tvdb__sr_t *sr) {
+    return sr->limit - sr->pos;
+}
+
+/* Mask buffers are fixed by log2dim: (1 << (3*log2dim)) bits. Reject a
+   claimed buffer when the remaining bytes below `limit` (the grid's
+   end_byte_offset) cannot hold it. */
+static int tvdb__mask_budget_ok(const tvdb__sr_t *sr, int32_t log2dim) {
+    uint64_t bits = (uint64_t)1 << (3 * (uint32_t)log2dim);
+    uint64_t bytes = (bits + 7) / 8;
+    return bytes <= tvdb__sr_remaining(sr);
 }
 
 static int tvdb__sr_seek_set(tvdb__sr_t *sr, uint64_t offset) {
@@ -1012,14 +1029,14 @@ static int tvdb__sr_seek_cur(tvdb__sr_t *sr, int64_t offset) {
 }
 
 static int tvdb__sr_read(tvdb__sr_t *sr, size_t n, uint8_t *dst) {
-    if (sr->pos + n > sr->length) return 0;
+    if (sr->pos + n > sr->limit) return 0;
     memcpy(dst, sr->data + sr->pos, n);
     sr->pos += n;
     return 1;
 }
 
 static int tvdb__sr_read_u8(tvdb__sr_t *sr, uint8_t *out) {
-    if (sr->pos + 1 > sr->length) return 0;
+    if (sr->pos + 1 > sr->limit) return 0;
     *out = sr->data[sr->pos++];
     return 1;
 }
@@ -1029,7 +1046,7 @@ static int tvdb__sr_read_i8(tvdb__sr_t *sr, int8_t *out) {
 }
 
 static int tvdb__sr_read_u16(tvdb__sr_t *sr, uint16_t *out) {
-    if (sr->pos + 2 > sr->length) return 0;
+    if (sr->pos + 2 > sr->limit) return 0;
     memcpy(out, sr->data + sr->pos, 2);
     if (sr->swap_endian) tvdb__swap2(out);
     sr->pos += 2;
@@ -1037,7 +1054,7 @@ static int tvdb__sr_read_u16(tvdb__sr_t *sr, uint16_t *out) {
 }
 
 static int tvdb__sr_read_u32(tvdb__sr_t *sr, uint32_t *out) {
-    if (sr->pos + 4 > sr->length) return 0;
+    if (sr->pos + 4 > sr->limit) return 0;
     memcpy(out, sr->data + sr->pos, 4);
     if (sr->swap_endian) tvdb__swap4(out);
     sr->pos += 4;
@@ -1049,7 +1066,7 @@ static int tvdb__sr_read_i32(tvdb__sr_t *sr, int32_t *out) {
 }
 
 static int tvdb__sr_read_u64(tvdb__sr_t *sr, uint64_t *out) {
-    if (sr->pos + 8 > sr->length) return 0;
+    if (sr->pos + 8 > sr->limit) return 0;
     memcpy(out, sr->data + sr->pos, 8);
     if (sr->swap_endian) tvdb__swap8(out);
     sr->pos += 8;
@@ -1090,7 +1107,7 @@ static tvdb_status_t tvdb__sr_read_cstring(tvdb__sr_t *sr, tvdb_allocator_t *a,
     uint32_t len = 0;
     *out = NULL;
     if (!tvdb__sr_read_u32(sr, &len)) return TVDB_ERROR_INVALID_DATA;
-    if ((uint64_t)len > sr->length - sr->pos) return TVDB_ERROR_INVALID_DATA;
+    if ((uint64_t)len > sr->limit - sr->pos) return TVDB_ERROR_INVALID_DATA;
     if (len && memchr(sr->data + sr->pos, 0, len)) return TVDB_ERROR_INVALID_DATA;
     *out = tvdb__strndup(a, (const char *)(sr->data + sr->pos), len);
     if (!*out) return TVDB_ERROR_OUT_OF_MEMORY;
@@ -1457,7 +1474,7 @@ static int tvdb__metadata_push(tvdb_metadata_t *m, tvdb_meta_entry_t *e) {
 static tvdb_status_t tvdb__meta_string(tvdb__sr_t *sr, tvdb_allocator_t *a,
                                       char **out, size_t *length) {
     uint32_t n;
-    if (!tvdb__sr_read_u32(sr, &n) || n > sr->length - sr->pos ||
+    if (!tvdb__sr_read_u32(sr, &n) || n > sr->limit - sr->pos ||
         (uint64_t)n + 1 > SIZE_MAX) return TVDB_ERROR_INVALID_DATA;
     /* Names have no stored allocation length and must be C strings. */
     if (!length && memchr(sr->data + sr->pos, 0, n)) return TVDB_ERROR_INVALID_DATA;
@@ -1493,7 +1510,7 @@ static tvdb_status_t tvdb__read_meta(tvdb__sr_t *sr, tvdb_metadata_t *meta,
             int32_t size;
             st = TVDB_ERROR_INVALID_DATA;
             if (!tvdb__sr_read_i32(sr, &size) || size < 0 ||
-                (uint64_t)size > sr->length - sr->pos) goto fail;
+                (uint64_t)size > sr->limit - sr->pos) goto fail;
             tvdb_value_type_t type = TVDB_VALUE_NULL;
             if (!strcmp(entry.type_name,"bool")) type = TVDB_VALUE_BOOL;
             else if (!strcmp(entry.type_name,"float")) type = TVDB_VALUE_FLOAT;
@@ -2181,7 +2198,7 @@ static tvdb_status_t tvdb__read_and_decompress(
         } else {
             /* Guard a corrupt/oversized compressed length against the bytes
                actually remaining in the stream, before allocating. */
-            if ((uint64_t)num_compressed > sr->length - sr->pos) {
+            if ((uint64_t)num_compressed > sr->limit - sr->pos) {
                 tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
                                 "Compressed size exceeds remaining data");
                 return TVDB_ERROR_INVALID_DATA;
@@ -2355,6 +2372,11 @@ static tvdb_status_t tvdb__read_mask_values(
     if (per_node_flag == TVDB_MASK_AND_NO_INACTIVE_VALS ||
         per_node_flag == TVDB_MASK_AND_ONE_INACTIVE_VAL ||
         per_node_flag == TVDB_MASK_AND_TWO_INACTIVE_VALS) {
+        if (!tvdb__mask_budget_ok(sr, value_mask->log2dim)) {
+            tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                            "selection mask exceeds remaining data");
+            return TVDB_ERROR_INVALID_DATA;
+        }
         if (!tvdb__nodemask_alloc(&selection_mask, value_mask->log2dim,
                                   alloc)) {
             tvdb__nodemask_destroy(&selection_mask);
@@ -2565,7 +2587,7 @@ static tvdb_status_t tvdb__read_root_topology(
        looping: each tile needs an origin, a value and an active byte, each
        child at least its origin. */
     {
-        uint64_t remaining = sr->length - sr->pos;
+        uint64_t remaining = sr->limit - sr->pos;
         uint64_t tile_bytes = 12u + (uint64_t)tvdb_value_type_size(vt) + 1u;
         uint64_t tiles_total = (uint64_t)root->num_tiles * tile_bytes;
         if (tiles_total > remaining ||
@@ -2681,6 +2703,11 @@ static tvdb_status_t tvdb__read_internal_topology(
     int32_t log2dim = tree->layout.levels[level].log2dim;
     tvdb_value_type_t vt = tree->layout.levels[level].value_type;
 
+    if (!tvdb__mask_budget_ok(sr, log2dim)) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "internal node masks exceed remaining data");
+        return TVDB_ERROR_INVALID_DATA;
+    }
     /* Read child mask and value mask */
     if (!tvdb__nodemask_alloc(&inode->child_mask, log2dim, a) ||
         !tvdb__nodemask_alloc(&inode->value_mask, log2dim, a)) {
@@ -2798,6 +2825,11 @@ static tvdb_status_t tvdb__read_leaf_topology(
     tvdb_leaf_node_t *leaf = &node->u.leaf;
     int32_t log2dim = tree->layout.levels[level].log2dim;
 
+    if (!tvdb__mask_budget_ok(sr, log2dim)) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                        "leaf mask exceeds remaining data");
+        return TVDB_ERROR_INVALID_DATA;
+    }
     if (!tvdb__nodemask_alloc(&leaf->value_mask, log2dim, tree->alloc)) {
         tvdb__set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
         return TVDB_ERROR_OUT_OF_MEMORY;
@@ -2989,7 +3021,7 @@ static tvdb_status_t tvdb__read_leaf_buffer(
 
         if (leaf->num_point_indices > 0) {
             if (leaf->num_point_indices > (uint64_t)(SIZE_MAX / sizeof(int32_t)) ||
-                leaf->num_point_indices > (sr->length - sr->pos) / sizeof(int32_t)) {
+                leaf->num_point_indices > (sr->limit - sr->pos) / sizeof(int32_t)) {
                 tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
                                 "PointIndex leaf index count too large");
                 return TVDB_ERROR_INVALID_DATA;
@@ -3016,7 +3048,7 @@ static tvdb_status_t tvdb__read_leaf_buffer(
         leaf->point_aux_data_size = (uint64_t)aux_bytes_i64;
         if (leaf->point_aux_data_size > 0) {
             if (leaf->point_aux_data_size > (uint64_t)SIZE_MAX ||
-                leaf->point_aux_data_size > sr->length - sr->pos) {
+                leaf->point_aux_data_size > sr->limit - sr->pos) {
                 tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
                                 "PointIndex leaf aux payload too large");
                 return TVDB_ERROR_INVALID_DATA;
@@ -3167,8 +3199,16 @@ static tvdb_status_t tvdb__read_grid(tvdb__sr_t *sr, tvdb_grid_t *grid,
                                      int header_only,
                                      tvdb_error_t *err) {
     tvdb__scratch_t scratch = { NULL, 0 };
+    /* Bound tree reads by the grid's end_byte_offset: an inflated descriptor
+       cannot force reads past the grid's declared data. */
+    uint64_t saved_limit = sr->limit;
+    if (grid->descriptor.end_byte_offset != 0 &&
+        grid->descriptor.end_byte_offset <= sr->length) {
+        sr->limit = grid->descriptor.end_byte_offset;
+    }
     tvdb_status_t st = tvdb__read_grid_inner(sr, grid, header, &scratch, alloc,
                                              header_only, err);
+    sr->limit = saved_limit;
     if (scratch.data) tvdb__free(alloc, scratch.data, scratch.size);
     return st;
 }

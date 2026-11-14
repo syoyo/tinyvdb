@@ -1020,6 +1020,32 @@ static void test_malformed_grid_type_rejected(void) {
 }
 
 /* ------------------------------------------------------------------------ */
+/*  Finding F5: huge log2dim claimed in the layout cannot force huge         */
+/*  mask allocations                                                        */
+/* ------------------------------------------------------------------------ */
+
+static void test_huge_log2dim_rejected(void) {
+    /* Tree_float_10_10_10 would ask for two 2^30-bit masks per internal
+       node; the claimed bytes cannot be backed by the file. */
+    bb_t p = { 0 };
+    put_grid_prefix(&p, 224, 0);
+    bb_f32(&p, 3.0f);
+    bb_u32(&p, 0); bb_u32(&p, 1);       /* 1 child */
+    bb_i32(&p, 0); bb_i32(&p, 0); bb_i32(&p, 0);  /* child origin */
+    bb_t file = make_file(224, "g", 1, "Tree_float_10_10_10", &p);
+    ctr_t c; ctr_init(&c);
+    tvdb_allocator_t a = ctr_alloc(&c);
+    tvdb_file_t f;
+    tvdb_error_t e; memset(&e, 0, sizeof(e));
+    tvdb_status_t st = open_read(&f, &file, &a, &e);
+    CHECK(st == TVDB_ERROR_INVALID_DATA);
+    tvdb_file_close(&f);
+    CHECK(c.peak_bytes < ((size_t)1 << 20));
+    CHECK(c.live_count == 0);
+    bb_free(&file); bb_free(&p);
+}
+
+/* ------------------------------------------------------------------------ */
 /*  Finding F3: version above the max is rejected; block_byte_offset          */
 /*  must be grid <= block <= end                                             */
 /* ------------------------------------------------------------------------ */
@@ -1177,6 +1203,7 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     T(test_open_error_paths_release),
     T(test_overflowing_header_fields),
     T(test_malformed_grid_type_rejected),
+    T(test_huge_log2dim_rejected),
     T(test_version_above_max_rejected),
     T(test_block_offset_out_of_order_rejected),
     T(test_nanovdb_close_frees_buffer_once),
