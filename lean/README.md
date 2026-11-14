@@ -23,21 +23,18 @@ lake build
 Mathlib is only needed from the coordinate/geometry modules onward; the byte,
 value and mask modules only use Lean core.
 
-## Status (this drop)
+## Status (current)
 
-Landed and building: `Vdb/Bytes.lean`, `Vdb/Value.lean`, `Vdb/Mask.lean`,
-`Vdb/Coord.lean`, `Vdb/Tree.lean`, `Vdb/MaskCompress.lean`, `Vdb/Half.lean`,
-`Vdb/Header.lean`, `Vdb/Chunks.lean`, `Vdb/Meta.lean`, `Vdb/Transform.lean`,
-`Vdb/Layout.lean`. The file header round trip is proven; metadata and
-transform encodings are modelled with their vector-chain round trips; metadata
-entries and metadata lists round trip for every type.
-The tree model reads a worked `5_4_3` tree (three lookups checked by `decide`),
-the **general mask-compression round trip is proven** (all seven codes,
-including the background swap and the code-6 full-list path).
-
-See `VERIFICATION.md` for the theorem inventory and the explicit list of
-remaining P1 work (mask byte round trip, slot bijection, tree model, format
-layer, oracle harness).
+The library, the oracle generator and the differential tools are all landed
+and building (`warningAsError` on, no `sorry`/`admit` in landed modules). The
+file round trip, tree model, mask-compression round trip, half-float
+encoding, winding-number and dipole far-field theory, narrow-band composition,
+geometry/SDF layer, CSG, Godunov/fast-sweeping/flood-fill/Euler theory, MC/DMC
+welding and ownership, and the dense-sampling coordinate change are all
+proved; the C code is checked against the model by differential harnesses
+(bit-exact for CSG and mesh→SDF). See `VERIFICATION.md` for the theorem
+inventory, the differential-harness results and the explicit list of what
+remains open or was abandoned with reasons.
 
 ## Conventions
 
@@ -62,4 +59,17 @@ Local-only for now (no CI job):
 ```sh
 lake build                     # zero errors (warningAsError is on)
 grep -rn '\bsorry\b' Vdb/      # must be empty
+./lean/scripts/check_samples.sh          # 13/13 .vdb files: official samples parsed & round-tripped
+./lean/scripts/check_mask_classify.sh    # 1,679,616/1,679,616 nodes byte-exact
+./lean/scripts/check_half.sh             # h2f + 192,940 f2h witnesses byte-exact
+./lean/scripts/check_godunov.sh          # 200,000/200,000 (1e-12)
+./lean/scripts/check_euler.sh            # 400/400 (c == 2·χ)
+./lean/scripts/check_fill.sh             # 400/400 byte-exact
+./lean/scripts/check_fastsweep.sh        # 102,400/102,400 (1e-5·h, exact sign)
+./lean/scripts/check_csg.sh              # 614,400/614,400 op outputs bit-exact
+./lean/scripts/check_meshsdf.sh          # 6,488/6,488 voxels bit-exact (mesh→SDF arm)
+./lean/scripts/check_winding.sh          # 194/194 points, degree 1 on closed meshes
+./lean/scripts/check_vdbgen.sh           # 2,500/2,500 corpus files: vdbcheck vs vdbdump
 ```
+
+None of the harnesses are wired into CTest — run them directly.
