@@ -423,6 +423,7 @@ self-contained (built with `cc -O2` against `src/*.c`).
   (exit 0); `check_godunov.sh`: **200,000/200,000** (1e-12); `check_fill.sh`:
   **400/400** byte-exact; `check_euler.sh`: **400/400** (`c == 2·χ`);
   `check_fastsweep.sh`: **102,400/102,400** voxels (1e-5·h, exact sign).
+* Scalar sanitizer CTest (`-fsanitize=address,undefined,float-cast-overflow`, SIMD and OpenMP off): **52/52 tests pass**.
 * Findings fixed in C: F1, F15, F2, F3, F4, F5, F7, F9, F11, F12, F13
   (all regression-tested). Modelled/decided: F6, F10, F14. Documented
   deviation: F8.
