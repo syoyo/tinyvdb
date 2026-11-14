@@ -65,6 +65,10 @@ lean_exe csgcheck where
 lean_exe meshsdfcheck where
   root := `Vdb.MeshSdfCheck
 
+/-- Model-side winding-number executable check (driven by `scripts/check_winding.sh`). -/
+lean_exe windingcheck where
+  root := `Vdb.WindingCheck
+
 /-- Seeded well-formed `.vdb` generator (differential harness, model half). -/
 lean_exe vdbgen where
   root := `VdbGen

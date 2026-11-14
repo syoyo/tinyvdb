@@ -315,9 +315,9 @@ These harnesses complement (and reuse the LCG/seeding of) the existing
 CTest — run them directly. All the float checks rely on the C drivers and
 Lean twins sharing the same inputs (the Godunov/fill/Euler/fast-sweep/CSG
 harnesses share the same seeded LCG and value mapping on both sides; the
-mesh→SDF harness dumps the generated mesh and grid and the twin recomputes
-from the dump). The C drivers are self-contained (built with `cc -O2`
-against `src/*.c`).
+mesh→SDF and winding harnesses dump generated meshes and the twin recomputes
+from the dump / asserts against IEEE doubles). The C drivers are
+self-contained (built with `cc -O2` against `src/*.c`).
 
 ## Differential harness: dense CSG (bit-exact, F12-adjacent)
 
@@ -368,6 +368,27 @@ or an exact equality such as `d1 == d3`); hitting one increments
 `fallback_hits` and skips comparison for that voxel, so it is a loud
 failure, never a silent pass. The gate asserts `fallback_hits=0`
 (unreachable for these finite, non-degenerate meshes).
+
+## Executable check: generalized winding number (degree 1 on closed meshes)
+
+`lean/Vdb/WindingCheck.lean` (`lean_exe windingcheck`, driven by
+`scripts/check_winding.sh`) pins the *executable* degree-1 claim of
+`src/tinyvdb_winding.c` on the same two closed meshes (cube, icosahedron):
+48 seeded-random interior sample points (box `[-0.45, 0.45]^3`) and 48
+seeded-random exterior points (radial shell `[2.35, 3.0]`) per mesh, plus the
+origin, evaluated with **both** `TVDB_WINDING_EXACT` (sum of per-face solid
+angles) and `TVDB_WINDING_FAST` (AABB tree with the dipole far field), printed
+as double bit patterns. The Lean checker asserts: **EXACT**
+|w − expected| ≤ 1e-9 (expected 1 inside, 0 outside); **FAST**
+|w − expected| ≤ 1e-6 (observed ≈ 4.4e-16 on these meshes — the tolerance is
+pinned to these two fixed meshes, not a universal FAST bound). Result:
+**194/194 points pass** (98 interior, 96 exterior; per-mesh max deviation
+≈ 4.4e-16 for both modes). Not a differential harness (there is no Lean Float
+`atan2` in core, and the claim being pinned is the closed-mesh degree) and
+deliberately small. Negative control verified: overwriting one point's EXACT
+value with the bits of `2.0` makes the checker report `bad=1` and exit 1; the
+script additionally asserts the exact `pts=194 inside=98 outside=96 bad=0`
+counters.
 
 ## Explicitly not yet done (next increments)
 
@@ -425,7 +446,9 @@ failure, never a silent pass. The gate asserts `fallback_hits=0`
      unique owner per crossing cell, orientation flip under `det M < 0`;
      `Vdb/OwnerWalk.lean`: exactly one position passes the accept test
      `tool_corner_of_bit[i] == tool_ctz32(side)` — the visitation invariant
-     given the collect-walk coverage); MC adaptivity bounds — **scoped but not
+     given the collect-walk coverage); the winding-number executable degree-1
+     check — **LANDED** (`Vdb/WindingCheck.lean` / `scripts/check_winding.sh`);
+     MC adaptivity bounds — **scoped but not
      landed**: the target is `tool_adapt` (`src/tinyvdb_sparse_tools.c`,
      `tolerance > 0`): vertex clustering on Morton keys `⌊vᵢ/step⌋` with
      `step = tolerance/√3`; the intended bound is that clustering distortion
@@ -490,7 +513,7 @@ failure, never a silent pass. The gate asserts `fallback_hits=0`
 
 ## Final tally
 
-* Landed Lean modules: 74 (69 under `Vdb/` + `VdbGen`, `VdbCheck`,
+* Landed Lean modules: 75 (70 under `Vdb/` + `VdbGen`, `VdbCheck`,
   `VdbSpec`, `HalfCheck`, `MaskClassify`) — the library, the oracle
   generator and the differential tools, all with `warningAsError` on and
   **0 `sorry`/`admit`** in landed modules.
@@ -504,7 +527,9 @@ failure, never a silent pass. The gate asserts `fallback_hits=0`
   `check_fastsweep.sh`: **102,400/102,400** voxels (1e-5·h, exact sign);
   `check_csg.sh`: **614,400/614,400** voxel comparisons bit-exact;
   `check_meshsdf.sh`: **6,488/6,488** voxels bit-exact (3 closed meshes,
-  mesh→SDF arm; `fallback_hits=0`).
+  mesh→SDF arm; `fallback_hits=0`);
+  `check_winding.sh`: **194/194** points, EXACT and FAST modes match degree 1
+  on closed meshes (`bad=0`).
 * Scalar sanitizer CTest (`-fsanitize=address,undefined,float-cast-overflow`, SIMD and OpenMP off): **52/52 tests pass**.
 * Findings fixed in C: F1, F15, F2, F3, F4, F5, F7, F9, F11, F12, F13
   (all regression-tested). Modelled/decided: F6, F10, F14. Documented
