@@ -538,6 +538,84 @@ static void test_phase3(void) {
   tvdb_dense_grid_free(&g);
 }
 
+static void test_phase7(void) {
+  // Boundary: central/one-sided differences of linear fields are exact
+  // everywhere, not just in the interior (F13).
+  int n = 8;
+  float vs = 0.5f;
+  tvdb_dense_grid f; tvdb_dense_grid_init(&f, n, n, n);
+  f.voxel_size = vs; f.ox = 1.0f; f.oy = 2.0f; f.oz = 3.0f;   // non-zero origin
+  for (int iz = 0; iz < n; ++iz)
+    for (int iy = 0; iy < n; ++iy)
+      for (int ix = 0; ix < n; ++ix) {
+        float px = f.ox + ((float)ix + 0.5f) * vs;
+        float py = f.oy + ((float)iy + 0.5f) * vs;
+        float pz = f.oz + ((float)iz + 0.5f) * vs;
+        f.data[(size_t)((iz * n + iy) * n + ix)] = 2.0f * px + 3.0f * py - 1.0f * pz;
+      }
+  tvdb_dense_vec_grid grad; tvdb_dense_vec_grid_init(&grad, n, n, n);
+  grad.voxel_size = vs; grad.ox = f.ox; grad.oy = f.oy; grad.oz = f.oz;
+  tvdb_gradient(&f, &grad);
+  for (int iz = 0; iz < n; ++iz)
+    for (int iy = 0; iy < n; ++iy)
+      for (int ix = 0; ix < n; ++ix) {
+        size_t i = ((size_t)iz * n + iy) * n + ix;
+        EXPECT_NEAR(grad.data[i * 3 + 0], 2.0f, 1e-5f);
+        EXPECT_NEAR(grad.data[i * 3 + 1], 3.0f, 1e-5f);
+        EXPECT_NEAR(grad.data[i * 3 + 2], -1.0f, 1e-5f);
+      }
+  EXPECT_NEAR(tvdb_central_diff_x(&f, 0, 3, 5), 2.0f, 1e-5f);
+  EXPECT_NEAR(tvdb_central_diff_x(&f, n - 1, 3, 5), 2.0f, 1e-5f);
+  EXPECT_NEAR(tvdb_central_diff_y(&f, 3, 0, 5), 3.0f, 1e-5f);
+  EXPECT_NEAR(tvdb_central_diff_y(&f, 3, n - 1, 5), 3.0f, 1e-5f);
+  EXPECT_NEAR(tvdb_central_diff_z(&f, 3, 5, 0), -1.0f, 1e-5f);
+  EXPECT_NEAR(tvdb_central_diff_z(&f, 3, 5, n - 1), -1.0f, 1e-5f);
+
+  // div(v) for v = (2x, 3y, -z) is 4 everywhere, boundary included.
+  tvdb_dense_vec_grid v; tvdb_dense_vec_grid_init(&v, n, n, n);
+  v.voxel_size = vs; v.ox = f.ox; v.oy = f.oy; v.oz = f.oz;
+  for (int iz = 0; iz < n; ++iz)
+    for (int iy = 0; iy < n; ++iy)
+      for (int ix = 0; ix < n; ++ix) {
+        size_t i = ((size_t)iz * n + iy) * n + ix;
+        v.data[i * 3 + 0] = 2.0f * (v.ox + ((float)ix + 0.5f) * vs);
+        v.data[i * 3 + 1] = 3.0f * (v.oy + ((float)iy + 0.5f) * vs);
+        v.data[i * 3 + 2] = -(v.oz + ((float)iz + 0.5f) * vs);
+      }
+  tvdb_dense_grid div; tvdb_dense_grid_init(&div, n, n, n);
+  div.voxel_size = vs; div.ox = v.ox; div.oy = v.oy; div.oz = v.oz;
+  tvdb_divergence(&v, &div);
+  for (size_t i = 0; i < (size_t)n * n * n; ++i)
+    EXPECT_NEAR(div.data[i], 4.0f, 1e-4f);
+
+  // curl(w) for w = (y, z, x) is (-1, -1, -1) everywhere, boundary included.
+  tvdb_dense_vec_grid w; tvdb_dense_vec_grid_init(&w, n, n, n);
+  w.voxel_size = vs; w.ox = f.ox; w.oy = f.oy; w.oz = f.oz;
+  for (int iz = 0; iz < n; ++iz)
+    for (int iy = 0; iy < n; ++iy)
+      for (int ix = 0; ix < n; ++ix) {
+        size_t i = ((size_t)iz * n + iy) * n + ix;
+        w.data[i * 3 + 0] = w.oy + ((float)iy + 0.5f) * vs;
+        w.data[i * 3 + 1] = w.oz + ((float)iz + 0.5f) * vs;
+        w.data[i * 3 + 2] = w.ox + ((float)ix + 0.5f) * vs;
+      }
+  tvdb_dense_vec_grid curl; tvdb_dense_vec_grid_init(&curl, n, n, n);
+  curl.voxel_size = vs; curl.ox = w.ox; curl.oy = w.oy; curl.oz = w.oz;
+  tvdb_curl(&w, &curl);
+  for (size_t i = 0; i < (size_t)n * n * n; ++i) {
+    EXPECT_NEAR(curl.data[i * 3 + 0], -1.0f, 1e-5f);
+    EXPECT_NEAR(curl.data[i * 3 + 1], -1.0f, 1e-5f);
+    EXPECT_NEAR(curl.data[i * 3 + 2], -1.0f, 1e-5f);
+  }
+
+  tvdb_dense_grid_free(&f);
+  tvdb_dense_grid_free(&div);
+  tvdb_dense_vec_grid_free(&grad);
+  tvdb_dense_vec_grid_free(&v);
+  tvdb_dense_vec_grid_free(&w);
+  tvdb_dense_vec_grid_free(&curl);
+}
+
 int main(void) {
   printf("[Phase 1] morphology / CSG / filters / measurement\n");
   test_phase1();
@@ -551,6 +629,8 @@ int main(void) {
   test_phase5();
   printf("[Phase 6] ray ops\n");
   test_phase6();
+  printf("[Phase 7] boundary differences (F13)\n");
+  test_phase7();
 
   if (g_failures == 0) {
     printf("\nAll tests passed.\n");

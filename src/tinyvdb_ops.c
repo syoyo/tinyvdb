@@ -396,17 +396,46 @@ float tvdb_volume(const tvdb_dense_grid* grid) {
 // Phase 2: differential operators
 // -------------------------------------------------------------------------
 
+/* Central difference with a one-sided difference over distance h at the
+   boundary (the previous clamped-neighbor / 2h form was half strength there). */
+static float tvdb_central_diff_x_impl(const tvdb_dense_grid* g, int ix, int iy, int iz) {
+  float h = g->voxel_size;
+  int64_t i = ix, L = (int64_t)(g->nx - 1);
+  if (i <= 0)
+    return g->nx > 1 ? (tvdb_at(g, 1, iy, iz) - tvdb_at(g, 0, iy, iz)) / h : 0.0f;
+  if (i >= L)
+    return g->nx > 1 ? (tvdb_at(g, L, iy, iz) - tvdb_at(g, L - 1, iy, iz)) / h : 0.0f;
+  return (tvdb_at(g, i + 1, iy, iz) - tvdb_at(g, i - 1, iy, iz)) / (2.0f * h);
+}
+static float tvdb_central_diff_y_impl(const tvdb_dense_grid* g, int ix, int iy, int iz) {
+  float h = g->voxel_size;
+  int64_t i = iy, L = (int64_t)(g->ny - 1);
+  if (i <= 0)
+    return g->ny > 1 ? (tvdb_at(g, ix, 1, iz) - tvdb_at(g, ix, 0, iz)) / h : 0.0f;
+  if (i >= L)
+    return g->ny > 1 ? (tvdb_at(g, ix, L, iz) - tvdb_at(g, ix, L - 1, iz)) / h : 0.0f;
+  return (tvdb_at(g, ix, i + 1, iz) - tvdb_at(g, ix, i - 1, iz)) / (2.0f * h);
+}
+static float tvdb_central_diff_z_impl(const tvdb_dense_grid* g, int ix, int iy, int iz) {
+  float h = g->voxel_size;
+  int64_t i = iz, L = (int64_t)(g->nz - 1);
+  if (i <= 0)
+    return g->nz > 1 ? (tvdb_at(g, ix, iy, 1) - tvdb_at(g, ix, iy, 0)) / h : 0.0f;
+  if (i >= L)
+    return g->nz > 1 ? (tvdb_at(g, ix, iy, L) - tvdb_at(g, ix, iy, L - 1)) / h : 0.0f;
+  return (tvdb_at(g, ix, iy, i + 1) - tvdb_at(g, ix, iy, i - 1)) / (2.0f * h);
+}
 float tvdb_central_diff_x(const tvdb_dense_grid* g, int ix, int iy, int iz) {
   if(!g || !tvdb_grid_valid(g->nx,g->ny,g->nz,g->voxel_size,g->data,sizeof(float))) return 0;
-  return (tvdb_at(g, (int64_t)ix + 1, iy, iz) - tvdb_at(g, (int64_t)ix - 1, iy, iz)) / (2.0f * g->voxel_size);
+  return tvdb_central_diff_x_impl(g, ix, iy, iz);
 }
 float tvdb_central_diff_y(const tvdb_dense_grid* g, int ix, int iy, int iz) {
   if(!g || !tvdb_grid_valid(g->nx,g->ny,g->nz,g->voxel_size,g->data,sizeof(float))) return 0;
-  return (tvdb_at(g, ix, (int64_t)iy + 1, iz) - tvdb_at(g, ix, (int64_t)iy - 1, iz)) / (2.0f * g->voxel_size);
+  return tvdb_central_diff_y_impl(g, ix, iy, iz);
 }
 float tvdb_central_diff_z(const tvdb_dense_grid* g, int ix, int iy, int iz) {
   if(!g || !tvdb_grid_valid(g->nx,g->ny,g->nz,g->voxel_size,g->data,sizeof(float))) return 0;
-  return (tvdb_at(g, ix, iy, (int64_t)iz + 1) - tvdb_at(g, ix, iy, (int64_t)iz - 1)) / (2.0f * g->voxel_size);
+  return tvdb_central_diff_z_impl(g, ix, iy, iz);
 }
 
 static void tvdb_gradient_impl(const tvdb_dense_grid* scalar, tvdb_dense_vec_grid* grad) {
@@ -419,10 +448,21 @@ static void tvdb_gradient_impl(const tvdb_dense_grid* scalar, tvdb_dense_vec_gri
         const size_t plane = (size_t)nx * (size_t)ny;
         const size_t i = ((size_t)iz * ny + iy) * nx + ix;
         const float* d = scalar->data;
-        const float inv2h = 1.0f / (2.0f * scalar->voxel_size);
-        float gx = ((ix + 1 < nx ? d[i + 1] : d[i]) - (ix > 0 ? d[i - 1] : d[i])) * inv2h;
-        float gy = ((iy + 1 < ny ? d[i + nx] : d[i]) - (iy > 0 ? d[i - nx] : d[i])) * inv2h;
-        float gz = ((iz + 1 < nz ? d[i + plane] : d[i]) - (iz > 0 ? d[i - plane] : d[i])) * inv2h;
+        const float h = scalar->voxel_size;
+        const float inv2h = 1.0f / (2.0f * h);
+        float gx, gy, gz;
+        if (ix > 0 && ix + 1 < nx) gx = (d[i + 1] - d[i - 1]) * inv2h;
+        else if (ix + 1 < nx) gx = (d[i + 1] - d[i]) / h;
+        else if (ix > 0) gx = (d[i] - d[i - 1]) / h;
+        else gx = 0.0f;
+        if (iy > 0 && iy + 1 < ny) gy = (d[i + nx] - d[i - nx]) * inv2h;
+        else if (iy + 1 < ny) gy = (d[i + nx] - d[i]) / h;
+        else if (iy > 0) gy = (d[i] - d[i - nx]) / h;
+        else gy = 0.0f;
+        if (iz > 0 && iz + 1 < nz) gz = (d[i + plane] - d[i - plane]) * inv2h;
+        else if (iz + 1 < nz) gz = (d[i + plane] - d[i]) / h;
+        else if (iz > 0) gz = (d[i] - d[i - plane]) / h;
+        else gz = 0.0f;
         size_t vi = i * 3u;
         grad->data[vi + 0] = gx;
         grad->data[vi + 1] = gy;
@@ -443,14 +483,24 @@ static inline float tvdb_vec_at(const tvdb_dense_vec_grid* v, int64_t ix, int64_
 static void tvdb_divergence_impl(const tvdb_dense_vec_grid* vec, tvdb_dense_grid* div) {
   if (!vec->data || !div->data) return;
   const int nx = vec->nx, ny = vec->ny, nz = vec->nz;
-  const float h2 = 2.0f * vec->voxel_size;
+  const float h = vec->voxel_size, h2 = 2.0f * h;
   #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
     for (int iy = 0; iy < ny; ++iy) {
       for (int ix = 0; ix < nx; ++ix) {
-        float dvx_dx = (tvdb_vec_at(vec, ix + 1, iy, iz, 0) - tvdb_vec_at(vec, ix - 1, iy, iz, 0)) / h2;
-        float dvy_dy = (tvdb_vec_at(vec, ix, iy + 1, iz, 1) - tvdb_vec_at(vec, ix, iy - 1, iz, 1)) / h2;
-        float dvz_dz = (tvdb_vec_at(vec, ix, iy, iz + 1, 2) - tvdb_vec_at(vec, ix, iy, iz - 1, 2)) / h2;
+        float dvx_dx, dvy_dy, dvz_dz;
+        if (ix > 0 && ix + 1 < nx) dvx_dx = (tvdb_vec_at(vec, ix + 1, iy, iz, 0) - tvdb_vec_at(vec, ix - 1, iy, iz, 0)) / h2;
+        else if (ix + 1 < nx) dvx_dx = (tvdb_vec_at(vec, ix + 1, iy, iz, 0) - tvdb_vec_at(vec, ix, iy, iz, 0)) / h;
+        else if (ix > 0) dvx_dx = (tvdb_vec_at(vec, ix, iy, iz, 0) - tvdb_vec_at(vec, ix - 1, iy, iz, 0)) / h;
+        else dvx_dx = 0.0f;
+        if (iy > 0 && iy + 1 < ny) dvy_dy = (tvdb_vec_at(vec, ix, iy + 1, iz, 1) - tvdb_vec_at(vec, ix, iy - 1, iz, 1)) / h2;
+        else if (iy + 1 < ny) dvy_dy = (tvdb_vec_at(vec, ix, iy + 1, iz, 1) - tvdb_vec_at(vec, ix, iy, iz, 1)) / h;
+        else if (iy > 0) dvy_dy = (tvdb_vec_at(vec, ix, iy, iz, 1) - tvdb_vec_at(vec, ix, iy - 1, iz, 1)) / h;
+        else dvy_dy = 0.0f;
+        if (iz > 0 && iz + 1 < nz) dvz_dz = (tvdb_vec_at(vec, ix, iy, iz + 1, 2) - tvdb_vec_at(vec, ix, iy, iz - 1, 2)) / h2;
+        else if (iz + 1 < nz) dvz_dz = (tvdb_vec_at(vec, ix, iy, iz + 1, 2) - tvdb_vec_at(vec, ix, iy, iz, 2)) / h;
+        else if (iz > 0) dvz_dz = (tvdb_vec_at(vec, ix, iy, iz, 2) - tvdb_vec_at(vec, ix, iy, iz - 1, 2)) / h;
+        else dvz_dz = 0.0f;
         div->data[tvdb_idx(div, ix, iy, iz)] = dvx_dx + dvy_dy + dvz_dz;
       }
     }
@@ -482,17 +532,39 @@ static void tvdb_laplacian_impl(const tvdb_dense_grid* scalar, tvdb_dense_grid* 
 static void tvdb_curl_impl(const tvdb_dense_vec_grid* vec, tvdb_dense_vec_grid* curl) {
   if (!vec->data || !curl->data) return;
   const int nx = vec->nx, ny = vec->ny, nz = vec->nz;
-  const float h2 = 2.0f * vec->voxel_size;
+  const float h = vec->voxel_size, h2 = 2.0f * h;
+  /* One-sided differences over distance h at the boundary; the old clamped-
+     neighbor / 2h form was half strength there. */
+  #define TVDB_CENTER_DIFF(out, axis, channel)                                     \
+    do {                                                                           \
+      if (axis == 0) {                                                             \
+        if (ix > 0 && ix + 1 < nx) out = (tvdb_vec_at(vec, ix + 1, iy, iz, channel) - tvdb_vec_at(vec, ix - 1, iy, iz, channel)) / h2; \
+        else if (ix + 1 < nx) out = (tvdb_vec_at(vec, ix + 1, iy, iz, channel) - tvdb_vec_at(vec, ix, iy, iz, channel)) / h; \
+        else if (ix > 0) out = (tvdb_vec_at(vec, ix, iy, iz, channel) - tvdb_vec_at(vec, ix - 1, iy, iz, channel)) / h; \
+        else out = 0.0f;                                                           \
+      } else if (axis == 1) {                                                      \
+        if (iy > 0 && iy + 1 < ny) out = (tvdb_vec_at(vec, ix, iy + 1, iz, channel) - tvdb_vec_at(vec, ix, iy - 1, iz, channel)) / h2; \
+        else if (iy + 1 < ny) out = (tvdb_vec_at(vec, ix, iy + 1, iz, channel) - tvdb_vec_at(vec, ix, iy, iz, channel)) / h; \
+        else if (iy > 0) out = (tvdb_vec_at(vec, ix, iy, iz, channel) - tvdb_vec_at(vec, ix, iy - 1, iz, channel)) / h; \
+        else out = 0.0f;                                                           \
+      } else {                                                                     \
+        if (iz > 0 && iz + 1 < nz) out = (tvdb_vec_at(vec, ix, iy, iz + 1, channel) - tvdb_vec_at(vec, ix, iy, iz - 1, channel)) / h2; \
+        else if (iz + 1 < nz) out = (tvdb_vec_at(vec, ix, iy, iz + 1, channel) - tvdb_vec_at(vec, ix, iy, iz, channel)) / h; \
+        else if (iz > 0) out = (tvdb_vec_at(vec, ix, iy, iz, channel) - tvdb_vec_at(vec, ix, iy, iz - 1, channel)) / h; \
+        else out = 0.0f;                                                           \
+      }                                                                            \
+    } while (0)
   #pragma omp parallel for collapse(2) schedule(static)
   for (int iz = 0; iz < nz; ++iz) {
     for (int iy = 0; iy < ny; ++iy) {
       for (int ix = 0; ix < nx; ++ix) {
-        float dvz_dy = (tvdb_vec_at(vec, ix, iy + 1, iz, 2) - tvdb_vec_at(vec, ix, iy - 1, iz, 2)) / h2;
-        float dvy_dz = (tvdb_vec_at(vec, ix, iy, iz + 1, 1) - tvdb_vec_at(vec, ix, iy, iz - 1, 1)) / h2;
-        float dvx_dz = (tvdb_vec_at(vec, ix, iy, iz + 1, 0) - tvdb_vec_at(vec, ix, iy, iz - 1, 0)) / h2;
-        float dvz_dx = (tvdb_vec_at(vec, ix + 1, iy, iz, 2) - tvdb_vec_at(vec, ix - 1, iy, iz, 2)) / h2;
-        float dvy_dx = (tvdb_vec_at(vec, ix + 1, iy, iz, 1) - tvdb_vec_at(vec, ix - 1, iy, iz, 1)) / h2;
-        float dvx_dy = (tvdb_vec_at(vec, ix, iy + 1, iz, 0) - tvdb_vec_at(vec, ix, iy - 1, iz, 0)) / h2;
+        float dvz_dy, dvy_dz, dvx_dz, dvz_dx, dvy_dx, dvx_dy;
+        TVDB_CENTER_DIFF(dvz_dy, 1, 2);
+        TVDB_CENTER_DIFF(dvy_dz, 2, 1);
+        TVDB_CENTER_DIFF(dvx_dz, 2, 0);
+        TVDB_CENTER_DIFF(dvz_dx, 0, 2);
+        TVDB_CENTER_DIFF(dvy_dx, 0, 1);
+        TVDB_CENTER_DIFF(dvx_dy, 1, 0);
         size_t i = (((size_t)iz * ny + iy) * nx + ix) * 3u;
         curl->data[i + 0] = dvz_dy - dvy_dz;
         curl->data[i + 1] = dvx_dz - dvz_dx;
@@ -500,6 +572,7 @@ static void tvdb_curl_impl(const tvdb_dense_vec_grid* vec, tvdb_dense_vec_grid* 
       }
     }
   }
+  #undef TVDB_CENTER_DIFF
 }
 
 // -------------------------------------------------------------------------
@@ -567,9 +640,20 @@ static void tvdb_cpt_impl(const tvdb_dense_grid* sdf, tvdb_dense_vec_grid* out) 
         float py = sdf->oy + ((float)iy + 0.5f) * vs;
         float pz = sdf->oz + ((float)iz + 0.5f) * vs;
         const float* d = sdf->data;
-        float gx = ((ix + 1 < nx ? d[i + 1] : d[i]) - (ix > 0 ? d[i - 1] : d[i])) * inv2h;
-        float gy = ((iy + 1 < ny ? d[i + nx] : d[i]) - (iy > 0 ? d[i - nx] : d[i])) * inv2h;
-        float gz = ((iz + 1 < nz ? d[i + plane] : d[i]) - (iz > 0 ? d[i - plane] : d[i])) * inv2h;
+        const float h = vs;
+        float gx, gy, gz;
+        if (ix > 0 && ix + 1 < nx) gx = (d[i + 1] - d[i - 1]) * inv2h;
+        else if (ix + 1 < nx) gx = (d[i + 1] - d[i]) / h;
+        else if (ix > 0) gx = (d[i] - d[i - 1]) / h;
+        else gx = 0.0f;
+        if (iy > 0 && iy + 1 < ny) gy = (d[i + nx] - d[i - nx]) * inv2h;
+        else if (iy + 1 < ny) gy = (d[i + nx] - d[i]) / h;
+        else if (iy > 0) gy = (d[i] - d[i - nx]) / h;
+        else gy = 0.0f;
+        if (iz > 0 && iz + 1 < nz) gz = (d[i + plane] - d[i - plane]) * inv2h;
+        else if (iz + 1 < nz) gz = (d[i + plane] - d[i]) / h;
+        else if (iz > 0) gz = (d[i] - d[i - plane]) / h;
+        else gz = 0.0f;
         float dv = d[i];
         out->data[i*3+0] = px - dv*gx;
         out->data[i*3+1] = py - dv*gy;
