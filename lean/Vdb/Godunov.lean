@@ -626,7 +626,7 @@ theorem godunov_mono_a {a b c a' h : ℝ} (hab : a ≤ b) (hbc : b ≤ c)
             ≤ (a + b + Real.sqrt (2 * h ^ 2 - (a - b) ^ 2)) / 2 :=
               godunov3D_le_2D h1 h2 hab hbc
           _ = godunov2D a b h := rfl
-          _ ≤ godunov2D a' b h := h2a' 
+          _ ≤ godunov2D a' b h := h2a'
       · rw [godunov_threeD h1a' h2']
         have hd3 := disc3_mono_a (h := h) haa' ha'b hbc
         have hsqrt := Real.sqrt_le_sqrt hd3
