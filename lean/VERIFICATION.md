@@ -313,6 +313,27 @@ CTest — run them directly. All four float checks rely on the C and Lean
 halves using the *same* LCG and value mapping; the C drivers are
 self-contained (built with `cc -O2` against `src/*.c`).
 
+## Differential harness: dense CSG (bit-exact, F12-adjacent)
+
+`lean/Vdb/CsgCheck.lean` (`lean_exe csgcheck`, driven by
+`scripts/check_csg.sh`) compares the real C `tvdb_csg_union`/`_intersection`/
+`_difference` (`scripts/csg_c.c`) against a Float32 Lean twin that mirrors
+the CPU comparison-ternary forms (`va < vb ? va : vb`, `va > vb ? va : vb`,
+`va > -vb ? va : -vb`), computing on `Float32` end to end. Both sides generate
+the same 400 seeded 8×8×8 random grids (same LCG, `u/100000-0.5` value
+mapping) with identical tie/zero/NaN injection (`i % 5 == 3 → b = a` ties;
+`i % 11 == 0 → a = +0.0`; `i % 13 == 7 → b = −0.0`; `case 7` injects NaN into
+`a`, `case 19` into `b`). The C driver prints float **bit patterns**
+(`%08x`) of both inputs and outputs, and the Lean twin recomputes and
+compares bits — **bit-exact, no tolerance**: **614,400/614,400 op outputs
+identical** (negative control verified: corrupt one voxel pattern to
+`deadbeef` → `bad=1`, exit 1; the script additionally asserts the exact
+`cases=400 ops=3 voxels=614400 bad=0` counters so dropped lines fail the
+gate). The mesh→SDF arm of the full-pipeline harness remains **open**
+(the C path's distance/BVH machinery is not mirrored — the per-component
+mesh→SDF coverage comes from the CPU unit tests and the `test_mesh_pseudo_normal`
+regression test instead).
+
 ## Explicitly not yet done (next increments)
 
 1. **VdbGen — LANDED.** The generator is `VdbGen.lean` (`lean_exe vdbgen`,
@@ -396,11 +417,14 @@ self-contained (built with `cc -O2` against `src/*.c`).
    * the tree-variant Godunov/sweep and the inactive=∞ tree Eikonal solve
      remain open (different operator; no convergence proof); the P2–P4
      harnesses listed in "Differential harness: Godunov, flood fill, Euler,
-     fast sweeping" above are **LANDED** (random seeded grids: Godunov
-     200,000/200,000, flood fill 400/400 byte-exact, Euler 400/400,
-     fast sweeping 102,400/102,400). Still open: a CSG/mesh-path
-     differential harness (the full dense pipeline), i.e. truly `OpsGen`-
-     style coverage of the whole SDF path.
+     fast sweeping" and "Differential harness: dense CSG (bit-exact)" above
+     are **LANDED** (random seeded grids: Godunov 200,000/200,000,
+     flood fill 400/400 byte-exact, Euler 400/400, fast sweeping
+     102,400/102,400, CSG 614,400/614,400 bit-exact). Still open: a
+     differential harness for the **mesh→SDF arm** of the dense pipeline
+     (the BVH/closest-point machinery is not mirrored in Lean); the mesh
+     path's coverage today is the CPU unit tests plus the
+     `test_mesh_pseudo_normal` regression.
 3. **Findings.** F1 (scalar encoder truncates/flushes) and F15 (`x >> 32`
    UB) are **confirmed and fixed in C** (see "Differential harness: half-float
    conversions"); F6 (half-grid zero-count chunks), F14 (raw framing for
@@ -411,7 +435,7 @@ self-contained (built with `cc -O2` against `src/*.c`).
 
 ## Final tally
 
-* Landed Lean modules: 69 (64 under `Vdb/` + `VdbGen`, `VdbCheck`,
+* Landed Lean modules: 70 (65 under `Vdb/` + `VdbGen`, `VdbCheck`,
   `VdbSpec`, `HalfCheck`, `MaskClassify`) — the library, the oracle
   generator and the differential tools, all with `warningAsError` on and
   **0 `sorry`/`admit`** in landed modules.
@@ -422,7 +446,8 @@ self-contained (built with `cc -O2` against `src/*.c`).
   `check_vdbgen.sh`: **2,500/2,500**; `check_mc_face.py`: face-consistent
   (exit 0); `check_godunov.sh`: **200,000/200,000** (1e-12); `check_fill.sh`:
   **400/400** byte-exact; `check_euler.sh`: **400/400** (`c == 2·χ`);
-  `check_fastsweep.sh`: **102,400/102,400** voxels (1e-5·h, exact sign).
+  `check_fastsweep.sh`: **102,400/102,400** voxels (1e-5·h, exact sign);
+  `check_csg.sh`: **614,400/614,400** voxel comparisons bit-exact.
 * Scalar sanitizer CTest (`-fsanitize=address,undefined,float-cast-overflow`, SIMD and OpenMP off): **52/52 tests pass**.
 * Findings fixed in C: F1, F15, F2, F3, F4, F5, F7, F9, F11, F12, F13
   (all regression-tested). Modelled/decided: F6, F10, F14. Documented

@@ -56,6 +56,10 @@ lean_exe eulercheck where
 lean_exe fastsweepcheck where
   root := `Vdb.FastSweepCheck
 
+/-- Model-side dense CSG differential harness (driven by `scripts/check_csg.sh`). -/
+lean_exe csgcheck where
+  root := `Vdb.CsgCheck
+
 /-- Seeded well-formed `.vdb` generator (differential harness, model half). -/
 lean_exe vdbgen where
   root := `VdbGen
