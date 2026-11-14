@@ -382,7 +382,10 @@ regression test instead).
      fast-sweeping theorems, T-FS-FIX (the fixed point solves the discrete
      Eikonal system), the full 8-direction convergence (Zhao 2005);
    * flood-fill `staircaseFaces` consistency (it is *not* a consistent
-     estimator — only the definition was recorded);
+     estimator — only the definition was recorded; two bound attempts
+     (`6 · #interior` via neighbour enumeration) were made and abandoned
+     after elaborator timeouts in this session; the estimator remains
+     documented, no bound proved);
    * Poincaré–Lefschetz as a general theorem (checked only on two concrete
      solids), homology machinery;
    * MC welding (`T-MC-WELD`) — **LANDED** (`Vdb/McWeld.lean`); tree MC
