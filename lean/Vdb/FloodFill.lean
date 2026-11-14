@@ -24,8 +24,9 @@
   * **staircase area**: `staircaseFaces` (exposed boundary faces of the
     interior set); the standard staircase estimator. It is *not* a consistent
     surface-area estimator in general (a diagonal plane rasterised on a grid
-    overestimates/underestimates it direction-dependently); this module
-    documents, rather than proves, that.
+    overestimates/underestimates it direction-dependently); the estimator is
+    documented and its one elementary fact proved here:
+    `staircaseFaces_le` — at most `6 · #interior` directed faces.
 
   What is *not* proved here: any theorem about re-meshing the filled level
   set; that is future work.
@@ -398,12 +399,215 @@ theorem interiorVolume_add {nx ny nz : ℕ} (far : GPoint nx ny nz → Bool)
     interior voxel to a non-interior neighbour (the standard staircase
     estimator). It is **not** consistent with the true surface area — a
     diagonal plane rasterised on the grid overestimates it in the worst
-    directions. This definition is provided for documentation; no geometric
-    theorem is claimed about it. -/
+    directions. No consistency theorem is claimed; `staircaseFaces_le`
+    proves the elementary count bound (at most six faces per interior
+    voxel). -/
 def staircaseFaces {nx ny nz : ℕ} (far : GPoint nx ny nz → Bool)
     (seeds : Finset (GPoint nx ny nz)) : ℕ :=
   (interior far seeds).biUnion
     (fun p => (Finset.univ : Finset (GPoint nx ny nz)).filter fun q =>
       adj6 p q ∧ q ∉ interior far seeds) |>.card
+
+/-! ### Staircase faces: the `6 · #interior` bound
+
+Each interior voxel has at most six 6-connected neighbours, so the
+estimator counts at most six faces per interior voxel. The neighbour set
+is bounded *symbolically*: the earlier enumeration attempt indexed the
+neighbours with `decide` over the lattice and did not scale; this proof
+splits adjacency into the six direction cases and never enumerates the
+grid. -/
+
+/-- The set of in-box neighbours of `p`: the at-most-six candidate slots,
+    restricted to the box (boundary voxels have fewer than six). Each
+    present candidate is a singleton; absent (out-of-box) slots are empty. -/
+def neighborFinset {nx ny nz : ℕ} (p : GPoint nx ny nz) : Finset (GPoint nx ny nz) :=
+  (if h : p.1.val + 1 < nx then {(⟨⟨p.1.val + 1, h⟩, p.2⟩ : GPoint nx ny nz)} else ∅) ∪
+  ((if h : 0 < p.1.val then {(⟨⟨p.1.val - 1, by omega⟩, p.2⟩ : GPoint nx ny nz)} else ∅) ∪
+   ((if h : p.2.1.val + 1 < ny then {(⟨p.1, ⟨p.2.1.val + 1, h⟩, p.2.2⟩ : GPoint nx ny nz)} else ∅) ∪
+    ((if h : 0 < p.2.1.val then {(⟨p.1, ⟨p.2.1.val - 1, by omega⟩, p.2.2⟩ : GPoint nx ny nz)} else ∅) ∪
+     ((if h : p.2.2.val + 1 < nz then {(⟨p.1, p.2.1, ⟨p.2.2.val + 1, h⟩⟩ : GPoint nx ny nz)} else ∅) ∪
+      (if h : 0 < p.2.2.val then {(⟨p.1, p.2.1, ⟨p.2.2.val - 1, by omega⟩⟩ : GPoint nx ny nz)} else ∅)))))
+
+theorem neighborFinset_card_le {nx ny nz : ℕ} (p : GPoint nx ny nz) :
+    (neighborFinset p).card ≤ 6 := by
+  have e1 : (if h : p.1.val + 1 < nx then ({(⟨⟨p.1.val + 1, h⟩, p.2⟩ : GPoint nx ny nz)} : Finset _) else ∅).card ≤ 1 := by
+    split_ifs <;> simp
+  have e2 : (if h : 0 < p.1.val then ({(⟨⟨p.1.val - 1, by omega⟩, p.2⟩ : GPoint nx ny nz)} : Finset _) else ∅).card ≤ 1 := by
+    split_ifs <;> simp
+  have e3 : (if h : p.2.1.val + 1 < ny then ({(⟨p.1, ⟨p.2.1.val + 1, h⟩, p.2.2⟩ : GPoint nx ny nz)} : Finset _) else ∅).card ≤ 1 := by
+    split_ifs <;> simp
+  have e4 : (if h : 0 < p.2.1.val then ({(⟨p.1, ⟨p.2.1.val - 1, by omega⟩, p.2.2⟩ : GPoint nx ny nz)} : Finset _) else ∅).card ≤ 1 := by
+    split_ifs <;> simp
+  have e5 : (if h : p.2.2.val + 1 < nz then ({(⟨p.1, p.2.1, ⟨p.2.2.val + 1, h⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅).card ≤ 1 := by
+    split_ifs <;> simp
+  have e6 : (if h : 0 < p.2.2.val then ({(⟨p.1, p.2.1, ⟨p.2.2.val - 1, by omega⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅).card ≤ 1 := by
+    split_ifs <;> simp
+  have u56 : ((if h : p.2.2.val + 1 < nz then ({(⟨p.1, p.2.1, ⟨p.2.2.val + 1, h⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅) ∪
+      (if h : 0 < p.2.2.val then ({(⟨p.1, p.2.1, ⟨p.2.2.val - 1, by omega⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅)).card ≤ 2 :=
+    le_trans (Finset.card_union_le _ _) (add_le_add e5 e6)
+  have u456 : ((if h : 0 < p.2.1.val then ({(⟨p.1, ⟨p.2.1.val - 1, by omega⟩, p.2.2⟩ : GPoint nx ny nz)} : Finset _) else ∅) ∪
+      ((if h : p.2.2.val + 1 < nz then ({(⟨p.1, p.2.1, ⟨p.2.2.val + 1, h⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅) ∪
+       (if h : 0 < p.2.2.val then ({(⟨p.1, p.2.1, ⟨p.2.2.val - 1, by omega⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅))).card ≤ 3 :=
+    le_trans (Finset.card_union_le _ _) (add_le_add e4 u56)
+  have u3456 : ((if h : p.2.1.val + 1 < ny then ({(⟨p.1, ⟨p.2.1.val + 1, h⟩, p.2.2⟩ : GPoint nx ny nz)} : Finset _) else ∅) ∪
+      ((if h : 0 < p.2.1.val then ({(⟨p.1, ⟨p.2.1.val - 1, by omega⟩, p.2.2⟩ : GPoint nx ny nz)} : Finset _) else ∅) ∪
+       ((if h : p.2.2.val + 1 < nz then ({(⟨p.1, p.2.1, ⟨p.2.2.val + 1, h⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅) ∪
+        (if h : 0 < p.2.2.val then ({(⟨p.1, p.2.1, ⟨p.2.2.val - 1, by omega⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅)))).card ≤ 4 :=
+    le_trans (Finset.card_union_le _ _) (add_le_add e3 u456)
+  have u23456 : ((if h : 0 < p.1.val then ({(⟨⟨p.1.val - 1, by omega⟩, p.2⟩ : GPoint nx ny nz)} : Finset _) else ∅) ∪
+      ((if h : p.2.1.val + 1 < ny then ({(⟨p.1, ⟨p.2.1.val + 1, h⟩, p.2.2⟩ : GPoint nx ny nz)} : Finset _) else ∅) ∪
+       ((if h : 0 < p.2.1.val then ({(⟨p.1, ⟨p.2.1.val - 1, by omega⟩, p.2.2⟩ : GPoint nx ny nz)} : Finset _) else ∅) ∪
+        ((if h : p.2.2.val + 1 < nz then ({(⟨p.1, p.2.1, ⟨p.2.2.val + 1, h⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅) ∪
+         (if h : 0 < p.2.2.val then ({(⟨p.1, p.2.1, ⟨p.2.2.val - 1, by omega⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅))))).card ≤ 5 :=
+    le_trans (Finset.card_union_le _ _) (add_le_add e2 u3456)
+  show (neighborFinset p).card ≤ 6
+  unfold neighborFinset
+  exact le_trans (Finset.card_union_le _ _) (add_le_add e1 u23456)
+
+theorem neighbor_mem {nx ny nz : ℕ} {p q : GPoint nx ny nz} (h : adj6 p q) :
+    q ∈ neighborFinset p := by
+  rcases h with ⟨h1, h2, h3⟩ | ⟨h1, h2, h3⟩ | ⟨h1, h2, h3⟩ | ⟨h1, h2, h3⟩
+              | ⟨h1, h2, h3⟩ | ⟨h1, h2, h3⟩
+  · -- q = p + eₓ
+    have hnx : p.1.val + 1 < nx := by have := q.1.isLt; omega
+    have hq : (⟨⟨p.1.val + 1, hnx⟩, p.2⟩ : GPoint nx ny nz) = q := by
+      show (⟨p.1.val + 1, hnx⟩, p.2) = q
+      apply Prod.ext
+      · show (⟨p.1.val + 1, hnx⟩ : Fin nx) = q.1
+        exact Fin.ext h1
+      · show p.2 = q.2
+        apply Prod.ext
+        · exact h2
+        · exact h3
+    rw [← hq]
+    unfold neighborFinset
+    have hmem : (⟨⟨p.1.val + 1, hnx⟩, p.2⟩ : GPoint nx ny nz) ∈
+        (if h : p.1.val + 1 < nx then ({(⟨⟨p.1.val + 1, h⟩, p.2⟩ : GPoint nx ny nz)} : Finset _) else ∅) := by
+      split_ifs
+      · exact Finset.mem_singleton_self _
+    exact Finset.mem_union_left _ hmem
+  · -- q = p − eₓ
+    have hnx : 0 < p.1.val := by omega
+    have hxis : q.1.val < nx := q.1.isLt
+    have hq : (⟨⟨p.1.val - 1, by omega⟩, p.2⟩ : GPoint nx ny nz) = q := by
+      show (⟨p.1.val - 1, by omega⟩, p.2) = q
+      apply Prod.ext
+      · show (⟨p.1.val - 1, by omega⟩ : Fin nx) = q.1
+        exact Fin.ext (by omega : p.1.val - 1 = q.1.val)
+      · show p.2 = q.2
+        apply Prod.ext
+        · exact h2
+        · exact h3
+    rw [← hq]
+    unfold neighborFinset
+    have hmem : (⟨⟨p.1.val - 1, by omega⟩, p.2⟩ : GPoint nx ny nz) ∈
+        (if h : 0 < p.1.val then ({(⟨⟨p.1.val - 1, by omega⟩, p.2⟩ : GPoint nx ny nz)} : Finset _) else ∅) := by
+      split_ifs
+      · exact Finset.mem_singleton_self _
+    exact Finset.mem_union_right _ (Finset.mem_union_left _ hmem)
+  · -- q = p + e_y
+    have hny : p.2.1.val + 1 < ny := by have := q.2.1.isLt; omega
+    have hq : (⟨p.1, ⟨p.2.1.val + 1, hny⟩, p.2.2⟩ : GPoint nx ny nz) = q := by
+      show (p.1, (⟨p.2.1.val + 1, hny⟩, p.2.2)) = q
+      apply Prod.ext
+      · show p.1 = q.1
+        exact h1
+      · show (⟨p.2.1.val + 1, hny⟩, p.2.2) = q.2
+        apply Prod.ext
+        · show (⟨p.2.1.val + 1, hny⟩ : Fin ny) = q.2.1
+          exact Fin.ext h2
+        · show p.2.2 = q.2.2
+          exact h3
+    rw [← hq]
+    unfold neighborFinset
+    have hmem : (⟨p.1, ⟨p.2.1.val + 1, hny⟩, p.2.2⟩ : GPoint nx ny nz) ∈
+        (if h : p.2.1.val + 1 < ny then ({(⟨p.1, ⟨p.2.1.val + 1, h⟩, p.2.2⟩ : GPoint nx ny nz)} : Finset _) else ∅) := by
+      split_ifs
+      · exact Finset.mem_singleton_self _
+    exact Finset.mem_union_right _
+      (Finset.mem_union_right _ (Finset.mem_union_left _ hmem))
+  · -- q = p − e_y
+    have hny : 0 < p.2.1.val := by omega
+    have hyis : q.2.1.val < ny := q.2.1.isLt
+    have hq : (⟨p.1, ⟨p.2.1.val - 1, by omega⟩, p.2.2⟩ : GPoint nx ny nz) = q := by
+      show (p.1, (⟨p.2.1.val - 1, by omega⟩, p.2.2)) = q
+      apply Prod.ext
+      · show p.1 = q.1
+        exact h1
+      · show (⟨p.2.1.val - 1, by omega⟩, p.2.2) = q.2
+        apply Prod.ext
+        · show (⟨p.2.1.val - 1, by omega⟩ : Fin ny) = q.2.1
+          exact Fin.ext (by omega : p.2.1.val - 1 = q.2.1.val)
+        · show p.2.2 = q.2.2
+          exact h3
+    rw [← hq]
+    unfold neighborFinset
+    have hmem : (⟨p.1, ⟨p.2.1.val - 1, by omega⟩, p.2.2⟩ : GPoint nx ny nz) ∈
+        (if h : 0 < p.2.1.val then ({(⟨p.1, ⟨p.2.1.val - 1, by omega⟩, p.2.2⟩ : GPoint nx ny nz)} : Finset _) else ∅) := by
+      split_ifs
+      · exact Finset.mem_singleton_self _
+    exact Finset.mem_union_right _
+      (Finset.mem_union_right _ (Finset.mem_union_right _ (Finset.mem_union_left _ hmem)))
+  · -- q = p + e_z
+    have hnz : p.2.2.val + 1 < nz := by have := q.2.2.isLt; omega
+    have hq : (⟨p.1, p.2.1, ⟨p.2.2.val + 1, hnz⟩⟩ : GPoint nx ny nz) = q := by
+      show (p.1, (p.2.1, ⟨p.2.2.val + 1, hnz⟩)) = q
+      apply Prod.ext
+      · show p.1 = q.1
+        exact h1
+      · show (p.2.1, ⟨p.2.2.val + 1, hnz⟩) = q.2
+        apply Prod.ext
+        · show p.2.1 = q.2.1
+          exact h2
+        · show (⟨p.2.2.val + 1, hnz⟩ : Fin nz) = q.2.2
+          exact Fin.ext h3
+    rw [← hq]
+    unfold neighborFinset
+    have hmem : (⟨p.1, p.2.1, ⟨p.2.2.val + 1, hnz⟩⟩ : GPoint nx ny nz) ∈
+        (if h : p.2.2.val + 1 < nz then ({(⟨p.1, p.2.1, ⟨p.2.2.val + 1, h⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅) := by
+      split_ifs
+      · exact Finset.mem_singleton_self _
+    exact Finset.mem_union_right _
+      (Finset.mem_union_right _ (Finset.mem_union_right _
+        (Finset.mem_union_right _ (Finset.mem_union_left _ hmem))))
+  · -- q = p − e_z
+    have hnz : 0 < p.2.2.val := by omega
+    have hzis : q.2.2.val < nz := q.2.2.isLt
+    have hq : (⟨p.1, p.2.1, ⟨p.2.2.val - 1, by omega⟩⟩ : GPoint nx ny nz) = q := by
+      show (p.1, (p.2.1, ⟨p.2.2.val - 1, by omega⟩)) = q
+      apply Prod.ext
+      · show p.1 = q.1
+        exact h1
+      · show (p.2.1, ⟨p.2.2.val - 1, by omega⟩) = q.2
+        apply Prod.ext
+        · show p.2.1 = q.2.1
+          exact h2
+        · show (⟨p.2.2.val - 1, by omega⟩ : Fin nz) = q.2.2
+          exact Fin.ext (by omega : p.2.2.val - 1 = q.2.2.val)
+    rw [← hq]
+    unfold neighborFinset
+    have hmem : (⟨p.1, p.2.1, ⟨p.2.2.val - 1, by omega⟩⟩ : GPoint nx ny nz) ∈
+        (if h : 0 < p.2.2.val then ({(⟨p.1, p.2.1, ⟨p.2.2.val - 1, by omega⟩⟩ : GPoint nx ny nz)} : Finset _) else ∅) := by
+      split_ifs
+      · exact Finset.mem_singleton_self _
+    exact Finset.mem_union_right _
+      (Finset.mem_union_right _ (Finset.mem_union_right _
+        (Finset.mem_union_right _ (Finset.mem_union_right _ hmem))))
+
+/-- **Staircase faces are bounded by six times the interior size.**
+    Each interior voxel contributes at most one face per in-box neighbour. -/
+theorem staircaseFaces_le {nx ny nz : ℕ} (far : GPoint nx ny nz → Bool)
+    (seeds : Finset (GPoint nx ny nz)) :
+    staircaseFaces far seeds ≤ 6 * (interior far seeds).card := by
+  unfold staircaseFaces
+  refine le_trans (Finset.card_biUnion_le_card_mul
+    (interior far seeds)
+    (fun p => (Finset.univ : Finset (GPoint nx ny nz)).filter fun q =>
+      adj6 p q ∧ q ∉ interior far seeds) 6 ?_) (le_of_eq (mul_comm _ _))
+  · intro p _
+    refine le_trans (Finset.card_le_card ?_) (neighborFinset_card_le p)
+    intro q hq
+    simp only [Finset.mem_filter, Finset.mem_univ, true_and] at hq
+    exact neighbor_mem hq.1
 
 end Vdb
