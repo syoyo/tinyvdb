@@ -4433,19 +4433,49 @@ static tvdb_status_t tvdb__write_node_topology(
 /*  Write tree buffers                                                        */
 /* ========================================================================== */
 
+/* Voxel span of `level` .. last: product of dims of the levels from `lv`
+   on. The root sits at level 0, so span(0) is the whole tree. Returns -1
+   if the span does not fit in int64 (layouts are validated at parse time
+   to log2dim <= 10 and depth <= 8, so this is a defensive guard). */
+static int64_t tvdb__level_span(const tvdb_grid_layout_t *layout, int lv) {
+    int64_t span = 1;
+    for (int i = lv; i < layout->num_levels; ++i) {
+        int L = layout->levels[i].log2dim;
+        if (L < 0 || span > (INT64_MAX >> L)) return -1;
+        span <<= L;
+    }
+    return span;
+}
+
+/* Decode the (sx, sy, sz) slot coordinates packed by
+   slot = (sx << 2L) | (sy << L) | sz (L = parent log2dim). */
+static void tvdb__slot_coords(int32_t slot, int32_t log2dim, int32_t out[3]) {
+    int32_t L = log2dim;
+    int32_t mask = (1 << L) - 1;
+    out[0] = (slot >> (2 * L)) & mask;
+    out[1] = (slot >> L) & mask;
+    out[2] = slot & mask;
+}
+
 static tvdb_status_t tvdb__write_node_buffer(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    const int32_t node_origin[3],
     tvdb_value_t background, uint32_t compression_flags,
     int half_precision, tvdb_error_t *err);
 
 static tvdb_status_t tvdb__write_root_buffer(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    const int32_t node_origin[3],
     tvdb_value_t background, uint32_t compression_flags,
     int half_precision, tvdb_error_t *err) {
+    (void)node_origin; /* the root itself has no serialized origin */
     const tvdb_root_node_t *root = &tree->nodes[node_idx].u.root;
     for (uint32_t i = 0; i < root->num_children; i++) {
+        /* Root children carry explicit origins (x, y, z) in the file and in
+           the in-memory tree (root->child_origins); thread them down. */
+        const int32_t *child_origin = root->child_origins + (size_t)i * 3;
         tvdb_status_t st = tvdb__write_node_buffer(
-            tree, sw, root->child_indices[i], level + 1,
+            tree, sw, root->child_indices[i], level + 1, child_origin,
             background, compression_flags, half_precision, err);
         if (st != TVDB_OK) return st;
     }
@@ -4454,14 +4484,39 @@ static tvdb_status_t tvdb__write_root_buffer(
 
 static tvdb_status_t tvdb__write_internal_buffer(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    const int32_t node_origin[3],
     tvdb_value_t background, uint32_t compression_flags,
     int half_precision, tvdb_error_t *err) {
     const tvdb_internal_node_t *inode = &tree->nodes[node_idx].u.internal;
+    int32_t L = tree->layout.levels[level].log2dim;
+    int64_t child_span64 = tvdb__level_span(&tree->layout, level + 1);
+    if (child_span64 <= 0) {
+        tvdb__set_error(err, TVDB_ERROR_INVALID_DATA, "invalid tree layout span");
+        return TVDB_ERROR_INVALID_DATA;
+    }
+    int64_t child_span = child_span64;
     size_t child_n = 0;
     for (int32_t i = 0; i < inode->child_mask.bitsize; i++) {
         if (tvdb__nodemask_is_on(&inode->child_mask, i)) {
+            /* Origin is implicit in the child-mask slot (OpenVDB packing
+               slot = (sx << 2L) | (sy << L) | sz); decode it so bool-leaf
+               buffers emit the true origin rather than {0,0,0}. */
+            int32_t coord[3];
+            tvdb__slot_coords(i, L, coord);
+            int64_t co0 = (int64_t)node_origin[0] + coord[0] * child_span;
+            int64_t co1 = (int64_t)node_origin[1] + coord[1] * child_span;
+            int64_t co2 = (int64_t)node_origin[2] + coord[2] * child_span;
+            if (co0 < INT32_MIN || co0 > INT32_MAX ||
+                co1 < INT32_MIN || co1 > INT32_MAX ||
+                co2 < INT32_MIN || co2 > INT32_MAX) {
+                tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
+                                "internal node child origin out of range");
+                return TVDB_ERROR_INVALID_DATA;
+            }
+            int32_t child_origin[3] = { (int32_t)co0, (int32_t)co1, (int32_t)co2 };
             tvdb_status_t st = tvdb__write_node_buffer(
                 tree, sw, inode->child_indices[child_n], level + 1,
+                child_origin,
                 background, compression_flags, half_precision, err);
             if (st != TVDB_OK) return st;
             child_n++;
@@ -4472,6 +4527,7 @@ static tvdb_status_t tvdb__write_internal_buffer(
 
 static tvdb_status_t tvdb__write_leaf_buffer(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    const int32_t node_origin[3],
     tvdb_value_t background, uint32_t compression_flags,
     int half_precision, tvdb_error_t *err) {
     const tvdb_leaf_node_t *leaf = &tree->nodes[node_idx].u.leaf;
@@ -4490,15 +4546,13 @@ static tvdb_status_t tvdb__write_leaf_buffer(
     /* BOOL leaves: OpenVDB's LeafNode<bool>::writeBuffers writes
        value_mask + mOrigin (12 bytes) + bit-packed data buffer.
        The value mask is written above; emit the origin and the packed
-       data here. The origin is recoverable from the tree node's origin
-       field; if not populated, write zeros (round-trip through tinyvdb
-       still works because we recompute coordinates from tree topology). */
+       data here. The origin is threaded down from the tree topology:
+       root children carry explicit origins, internal children decode from
+       their child-mask slot, and this leaf is at the requested origin. */
     if (vt == TVDB_VALUE_BOOL) {
-        const tvdb_tree_node_t *node = &tree->nodes[node_idx];
-        int32_t origin[3] = { node->origin[0], node->origin[1], node->origin[2] };
-        tvdb__sw_write_i32(sw, origin[0]);
-        tvdb__sw_write_i32(sw, origin[1]);
-        tvdb__sw_write_i32(sw, origin[2]);
+        tvdb__sw_write_i32(sw, node_origin[0]);
+        tvdb__sw_write_i32(sw, node_origin[1]);
+        tvdb__sw_write_i32(sw, node_origin[2]);
         if (tree->is_mask_grid) return TVDB_OK; /* the mask is the buffer */
         size_t packed_bytes = (num_values + 7) / 8;
         uint8_t *packed = (uint8_t *)tvdb__alloc(sw->alloc, packed_bytes);
@@ -4547,20 +4601,24 @@ static tvdb_status_t tvdb__write_leaf_buffer(
 
 static tvdb_status_t tvdb__write_node_buffer(
     const tvdb_tree_t *tree, tvdb__sw_t *sw, size_t node_idx, int level,
+    const int32_t node_origin[3],
     tvdb_value_t background, uint32_t compression_flags,
     int half_precision, tvdb_error_t *err) {
     tvdb_node_type_t nt = tree->nodes[node_idx].type;
     switch (nt) {
         case TVDB_NODE_ROOT:
             return tvdb__write_root_buffer(tree, sw, node_idx, level,
+                                           node_origin,
                                            background, compression_flags,
                                            half_precision, err);
         case TVDB_NODE_INTERNAL:
             return tvdb__write_internal_buffer(tree, sw, node_idx, level,
+                                               node_origin,
                                                background, compression_flags,
                                                half_precision, err);
         case TVDB_NODE_LEAF:
             return tvdb__write_leaf_buffer(tree, sw, node_idx, level,
+                                           node_origin,
                                            background, compression_flags,
                                            half_precision, err);
         default:
@@ -4800,8 +4858,10 @@ static tvdb_status_t tvdb__write_grid(
     if (st != TVDB_OK) return st;
 
     /* Write buffers */
+    const int32_t zero_origin[3] = { 0, 0, 0 };
     st = tvdb__write_node_buffer(
-        &grid->tree, sw, 0, 0, background, compression_flags, half, err);
+        &grid->tree, sw, 0, 0, zero_origin, background, compression_flags,
+        half, err);
     return st;
 }
 

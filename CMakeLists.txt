@@ -599,6 +599,11 @@ if(TINYVDB_BUILD_TESTS)
   add_test(NAME test_grid_from_sparse
            COMMAND test_grid_from_sparse ${TINYVDB_TEST_FIXTURE})
 
+  add_executable(test_bool_leaf_origin ${PROJECT_SOURCE_DIR}/tests/test_bool_leaf_origin.c)
+  target_link_libraries(test_bool_leaf_origin PRIVATE tinyvdb_mesh_ops tinyvdb)
+  add_test(NAME test_bool_leaf_origin
+           COMMAND test_bool_leaf_origin ${TINYVDB_TEST_FIXTURE})
+
   add_executable(test_simd ${PROJECT_SOURCE_DIR}/tests/test_simd.c)
   target_link_libraries(test_simd PRIVATE tinyvdb_mesh_ops)
   # Inherit the SIMD compile flags from tinyvdb_mesh_ops via PUBLIC define;
