@@ -99,6 +99,41 @@ static void test_phase1(void) {
   }
   tvdb_dense_grid_free(&gu);
 
+  // Finding F12: geometry mismatch must no-op (result untouched), not
+  // silently produce a pointwise blend of misaligned voxels.
+  {
+    tvdb_dense_grid mis_o;
+    tvdb_dense_grid_init(&mis_o, 16, 16, 16);
+    mis_o.voxel_size = g.voxel_size;   /* same vs */
+    mis_o.ox = g.ox + 0.25f;           /* different origin */
+    mis_o.oy = g.oy; mis_o.oz = g.oz;
+    tvdb_dense_grid_init(&gu, 16, 16, 16);
+    gu.voxel_size = g.voxel_size;
+    gu.ox = g.ox; gu.oy = g.oy; gu.oz = g.oz;
+    for (size_t i = 0; i < (size_t)16*16*16; ++i) gu.data[i] = 777.0f;
+    tvdb_csg_union(&g, &mis_o, &gu);
+    for (size_t i = 0; i < (size_t)16*16*16; ++i)
+      if (gu.data[i] != 777.0f) { EXPECT(0); break; }
+    tvdb_csg_difference(&g, &mis_o, &gu);
+    for (size_t i = 0; i < (size_t)16*16*16; ++i)
+      if (gu.data[i] != 777.0f) { EXPECT(0); break; }
+    tvdb_dense_grid_free(&mis_o);
+    /* mismatched voxel size */
+    tvdb_dense_grid_init(&mis_o, 16, 16, 16);
+    mis_o.voxel_size = g.voxel_size * 2.0f;
+    mis_o.ox = g.ox; mis_o.oy = g.oy; mis_o.oz = g.oz;
+    for (size_t i = 0; i < (size_t)16*16*16; ++i) gu.data[i] = 777.0f;
+    tvdb_csg_intersection(&g, &mis_o, &gu);
+    for (size_t i = 0; i < (size_t)16*16*16; ++i)
+      if (gu.data[i] != 777.0f) { EXPECT(0); break; }
+    tvdb_dense_grid_free(&mis_o);
+    /* matching geometry still computes (control) */
+    for (size_t i = 0; i < (size_t)16*16*16; ++i) gu.data[i] = -999.0f;
+    tvdb_csg_union(&g, &g, &gu);
+    EXPECT(gu.data[0] != -999.0f);
+    tvdb_dense_grid_free(&gu);
+  }
+
   // Mean filter is volume-preserving on closed shapes (approximately).
   memcpy(g2.data, g.data, (size_t)16*16*16 * sizeof(float));
   tvdb_mean_filter(&g2, 1, 1);

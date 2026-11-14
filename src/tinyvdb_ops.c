@@ -46,7 +46,11 @@ static int tvdb_grid_same_shape(const tvdb_dense_grid* a, const tvdb_dense_grid*
   size_t bytes;
   return a && b && a->data && b->data &&
          tvdb_grid_bytes(a->nx,a->ny,a->nz,sizeof(float),&bytes) &&
-         a->nx==b->nx && a->ny==b->ny && a->nz==b->nz;
+         a->nx==b->nx && a->ny==b->ny && a->nz==b->nz &&
+         /* Elementwise ops need voxel i <-> voxel i to mean the same point.
+            Exact float equality is the right criterion: grids meant for
+            elementwise math are built from the same geometry parameters. */
+         a->voxel_size==b->voxel_size && a->ox==b->ox && a->oy==b->oy && a->oz==b->oz;
 }
 
 // -------------------------------------------------------------------------
@@ -296,7 +300,9 @@ void tvdb_laplacian_filter(tvdb_dense_grid* grid, int iterations) {
 // -------------------------------------------------------------------------
 
 // SDF convention: union = min, intersection = max, difference = max(a, -b).
-// Requires identical grid dimensions; result must be pre-allocated to same shape.
+// Requires identical grid geometry (dims, origin, voxel size); result must
+// be pre-allocated to the same geometry. On any mismatch the call is a no-op
+// and result is left untouched (the C API has no error return).
 
 void tvdb_csg_union(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result) {
   if (!tvdb_grid_same_shape(a, b) || !tvdb_grid_same_shape(a, result)) return;

@@ -32,6 +32,9 @@ void tvdb_mean_filter(tvdb_dense_grid* grid, int width, int iterations);
 void tvdb_laplacian_filter(tvdb_dense_grid* grid, int iterations);
 
 // Phase 1: CSG
+/* Dense CSG: result must be pre-allocated to the same geometry as a and b
+ * (dims, origin, voxel size). On any mismatch the call is a no-op and
+ * result is left untouched. */
 void tvdb_csg_union(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result);
 void tvdb_csg_intersection(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result);
 void tvdb_csg_difference(const tvdb_dense_grid* a, const tvdb_dense_grid* b, tvdb_dense_grid* result);
