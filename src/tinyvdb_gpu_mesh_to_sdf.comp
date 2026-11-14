@@ -78,13 +78,16 @@ void main() {
       best_n = vec3(normals[3u*f+0u], normals[3u*f+1u], normals[3u*f+2u]);
     }
   }
-  // Pseudo-normal (Baerentzen & Aanaes), matching the CPU reference: the sign
-  // uses the normal of the closest feature, not of the closest face. An edge or
-  // vertex feature sums the normals of every face sharing it (coordinates equal
-  // exactly -- vertex copies of the same point are stored bit-identically);
-  // a face-interior feature keeps the face normal; a zero/degenerate sum falls
-  // back to the face normal.
-  vec3 n = best_n;
+  // Sign at the closest feature (F16), mirroring the CPU reference
+  // (mesh_feature_direction): a vertex feature pairs positively iff SOME
+  // incident face normal does (max dot over incident faces; for a convex
+  // polyhedron an outside point has at least one while an inside point has
+  // none). An edge feature keeps the sum of the two incident face normals;
+  // a face-interior feature keeps the face normal. A vertex feature with no
+  // matching incident face (bit-level vertex-identity mismatch) falls back
+  // to the face-normal pairing.
+  vec3 dv = p - best_cp;
+  float direction = dot(dv, best_n);
   if (best_feat < 6) {
     vec3 fa = vec3(verts[9u*best_face+0u], verts[9u*best_face+1u], verts[9u*best_face+2u]);
     vec3 fb = vec3(verts[9u*best_face+3u], verts[9u*best_face+4u], verts[9u*best_face+5u]);
@@ -92,29 +95,35 @@ void main() {
     vec3 wa, wb;
     if (best_feat <= 2) {
       wa = best_feat == 0 ? fa : (best_feat == 1 ? fb : fc);
+      float best_dir = -1e30;
+      for (uint g = 0; g < u.face_count; ++g) {
+        vec3 ga = vec3(verts[9u*g+0u], verts[9u*g+1u], verts[9u*g+2u]);
+        vec3 gb = vec3(verts[9u*g+3u], verts[9u*g+4u], verts[9u*g+5u]);
+        vec3 gc = vec3(verts[9u*g+6u], verts[9u*g+7u], verts[9u*g+8u]);
+        if (ga == wa || gb == wa || gc == wa) {
+          float dt = dot(dv, vec3(normals[3u*g+0u], normals[3u*g+1u], normals[3u*g+2u]));
+          if (dt > best_dir) best_dir = dt;
+        }
+      }
+      if (!isnan(best_dir) && best_dir > -1e30) direction = best_dir;
     } else {
       if (best_feat == 3) { wa = fa; wb = fb; }
       else if (best_feat == 4) { wa = fa; wb = fc; }
       else { wa = fb; wb = fc; }
-    }
-    vec3 sum = vec3(0.0);
-    for (uint g = 0; g < u.face_count; ++g) {
-      vec3 ga = vec3(verts[9u*g+0u], verts[9u*g+1u], verts[9u*g+2u]);
-      vec3 gb = vec3(verts[9u*g+3u], verts[9u*g+4u], verts[9u*g+5u]);
-      vec3 gc = vec3(verts[9u*g+6u], verts[9u*g+7u], verts[9u*g+8u]);
-      int count = 0;
-      if (best_feat <= 2) {
-        count = (ga == wa ? 1 : 0) + (gb == wa ? 1 : 0) + (gc == wa ? 1 : 0);
-      } else {
-        if ((ga == wa || gb == wa || gc == wa) && (ga == wb || gb == wb || gc == wb)) count = 1;
+      vec3 sum = vec3(0.0);
+      for (uint g = 0; g < u.face_count; ++g) {
+        vec3 ga = vec3(verts[9u*g+0u], verts[9u*g+1u], verts[9u*g+2u]);
+        vec3 gb = vec3(verts[9u*g+3u], verts[9u*g+4u], verts[9u*g+5u]);
+        vec3 gc = vec3(verts[9u*g+6u], verts[9u*g+7u], verts[9u*g+8u]);
+        if ((ga == wa || gb == wa || gc == wa) && (ga == wb || gb == wb || gc == wb))
+          sum += vec3(normals[3u*g+0u], normals[3u*g+1u], normals[3u*g+2u]);
       }
-      if (count > 0) sum += vec3(normals[3u*g+0u], normals[3u*g+1u], normals[3u*g+2u]);
+      float l2 = dot(sum, sum);
+      if (!isnan(l2) && l2 > 0.0) direction = dot(dv, sum / sqrt(l2));
     }
-    float l2 = dot(sum, sum);
-    if (!isnan(l2) && l2 > 0.0) n = sum / sqrt(l2);
   }
   float dist = sqrt(best);
-  float s = dot(p - best_cp, n) >= 0.0 ? 1.0 : -1.0;
+  float s = direction >= 0.0 ? 1.0 : -1.0;
   float v = s * dist;
   v = clamp(v, -u.band, u.band);
   out_sdf[(uint(iz) * uint(ny) + uint(iy)) * uint(nx) + uint(ix)] = v;

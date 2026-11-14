@@ -214,11 +214,13 @@ static void mesh_feature_adjacency_free(tvdb_mesh_sdf_t *p) {
     p->edge_faces = NULL;
 }
 
-/* Pseudo-normal (Bærentzen & Aanæs): the direction used for the inside/
- * outside test when the closest feature is not the face interior. Sums the
- * face normals of the faces sharing the closest feature (edge or vertex);
- * falls back to the face normal for the face-interior case or a zero/invalid
- * sum. Returns a unit vector (or the face normal verbatim). */
+/* Pseudo-normal (Bærentzen & Aanæs): the unit vector used for the inside/
+ * outside test at an *edge* feature. Sums the face normals of the two faces
+ * sharing the edge; falls back to the face normal for a face-interior
+ * feature (not called then) or a zero/invalid sum. Returns a unit vector
+ * (or the face normal verbatim). Vertex features no longer use this sum —
+ * they pair each incident face's normal against the offset directly in
+ * `mesh_feature_direction` (F16). */
 static tvdb_vec3f mesh_pseudo_normal(const tvdb_mesh_sdf_t *p, int32_t face,
                                      int feature) {
     if (feature == 6 || feature > 6) return p->normals[face];
@@ -265,6 +267,43 @@ static tvdb_vec3f mesh_pseudo_normal(const tvdb_mesh_sdf_t *p, int32_t face,
     float len2 = dot_c(sum, sum);
     if (!isfinite(len2) || len2 <= 0.0f) return p->normals[face];
     return normalize_c(sum);
+}
+
+/* Sign direction at the closest feature, used for the inside/outside test
+ * (`d` is `point - cp`).
+ * Vertex features: the maximum dot product over the incident faces' outward
+ * normals -- for an outside point of a convex polyhedron at least one
+ * incident face pairs strictly positively (|p - q|^2 = sum lambda_i <n_i, p-q>
+ * with lambda_i >= 0 and p - q != 0), while for an inside point every incident
+ * face pairs non-positively (p lies in every tight face's inner half-space).
+ * The unweighted sum it replaces can be negative for outside points even on
+ * convex meshes (F16, see lean/Vdb/PseudoNormal.lean).
+ * Edge features: dot with the sum of the two incident face normals
+ * (unchanged). Face interior: dot with the face normal (unchanged).
+ * `face < 0` is the caller's bad-input case; returns a non-finite direction
+ * so the caller's `isfinite` check fires. */
+static float mesh_feature_direction(const tvdb_mesh_sdf_t *p, int32_t face, int feature,
+                                    const tvdb_vec3f d) {
+    if (face < 0)
+        return INFINITY;
+    const tvdb_triangle *f = &p->faces[face];
+    if (feature == 6 || feature > 6)
+        return dot_c(d, p->normals[face]);
+    if (feature < 3) {
+        uint32_t vid = feature == 0 ? f->v0 : feature == 1 ? f->v1 : f->v2;
+        size_t b = p->vertex_face_begin[vid], e = p->vertex_face_begin[vid + 1];
+        float best = -INFINITY;
+        for (size_t k = b; k < e; ++k) {
+            float dt = dot_c(d, p->normals[p->vertex_faces[k]]);
+            if (dt > best) best = dt;
+        }
+        if (!isfinite(best))
+            return dot_c(d, p->normals[face]);
+        return best;
+    }
+    /* Edge feature: the incident normal sum (Bærentzen & Aanæs), as before. */
+    tvdb_vec3f pn = mesh_pseudo_normal(p, face, feature);
+    return dot_c(d, pn);
 }
 
 tvdb_status_t tvdb_mesh_sdf_create(const tvdb_triangle_mesh *mesh, tvdb_mesh_sdf_t **out,
@@ -398,10 +437,14 @@ static void mesh_fill_rows(size_t begin, size_t end, void *user) {
                                  &feature);
             seed = dsq;
             seed_face = face;
-            /* Sign from the closest feature's pseudo-normal (sum of the face
-             * normals incident on the feature): correct at convex edges and
-             * vertices where the closest face's normal flips the sign. */
-            float direction = dot_c(sub_c(point, cp), mesh_pseudo_normal(p, face, feature));
+            /* Sign from the closest feature: a vertex feature pairs positively
+             * with at least one incident face's outward normal iff the point is
+             * outside (convex polyhedra); edge and face features keep the
+             * incident-sum / face normal. face < 0 or non-finite direction marks
+             * the voxel as bad. */
+            float direction = (face >= 0 && isfinite(dsq))
+                                  ? mesh_feature_direction(p, face, feature, sub_c(point, cp))
+                                  : INFINITY;
             if (face < 0 || !isfinite(dsq) || !isfinite(direction))
                 atomic_store_explicit(&j->bad, 1, memory_order_relaxed);
             float distance = sqrtf(dsq), sign = direction >= 0 ? 1 : -1;

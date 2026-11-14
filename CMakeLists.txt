@@ -613,6 +613,10 @@ if(TINYVDB_BUILD_TESTS)
   target_link_libraries(test_mesh_pseudo_normal PRIVATE tinyvdb_mesh_ops tinyvdb)
   add_test(NAME test_mesh_pseudo_normal COMMAND test_mesh_pseudo_normal)
 
+  add_executable(test_mesh_vertex_sign ${PROJECT_SOURCE_DIR}/tests/test_mesh_vertex_sign.c)
+  target_link_libraries(test_mesh_vertex_sign PRIVATE tinyvdb_mesh_ops tinyvdb)
+  add_test(NAME test_mesh_vertex_sign COMMAND test_mesh_vertex_sign)
+
   add_executable(test_simd ${PROJECT_SOURCE_DIR}/tests/test_simd.c)
   target_link_libraries(test_simd PRIVATE tinyvdb_mesh_ops)
   # Inherit the SIMD compile flags from tinyvdb_mesh_ops via PUBLIC define;

@@ -183,6 +183,26 @@ def pseudoNormal (m : Mesh) (normals : Array V3f) (face : Nat) (feature : Nat) :
     if !len2.isFinite || len2 <= 0 then normals[face]!
     else normalizef sum
 
+/-- `mesh_feature_direction` (F16): the direction of the inside/outside
+    test at the closest feature (`d = point - cp`). Vertex features: the
+    maximum dot product over incident faces' outward normals (an outside
+    point of a convex polyhedron pairs positively with at least one
+    incident face; an inside point with none). Edge features: dot with the
+    incident normal sum; face interiors: dot with the face normal. -/
+def featureDirection (m : Mesh) (normals : Array V3f) (face : Nat) (feature : Nat)
+    (d : V3f) : Float32 :=
+  if feature == 6 || feature > 6 then dotf d normals[face]!
+  else
+    let f := m.faces[face]!
+    if feature < 3 then
+      let vid := if feature == 0 then f.1.toNat else if feature == 1 then f.2.1.toNat else f.2.2.toNat
+      let incident := vertexFaces m vid
+      let best := incident.foldl (init := -Float32.inf) fun b i =>
+        let dt := dotf d normals[i]!
+        if dt > b then dt else b
+      if !best.isFinite then dotf d normals[face]! else best
+    else dotf d (pseudoNormal m normals face feature)
+
 /-- The closest-triangle query (brute force; the C BVH tree prunes on the
     same acceptance rule `dsq < best || (dsq == best && f < best_face)`, so
     both select the same winner). Returns `(face, feature)`. -/
@@ -213,8 +233,7 @@ def voxelValue (m : Mesh) (normals : Array V3f) (ix iy iz : Nat) : Float32 × Bo
   -- recompute the closest point for this face (same order of operations)
   let (cp, _, fb) :=
     triClosest point (m.verts[fa.1.toNat]!) (m.verts[fa.2.1.toNat]!) (m.verts[fa.2.2.toNat]!)
-  let pnormal := pseudoNormal m normals face feature.toNat
-  let direction := dotf (subf point cp) pnormal
+  let direction := featureDirection m normals face feature.toNat (subf point cp)
   let d := subf point cp
   let dsq := dotf d d
   let distance := Float32.sqrt dsq
