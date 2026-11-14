@@ -183,6 +183,117 @@ static void nv__slot_to_ijk(int32_t s, int log2dim,
     *iz =  s & mask;
 }
 
+/* Forward declaration (defined below, next to the NanoVDB writer). */
+static tvdb_status_t nv__error(tvdb_error_t *err, tvdb_status_t st,
+                               const char *msg);
+
+/* ------------------------------------------------------------------ */
+/* Tree validation: the reader and the from-sparse builder maintain the   */
+/* invariants below; caller-supplied trees may not. Reject a tree early   */
+/* instead of indexing tree->nodes or child_indices unchecked (NULL        */
+/* dereference / out-of-bounds) or silently dropping subtrees.            */
+/* ------------------------------------------------------------------ */
+
+static int nv__popcount64(uint64_t x) {
+    x = x - ((x >> 1) & UINT64_C(0x5555555555555555));
+    x = (x & UINT64_C(0x3333333333333333)) + ((x >> 2) & UINT64_C(0x3333333333333333));
+    return (int)((((x + (x >> 4)) & UINT64_C(0x0f0f0f0f0f0f0f0f0f)) *
+                  UINT64_C(0x0101010101010101)) >> 56);
+}
+
+static int nv__mask_ok(const tvdb_nodemask_t *m, int L) {
+    if (!m || m->log2dim != L) return 0;
+    int32_t bitsize = (int32_t)1 << (3 * L);
+    if (m->bitsize != bitsize) return 0;
+    size_t bytes = ((size_t)bitsize + 7) / 8;
+    return m->bits.num_bits == (uint64_t)bitsize && m->bits.num_bytes >= bytes &&
+           m->bits.data != NULL;
+}
+
+static size_t nv__mask_rank(const tvdb_nodemask_t *m) {
+    size_t bytes = ((size_t)m->bitsize + 7) / 8;
+    size_t total = 0;
+    for (size_t i = 0; i + 8 <= bytes; i += 8) {
+        uint64_t w;
+        memcpy(&w, m->bits.data + i, 8);
+        total += (size_t)nv__popcount64(w);
+    }
+    for (size_t i = bytes & ~(size_t)7; i < bytes; ++i)
+        total += (size_t)nv__popcount64(m->bits.data[i]);
+    return total;
+}
+
+static int nv__child_ok(const tvdb_tree_t *tree, size_t idx, int want_level,
+                        tvdb_node_type_t want_type, unsigned char *seen) {
+    const size_t n = tree->num_nodes;
+    if (idx >= n || seen[idx]) return 0; /* out of bounds or shared/cyclic child */
+    seen[idx] = 1;
+    const tvdb_tree_node_t *node = &tree->nodes[idx];
+    return node->type == want_type && node->level == want_level;
+}
+
+/* Validates exactly the structure the walk and writer dereference:
+   - root node type/level, num_children bound, child_origins/child_indices for
+     nonempty root children, root tile arrays,
+   - internal nodes: mask storage present, child_mask bitsize, popcount ==
+     num_children, nonempty child_indices,
+   - children: bounds, uniqueness, node type/level; leaves carry a value mask. */
+static int nv__validate_tree(const tvdb_tree_t *tree, tvdb_error_t *err) {
+    const size_t n = tree->num_nodes;
+    unsigned char *seen = (unsigned char *)calloc(n ? n : 1, 1);
+    if (!seen) {
+        nv__error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM in tree validation");
+        return 0;
+    }
+    int ok = 1;
+    const tvdb_tree_node_t *nodes = tree->nodes;
+    const tvdb_root_node_t *r = &nodes[0].u.root;
+
+    if (nodes[0].type != TVDB_NODE_ROOT || nodes[0].level != 0) {
+        ok = 0;
+    } else {
+        seen[0] = 1;
+        if (r->num_children && (!r->child_indices || !r->child_origins)) ok = 0;
+        else if ((uint64_t)r->num_children >= (uint64_t)n) ok = 0; /* distinct nodes */
+        if (ok && r->num_tiles &&
+            (!r->tile_origins || !r->tile_values || !r->tile_active)) ok = 0;
+    }
+
+    for (uint32_t i = 0; ok && i < r->num_children; ++i) {
+        size_t idx = r->child_indices[i];
+        if (!nv__child_ok(tree, idx, /*level=*/1, TVDB_NODE_INTERNAL, seen)) { ok = 0; break; }
+        const tvdb_internal_node_t *ui = &nodes[idx].u.internal;
+        if (!nv__mask_ok(&ui->child_mask, 5) || !nv__mask_ok(&ui->value_mask, 5) ||
+            (ui->num_children && !ui->child_indices)) { ok = 0; break; }
+        if (nv__mask_rank(&ui->child_mask) != (size_t)ui->num_children) { ok = 0; break; }
+
+        size_t c = 0;
+        for (int32_t s = 0; ok && s < ui->child_mask.bitsize; ++s) {
+            if (!(ui->child_mask.bits.data[s >> 3] & (1u << (s & 7u)))) continue;
+            size_t lidx = ui->child_indices[c++];
+            if (!nv__child_ok(tree, lidx, /*level=*/2, TVDB_NODE_INTERNAL, seen)) { ok = 0; break; }
+            const tvdb_internal_node_t *li = &nodes[lidx].u.internal;
+            if (!nv__mask_ok(&li->child_mask, 4) || !nv__mask_ok(&li->value_mask, 4) ||
+                (li->num_children && !li->child_indices)) { ok = 0; break; }
+            if (nv__mask_rank(&li->child_mask) != (size_t)li->num_children) { ok = 0; break; }
+
+            size_t c2 = 0;
+            for (int32_t t = 0; ok && t < li->child_mask.bitsize; ++t) {
+                if (!(li->child_mask.bits.data[t >> 3] & (1u << (t & 7u)))) continue;
+                size_t leaf_idx = li->child_indices[c2++];
+                if (!nv__child_ok(tree, leaf_idx, /*level=*/3, TVDB_NODE_LEAF, seen)) { ok = 0; break; }
+                const tvdb_leaf_node_t *lf = &nodes[leaf_idx].u.leaf;
+                if (!nv__mask_ok(&lf->value_mask, 3) || !lf->data) { ok = 0; break; }
+            }
+        }
+    }
+    free(seen);
+    if (!ok)
+        nv__error(err, TVDB_ERROR_INVALID_DATA,
+                  "tvdb_grid_to_nanovdb: inconsistent tree (child_indices/types/masks)");
+    return ok;
+}
+
 /* DFS walk: collect uppers/lowers/leaves with origins and parent linkage. */
 static int nv__collect(const tvdb_tree_t *tree, nv_build_ctx_t *ctx) {
     if (tree->num_nodes == 0) return 1;
@@ -448,6 +559,8 @@ tvdb_status_t tvdb_grid_to_nanovdb(const tvdb_grid_t *grid, uint8_t **out_data,
     const pnanovdb_grid_type_constants_t *C = &pnanovdb_grid_type_constants[gt];
     const size_t vbytes = nv__value_bytes(gt);
 
+    if (!nv__validate_tree(&grid->tree, err))
+        return TVDB_ERROR_INVALID_DATA;
     nv_build_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
     if (!nv__collect(&grid->tree, &ctx)) {

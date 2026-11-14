@@ -604,6 +604,11 @@ if(TINYVDB_BUILD_TESTS)
   add_test(NAME test_bool_leaf_origin
            COMMAND test_bool_leaf_origin ${TINYVDB_TEST_FIXTURE})
 
+  add_executable(test_to_nanovdb_validation ${PROJECT_SOURCE_DIR}/tests/test_to_nanovdb_validation.c)
+  target_link_libraries(test_to_nanovdb_validation PRIVATE tinyvdb_mesh_ops tinyvdb tinyvdb_nanovdb)
+  add_test(NAME test_to_nanovdb_validation
+           COMMAND test_to_nanovdb_validation ${TINYVDB_TEST_FIXTURE})
+
   add_executable(test_simd ${PROJECT_SOURCE_DIR}/tests/test_simd.c)
   target_link_libraries(test_simd PRIVATE tinyvdb_mesh_ops)
   # Inherit the SIMD compile flags from tinyvdb_mesh_ops via PUBLIC define;
