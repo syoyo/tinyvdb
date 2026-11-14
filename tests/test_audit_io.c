@@ -990,6 +990,64 @@ static void test_overflowing_header_fields(void) {
 }
 
 /* ------------------------------------------------------------------------ */
+/*  Finding F3: version above the max is rejected; block_byte_offset          */
+/*  must be grid <= block <= end                                             */
+/* ------------------------------------------------------------------------ */
+
+static void test_version_above_max_rejected(void) {
+    bb_t p = { 0 };
+    put_grid_prefix(&p, 224, 0);
+    bb_f32(&p, 3.0f);
+    bb_u32(&p, 0); bb_u32(&p, 0);
+    bb_i32(&p, 1);
+    bb_t file = make_file(226, "g", 1, "Tree_float_5_4_3", &p);
+    tvdb_file_t f;
+    tvdb_error_t e; memset(&e, 0, sizeof(e));
+    tvdb_status_t st = open_read(&f, &file, NULL, &e);
+    CHECK(st == TVDB_ERROR_UNSUPPORTED_VERSION);
+    tvdb_file_close(&f);
+    bb_free(&file); bb_free(&p);
+}
+
+static void test_block_offset_out_of_order_rejected(void) {
+    bb_t p = { 0 };
+    put_grid_prefix(&p, 224, 0);
+    bb_f32(&p, 3.0f);
+    bb_u32(&p, 0); bb_u32(&p, 0);
+    bb_i32(&p, 1);
+    bb_t file = make_file(224, "g", 1, "Tree_float_5_4_3", &p);
+    /* grid at byte 94, block at 102, end at 110 (see put_header layout) */
+    uint64_t grid = 0, end = 0;
+    memcpy(&grid, file.d + 94, 8);
+    memcpy(&end, file.d + 110, 8);
+    CHECK(grid == 118 && end >= grid);
+    ctr_t c; ctr_init(&c);
+    tvdb_allocator_t a = ctr_alloc(&c);
+    tvdb_file_t f;
+    tvdb_error_t e; memset(&e, 0, sizeof(e));
+    /* block == grid - 1 (block < grid) -> reject */
+    uint64_t bad = grid - 1;
+    memcpy(file.d + 102, &bad, 8);
+    CHECK(open_read(&f, &file, &a, &e) == TVDB_ERROR_INVALID_DATA);
+    tvdb_file_close(&f);
+    CHECK(c.live_count == 0);
+    /* block == end + 1 > end -> reject */
+    bad = end + 1;
+    memcpy(file.d + 102, &bad, 8);
+    memset(&e, 0, sizeof(e));
+    CHECK(open_read(&f, &file, &a, &e) == TVDB_ERROR_INVALID_DATA);
+    tvdb_file_close(&f);
+    CHECK(c.live_count == 0);
+    /* restore the original (good) order: block == grid */
+    memcpy(file.d + 102, &grid, 8);
+    memset(&e, 0, sizeof(e));
+    CHECK(open_read(&f, &file, &a, &e) == TVDB_OK);
+    tvdb_file_close(&f);
+    CHECK(c.live_count == 0 && c.mismatches == 0);
+    bb_free(&file); bb_free(&p);
+}
+
+/* ------------------------------------------------------------------------ */
 /*  Plausible: nanovdb_file_close frees f->buffer once                       */
 /* ------------------------------------------------------------------------ */
 
@@ -1088,6 +1146,8 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     T(test_header_sized_allocations),
     T(test_open_error_paths_release),
     T(test_overflowing_header_fields),
+    T(test_version_above_max_rejected),
+    T(test_block_offset_out_of_order_rejected),
     T(test_nanovdb_close_frees_buffer_once),
     T(test_allocation_failure_sweep),
 };

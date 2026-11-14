@@ -3313,6 +3313,11 @@ static tvdb_status_t tvdb__read_header(tvdb__sr_t *sr, tvdb_header_t *header,
                         "VDB file version < 220 not supported");
         return TVDB_ERROR_UNSUPPORTED_VERSION;
     }
+    if (header->file_version > TVDB_FILE_VERSION_HALF_GRID) {
+        tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_VERSION,
+                        "VDB file version > 225 not supported");
+        return TVDB_ERROR_UNSUPPORTED_VERSION;
+    }
 
     /* Library version (v211+) */
     if (header->file_version >= 211) {
@@ -3452,9 +3457,12 @@ static tvdb_status_t tvdb__file_parse(tvdb_file_t *file, tvdb_error_t *err) {
                                             &file->grids[i].descriptor,
                                             &file->alloc, err);
             if (st != TVDB_OK) goto fail;
-            /* Validate grid offsets */
+            /* Validate grid offsets: tinyvdb writes grid == block < end,
+               and OpenVDB's header guarantees grid <= block <= end. */
             tvdb_grid_descriptor_t *gd = &file->grids[i].descriptor;
-            if (gd->grid_byte_offset > gd->end_byte_offset ||
+            if (gd->grid_byte_offset > gd->block_byte_offset ||
+                gd->block_byte_offset > gd->end_byte_offset ||
+                gd->grid_byte_offset > gd->end_byte_offset ||
                 gd->end_byte_offset > file->file_data.data_len ||
                 !tvdb__sr_seek_set(&sr, gd->end_byte_offset)) {
                 tvdb__set_error(err, TVDB_ERROR_INVALID_DATA,
