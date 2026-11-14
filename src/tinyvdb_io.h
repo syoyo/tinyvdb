@@ -3251,7 +3251,13 @@ static tvdb_status_t tvdb__read_grid_inner(tvdb__sr_t *sr, tvdb_grid_t *grid,
 
     if (header_only) return TVDB_OK;
 
-    /* Check for grid instances */
+    /* Check for grid instances. tinyvdb deliberately does not resolve an
+       instance grid to its parent: the grid owns its tree (no shared/ref-counted
+       tree), and silently deep-copying the parent's tree here would duplicate
+       unbounded buffers in every file that declares an instance. The instance
+       grid carries its own metadata, transform and descriptor
+       (instance_parent_name) and NO tree: consumers must not open its voxel
+       data. Round-trips through the writer preserve the instance entry. */
     if (grid->descriptor.instance_parent_name &&
         grid->descriptor.instance_parent_name[0] != '\0') {
         /* Instance grid — skip tree data */

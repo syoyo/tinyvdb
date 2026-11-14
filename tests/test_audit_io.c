@@ -1046,6 +1046,69 @@ static void test_huge_log2dim_rejected(void) {
 }
 
 /* ------------------------------------------------------------------------ */
+/*  Finding F8: instance grids are metadata/transform-only; voxel data       */
+/*  is never resolved from the parent. Pinned contract.                      */
+/* ------------------------------------------------------------------------ */
+
+static void test_instance_grid_not_resolved(void) {
+    /* Crafted v224 file with a single instance grid: descriptor names the
+       parent "parentgrid", payload carries compression, empty metadata and
+       a UniformScaleMap transform, then NOTHING (no tree section). The read
+       must succeed, leave the tree empty, and round-trip as an instance. */
+    /* Instance payload: compression + empty metadata + UniformScaleMap
+       transform, and nothing else (no buffer count, no tree sections). */
+    bb_t p = { 0 };
+    bb_u32(&p, 0);              /* compression flags */
+    bb_i32(&p, 0);              /* metadata count */
+    bb_cstr(&p, "UniformScaleMap");
+    for (int i = 0; i < 15; ++i) bb_f64(&p, 1.0);
+    bb_t f = { 0 };
+    put_header(&f, 224);
+    bb_i32(&f, 0);  /* file metadata count */
+    bb_i32(&f, 1);  /* grid count */
+    bb_cstr(&f, "inst");
+    bb_cstr(&f, "Tree_float_5_4_3");
+    bb_cstr(&f, "parentgrid"); /* instance parent name (v221+) */
+    uint64_t off = f.n + 24;
+    bb_u64(&f, off);
+    bb_u64(&f, off);
+    bb_u64(&f, off + p.n);
+    bb_put(&f, p.d, p.n);
+
+    tvdb_file_t file;
+    tvdb_error_t e; memset(&e, 0, sizeof(e));
+    CHECK(open_read(&file, &f, NULL, &e) == TVDB_OK);
+    CHECK(file.num_grids == 1);
+    CHECK(file.grids[0].descriptor.instance_parent_name &&
+          strcmp(file.grids[0].descriptor.instance_parent_name, "parentgrid") == 0);
+    /* The tree stays empty: no nodes, and num_nodes == 0. */
+    CHECK(file.grids[0].tree.num_nodes == 0);
+
+    /* Round-trip through memory: the instance entry is preserved (the
+       writer never emits a tree section for instance grids). */
+    uint8_t *data = NULL;
+    size_t size = 0;
+    tvdb_status_t st = tvdb_write_to_memory(&file, TVDB_COMPRESS_NONE, 5,
+                                            &data, &size, &e);
+    CHECK(st == TVDB_OK && data && size > 0);
+    if (st == TVDB_OK && data) {
+        tvdb_file_t file2;
+        tvdb_error_t e2; memset(&e2, 0, sizeof(e2));
+        CHECK(tvdb_file_open_memory(&file2, data, size, NULL, &e2) == TVDB_OK);
+        CHECK(tvdb_read_all_grids(&file2, &e2) == TVDB_OK);
+        CHECK(file2.num_grids == 1);
+        CHECK(file2.grids[0].descriptor.instance_parent_name &&
+              strcmp(file2.grids[0].descriptor.instance_parent_name,
+                     "parentgrid") == 0);
+        CHECK(file2.grids[0].tree.num_nodes == 0);
+        tvdb_file_close(&file2);
+        free(data);
+    }
+    tvdb_file_close(&file);
+    bb_free(&f); bb_free(&p);
+}
+
+/* ------------------------------------------------------------------------ */
 /*  Finding F3: version above the max is rejected; block_byte_offset          */
 /*  must be grid <= block <= end                                             */
 /* ------------------------------------------------------------------------ */
@@ -1204,6 +1267,7 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     T(test_overflowing_header_fields),
     T(test_malformed_grid_type_rejected),
     T(test_huge_log2dim_rejected),
+    T(test_instance_grid_not_resolved),
     T(test_version_above_max_rejected),
     T(test_block_offset_out_of_order_rejected),
     T(test_nanovdb_close_frees_buffer_once),
