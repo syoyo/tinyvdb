@@ -990,6 +990,36 @@ static void test_overflowing_header_fields(void) {
 }
 
 /* ------------------------------------------------------------------------ */
+/*  Finding F4: malformed grid-type strings must not parse as tree levels   */
+/* ------------------------------------------------------------------------ */
+
+static void test_malformed_grid_type_rejected(void) {
+    static const char *const bad[] = {
+        "Tree_float_5_4_3junk",
+        "Tree_float_5_4_3_",
+        "Tree_float_5_x4_3",
+        "Tree_float_5__4_3",
+        "Tree_float_5_4_33",
+    };
+    for (int i = 0; i < 5; ++i) {
+        bb_t p = { 0 };
+        put_grid_prefix(&p, 224, 0);
+        bb_f32(&p, 3.0f);
+        bb_u32(&p, 0); bb_u32(&p, 0);
+        bb_i32(&p, 1);
+        bb_t file = make_file(224, "g", 1, bad[i], &p);
+        tvdb_file_t f;
+        tvdb_error_t e; memset(&e, 0, sizeof(e));
+        tvdb_status_t st = open_read(&f, &file, NULL, &e);
+        CHECK(st == TVDB_ERROR_UNSUPPORTED_GRID_TYPE);
+        tvdb_file_close(&f);
+        bb_free(&file); bb_free(&p);
+    }
+    /* a well-formed grid type is still accepted (minimal tree is not needed
+        to pass the grammar; other tests exercise the full read path) */
+}
+
+/* ------------------------------------------------------------------------ */
 /*  Finding F3: version above the max is rejected; block_byte_offset          */
 /*  must be grid <= block <= end                                             */
 /* ------------------------------------------------------------------------ */
@@ -1146,6 +1176,7 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     T(test_header_sized_allocations),
     T(test_open_error_paths_release),
     T(test_overflowing_header_fields),
+    T(test_malformed_grid_type_rejected),
     T(test_version_above_max_rejected),
     T(test_block_offset_out_of_order_rejected),
     T(test_nanovdb_close_frees_buffer_once),

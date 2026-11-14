@@ -1683,22 +1683,45 @@ static tvdb_status_t tvdb__parse_grid_type(const char *grid_type,
     layout->levels[0].log2dim    = 0;
     layout->num_levels = 1;
 
-    /* Parse dimensions (e.g. "5_4_3") */
-    while (*p && layout->num_levels < TVDB_MAX_TREE_DEPTH) {
+    /* Parse dimensions (e.g. "5_4_3"). Each token must be 1-2 digits in the
+       range 0..10, separated by single '_' and the string must end after the
+       last token; trailing junk is rejected (it used to parse as zero-dim
+       levels up to the depth cap). */
+    while (*p != '\0') {
+        if (layout->num_levels >= TVDB_MAX_TREE_DEPTH) {
+            tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
+                            "tree too deep (max 8 levels)");
+            return TVDB_ERROR_UNSUPPORTED_GRID_TYPE;
+        }
+        if (*p < '0' || *p > '9') {
+            tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
+                            "malformed token in grid type (expected digits)");
+            return TVDB_ERROR_UNSUPPORTED_GRID_TYPE;
+        }
         int dim = 0;
         while (*p >= '0' && *p <= '9') {
             /* Saturate instead of overflowing; anything > 10 is rejected. */
             if (dim <= 10) dim = dim * 10 + (*p - '0');
             p++;
         }
-        if (*p == '_') p++;
-
-        /* Reject log2dim >= 10 to prevent undefined behavior in
-           1 << (3 * log2dim). Standard OpenVDB uses 3, 4, 5. */
-        if (dim < 0 || dim > 10) {
+        if (dim > 10) {
             tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
                             "log2dim out of range (max 10)");
             return TVDB_ERROR_UNSUPPORTED_GRID_TYPE;
+        }
+        /* '_' separator required between tokens; a trailing '_' is junk. */
+        if (*p != '\0') {
+            if (*p != '_') {
+                tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
+                                "trailing junk in grid type");
+                return TVDB_ERROR_UNSUPPORTED_GRID_TYPE;
+            }
+            p++;
+            if (*p == '\0') {
+                tvdb__set_error(err, TVDB_ERROR_UNSUPPORTED_GRID_TYPE,
+                                "grid type ends with a separator");
+                return TVDB_ERROR_UNSUPPORTED_GRID_TYPE;
+            }
         }
 
         int level = layout->num_levels;
