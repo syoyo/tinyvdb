@@ -43,6 +43,7 @@ static void comp_case(const char* name, tvdb_gpu_context_t* ctx, int op,
   tvdb_dense_grid rc, rg;
   memset(&rc, 0, sizeof rc); memset(&rg, 0, sizeof rg);
   rc.nx = rg.nx = 9; rc.ny = rg.ny = 7; rc.nz = rg.nz = 5;
+  rc.voxel_size = rg.voxel_size = 0.25f; rc.ox = rg.ox = -1.0f; rc.oy = rg.oy = 0.5f; rc.oz = rg.oz = 2.0f;
   size_t n = (size_t)9 * 7 * 5;
   rc.data = (float*)malloc(n * sizeof(float));
   rg.data = (float*)malloc(n * sizeof(float));
@@ -85,6 +86,7 @@ int main(int argc, char** argv) {
     tvdb_dense_grid rc, rg;
     memset(&rc, 0, sizeof rc); memset(&rg, 0, sizeof rg);
     rc.nx = rg.nx = rc.ny = rg.ny = rc.nz = rg.nz = 4;
+    rc.voxel_size = rg.voxel_size = 0.25f; rc.ox = rg.ox = -1.0f; rc.oy = rg.oy = 0.5f; rc.oz = rg.oz = 2.0f;
     rc.data = (float*)malloc(n * sizeof(float));
     rg.data = (float*)malloc(n * sizeof(float));
     for (size_t i = 0; i < n; ++i) { rc.data[i] = -1.0f; rg.data[i] = -1.0f; }

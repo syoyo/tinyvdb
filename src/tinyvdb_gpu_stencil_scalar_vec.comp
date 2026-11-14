@@ -1,7 +1,8 @@
 #version 450
-// Scalar -> vec3 gradient, matching tvdb_gradient: the three central
-// differences, each scaled by 1/(2h) (the host supplies the scale), with reads
-// clamped at the grid edge.
+// Scalar -> vec3 gradient, matching tvdb_gradient: one-sided difference over
+// distance h at the boundary voxels (0 when the axis has a single cell), the
+// central difference over 2h in the interior, reads clamped at the grid edge;
+// (the host supplies the scale 1/(2h); the boundary path derives 1/h as 2*scale).
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(std430, set = 0, binding = 0) readonly buffer InBuffer  { float src[]; };
 layout(std430, set = 0, binding = 1) buffer OutBuffer { float dst[]; };  // 3 per voxel
@@ -20,9 +21,18 @@ float at(int ix, int iy, int iz) {
 void main() {
   ivec3 c = ivec3(gl_GlobalInvocationID.xy, int(gl_WorkGroupID.z));
   if (c.x >= u.dim.x || c.y >= u.dim.y || c.z >= u.dim.z) return;
-  float gx = (at(c.x + 1, c.y, c.z) - at(c.x - 1, c.y, c.z)) * u.scale;
-  float gy = (at(c.x, c.y + 1, c.z) - at(c.x, c.y - 1, c.z)) * u.scale;
-  float gz = (at(c.x, c.y, c.z + 1) - at(c.x, c.y, c.z - 1)) * u.scale;
+  float sh = u.scale * 2.0; /* 1/h */
+  int Lx = u.dim.x - 1, Ly = u.dim.y - 1, Lz = u.dim.z - 1;
+  float gx, gy, gz;
+  if (c.x <= 0)      gx = (u.dim.x > 1) ? (at(1, c.y, c.z) - at(0, c.y, c.z)) * sh : 0.0;
+  else if (c.x >= Lx) gx = (u.dim.x > 1) ? (at(Lx, c.y, c.z) - at(Lx - 1, c.y, c.z)) * sh : 0.0;
+  else               gx = (at(c.x + 1, c.y, c.z) - at(c.x - 1, c.y, c.z)) * u.scale;
+  if (c.y <= 0)      gy = (u.dim.y > 1) ? (at(c.x, 1, c.z) - at(c.x, 0, c.z)) * sh : 0.0;
+  else if (c.y >= Ly) gy = (u.dim.y > 1) ? (at(c.x, Ly, c.z) - at(c.x, Ly - 1, c.z)) * sh : 0.0;
+  else               gy = (at(c.x, c.y + 1, c.z) - at(c.x, c.y - 1, c.z)) * u.scale;
+  if (c.z <= 0)      gz = (u.dim.z > 1) ? (at(c.x, c.y, 1) - at(c.x, c.y, 0)) * sh : 0.0;
+  else if (c.z >= Lz) gz = (u.dim.z > 1) ? (at(c.x, c.y, Lz) - at(c.x, c.y, Lz - 1)) * sh : 0.0;
+  else               gz = (at(c.x, c.y, c.z + 1) - at(c.x, c.y, c.z - 1)) * u.scale;
   uint i = 3u * ((uint(c.z) * uint(u.dim.y) + uint(c.y)) * uint(u.dim.x) + uint(c.x));
   if (u.dim.w == 1) {
     // cpt: the closest-point transform, p - d * grad, matching tvdb_cpt.

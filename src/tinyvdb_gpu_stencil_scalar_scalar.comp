@@ -2,10 +2,12 @@
 // Scalar -> scalar stencils: laplacian (op 0) and central differences
 // (op 1 = dx, 2 = dy, 3 = dz).
 //
-// Matches the CPU reference exactly: reads are clamped at the grid edge
+// Matches the CPU reference exactly: reads clamped at the grid edge
 // (tvdb_at), laplacian is the 7-point (sum of 6 neighbours - 6*centre) scaled by
-// 1/h^2, and the central differences are (f(+1) - f(-1)) scaled by 1/(2h). The
-// host precomputes the scale so the shader only multiplies.
+// 1/h^2, and the central differences follow the CPU formula: one-sided
+// difference over distance h at the boundary voxels (or 0 when the axis has a
+// single cell), central difference over 2h in the interior. The host
+// precomputes the scale (1/(2h)); the boundary path derives 1/h as 2*scale.
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(std430, set = 0, binding = 0) readonly buffer InBuffer  { float src[]; };
 layout(std430, set = 0, binding = 1) buffer OutBuffer { float dst[]; };
@@ -36,11 +38,20 @@ void main() {
             + at(c.x, c.y, c.z - 1) + at(c.x, c.y, c.z + 1);
     v = (s - 6.0 * at(c.x, c.y, c.z)) * u.scale;
   } else if (u.dim.w == 1) {
-    v = (at(c.x + 1, c.y, c.z) - at(c.x - 1, c.y, c.z)) * u.scale;
+    int L = u.dim.x - 1;
+    if (c.x <= 0)      v = (u.dim.x > 1) ? (at(1, c.y, c.z) - at(0, c.y, c.z)) * (u.scale * 2.0) : 0.0;
+    else if (c.x >= L) v = (u.dim.x > 1) ? (at(L, c.y, c.z) - at(L - 1, c.y, c.z)) * (u.scale * 2.0) : 0.0;
+    else               v = (at(c.x + 1, c.y, c.z) - at(c.x - 1, c.y, c.z)) * u.scale;
   } else if (u.dim.w == 2) {
-    v = (at(c.x, c.y + 1, c.z) - at(c.x, c.y - 1, c.z)) * u.scale;
+    int L = u.dim.y - 1;
+    if (c.y <= 0)      v = (u.dim.y > 1) ? (at(c.x, 1, c.z) - at(c.x, 0, c.z)) * (u.scale * 2.0) : 0.0;
+    else if (c.y >= L) v = (u.dim.y > 1) ? (at(c.x, L, c.z) - at(c.x, L - 1, c.z)) * (u.scale * 2.0) : 0.0;
+    else               v = (at(c.x, c.y + 1, c.z) - at(c.x, c.y - 1, c.z)) * u.scale;
   } else {
-    v = (at(c.x, c.y, c.z + 1) - at(c.x, c.y, c.z - 1)) * u.scale;
+    int L = u.dim.z - 1;
+    if (c.z <= 0)      v = (u.dim.z > 1) ? (at(c.x, c.y, 1) - at(c.x, c.y, 0)) * (u.scale * 2.0) : 0.0;
+    else if (c.z >= L) v = (u.dim.z > 1) ? (at(c.x, c.y, L) - at(c.x, c.y, L - 1)) * (u.scale * 2.0) : 0.0;
+    else               v = (at(c.x, c.y, c.z + 1) - at(c.x, c.y, c.z - 1)) * u.scale;
   }
   dst[i] = v;
 }
