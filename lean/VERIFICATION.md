@@ -262,6 +262,57 @@ chunk when the stored count is zero. The earlier model wrote and read `i32 x3`
 origins at every level and always framed a chunk, neither of which matches a
 real file.
 
+## Differential harness: Godunov, flood fill, Euler, fast sweeping (P2–P4)
+
+`lean/Vdb/GodunovCheck.lean`, `lean/Vdb/FillCheck.lean`, `lean/Vdb/EulerCheck.lean`
+and `lean/Vdb/FastSweepCheck.lean` are `lean_exe` targets (`lakefile.lean`)
+driven by `lean/scripts/check_godunov.sh`, `check_fill.sh`, `check_euler.sh`
+and `check_fastsweep.sh`. Shared Float helpers (`%e`-notation parser used to
+re-read the C drivers' `%.17e` dumps exactly enough for the tolerances,
+`fmax`/`fabs`) live in `lean/Vdb/FloatParse.lean`.
+
+* **Godunov** (`Vdb.GodunovCheck` vs `scripts/godunov_c.c`, a double twin of
+  `tvdb__godunov_solve`, branch by branch): the same 200,000 seeded
+  pseudo-random sorted triples (LCG `0x9e37…`, values `u/10000`, `h ∈
+  [0.5, 4.5)`), including near-equal upwind values. The C side prints
+  `%.17e`; the Lean side re-parses the C file and recomputes the solver on
+  the parsed inputs; `|a-b| <= max(1e-12, 1e-12·max(|a|,|b|))` must hold
+  everywhere. Result: **200,000/200,000 match, 0 bad** (max rel err
+  ~1e-12). Negative control verified: corrupting one printed output line
+  makes the check report `bad=1` and exit 1. Not covered: the tree-variant
+  of the sweep and the `a > b` unsorted-input contract (the C pre-sorts).
+* **Flood fill** (`Vdb.FillCheck` vs `scripts/fill_c.c`, calling the real
+  `tvdb_signed_flood_fill`): the same 400 seeded 8×8×8 random grids
+  (values in `[-0.5, 0.5)`, band `0.25`), signs compared byte-wise against
+  the post-fill grid (`+` exterior far, `-` interior far, `.` band voxel).
+  Result: **400/400 cases byte-identical** (316/400 exercise the interior
+  fill path). This is the exact-equality P4 check; it found no defect.
+* **Euler characteristic** (`Vdb.EulerCheck` vs `scripts/euler_c.c`,
+  `tvdb_level_set_euler_characteristic`): the same 400 seeded 5×5×5 random
+  grids (solid = voxels with value < 0, isovalue 0). The C function returns
+  `2·χ(solid)` (Poincaré–Lefschetz); the Lean exe computes
+  `Vdb.chiOf` (exact cubical-cell count: `V − E + F − C`). Result:
+  **400/400 satisfy `c == 2·χ`**.
+* **Fast sweeping** (`Vdb.FastSweepCheck` vs `scripts/fastsweep_c.c`, the
+  real `tvdb_fast_sweeping`, `frozen_band = 0.25`, `h = 0.25`,
+  `max_iters = 10`, `tol = 1e-6`): the same 200 seeded 8×8×8 random grids;
+  the Lean twin recomputes the sweep (all 8 sweep directions, same branch
+  structure as the C `tvdb__godunov_solve`) and compares the *final* grids
+  voxel by voxel: exact sign identity and `|diff| <= 1e-5·h`.
+  Result: **102,400/102,400 voxel lines match, 0 sign mismatches**
+  (negative control verified: corrupting one printed value makes the check
+  exit 1; the script additionally asserts the 102,400 count so a silently
+  dropped line fails the gate). Not covered: the un-frozen-boundary
+  convergence behaviour of the 8-direction Gauss–Seidel, and the
+  inactive=∞ tree Eikonal solve (still open — different operator, no
+  convergence proof in the sweep abstraction).
+
+These harnesses complement (and reuse the LCG/seeding of) the existing
+`MaskClassify`/`HalfCheck`/`VdbGen` gates; none of them are wired into
+CTest — run them directly. All four float checks rely on the C and Lean
+halves using the *same* LCG and value mapping; the C drivers are
+self-contained (built with `cc -O2` against `src/*.c`).
+
 ## Explicitly not yet done (next increments)
 
 1. **VdbGen — LANDED.** The generator is `VdbGen.lean` (`lean_exe vdbgen`,
@@ -342,8 +393,14 @@ real file.
      (same dilation generator); the tree Eikonal solve with inactive = ∞
      remains open (different operator, no convergence proof in the current
      sweep abstraction);
-   * the P2–P4 differential tests versus the C binaries (`OpsGen`-style
-     random testing).
+   * the tree-variant Godunov/sweep and the inactive=∞ tree Eikonal solve
+     remain open (different operator; no convergence proof); the P2–P4
+     harnesses listed in "Differential harness: Godunov, flood fill, Euler,
+     fast sweeping" above are **LANDED** (random seeded grids: Godunov
+     200,000/200,000, flood fill 400/400 byte-exact, Euler 400/400,
+     fast sweeping 102,400/102,400). Still open: a CSG/mesh-path
+     differential harness (the full dense pipeline), i.e. truly `OpsGen`-
+     style coverage of the whole SDF path.
 3. **Findings.** F1 (scalar encoder truncates/flushes) and F15 (`x >> 32`
    UB) are **confirmed and fixed in C** (see "Differential harness: half-float
    conversions"); F6 (half-grid zero-count chunks), F14 (raw framing for
@@ -354,7 +411,7 @@ real file.
 
 ## Final tally
 
-* Landed Lean modules: 63 (58 under `Vdb/` + `VdbGen`, `VdbCheck`,
+* Landed Lean modules: 69 (64 under `Vdb/` + `VdbGen`, `VdbCheck`,
   `VdbSpec`, `HalfCheck`, `MaskClassify`) — the library, the oracle
   generator and the differential tools, all with `warningAsError` on and
   **0 `sorry`/`admit`** in landed modules.
@@ -363,7 +420,9 @@ real file.
   `check_half.sh`: **65,536/65,536** `h2f` + **192,940/192,940** `f2h`
   witnesses byte-exact (fiber audit clean over all 2³² inputs);
   `check_vdbgen.sh`: **2,500/2,500**; `check_mc_face.py`: face-consistent
-  (exit 0).
+  (exit 0); `check_godunov.sh`: **200,000/200,000** (1e-12); `check_fill.sh`:
+  **400/400** byte-exact; `check_euler.sh`: **400/400** (`c == 2·χ`);
+  `check_fastsweep.sh`: **102,400/102,400** voxels (1e-5·h, exact sign).
 * Findings fixed in C: F1, F15, F2, F3, F4, F5, F7, F9, F11, F12, F13
   (all regression-tested). Modelled/decided: F6, F10, F14. Documented
   deviation: F8.

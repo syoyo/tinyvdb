@@ -40,6 +40,22 @@ lean_exe maskcheck where
 lean_exe halfcheck where
   root := `HalfCheck
 
+/-- Model-side Godunov differential harness (driven by `scripts/check_godunov.sh`). -/
+lean_exe godunovcheck where
+  root := `Vdb.GodunovCheck
+
+/-- Model-side signed-flood-fill differential harness (driven by `scripts/check_fill.sh`). -/
+lean_exe fillcheck where
+  root := `Vdb.FillCheck
+
+/-- Model-side Euler-characteristic differential harness (driven by `scripts/check_euler.sh`). -/
+lean_exe eulercheck where
+  root := `Vdb.EulerCheck
+
+/-- Model-side fast-sweeping differential harness (driven by `scripts/check_fastsweep.sh`). -/
+lean_exe fastsweepcheck where
+  root := `Vdb.FastSweepCheck
+
 /-- Seeded well-formed `.vdb` generator (differential harness, model half). -/
 lean_exe vdbgen where
   root := `VdbGen
