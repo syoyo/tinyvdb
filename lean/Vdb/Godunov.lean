@@ -439,6 +439,200 @@ theorem disc3_mono {a b c h h' : ℝ} (hhh : 0 ≤ h) (hh : h ≤ h') :
   unfold disc3
   nlinarith [hh, hhh, sq_nonneg h']
 
+/-- **Monotonicity in the discriminant is free in `a`** (the running variable
+    appears only squared-centered). -/
+theorem disc3_mono_a {a b c a' h : ℝ} (hab : a ≤ a') (hb : a' ≤ b) (hbc : b ≤ c) :
+    disc3 a b c h ≤ disc3 a' b c h := by
+  unfold disc3
+  nlinarith [hb, hbc, hab, sq_nonneg (b - a'), sq_nonneg (c - a')]
+
+/-- **The 2-D candidate is monotone in `a`.** -/
+theorem godunov2D_mono_a {a b a' h : ℝ} (hab : a ≤ a') (hb : a' ≤ b) (_hpos : 0 ≤ h) :
+    godunov2D a b h ≤ godunov2D a' b h := by
+  have hsq : 2 * h ^ 2 - (a - b) ^ 2 ≤ 2 * h ^ 2 - (a' - b) ^ 2 := by
+    nlinarith [sq_nonneg (b - a), sq_nonneg (b - a'), hb, hab]
+  have hsqrt := Real.sqrt_le_sqrt hsq
+  unfold godunov2D
+  linarith [hsqrt]
+
+/-- **The 3-D branch constraint**: when the 3-D branch is reachable
+    (`godunov2D a b h > c`), the 2-D candidate exceeded `c`, which forces
+    `h² ≥ (c - a)² + (c - b)²`. -/
+theorem threeD_reach {a b c h : ℝ} (h1 : ¬ a + h ≤ b)
+    (h2 : ¬ (a + b + Real.sqrt (2 * h ^ 2 - (a - b) ^ 2)) / 2 ≤ c)
+    (hab : a ≤ b) (hbc : b ≤ c) :
+    (c - a) ^ 2 + (c - b) ^ 2 ≤ h ^ 2 := by
+  have hx : 2 * c - a - b ≤ Real.sqrt (2 * h ^ 2 - (a - b) ^ 2) := by
+    have h2' : c < (a + b + Real.sqrt (2 * h ^ 2 - (a - b) ^ 2)) / 2 := not_le.mp h2
+    linarith
+  have hsq : (2 * c - a - b) ^ 2 ≤ 2 * h ^ 2 - (a - b) ^ 2 := by
+    by_cases hsign : 0 ≤ 2 * c - a - b
+    · have h1' : 0 ≤ 2 * c - a - b := by linarith
+      have hd : 0 ≤ 2 * h ^ 2 - (a - b) ^ 2 := disc2_nonneg (not_le.mp h1) hab
+      exact (Real.le_sqrt h1' hd).mp hx
+    · have h2n : 2 * c - a - b < 0 := not_le.mp hsign
+      nlinarith [sq_nonneg (2 * c - a - b), h2n, hab, hbc]
+  nlinarith [sq_nonneg (a - b), sq_nonneg (c - a), sq_nonneg (c - b), hsq, hab, hbc]
+
+/-- **The 3-D value is at most the 2-D candidate** when the 3-D branch is
+    reachable (equivalently: the Godunov answer is `≤ godunov2D a b h`). -/
+theorem godunov3D_le_2D {a b c h : ℝ} (h1 : ¬ a + h ≤ b)
+    (h2 : ¬ (a + b + Real.sqrt (2 * h ^ 2 - (a - b) ^ 2)) / 2 ≤ c)
+    (hab : a ≤ b) (hbc : b ≤ c) :
+    (a + b + c + Real.sqrt (disc3 a b c h)) / 3 ≤
+      (a + b + Real.sqrt (2 * h ^ 2 - (a - b) ^ 2)) / 2 := by
+  -- In the 3-D branch the answer exceeds c (proved inside `godunov_spec`).
+  have hx1 : b < a + h := not_le.mp h1
+  obtain ⟨hd3, hsqrt3⟩ := disc3_strong h1 h2 hab hbc
+  set r₂ := (a + b + Real.sqrt (2 * h ^ 2 - (a - b) ^ 2)) / 2 with hr2def
+  set r₃ := (a + b + c + Real.sqrt (disc3 a b c h)) / 3 with hr3def
+  have hh : (0:ℝ) ≤ h := by linarith [hx1]
+  have hr2_ge : b ≤ r₂ := godunov2D_ge_b h1 hab hh
+  have hr2a : a ≤ r₂ := le_trans hab hr2_ge
+  have hr3_ge : c < r₃ := by
+    rw [hr3def]
+    linarith [hsqrt3]
+  have hr3b : b ≤ r₃ := le_trans hbc (le_of_lt hr3_ge)
+  have hr3a : a ≤ r₃ := le_trans hab hr3b
+  -- f(r₂) = h²
+  have hr2_sq : (r₂ - a) ^ 2 + (r₂ - b) ^ 2 = h ^ 2 := godunov2D_spec h1 hab
+  -- f(r₃) = h² − (r₃ − c)²
+  have hr3_sq : (r₃ - a) ^ 2 + (r₃ - b) ^ 2 + (r₃ - c) ^ 2 = h ^ 2 := by
+    have hspec := godunov_spec hab hbc hh
+    have hr3eq : godunov a b c h = r₃ := godunov_threeD h1 h2
+    rw [hr3eq, max_eq_left (show (0:ℝ) ≤ r₃ - a by linarith [hr3a]),
+        max_eq_left (show (0:ℝ) ≤ r₃ - b by linarith [hr3b]),
+        max_eq_left (show (0:ℝ) ≤ r₃ - c by linarith [hr3_ge])] at hspec
+    exact hspec
+  -- so f(r₃) ≤ h² = f(r₂)
+  have hfle : (r₃ - a) ^ 2 + (r₃ - b) ^ 2 ≤ (r₂ - a) ^ 2 + (r₂ - b) ^ 2 := by
+    have h3 : (r₃ - a) ^ 2 + (r₃ - b) ^ 2 ≤ h ^ 2 := by
+      nlinarith [sq_nonneg (r₃ - c), hr3_sq]
+    rwa [hr2_sq]
+  -- but increasing on [b, ∞), so r₂ < r₃ would force f(r₂) < f(r₃)
+  by_contra hlt
+  have hr2lt : r₂ < r₃ := not_le.mp hlt
+  have hdiff : (r₃ - a) ^ 2 + (r₃ - b) ^ 2 >
+      (r₂ - a) ^ 2 + (r₂ - b) ^ 2 := by
+    have hsub1 : (r₃ - a) ^ 2 - (r₂ - a) ^ 2 =
+        (r₃ - r₂) * (r₃ + r₂ - 2 * a) := by ring
+    have hsub2 : (r₃ - b) ^ 2 - (r₂ - b) ^ 2 =
+        (r₃ - r₂) * (r₃ + r₂ - 2 * b) := by ring
+    nlinarith [hr2a, hr2_ge, hr2lt, hr3a, hr3b, hab]
+  linarith [hfle, hdiff]
+
+/-- **Monotonicity in `c`**: raising the largest upwind value cannot lower the
+    Godunov solution; in the 2-D branch both sides coincide, in the 1-D
+    branch the answer is independent of `c`, and in the 3-D branch the value
+    is below the 2-D candidate (`godunov3D_le_2D`), which is constant in `c`. -/
+theorem godunov_mono_c {a b c c' h : ℝ} (hab : a ≤ b) (hbc : b ≤ c) (hcc' : c ≤ c')
+    (_ : 0 ≤ h) :
+    godunov a b c h ≤ godunov a b c' h := by
+  have hbc' : b ≤ c' := le_trans hbc hcc'
+  by_cases h1 : a + h ≤ b
+  · -- 1-D branch: answer independent of c
+    rw [godunov_oneD h1, godunov_oneD h1]
+  · by_cases h2 : godunov2D a b h ≤ c
+    · -- 2-D branch for c; c' still in 2-D branch
+      have h2' : godunov2D a b h ≤ c' := le_trans h2 hcc'
+      rw [godunov_twoD h1 h2, godunov_twoD h1 h2']
+    · -- 3-D branch for c (h2 : ¬ godunov2D a b h ≤ c)
+      rw [godunov_threeD h1 h2]
+      by_cases h2c' : godunov2D a b h ≤ c'
+      · -- c' in the 2-D branch
+        rw [godunov_twoD h1 h2c']
+        exact godunov3D_le_2D h1 h2 hab hbc
+      · -- c' still in the 3-D branch
+        rw [godunov_threeD h1 h2c']
+        obtain ⟨hd3a, hsqrt3⟩ := disc3_strong h1 h2 hab hbc
+        obtain ⟨hd3b, hsqrt3b⟩ := disc3_strong h1 h2c' hab hbc'
+        have hd3eq : disc3 a b c h = disc3 a b c' h + 2 * (c' - c) * (c + c' - a - b) := by
+          unfold disc3; ring
+        have key : (c' - c + Real.sqrt (disc3 a b c' h)) ^ 2 ≥ disc3 a b c h := by
+          have hsq : Real.sqrt (disc3 a b c' h) ^ 2 = disc3 a b c' h := Real.sq_sqrt hd3b
+          have hgt : Real.sqrt (disc3 a b c' h) > 2 * c' - a - b := by
+            have hh3 : Real.sqrt (disc3 a b c' h) > (b - a) + 2 * (c' - b) := hsqrt3b
+            linarith
+          nlinarith [hsq, hd3eq, hgt, hcc', hab, hbc, hbc',
+            sq_nonneg (c' - c), Real.sqrt_nonneg (disc3 a b c' h)]
+        have hnn : 0 ≤ c' - c + Real.sqrt (disc3 a b c' h) := by
+          have h0 := Real.sqrt_nonneg (disc3 a b c' h); linarith [hcc']
+        have hs : Real.sqrt (disc3 a b c h) ≤ c' - c + Real.sqrt (disc3 a b c' h) := by
+          calc Real.sqrt (disc3 a b c h)
+              ≤ Real.sqrt ((c' - c + Real.sqrt (disc3 a b c' h)) ^ 2) := Real.sqrt_le_sqrt key
+            _ = |c' - c + Real.sqrt (disc3 a b c' h)| := Real.sqrt_sq_eq_abs _
+            _ = c' - c + Real.sqrt (disc3 a b c' h) := abs_of_nonneg hnn
+        linarith [hs]
+
+/-- **Monotonicity in `a`**: raising the smallest upwind value cannot lower
+    the Godunov solution. Case analysis on which branch each side lands in;
+    the 1-D/2-D sub-cases use `godunov2D_mono_a` and the 3-D sub-cases use
+    `disc3_mono_a`. -/
+theorem godunov_mono_a {a b c a' h : ℝ} (hab : a ≤ b) (hbc : b ≤ c)
+    (haa' : a ≤ a') (ha'b : a' ≤ b) (hh : 0 ≤ h) :
+    godunov a b c h ≤ godunov a' b c h := by
+  by_cases h1 : a + h ≤ b
+  · -- 1-D branch for the smaller `a`
+    rw [godunov_oneD h1]
+    by_cases h1' : a' + h ≤ b
+    · rw [godunov_oneD h1']; linarith
+    · -- `a'` is not 1-D; its value is ≥ b ≥ a + h
+      have h2b := godunov2D_ge_b h1' ha'b hh
+      by_cases h2' : godunov2D a' b h ≤ c
+      · rw [godunov_twoD h1' h2']; linarith [h2b]
+      · rw [godunov_threeD h1' h2']
+        have hreach := threeD_reach h1' h2' ha'b hbc
+        have hb' : b ≤ (a' + b + c + Real.sqrt (disc3 a' b c h)) / 3 := by
+          have hsq : (2 * b - a' - c) ^ 2 ≤ disc3 a' b c h := by
+            unfold disc3
+            have hsub1 : (a' - b) ^ 2 = (b - a') ^ 2 := by ring
+            have hsub2 : (a' - c) ^ 2 = (c - a') ^ 2 := by ring
+            have hsub3 : (b - c) ^ 2 = (c - b) ^ 2 := by ring
+            nlinarith [hreach, ha'b, hbc, hsub1, hsub2, hsub3]
+          by_cases huv : 0 ≤ 2 * b - a' - c
+          · have hd : 0 ≤ disc3 a' b c h := by
+              unfold disc3
+              nlinarith [hreach, ha'b, hbc, sq_nonneg (a' - b), sq_nonneg (c - a'), sq_nonneg (c - b)]
+            have hsqrt := (Real.le_sqrt huv hd).mpr hsq
+            linarith
+          · have hsqrt : 0 ≤ Real.sqrt (disc3 a' b c h) := Real.sqrt_nonneg _
+            linarith
+        linarith [hb']
+  · by_cases h2 : godunov2D a b h ≤ c
+    · -- smaller `a` is 2-D
+      rw [godunov_twoD h1 h2]
+      have h1a' : ¬ a' + h ≤ b := by
+        have : a + h > b := not_le.mp h1
+        linarith [haa']
+      by_cases h2' : godunov2D a' b h ≤ c
+      · rw [godunov_twoD h1a' h2']; exact godunov2D_mono_a haa' ha'b hh
+      · -- the 3-D answer for `a'` exceeds `c ≥ godunov2D a b h`
+        have h3dge : c < (a' + b + c + Real.sqrt (disc3 a' b c h)) / 3 := by
+          obtain ⟨hd3', hsqrt3'⟩ := disc3_strong h1a' h2' ha'b hbc
+          linarith [hsqrt3']
+        calc godunov2D a b h ≤ c := h2
+          _ ≤ (a' + b + c + Real.sqrt (disc3 a' b c h)) / 3 := le_of_lt h3dge
+          _ = godunov a' b c h := (godunov_threeD h1a' h2').symm
+    · -- smaller `a` is 3-D
+      rw [godunov_threeD h1 h2]
+      have h1a' : ¬ a' + h ≤ b := by
+        have : a + h > b := not_le.mp h1
+        linarith [haa']
+      by_cases h2' : godunov2D a' b h ≤ c
+      · -- larger `a` pushes past the 2-D branch: `c` would satisfy both, so the
+        have h2a' : godunov2D a b h ≤ godunov2D a' b h := godunov2D_mono_a haa' ha'b hh
+        rw [godunov_twoD h1a' h2']
+        calc (a + b + c + Real.sqrt (disc3 a b c h)) / 3
+            ≤ (a + b + Real.sqrt (2 * h ^ 2 - (a - b) ^ 2)) / 2 :=
+              godunov3D_le_2D h1 h2 hab hbc
+          _ = godunov2D a b h := rfl
+          _ ≤ godunov2D a' b h := h2a' 
+      · rw [godunov_threeD h1a' h2']
+        have hd3 := disc3_mono_a (h := h) haa' ha'b hbc
+        have hsqrt := Real.sqrt_le_sqrt hd3
+        linarith [hsqrt]
+
+
 /-- **Monotonicity in the grid size**: for fixed sorted upwind values
     `a ≤ b ≤ c`, the solver output is non-decreasing in `h`. -/
 theorem godunov_mono_h {a b c h h' : ℝ} (hab : a ≤ b) (hbc : b ≤ c)

@@ -281,6 +281,39 @@ theorem sdfSphere_activeSet_annulus (r band : ℝ) (_hb : band < r) :
 
 
 
+/-- **The narrow-band clamp** `clip φ = max (min φ bg) (-bg)` (the passes that
+    pin off-band values to ±`bg`: `lvl_clampf` in `tinyvdb_levelset.c`,
+    `tvdb_clamp_ghost` in `tinyvdb_sparse_tools.c`) is 1-Lipschitz and
+    preserves the field exactly on the band. Follows from
+    `abs_max_sub_max_le_abs` and `abs_min_sub_min_le_max`. -/
+theorem clamp_isSDF (f : Point → ℝ) (hf : IsSDF f) (bg : ℝ) :
+    IsSDF (fun p => max (min (f p) bg) (-bg)) := by
+  intro p q
+  rw [dist_eq_norm]
+  have h1 : |min (f p) bg - min (f q) bg| ≤ |f p - f q| := by
+    have h := abs_min_sub_min_le_max (f p) bg (f q) bg
+    rwa [sub_self, abs_zero, max_eq_left (abs_nonneg (f p - f q))] at h
+  have h2 : |max (min (f p) bg) (-bg) - max (min (f q) bg) (-bg)|
+            ≤ |min (f p) bg - min (f q) bg| :=
+    abs_max_sub_max_le_abs (min (f p) bg) (min (f q) bg) (-bg)
+  calc |max (min (f p) bg) (-bg) - max (min (f q) bg) (-bg)|
+      ≤ |min (f p) bg - min (f q) bg| := h2
+    _ ≤ |f p - f q| := h1
+    _ ≤ dist p q := hf p q
+
+/-- The clamp is the identity where the field is within the band (it only
+    touches off-band values). -/
+theorem clamp_eq_self (f : Point → ℝ) (bg : ℝ) (p : Point) (h : |f p| ≤ bg) :
+    max (min (f p) bg) (-bg) = f p := by
+  have hb := abs_le.mp h
+  rw [min_eq_left hb.2, max_eq_left hb.1]
+
+/-- The clamped field is bounded by `±bg`. -/
+theorem clamp_abs_le (f : Point → ℝ) (bg : ℝ) (hbg : 0 ≤ bg) (p : Point) :
+    |max (min (f p) bg) (-bg)| ≤ bg := by
+  rw [abs_le]
+  exact ⟨le_max_right _ _, max_le (min_le_right _ _) (neg_le_self hbg)⟩
+
 /-! ### Exact distance: the plane -/
 
 /-- The point of the plane nearest to `p` (the orthogonal projection). -/
