@@ -53,6 +53,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vdb/GlobalSurface.lean` | global dual-surface assembly: `IxQuad` (a quad by vertex *indices*), `ixSurfaceEdges`, `IxWatertight` (every directed index edge appears with its reverse) and **`watertight_of_ix`** — a combinatorially watertight index mesh is watertight under *any* vertex placement (`IxQuad.mem_edges_of_mem_map_edges`/`mem_map_edges_of_mem_edges` handle the collisions). `boxFaces` is the six outward faces of the unit box, `boxFaces_ixWatertight` verifies it exhaustively over the 64 corner pairs, and `watertight_box` places it anywhere. The DMC assembly therefore reduces to establishing the primal edge/face pairing. |
 | `Vdb/Assembly.lean` | **global DMC assembly from primal incidence**: `LabeledEdge` (a primal face plus traversal direction), `dirEdge`/`asmSurface` (concrete directed dual edges), `EdgeClosed` (each edge appears with its reverse), `Balanced` (each primal face is used equally often in both directions — the DMC assembly criterion), **`watertight_of_balanced`** (balanced incidence implies the assembled edge list is closed), `StencilComplex` (crossed edges with their four labeled faces) and `StencilComplex.watertight`, the bridge `watertight_concrete_of_edges` (an index-quad complex with the assembled edges is watertight under any placement), and the concrete `beltQuads` four-quad belt (`beltQuads_balanced`, `beltQuads_edgeClosed`). **Closed surface is a cycle**: `flip` (reverse a directed edge), `sumEdges` (net displacement sum over a directed-edge list), **`sumEdges_map_flip`** (flipping every edge negates the net displacement), `ClosedSurface` (`es = es.map flip`, i.e. the list is reversal-invariant) and **`sumEdges_eq_zero_of_closed`** (such a list has zero net displacement sum — the cycle lemma: the signed sum over a closed oriented surface is zero). |
 | `Vdb/Winding.lean` | orientation/parity foundation over `ℚ`: `edgesOf` (cyclic edges), exact `signedArea2` (shoelace), `orientation` (+1 CCW, -1 CW, 0 degenerate), and the unit square instances; plus the **ray-crossing parity** `rayCrosses` (cross-multiplied, exact), `crossingCount`, and `insideByParity`. The unit square has `crossingCount = 1` at the center and `0` outside (explicit per-edge reductions), so `insideByParity` is `true` inside and `false` outside. The full winding number of a closed oriented surface is still future work. |
+| `Vdb/WindingNumber.lean` | the generalized winding number (`src/tinyvdb_winding.c`), modelled over ℝ with a total `atan2'` (C `atan2` branch semantics: `x > 0`, `x = 0` with `y` sign, `x < 0` with `y ≥ 0` / `y < 0`): **`atan2'_neg_y`** (odd in the first argument for `y ≠ 0`). The scalar triple product is **a determinant** (`triple a b c := Matrix.det (cols a b c)`), so **`triple_swap`** (orientation flip negates) comes from column permutation (`Matrix.det_permute'`, sign of the transposition `-1`) and **`triple_apply`** (`Qᵀ-Q = 1`, `Q.det = 1` preserves; `Q.det = −1` negates) from `Matrix.det_mul`. **`dot_apply`** (orthogonal `Q` preserves dot products, via the nine column identities `QᵀQ = 1` and a `linear_combination`). At the solid-angle level: **`solidAngle_flip`** (orientation flip negates the triangle's solid angle, under `num ≠ 0` — the C code's branch cut), **`solidAngle_translate`** (relative vectors only), **`solidAngle_rotate`** (proper rotations, unconditional) and **`solidAngle_reflect`** (reflections negate, `num ≠ 0`). **Mesh level**: **`meshWinding`** (the `(Σ 2·atan2(num, den))/(4π)` the C code accumulates) with **`meshWinding_append`** (additivity), **`meshWinding_translate`** (unconditional), **`meshWinding_rotate`** (proper rotations preserve it), **`meshWinding_reverse`** / **`meshWinding_reflect`** (flips/reflections negate it, under `∀ f ∈ fs, num f ≠ 0`). `cols_applyMat` / `dot_applyMat` / `sub_applyMat` / `sub_add_cancel_left` are the rewriting lemmas. Barnes–Hut's dipole far-field is *not* modelled (it is the first-order Taylor term; an explicit error bound is future work). |
 | `Vdb/BoxInside.lean` | a 3D inside predicate and signed distance field: `boxInside` (six open half-spaces), `boxBoundary`, and the signed Chebyshev field `sdfBox` with `signedBoxField_eq_zero_iff` (zero exactly on the boundary), `signedBoxField_neg_iff` (negative exactly inside), `signedBoxField_pos_iff` (positive exactly outside) and `signedBoxField_trichotomy`. The **ray-crossing parity** `boxRayParity` (the `+x` ray's boundary crossings, `xParity_iff` for the slab part) satisfies `boxRayParity_iff`: for a point off the boundary it is true exactly inside the box. |
 | `Vdb/MeshRay.lean` | ray-crossing parity for the concrete closed DMC surface: the bump field's dual vertices are exactly the cube corners `{1/6, 11/6}³` (`bumpCorner_cube`), its six quads are the six faces, and each quad is triangulated (`triOf`, `meshTris`, 12 triangles). `rayTri` is Möller–Trumbore for the `+x` ray over `ℚ`, and `parity` counts the triangle crossings mod 2. Concrete evaluations: `parity_inside` (odd at an inside point), `parity_outside_left`/`_right` (even, two/no crossings) and `parity_outside_y`/`_z` (ray misses). The same cube's signed Chebyshev field `bumpFieldQ` has `bumpFieldQ_neg_iff` (negative exactly inside), `bumpFieldQ_zero_iff` (zero exactly on the boundary) and `bumpFieldQ_pos_iff` (positive exactly outside), with `bumpFieldQ_inside_point`. The concrete parities are `native_decide` checks. **Face level**: `xFaceParity_iff` (the `+x` interval parity is exactly "inside the slab"), `boxFaceParity` and **`boxFaceParity_iff`** — for any point off the boundary, the face-level ray parity is true exactly inside the cube — so the closed cube surface's inside predicate is the ray parity at *all* points off the boundary, not just samples. `isCubeCorner`/`meshTris_vertices_cube` confirm every triangle vertex is a cube corner, and `parity_inside_face` checks the triangle parity agrees with the face parity at the inside sample (the two differ on face diagonals, where the closed triangle tests double-count the crossing). |
 | `Vdb/CubeField.lean` | end-to-end DMC on the concrete grid: `fieldVal p = p.x - 1/2`, `cornerOf`, `cubeVal`/`cubeCrossings`, `cubeDualQ = Vdb.dualVertex`, `cubeAnchor`, and `cubeDual` in `Point`. `cubeVal_mixed`, `stencilQuads_length`, and **`cubeDual_watertight`**. **Arbitrary fields**: `fieldCrossings`/`fieldDualQ`/`fieldDual`, `stencilQuadsOf`, `edgeQuad_edges_agree`/`stencilQuadsOf_edges`; the quad cycle is oriented by the edge's sign direction so mixed-axis patterns balance. The non-planar bump field has `bump_not_affine`, `bumpStencil_balanced`, and **`bumpDual_watertight`**. |
@@ -307,8 +308,13 @@ real file.
      manifold theorem (the 2×2×2 `Fin 2` torus double-covers and cannot host
      it), T-DMC1-DUAL (explicitly not landable on the Fin 2 torus — MC 16
      triangles vs DMC 6 quads; needs a padded-grid model);
-   * generalized winding number (orientation flip, additivity, invariance)
-     and the Barnes–Hut dipole first-order term + error bound;
+   * generalized winding number theory — **LANDED** in this goal
+     (`Vdb/WindingNumber.lean`): orientation flip negates (`solidAngle_flip`,
+     `meshWinding_reverse`), additivity (`meshWinding_append`), translation
+     invariance (`meshWinding_translate`, unconditional), rotation invariance
+     (`meshWinding_rotate`, proper rotations) and reflection negation
+     (`solidAngle_reflect`, `meshWinding_reflect`). Barnes–Hut's dipole
+     far-field first-order term + error bound is still open;
    * the narrow-band composition theorem (`denote = clamp(signedDist, …)`),
      the tree-variant band completeness, sphere-band shell evaluation;
    * the P2–P4 differential tests versus the C binaries (`OpsGen`-style
@@ -317,12 +323,13 @@ real file.
    UB) are **confirmed and fixed in C** (see "Differential harness: half-float
    conversions"); F6 (half-grid zero-count chunks), F14 (raw framing for
    `compression = 0/2`) and F10 (MC table face-consistent) are **confirmed
-   and modelled/decided** in Lean. F2–F5, F7–F9, F11–F13 remain hypotheses
-   (not yet checked against a Lean model — see the findings table below).
+   and modelled/decided** in Lean. F2–F5, F7, F9, F11–F13 are **confirmed and
+   fixed in C** (see the findings table below); F8 is a documented intentional
+   deviation (instance grids are metadata/transform-only, pinned by test).
 
 ## Final tally
 
-* Landed Lean modules: 56 (51 under `Vdb/` + `VdbGen`, `VdbCheck`,
+* Landed Lean modules: 57 (52 under `Vdb/` + `VdbGen`, `VdbCheck`,
   `VdbSpec`, `HalfCheck`, `MaskClassify`) — the library, the oracle
   generator and the differential tools, all with `warningAsError` on and
   **0 `sorry`/`admit`** in landed modules.
@@ -332,16 +339,17 @@ real file.
   witnesses byte-exact (fiber audit clean over all 2³² inputs);
   `check_vdbgen.sh`: **2,500/2,500**; `check_mc_face.py`: face-consistent
   (exit 0).
-* Findings fixed in C: F1, F15 (both regression-tested). Modelled/decided:
-  F6, F10, F14. Open hypotheses: F2–F5, F7–F9, F11–F13.
+* Findings fixed in C: F1, F15, F2, F3, F4, F5, F7, F9, F11, F12, F13
+  (all regression-tested). Modelled/decided: F6, F10, F14. Documented
+  deviation: F8.
 * Not pushed anywhere; everything is local commits on `main`.
 
 ## Findings awaiting model confirmation
 
 These are hypotheses from the C survey (details in `../plan-lean.md` §0.2).
-Each is confirmed or refuted by the corresponding Lean model, then fixed in C
-(or documented). F1 and F15 are confirmed and fixed in C; F6 and F14 are confirmed and
-modelled in the Lean layer. The rest are still open.
+Each is confirmed or refuted, then fixed in C (or documented). F1, F15, F2–F5,
+F7, F9, F11–F13 are confirmed and fixed in C; F6, F10, F14 are modelled/decided in
+the Lean layer; F8 is a documented intentional deviation (pinned by test).
 
 | ID | Hypothesis |
 | --- | --- |
