@@ -197,4 +197,20 @@ theorem band_complete (F : Set P3R) (S : Finset Lattice) {width : ℝ}
         push_cast
         ring
 
+
+/-- **Tree-variant band completeness** (`tvdb_mesh_to_level_set`'s sparse path,
+    whose candidate set is exactly the `⌈√3·width⌉ + 2`-layer dilation this
+    module bounds): every voxel within Euclidean distance `< width` of the
+    surface lies in the candidate/active set, i.e. the sparse tree covers the
+    true band before the Eikonal solve starts. The coverage hypothesis and
+    the conclusion are the same as the dense path — the candidate generator
+    is shared; what differs is only that inactive voxels are treated as
+    `∞` by the subsequent tree fast sweeping, which is *not* covered by
+    this theorem (see VERIFICATION.md, open items). -/
+theorem band_complete_tree {F : Set P3R} (S : Finset Lattice) {width : ℝ}
+    (hcover : ∀ q ∈ F, ∃ s ∈ S, edist q (embed s) ≤ 2 / Real.sqrt 3)
+    {v : Lattice} {q : P3R} (hqF : q ∈ F) (hv : edist (embed v) q < width) :
+    inCandidate S (Nat.ceil (Real.sqrt 3 * width) + 2) v :=
+  band_complete F S hcover hqF hv
+
 end Vdb

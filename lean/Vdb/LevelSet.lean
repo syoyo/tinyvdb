@@ -254,6 +254,31 @@ theorem sdfSphere_activeSet_subset (r band : ℝ) :
   intro p hp
   rw [sdfSphere_activeSet_eq] at hp
   exact hp.2
+/-- For `r < band` the sphere band is the open ball of radius `r + band`
+    (the inner hole vanished: `|‖p‖ − r| < band` already follows from
+    `‖p‖ < r + band`). -/
+theorem sdfSphere_activeSet_eq_ball (r band : ℝ) (hb : r < band) :
+    activeSet (sdfSphere r) band = {p : Point | ‖p‖ < r + band} := by
+  ext p
+  simp only [mem_activeSet, sdfSphere, Set.mem_ofPred_eq, abs_lt]
+  constructor
+  · rintro ⟨-, h2⟩
+    linarith
+  · rintro h'
+    have h1 : r - band < ‖p‖ := by linarith [h', hb, norm_nonneg p]
+    exact ⟨by linarith, by linarith⟩
+
+/-- For `band < r` the sphere band is the annulus `r - band < ‖p‖ < r + band`:
+    the inner open ball of radius `r - band` is *not* active (in particular
+    `‖p‖ ≤ r - band` points are excluded, band-limited sweeps leave the solid
+    core alone). -/
+theorem sdfSphere_activeSet_annulus (r band : ℝ) (_hb : band < r) :
+    ∀ p : Point, ‖p‖ ≤ r - band → p ∉ activeSet (sdfSphere r) band := by
+  intro p hp hmem
+  simp only [mem_activeSet, sdfSphere, abs_lt] at hmem
+  have hnn : 0 ≤ ‖p‖ := norm_nonneg p
+  linarith [hmem.1, hp, hnn]
+
 
 
 /-! ### Exact distance: the plane -/
