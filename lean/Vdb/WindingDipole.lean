@@ -29,6 +29,8 @@
 -/
 import Vdb.WindingNumber
 import Mathlib.Tactic
+import Mathlib.Analysis.SpecialFunctions.Integrals.Basic
+import Mathlib.Analysis.SpecialFunctions.Trigonometric.ArctanDeriv
 
 namespace Vdb
 namespace V3
@@ -270,6 +272,169 @@ theorem cluster_triNum_residual_bound (fs : List (V3 × V3 × V3)) (p : V3)
         _ ≤ εs f ^ 3 + (fs.map fun f => εs f ^ 3).sum := add_le_add (hres2 ▸ hres) ih'
         _ = List.sum ((f :: fs).map fun f => εs f ^ 3) := by
             simp [List.map_cons, List.sum_cons]
+
+/-! ## The arc-tangent tail bound -/
+
+/-- Remainder estimate for `atan`: `|atan x − x| ≤ |x|³ / 3`. The cubic
+    Taylor tail the C solid-angle computation relies on (its
+    `atan2(num, den)` for small ratios). -/
+theorem abs_atan_sub_id_le_aux {x : ℝ} (hx : 0 ≤ x) :
+    |Real.arctan x - x| ≤ x ^ 3 / 3 := by
+  have h1 : Continuous fun u : ℝ => 1 + u ^ 2 := by fun_prop
+  have h1' : ∀ u : ℝ, 1 + u ^ 2 ≠ 0 := fun u => by nlinarith [sq_nonneg u]
+  have hcont : Continuous fun t : ℝ => ((1:ℝ) + t ^ 2)⁻¹ := Continuous.inv₀ h1 h1'
+  have key : Real.arctan x - x = - ∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2) := by
+    have h0 : (∫ t in (0:ℝ)..x, ((1:ℝ) + t ^ 2)⁻¹) = Real.arctan x := by
+      rw [integral_inv_one_add_sq]
+      simp [Real.arctan_zero]
+    have h1x : (∫ t in (0:ℝ)..x, (1:ℝ)) = x := by
+      simp
+    have hsub : ∫ t in (0:ℝ)..x, (((1:ℝ) + t ^ 2)⁻¹ - 1)
+        = (∫ t in (0:ℝ)..x, ((1:ℝ) + t ^ 2)⁻¹) - ∫ t in (0:ℝ)..x, 1 :=
+      intervalIntegral.integral_sub (Continuous.intervalIntegrable hcont 0 x)
+        intervalIntegrable_const
+    have hpt : (fun t : ℝ => ((1:ℝ) + t ^ 2)⁻¹ - 1)
+        = (fun t : ℝ => -(t ^ 2 / (1 + t ^ 2))) := by
+      funext t
+      have h : (1:ℝ) + t ^ 2 ≠ 0 := h1' t
+      rw [inv_eq_one_div]
+      field_simp
+      ring
+    calc Real.arctan x - x
+        = (∫ t in (0:ℝ)..x, ((1:ℝ) + t ^ 2)⁻¹) - ∫ t in (0:ℝ)..x, 1 := by
+            rw [h0, h1x]
+      _ = ∫ t in (0:ℝ)..x, (((1:ℝ) + t ^ 2)⁻¹ - 1) := by
+            rw [hsub]
+      _ = ∫ t in (0:ℝ)..x, -(t ^ 2 / (1 + t ^ 2)) := by
+            rw [hpt]
+      _ = - ∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2) := by
+            rw [← intervalIntegral.integral_neg]
+  rw [key]
+  have hpos : 0 ≤ ∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2) := by
+    apply intervalIntegral.integral_nonneg hx
+    intro t _
+    have ht : (0:ℝ) < 1 + t ^ 2 := by nlinarith [sq_nonneg t]
+    exact div_nonneg (sq_nonneg t) (le_of_lt ht)
+  rw [abs_neg, abs_of_nonneg hpos]
+  calc ∫ t in (0:ℝ)..x, t ^ 2 / (1 + t ^ 2)
+      ≤ ∫ t in (0:ℝ)..x, t ^ 2 := by
+        apply intervalIntegral.integral_mono_on hx
+          (Continuous.intervalIntegrable (Continuous.div₀ (continuous_pow 2) h1 h1') 0 x)
+          (Continuous.intervalIntegrable (continuous_pow 2) 0 x)
+        intro t _
+        have h3 : 0 ≤ t ^ 2 := sq_nonneg t
+        have h4 : (1:ℝ) ≤ 1 + t ^ 2 := by nlinarith
+        have h5 : t ^ 2 / (1 + t ^ 2) ≤ t ^ 2 / 1 :=
+          div_le_div_of_nonneg_left h3 zero_lt_one h4
+        simpa using h5
+    _ = x ^ 3 / 3 := by
+        rw [integral_pow]
+        norm_num
+
+/-- `|atan x − x| ≤ |x|³ / 3` for all `x` (both signs by oddness). -/
+theorem abs_atan_sub_id_le (x : ℝ) : |Real.arctan x - x| ≤ |x| ^ 3 / 3 := by
+  rcases le_or_gt x 0 with hx | hx
+  · have h1 : Real.arctan x - x = -(Real.arctan (-x) - -x) := by
+      rw [Real.arctan_neg]
+      ring
+    rw [h1, abs_neg]
+    have h2 := abs_atan_sub_id_le_aux (neg_nonneg.mpr hx)
+    have h3 : |x| ^ 3 = (-x) ^ 3 := by
+      rw [abs_of_nonpos hx]
+    rw [h3]
+    exact h2
+  · have h2 := abs_atan_sub_id_le_aux hx.le
+    rw [abs_of_pos hx]
+    exact h2
+
+/-! ## The net dipole of a closed oriented mesh is zero -/
+
+/-- A directed edge-list of a mesh's triangles. -/
+def edgeList (fs : List (V3 × V3 × V3)) : List (V3 × V3) :=
+  fs.flatMap fun f => [(f.1, f.2.1), (f.2.1, f.2.2), (f.2.2, f.1)]
+
+/-- Re-association of `V3.add`. -/
+theorem add_assoc' (a b c : V3) : add (add a b) c = add a (add b c) := by
+  apply V3.ext <;> simp [add] <;> ring
+
+/-- `sumV3` over a list of `V3` (right-recursive, like `sumEdges` in Assembly). -/
+def sumV3 : List V3 → V3
+  | [] => ⟨0, 0, 0⟩
+  | a :: l => add a (sumV3 l)
+
+theorem sumV3_nil : sumV3 [] = ⟨0, 0, 0⟩ := rfl
+
+theorem sumV3_cons (a : V3) (l : List V3) : sumV3 (a :: l) = add a (sumV3 l) := rfl
+
+theorem sumV3_append (l₁ l₂ : List V3) : sumV3 (l₁ ++ l₂) = add (sumV3 l₁) (sumV3 l₂) := by
+  induction l₁ with
+  | nil => apply V3.ext <;> simp [sumV3_nil, add]
+  | cons a l₁ ih => simp [List.cons_append, sumV3_cons, ih, ← add_assoc']
+
+def crossEdgeSum (fs : List (V3 × V3 × V3)) : V3 :=
+  sumV3 ((edgeList fs).map fun e => cross e.1 e.2)
+
+/-- The sum of the per-face `T`s equals the cross-sum over the directed edge
+    list. -/
+theorem Tsum_eq_crossEdgeSum (fs : List (V3 × V3 × V3)) :
+    sumV3 (fs.map (fun f => T f.1 f.2.1 f.2.2)) = crossEdgeSum fs := by
+  induction fs with
+  | nil => rfl
+  | cons f fs ih =>
+      obtain ⟨A, B, C⟩ := f
+      have h_edge : edgeList (⟨A, B, C⟩ :: fs) = (A, B) :: (B, C) :: (C, A) :: edgeList fs := by
+        simp [edgeList, List.flatMap]
+      have hce : crossEdgeSum (⟨A, B, C⟩ :: fs)
+          = add (cross A B) (add (cross B C) (add (cross C A) (crossEdgeSum fs))) := by
+        have hce2 := congrArg (fun l => sumV3 (l.map fun e => cross e.1 e.2)) h_edge
+        simpa [crossEdgeSum, sumV3, List.map_cons] using hce2
+      rw [List.map_cons, sumV3_cons, hce, ih]
+      simp only [T]
+      rw [add_assoc', add_assoc']
+
+/-- `cross` swap negates. -/
+theorem cross_swap (a b : V3) : cross a b = sub ⟨0, 0, 0⟩ (cross b a) := by
+  apply V3.ext <;> simp [cross, sub] <;> ring
+
+/-- Flipping every edge in the list negates the cross-sum (as a zero-sum
+    decomposition of `sumV3`). -/
+theorem sumV3_map_cross_flip (es : List (V3 × V3)) :
+    sumV3 (es.map (fun e => cross e.2 e.1)) = sub ⟨0, 0, 0⟩ (sumV3 (es.map (fun e => cross e.1 e.2))) := by
+  induction es with
+  | nil => simp [sumV3_nil, sub]
+  | cons e es ih =>
+      obtain ⟨a, b⟩ := e
+      simp only [List.map_cons, sumV3_cons, ih]
+      rw [cross_swap b a]
+      apply V3.ext <;> simp [sub, add] <;> ring
+
+/-- **Net dipole of a closed oriented mesh is zero**: if the directed edge
+    list is fixed under `flip` (every directed edge appears with the same
+    multiplicity as its reverse), the sum of all area-weighted normals
+    vanishes. This is the consistency fact that makes the dipole-far-field
+    approximation vanish at infinity for closed surfaces. -/
+theorem closed_net_dipole_zero (fs : List (V3 × V3 × V3))
+    (h : edgeList fs = (edgeList fs).map fun e => (e.2, e.1)) :
+    sumV3 (fs.map (fun f => T f.1 f.2.1 f.2.2)) = ⟨0, 0, 0⟩ := by
+  have h2 : List.map (fun e => cross e.2 e.1) (edgeList fs)
+          = List.map (fun e => cross e.1 e.2) (edgeList fs) := by
+    conv_lhs => rw [h, List.map_map]
+    simp [Function.comp_def]
+  have h3 := sumV3_map_cross_flip (edgeList fs)
+  rw [h2] at h3
+  have h3' : sumV3 ((edgeList fs).map (fun e => cross e.1 e.2)) = ⟨0, 0, 0⟩ := by
+    apply V3.ext
+    · have hx0 := congrArg V3.x h3
+      simp only [sub] at hx0
+      linarith
+    · have hy0 := congrArg V3.y h3
+      simp only [sub] at hy0
+      linarith
+    · have hz0 := congrArg V3.z h3
+      simp only [sub] at hz0
+      linarith
+  have h4 : crossEdgeSum fs = ⟨0, 0, 0⟩ := h3'
+  rw [Tsum_eq_crossEdgeSum, h4]
 
 end V3
 end Vdb
