@@ -26,16 +26,29 @@
 
   * **`facePerimeter_even`** — T-DMC0-EVEN, general (grid-independent):
     every cell face's 4-cycle has an even number of sign changes;
-  * **`balanced_general`** — T-DMC0-CYCLE, general: for every in-cells
-    face, the assembled uses are balanced (equal true/false directions),
-    hence (via `Assembly.watertight_of_balanced`) the quad mesh is
-    watertight;
-  * **`padded_watertight`** — T-DMC0-CYCLE, concrete: the assembled quads
-    are watertight under any vertex placement of the cells.
+  * **`faceUses_count_eq_uses`**, **`uses_length_eq_localCount`**,
+    **`balanced_iff_local`** — the assembly bridge: the assembled stencil
+    is `Balanced` iff every face's two local candidate counts agree
+    (all directions, including out-of-range ones);
+  * **`local_balance_x/y/z`**, **`windowX/Y/ZTrue/False`** — the local
+    window balance (machine-checked equality for each orientation);
+  * **`mem_candidates`**, **`mem_uses_iff`**,
+    **`candidates_filter_nodup_x/y/z`**, **`labels_face_dir_lt_three`** —
+    the six-candidate decomposition machinery.
 
-  What is *not* claimed: T-DMC0-ORIENT as a global ℤ-cycle (false in
-  general — checkerboard faces double-cover edges), T-DMC0-χ in general
-  (bounded instances only, `Vdb/Cuberille.lean`), and any claim about the
+  What is *not* claimed: the general-`n` balance theorem
+  (`localCount n s f true = localCount n s f false` for all in-grid faces
+  under shell-pinned `s`) is **open** — the decomposition and local
+  windows are in place, and the reduction to the local count is landed
+  (`balanced_iff_local`), but the boundary/shell case analysis is not yet
+  mechanized. The bounded Fin-4 instance is machine-checked
+  (`Vdb/Cuberille.lean`). Machine-checked evidence: shell-pinned fields
+  balance everywhere sampled (n = 1 all 256 fields, n = 2 and n = 3 all
+  pinned fields including out-of-grid faces up to distance 1 beyond the
+  grid). Note: arbitrary (unpinned) sign fields do **not** balance even
+  on in-grid faces (machine evidence, n = 1) — shell pinning is required.
+  Also not claimed: T-DMC0-ORIENT as a global ℤ-cycle (false in general),
+  T-DMC0-χ in general (bounded instances only), and any claim about the
   unbounded plane or non-shell-pinned sign fields.
 
   Copyright (c) 2026 Syoyo Fujita and TinyVDB authors
@@ -1488,6 +1501,154 @@ theorem candidates_filter_nodup_z (n : Nat) (s : Vdb.PadGrid.Lat → Bool)
       · by_cases h6 : Vdb.PadGrid.contributes n s ((X, Y, Z), 2) dir ((X + 1, Y, Z + 1), 1) = true
         · unfold Vdb.PadGrid.candidates; simp only [List.filter_cons, h1, h2, h3, h4, h5, h6, Bool.false_eq_true, ite_true, ite_false]; simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, List.filter_nil, not_or, and_true, Prod.mk.injEq]; simp
         · unfold Vdb.PadGrid.candidates; simp only [List.filter_cons, h1, h2, h3, h4, h5, h6, Bool.false_eq_true, ite_true, ite_false]; simp only [List.nodup_cons, List.mem_cons, List.not_mem_nil, List.filter_nil, not_or, and_true, Prod.mk.injEq]; simp
+
+/-! ### The assembly bridge
+
+This section reduces the `Assembly.Balanced` predicate on the assembled stencil
+to the per-face `localCount` equality, for arbitrary face directions
+(including out-of-range directions, where both sides vanish). The remaining
+obligation for the general-`n` balance theorem is exactly the `localCount`
+equality; see the module docstring and `VERIFICATION.md` for the status.
+-/
+
+/-- The uses of a face list no duplicates. -/
+theorem uses_nodup (n : Nat) (s : Lat → Bool) (f : Face) (dir : Bool) :
+    (uses n s f dir).Nodup :=
+  List.Nodup.filter _ (nodup_crossed n s)
+
+/-- The two components of the `ij` map are at most `2`. -/
+theorem ij_le_two (d : Nat) (flip : Bool) :
+    (ij d flip).1 ≤ 2 ∧ (ij d flip).2 ≤ 2 := by
+  unfold ij
+  split_ifs <;> decide
+
+/-- Every label produced by `labels` carries a face normal direction `< 3`. -/
+theorem labels_face_dir_lt_three (p : Lat) (d : Nat) (flip : Bool) {f : Face} {dir : Bool}
+    (h : (⟨f, dir⟩ : LabeledEdge Face) ∈ labels p d flip) : f.2 < 3 := by
+  have h1 := ij_le_two d flip
+  unfold labels at h
+  match h' : anchorCell p d with
+  | none => rw [h'] at h; cases h
+  | some q =>
+    rw [h'] at h
+    dsimp only [] at h
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at h
+    rcases h with h | h | h | h
+    all_goals
+      rw [LabeledEdge.mk.injEq] at h
+      obtain ⟨hc, _⟩ := h
+      obtain ⟨f1, f2⟩ := f
+      simp only [Prod.mk.injEq] at hc
+      obtain ⟨_, hc2⟩ := hc
+      omega
+
+/-- The uses of a face out of the direction range are empty. -/
+theorem uses_eq_nil_of_nf_ge_three (n : Nat) (s : Lat → Bool) (c : Cell) (i : Nat) (hi : 3 ≤ i)
+    (dir : Bool) : uses n s (c, i) dir = [] := by
+  unfold uses
+  rw [List.filter_eq_nil_iff]
+  intro e he hmem
+  have hmem' := List.contains_iff_mem.mp hmem
+  exact Nat.not_lt_of_ge hi (labels_face_dir_lt_three e.1 e.2 (s e.1) hmem')
+
+/-- The candidate contribution list of a face out of the direction range is empty. -/
+theorem localCount_eq_zero_of_nf_ge_three (n : Nat) (s : Lat → Bool) (c : Cell) (i : Nat) (hi : 3 ≤ i)
+    (dir : Bool) : localCount n s (c, i) dir = 0 := by
+  unfold localCount
+  have heq : (candidates (c, i)).filter (fun e => contributes n s (c, i) dir e) = [] := by
+    rw [List.filter_eq_nil_iff]
+    intro e he hmem
+    unfold contributes at hmem
+    rw [Bool.and_eq_true] at hmem
+    obtain ⟨_, hcont⟩ := hmem
+    have hcont' := List.contains_iff_mem.mp hcont
+    exact Nat.not_lt_of_ge hi (labels_face_dir_lt_three e.1 e.2 (s e.1) hcont')
+  rw [heq, List.length_nil]
+
+/-- **The assembly bridge**: the uses of a face in one direction have the same
+    length as the local count over the six candidates. -/
+theorem uses_length_eq_localCount (n : Nat) (s : Lat → Bool) (f : Face) (dir : Bool) :
+    (uses n s f dir).length = localCount n s f dir := by
+  unfold localCount
+  apply length_eq_of_mem_iff_of_nodup
+  · intro e
+    rw [List.mem_filter]
+    exact mem_uses_iff n s f dir
+  · exact uses_nodup n s f dir
+  · obtain ⟨c, nf⟩ := f
+    cases nf with
+    | zero => exact candidates_filter_nodup_x n s c.1 c.2.1 c.2.2 dir
+    | succ d' =>
+      cases d' with
+      | zero => exact candidates_filter_nodup_y n s c.1 c.2.1 c.2.2 dir
+      | succ d'' =>
+        cases d'' with
+        | zero => exact candidates_filter_nodup_z n s c.1 c.2.1 c.2.2 dir
+        | succ d''' =>
+          have hi : 3 ≤ d''' + 3 := by omega
+          have heq : (candidates (c, d''' + 3)).filter
+              (fun e => contributes n s (c, d''' + 3) dir e) = [] := by
+            rw [List.filter_eq_nil_iff]
+            intro e he hmem
+            unfold contributes at hmem
+            rw [Bool.and_eq_true] at hmem
+            obtain ⟨_, hcont⟩ := hmem
+            have hcont' := List.contains_iff_mem.mp hcont
+            exact Nat.not_lt_of_ge hi (labels_face_dir_lt_three e.1 e.2 (s e.1) hcont')
+          rw [heq]
+          exact List.nodup_nil
+
+/-- The flat face-use list of the assembled stencil equals the flat map of the
+    crossed edges' labels, and its `⟨f, dir⟩` count equals the `uses` length. -/
+theorem faceUses_count_eq_uses (n : Nat) (s : Lat → Bool) (f : Face) (dir : Bool) :
+    (faceUses (cuberilleStencil n s).quads).count ⟨f, dir⟩ = (uses n s f dir).length := by
+  have h0 : faceUses (cuberilleStencil n s).quads =
+      (crossed n s).flatMap fun e => labels e.1 e.2 (s e.1) := by
+    simp [StencilComplex.quads, cuberilleStencil, faceUses, List.flatMap_map, Function.comp_def]
+  rw [h0]
+  have h1 : ∀ es : List PadEdge,
+      (es.flatMap fun e => labels e.1 e.2 (s e.1)).count ⟨f, dir⟩ =
+        (es.filter fun e => (labels e.1 e.2 (s e.1)).contains ⟨f, dir⟩).length := by
+    intro es
+    induction es with
+    | nil => rfl
+    | cons a es ih =>
+      rw [List.flatMap_cons, List.count_append, ih, List.filter_cons]
+      have hnd : (labels a.1 a.2 (s a.1)).Nodup := labels_nodup a.1 a.2 (s a.1)
+      have hle : (labels a.1 a.2 (s a.1)).count ⟨f, dir⟩ ≤ 1 :=
+        (List.nodup_iff_count_le_one.mp hnd) ⟨f, dir⟩
+      by_cases hc : (labels a.1 a.2 (s a.1)).contains ⟨f, dir⟩ = true
+      · have hmem : ⟨f, dir⟩ ∈ labels a.1 a.2 (s a.1) := List.contains_iff_mem.mp hc
+        have hpos : 0 < (labels a.1 a.2 (s a.1)).count ⟨f, dir⟩ := List.count_pos_iff.mpr hmem
+        have h1e : (labels a.1 a.2 (s a.1)).count ⟨f, dir⟩ = 1 := by omega
+        rw [h1e, ite_eq_left hc]
+        simp [List.length_cons, Nat.add_comm]
+      · have hnotmem : ⟨f, dir⟩ ∉ labels a.1 a.2 (s a.1) := by
+          intro h
+          exact hc (List.contains_iff_mem.mpr h)
+        have h0' : (labels a.1 a.2 (s a.1)).count ⟨f, dir⟩ = 0 := List.count_eq_zero_of_not_mem hnotmem
+        rw [h0', ite_eq_right hc]
+        simp [Nat.zero_add]
+  rw [h1 (crossed n s)]
+  rfl
+
+/-- **The balance reduction**: the assembled stencil is `Balanced` iff every
+    face's two local counts agree. This is the exact remaining obligation for
+    the general-`n` theorem. -/
+theorem balanced_iff_local (n : Nat) (s : Lat → Bool) :
+    (cuberilleStencil n s).Balanced ↔ ∀ f : Face, localCount n s f true = localCount n s f false := by
+  unfold StencilComplex.Balanced Balanced
+  constructor
+  · intro h f
+    have h1 := h f
+    rw [faceUses_count_eq_uses n s f true, faceUses_count_eq_uses n s f false,
+        uses_length_eq_localCount n s f true, uses_length_eq_localCount n s f false] at h1
+    exact h1
+  · intro h f
+    have h1 := h f
+    rw [faceUses_count_eq_uses n s f true, faceUses_count_eq_uses n s f false,
+        uses_length_eq_localCount n s f true, uses_length_eq_localCount n s f false]
+    exact h1
 
 end PadGrid
 
