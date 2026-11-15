@@ -52,4 +52,5 @@ import Vdb.EikonalTop
 import Vdb.Cuberille
 import Vdb.StaircaseRatio
 import Vdb.NormalCone
+import Vdb.McTable
 import Vdb.TreeSweep
