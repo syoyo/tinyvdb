@@ -293,6 +293,67 @@ theorem padded_watertight :
   exact watertight_concrete_of_edges
     (by rw [paddedQuads_edges]; exact edgeClosed_fin4 s hs) V
 
+/-! ### Bounded Euler characteristic evidence (T-DMC0-χ)
+
+The mesh vertices are the cells the quads touch; the faces are the quads;
+the edges are the unordered quad edges. Concrete shell-pinned instances
+of the Fin-4 lattice model:
+
+* `chi_singleton` — a single inside corner: χ = 2;
+* `chi_adjacent` — two adjacent inside corners (an inside edge): χ = 2;
+* `chi_block` — all eight interior points inside (a solid cuboid): χ = 2;
+* `chi_diagonal` — two non-adjacent inside corners (one-cell bump
+  connected surface): χ = 2 per the count.
+
+These are bounded evidence, not the general theorem (which needs the
+edge-manifold classification of the ambiguous configurations, §4.3).
+-/
+
+def faceCountM (s : Lat → Bool) : Nat := (crossed s).length
+
+def insertUniqCell (a : Cell) (l : List Cell) : List Cell :=
+  if l.contains a then l else a :: l
+
+def vertexCountM (s : Lat → Bool) : Nat :=
+  ((crossed s).flatMap fun e => [paddedQuad (s e.1) e |>.a,
+      (paddedQuad (s e.1) e).b, (paddedQuad (s e.1) e).c, (paddedQuad (s e.1) e).d])
+    |>.foldr insertUniqCell [] |>.length
+
+def cellKey (p : Cell) : Nat :=
+  p.1.val + 3 * (p.2.1.val + 3 * p.2.2.val)
+
+def unCell (a b : Cell) : Cell × Cell := if cellKey a ≤ cellKey b then (a, b) else (b, a)
+
+def insertUniqEdge (a : Cell × Cell) (l : List (Cell × Cell)) : List (Cell × Cell) :=
+  if l.contains a then l else a :: l
+
+def edgeCountM (s : Lat → Bool) : Nat :=
+  let es := (crossed s).flatMap fun e =>
+    let q := paddedQuad (s e.1) e
+    [unCell q.a q.b, unCell q.b q.c, unCell q.c q.d, unCell q.d q.a]
+  es.foldr insertUniqEdge [] |>.length
+
+theorem chi_singleton :
+    (vertexCountM (latSignOf 2) : ℤ) - edgeCountM (latSignOf 2) + faceCountM (latSignOf 2) = 2 := by
+  native_decide
+
+theorem chi_singleton_four :
+    (vertexCountM (latSignOf 4) : ℤ) - edgeCountM (latSignOf 4) + faceCountM (latSignOf 4) = 2 := by
+  native_decide
+
+theorem chi_adjacent :
+    (vertexCountM (latSignOf 6) : ℤ) - edgeCountM (latSignOf 6) + faceCountM (latSignOf 6) = 2 := by
+  native_decide
+
+theorem chi_block :
+    (vertexCountM (latSignOf 255) : ℤ) - edgeCountM (latSignOf 255) + faceCountM (latSignOf 255) = 2 := by
+  native_decide
+
+theorem chi_diagonal :
+    (vertexCountM (latSignOf 17) : ℤ) - edgeCountM (latSignOf 17) + faceCountM (latSignOf 17) = 2 := by
+  native_decide
+
 end Cuberille
 
 end Vdb
+
