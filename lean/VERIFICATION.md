@@ -654,7 +654,7 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   stale 84/79 count; `Vdb/FilePrefix.lean`, `Vdb/GridBody.lean` and
   `Vdb/Cuberille.lean` were already covered by theorem rows but absent from
   the module tally.)
-* `lake build` green (9,130 jobs on 2026-11-16); `./lean/scripts/check_samples.sh`
+* `lake build` green (9,133 jobs on 2026-11-16); `./lean/scripts/check_samples.sh`
   **13/13**; `check_mask_classify.sh` **1,679,616/1,679,616** byte-exact;
   `check_half.sh`: **65,536/65,536** `h2f` + **192,940/192,940** `f2h`
   witnesses byte-exact (fiber audit clean over all 2³² inputs);
@@ -671,7 +671,16 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
 * Findings fixed in C: F1, F15, F2, F3, F4, F5, F7, F9, F11, F12, F13, F16
   (all regression-tested). Modelled/decided: F6, F10, F14. Documented
   deviation: F8.
-* Not pushed anywhere; everything is local commits on `main`.
+* Published: `origin/main` is at `f171874` (2026-11-16); nothing local is
+  ahead. Each push followed the AGENTS.md pre-push audit.
+* C-side follow-ups from the model's findings: the web wrapper
+  (`web/tinyvdb_embind.cc`) now rejects voxel-size/origin mismatches in
+  csgUnion/Intersection/Difference, consistent with F12; clang builds pass
+  `-ffp-contract=off` so `tvdb_merge_grids` matches the GPU path (GCC in ISO
+  mode already did). C matrix at the tip: scalar sanitizer 53/53, SIMD+OpenMP
+  53/53 at OMP 1 and 8, GPU 92 pass + 18 HIP skips, no-glslang fallback
+  74 pass + 36 skips, clang 74 pass + 36 skips, 0 failures. CUDA device
+  arithmetic and HIP remain unverified (no device).
 
 ## Findings awaiting model confirmation
 

@@ -32,10 +32,21 @@ encoding, winding-number and dipole far-field theory, narrow-band composition,
 geometry/SDF layer, CSG, Godunov/fast-sweeping/flood-fill/Euler theory, MC/DMC
 welding and ownership, the general-`n` padded-grid DMC-0 edge-closure
 theorem (`balanced_general` / `edgeClosed_general`), and the dense-sampling
-coordinate change are all proved; the C code is checked against the model by
+coordinate change are all proved. The general-`n` DMC-0 mesh also has
+`E = 2F` and `χ = V − F` (`QuadEuler`, `QuadEulerPad`), a classification of the
+no-repeated-edge hypothesis as "no checkerboard face" (`DmcNodup`), and a
+machine-checked `χ = 3` family for every `n ≥ 3` (`QuadEulerEmbed`) — so
+"edge-manifold" and "`χ = 2`" are *false* in general, not merely unproved. The
+staircase face-count overshoot on the octahedron is proved for every radius
+(`StaircaseClosed`). Findings F1–F18 are tracked in the ledger (F17/F18 are
+Lean-side: the cell-sign torus model does not transfer to bounded grids, and
+an off-by-one in the bounded sign enumeration). The module tally is 90 (85
+under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
-list of what remains open or was abandoned with reasons.
+list of what remains open or was abandoned with reasons (general DMC-1
+manifold theorem, general Poincaré–Lefschetz, `staircaseFaces` for general
+sets, Zhao 2005 / Phase C).
 
 ## Conventions
 
