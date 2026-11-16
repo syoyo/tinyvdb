@@ -709,12 +709,12 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   (all regression-tested). Modelled/decided: F6, F10, F14. Documented
   deviation: F8.
 * Published: `origin/main` is at `f171874` (2026-11-16). Local `main` is ahead
-  of `origin/main` by eight commits after 2026-11-16 (`1e99457` tally refresh,
+  of `origin/main` by ten commits after 2026-11-16 (`1e99457` tally refresh,
   `f2cf51f` WASM C++17 fix, `0fa0509` CUDA/RTX 5060 Ti verification record,
   `9f794ac` DMC-0 dual-vertex-pinch module, `6219d6d` staircase general-set
   module, `978c487` MC-adaptivity Float-key harness, `482c885` WindingDipoleSharp,
   `bd39f91` ConeExpansion, `b2efbc3` ConeClosed (exact expansion, item 8 closed),
-  and the `WindingFarField` far-field landing documented in this update);
+  `7c0b246` WindingFarField (far-field consistency, item 6 closed));
   none have been pushed. Each push follows the AGENTS.md pre-push audit.
 * C matrix re-run on 2026-11-16 (fresh out-of-tree Ninja builds, `glslangValidator`
   15.1.0 unpacked rootless): scalar ASan/UBSan/float-cast-overflow **53/53**,
