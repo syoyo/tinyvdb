@@ -47,9 +47,12 @@ staircase face-count overshoot on the octahedron is proved for every radius
 C↔Lean differential harness over millions of adversarial doubles,
 `McAdaptKey`) are landed. In Lean, the winding-dipole residual in the
 landed identity is shown identically zero and the generic triple-product
-bound is attained (`WindingDipoleSharp`). Findings F1–F18 are tracked in the ledger (F17/F18 are
+bound is attained (`WindingDipoleSharp`), and the closest-point cone
+expansion is machine-checked in closure form (`ConeExpansion`: `p − q` lies
+in the closure of the cone of tight face normals — the Farkas content of
+`p − q = Σ λᵢ nᵢ`). Findings F1–F18 are tracked in the ledger (F17/F18 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids, and
-an off-by-one in the bounded sign enumeration). The module tally is 94 (89
+an off-by-one in the bounded sign enumeration). The module tally is 95 (90
 under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
