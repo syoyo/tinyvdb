@@ -2522,6 +2522,40 @@ theorem localCount_z_face (n : Nat) (s : Lat → Bool) (X Y Z : Nat)
     have hn1 : 1 ≤ n := by omega
     exact localCount_z_zn1 n s X Y hpin hn1
 
+/-- **The general-`n` balance theorem** (T-DMC0-CYCLE for shell-pinned sign
+    fields): every face's two local candidate counts agree, hence the
+    assembled stencil is `Balanced`. Assembled from the three universal
+    orientation dispatchers (`localCount_x_face`, `localCount_y_face`,
+    `localCount_z_face`) via the bridge `balanced_iff_local`; directions
+    `≥ 3` are unused. -/
+theorem balanced_general (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, isShell n p = true → s p = false) :
+    (cuberilleStencil n s).Balanced := by
+  rw [balanced_iff_local]
+  intro f
+  obtain ⟨c, i⟩ := f
+  obtain ⟨X, Y, Z⟩ := c
+  by_cases h0 : i = 0
+  · rw [h0]
+    exact localCount_x_face n s X Y Z hpin
+  by_cases h1 : i = 1
+  · rw [h1]
+    exact localCount_y_face n s X Y Z hpin
+  by_cases h2 : i = 2
+  · rw [h2]
+    exact localCount_z_face n s X Y Z hpin
+  · have hge : 3 ≤ i := by omega
+    rw [localCount_eq_zero_of_nf_ge_three n s (X, Y, Z) i hge true,
+        localCount_eq_zero_of_nf_ge_three n s (X, Y, Z) i hge false]
+
+/-- **The general-`n` mesh is edge-closed** (T-DMC0-CYCLE, edge form): the
+    assembled surface of every shell-pinned sign field is watertight in the
+    edge-manifold sense. -/
+theorem edgeClosed_general (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, isShell n p = true → s p = false) :
+    EdgeClosed (cuberilleStencil n s).mesh :=
+  (cuberilleStencil n s).watertight (balanced_general n s hpin)
+
 end PadGrid
 
 end Vdb
