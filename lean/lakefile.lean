@@ -69,6 +69,11 @@ lean_exe meshsdfcheck where
 lean_exe windingcheck where
   root := `Vdb.WindingCheck
 
+/-- Model-side MC-adaptivity Float-floor/int64-key twin (driven by
+    `scripts/check_mc_adapt.sh`). -/
+lean_exe mckeycheck where
+  root := `Vdb.McAdaptKey
+
 /-- Seeded well-formed `.vdb` generator (differential harness, model half). -/
 lean_exe vdbgen where
   root := `VdbGen

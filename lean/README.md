@@ -43,18 +43,19 @@ lemma (`euler_glue`) — so "edge-manifold" and "`χ = 2`" are *false* in
 general, not merely unproved. The
 staircase face-count overshoot on the octahedron is proved for every radius
 (`StaircaseClosed`); general-set statements about the estimator
-(`StaircaseBoundary`: `adj6_connected`, `staircaseFaces_eq_zero_iff`,
-`staircaseFaces_le_exterior`/`_le_min`, the sharpness witness
-`staircaseFaces_six`) are landed — the consistency question for
-general sets remains open. Findings F1–F18 are tracked in the ledger (F17/F18 are
+(`StaircaseBoundary`) and the MC adaptivity Float-key layer (verified by a
+C↔Lean differential harness over millions of adversarial doubles,
+`McAdaptKey`) are landed. In Lean, the winding-dipole residual in the
+landed identity is shown identically zero and the generic triple-product
+bound is attained (`WindingDipoleSharp`). Findings F1–F18 are tracked in the ledger (F17/F18 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids, and
-an off-by-one in the bounded sign enumeration). The module tally is 92 (87
+an off-by-one in the bounded sign enumeration). The module tally is 94 (89
 under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
 list of what remains open or was abandoned with reasons (general DMC-1
 manifold theorem, general Poincaré–Lefschetz, staircase-estimator consistency for general
-sets, Zhao 2005 / Phase C).
+sets, the dipole estimator's asymptotic consistency in C, Zhao 2005 / Phase C).
 
 ## Conventions
 
