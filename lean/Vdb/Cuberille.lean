@@ -69,16 +69,18 @@ abbrev Face : Type := Cell × Fin 3
 /-- A primal lattice edge: an anchor plus its direction. -/
 abbrev PadEdge : Type := Lat × Fin 3
 
-/-- The `k`-th shell-pinned sign field (the 8 interior points, bits of `k`). -/
+/-- The interior sign field with index `k`: bit `j` of `k` is the sign at the
+    `j`-th interior lattice point (lexicographic order), bit 0 = `(1,1,1)`.
+    `k` ranges over `0..255`, enumerating all `2^8 = 256` shell-pinned fields. -/
 def latSignOf (k : Nat) (p : Lat) : Bool :=
-  if p.1.val = 1 ∧ p.2.1.val = 1 ∧ p.2.2.val = 1 then k / 2 % 2 = 1
-  else if p.1.val = 1 ∧ p.2.1.val = 1 ∧ p.2.2.val = 2 then k / 4 % 2 = 1
-  else if p.1.val = 1 ∧ p.2.1.val = 2 ∧ p.2.2.val = 1 then k / 8 % 2 = 1
-  else if p.1.val = 1 ∧ p.2.1.val = 2 ∧ p.2.2.val = 2 then k / 16 % 2 = 1
-  else if p.1.val = 2 ∧ p.2.1.val = 1 ∧ p.2.2.val = 1 then k / 32 % 2 = 1
-  else if p.1.val = 2 ∧ p.2.1.val = 1 ∧ p.2.2.val = 2 then k / 64 % 2 = 1
-  else if p.1.val = 2 ∧ p.2.1.val = 2 ∧ p.2.2.val = 1 then k / 128 % 2 = 1
-  else if p.1.val = 2 ∧ p.2.1.val = 2 ∧ p.2.2.val = 2 then k / 256 % 2 = 1
+  if p.1.val = 1 ∧ p.2.1.val = 1 ∧ p.2.2.val = 1 then k / 1 % 2 = 1
+  else if p.1.val = 1 ∧ p.2.1.val = 1 ∧ p.2.2.val = 2 then k / 2 % 2 = 1
+  else if p.1.val = 1 ∧ p.2.1.val = 2 ∧ p.2.2.val = 1 then k / 4 % 2 = 1
+  else if p.1.val = 1 ∧ p.2.1.val = 2 ∧ p.2.2.val = 2 then k / 8 % 2 = 1
+  else if p.1.val = 2 ∧ p.2.1.val = 1 ∧ p.2.2.val = 1 then k / 16 % 2 = 1
+  else if p.1.val = 2 ∧ p.2.1.val = 1 ∧ p.2.2.val = 2 then k / 32 % 2 = 1
+  else if p.1.val = 2 ∧ p.2.1.val = 2 ∧ p.2.2.val = 1 then k / 64 % 2 = 1
+  else if p.1.val = 2 ∧ p.2.1.val = 2 ∧ p.2.2.val = 2 then k / 128 % 2 = 1
   else false
 
 /-- All 256 shell-pinned sign fields. -/
@@ -300,10 +302,13 @@ the edges are the unordered quad edges. Concrete shell-pinned instances
 of the Fin-4 lattice model:
 
 * `chi_singleton` — a single inside corner: χ = 2;
+* `chi_singleton_four` — a single inside corner (second lattice point): χ = 2;
 * `chi_adjacent` — two adjacent inside corners (an inside edge): χ = 2;
 * `chi_block` — all eight interior points inside (a solid cuboid): χ = 2;
-* `chi_diagonal` — two non-adjacent inside corners (one-cell bump
-  connected surface): χ = 2 per the count.
+* `chi_diagonal` — two face-diagonal inside corners (`k = 9`): χ = **3**,
+  **not** 2 — the two one-cell bumps pinch and the configuration is not
+  edge-manifold. Bounded evidence that the general χ claim only holds on
+  edge-manifold fields; diagonal pairs are the simplest counterexample.
 
 These are bounded evidence, not the general theorem (which needs the
 edge-manifold classification of the ambiguous configurations, §4.3).
@@ -342,7 +347,7 @@ theorem chi_singleton_four :
   native_decide
 
 theorem chi_adjacent :
-    (vertexCountM (latSignOf 6) : ℤ) - edgeCountM (latSignOf 6) + faceCountM (latSignOf 6) = 2 := by
+    (vertexCountM (latSignOf 3) : ℤ) - edgeCountM (latSignOf 3) + faceCountM (latSignOf 3) = 2 := by
   native_decide
 
 theorem chi_block :
@@ -350,7 +355,7 @@ theorem chi_block :
   native_decide
 
 theorem chi_diagonal :
-    (vertexCountM (latSignOf 17) : ℤ) - edgeCountM (latSignOf 17) + faceCountM (latSignOf 17) = 2 := by
+    (vertexCountM (latSignOf 9) : ℤ) - edgeCountM (latSignOf 9) + faceCountM (latSignOf 9) = 3 := by
   native_decide
 
 end Cuberille
