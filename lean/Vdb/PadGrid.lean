@@ -95,6 +95,14 @@ def InLattice (n : Nat) (p : Lat) : Prop :=
 instance (n : Nat) : Decidable (InLattice n p) :=
   inferInstanceAs (Decidable (p.1 ≤ n ∧ p.2.1 ≤ n ∧ p.2.2 ≤ n))
 
+/-- Every coordinate hitting `0` or `n` makes the lattice point a shell
+    point, so the pinned sign field assigns it `false`. -/
+theorem shell_of_or (n : Nat) (p : Lat)
+    (h : p.1 = 0 ∨ p.1 = n ∨ p.2.1 = 0 ∨ p.2.1 = n ∨ p.2.2 = 0 ∨ p.2.2 = n) :
+    isShell n p = true := by
+  unfold isShell
+  rcases h with h | h | h | h | h | h <;> simp [h]
+
 /-- All lattice points of the `(n+1)^3` lattice. -/
 def latAll (n : Nat) : List Lat :=
   (List.range (n+1)).flatMap fun x =>
