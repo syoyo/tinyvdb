@@ -197,7 +197,7 @@ static tvdb_status_t nv__error(tvdb_error_t *err, tvdb_status_t st,
 static int nv__popcount64(uint64_t x) {
     x = x - ((x >> 1) & UINT64_C(0x5555555555555555));
     x = (x & UINT64_C(0x3333333333333333)) + ((x >> 2) & UINT64_C(0x3333333333333333));
-    return (int)((((x + (x >> 4)) & UINT64_C(0x0f0f0f0f0f0f0f0f0f)) *
+    return (int)((((x + (x >> 4)) & UINT64_C(0x0f0f0f0f0f0f0f0f)) *
                   UINT64_C(0x0101010101010101)) >> 56);
 }
 
