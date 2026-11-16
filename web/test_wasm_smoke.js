@@ -200,12 +200,19 @@ function requireFile(p, what) {
   ok(fvc.valid === true, 'checkFogVolume reports valid');
 
   // ---- dense operators ---------------------------------------------------
+  // sphB is a *shifted* sphere: same 19^3 dimensions as sph but a different
+  // origin, so it does not occupy the same space. The elementwise operators
+  // require identical geometry (dims, voxel size, origin) and reject it below;
+  // it is also the mismatched frame for csgUnionSparse. sphC shares sph's
+  // geometry, so it is the valid second operand for the value checks.
   const sphB = tv.levelSetSphere(6, 3, 0, 0, 1.0, 3.0);
-  ok(tv.compMax(sph, sphB).size() === sph.size(), 'compMax ran');
-  ok(tv.compMin(sph, sphB).size() === sph.size(), 'compMin ran');
-  ok(tv.compSum(sph, sphB).size() === sph.size(), 'compSum ran');
-  ok(tv.compMult(sph, sphB).size() === sph.size(), 'compMult ran');
-  approx(tv.compMax(sph, sphB).get(9, 9, 9), -3.0, 1e-6, 'compMax centre matches native');
+  const sphC = tv.dilate(sph, 1);
+  ok(tv.compMax(sph, sphC).size() === sph.size(), 'compMax ran');
+  ok(tv.compMin(sph, sphC).size() === sph.size(), 'compMin ran');
+  ok(tv.compSum(sph, sphC).size() === sph.size(), 'compSum ran');
+  ok(tv.compMult(sph, sphC).size() === sph.size(), 'compMult ran');
+  approx(tv.compMax(sph, sphC).get(9, 9, 9), -3.0, 1e-6, 'compMax centre matches native');
+  approx(tv.compSum(sph, sphC).get(9, 9, 9), -6.0, 1e-6, 'compSum centre = -3 + -3');
 
   const m1 = tv.levelSetSphere(6, 0, 0, 0, 1.0, 3.0);
   tv.medianFilter(m1, 1, 1);
@@ -314,6 +321,12 @@ function requireFile(p, what) {
      'levelSetSphere'],
     ['compMax(mismatched shapes)', () => tv.compMax(sph, new tv.DenseGrid(4, 4, 4, 1)),
      'compMax'],
+    ['compMax(mismatched geometry)', () => tv.compMax(sph, sphB), 'compMax'],
+    ['csgUnion(mismatched geometry)', () => tv.csgUnion(sph, sphB), 'csgUnion'],
+    ['csgIntersection(mismatched geometry)', () => tv.csgIntersection(sph, sphB),
+     'csgIntersection'],
+    ['csgDifference(mismatched geometry)', () => tv.csgDifference(sph, sphB),
+     'csgDifference'],
     ['csgUnionSparse(mismatched frames)',
      () => tv.csgUnionSparse(sp, tv.denseToSparse(sphB, 3, 1e-3), 3), 'csgUnionSparse'],
     ['uniformRaySamples(nSamples=0)', () => tv.uniformRaySamples(0, 0, 0, 1, 0, 0, 0, 1, 0, true),

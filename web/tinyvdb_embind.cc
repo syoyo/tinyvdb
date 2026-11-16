@@ -617,17 +617,46 @@ DenseGridWrap laplacianFilter(const DenseGridWrap &g, int iterations) {
     DenseGridWrap r(g); tvdb_laplacian_filter(&r.grid, iterations); return r;
 }
 
+namespace {
+/* The dense elementwise operators (CSG, comp*) combine voxel i of `a` with
+ * voxel i of `b`, so they require the same dimensions AND the same voxel size
+ * and origin; the C library makes anything else a silent no-op that leaves the
+ * result untouched. Reject it here instead, so JS gets an error and an empty
+ * grid rather than an untouched or zero-filled result.
+ * Returns false and records the error on a mismatch. Callers MUST bail:
+ * tvdb_comp_* writes elementwise into a result sized like `a`, so a smaller
+ * `b` would be read past its end. */
+bool requireSameShape(const DenseGridWrap &a, const DenseGridWrap &b, const char *what) {
+    if (a.grid.nx != b.grid.nx || a.grid.ny != b.grid.ny || a.grid.nz == 0
+        || b.grid.nz == 0 || a.grid.nz != b.grid.nz) {
+        failVoid(std::string(what) + ": grid shapes differ (" +
+            std::to_string(a.grid.nx) + "x" + std::to_string(a.grid.ny) + "x" + std::to_string(a.grid.nz) +
+            " vs " + std::to_string(b.grid.nx) + "x" + std::to_string(b.grid.ny) + "x" + std::to_string(b.grid.nz) + ")");
+        return false;
+    }
+    if (a.grid.voxel_size != b.grid.voxel_size || a.grid.ox != b.grid.ox
+        || a.grid.oy != b.grid.oy || a.grid.oz != b.grid.oz) {
+        failVoid(std::string(what) + ": grid geometry differs (voxel size or origin)");
+        return false;
+    }
+    return true;
+}
+} // namespace
+
 DenseGridWrap csgUnion(const DenseGridWrap &a, const DenseGridWrap &b) {
+    if (!requireSameShape(a, b, "csgUnion")) return DenseGridWrap();
     DenseGridWrap r(a);
     tvdb_csg_union(&a.grid, &b.grid, &r.grid);
     return r;
 }
 DenseGridWrap csgIntersection(const DenseGridWrap &a, const DenseGridWrap &b) {
+    if (!requireSameShape(a, b, "csgIntersection")) return DenseGridWrap();
     DenseGridWrap r(a);
     tvdb_csg_intersection(&a.grid, &b.grid, &r.grid);
     return r;
 }
 DenseGridWrap csgDifference(const DenseGridWrap &a, const DenseGridWrap &b) {
+    if (!requireSameShape(a, b, "csgDifference")) return DenseGridWrap();
     DenseGridWrap r(a);
     tvdb_csg_difference(&a.grid, &b.grid, &r.grid);
     return r;
@@ -686,23 +715,9 @@ val mcTriTableFlat() { return val(typed_memory_view(256 * 16, tvdb_mc_tri_table_
 /* ======================================================================== */
 
 namespace {
-/* `result` is pre-allocated and the inputs must be the same shape, so build
- * the target from `a` and reject a mismatch rather than scribbling past it. */
-/* Returns false and records the error when the shapes differ. Callers MUST
-   bail: tvdb_comp_* writes elementwise into a result sized like `a`, so a
-   smaller `b` would be read past its end. */
-bool requireSameShape(const DenseGridWrap &a, const DenseGridWrap &b, const char *what) {
-    if (a.grid.nx != b.grid.nx || a.grid.ny != b.grid.ny || a.grid.nz == 0
-        || b.grid.nz == 0 || a.grid.nz != b.grid.nz || a.grid.ny != b.grid.ny
-        || a.grid.nx != b.grid.nx) {
-        failVoid(std::string(what) + ": grid shapes differ (" +
-            std::to_string(a.grid.nx) + "x" + std::to_string(a.grid.ny) + "x" + std::to_string(a.grid.nz) +
-            " vs " + std::to_string(b.grid.nx) + "x" + std::to_string(b.grid.ny) + "x" + std::to_string(b.grid.nz) + ")");
-        return false;
-    }
-    return true;
-}
-
+/* `result` is pre-allocated and the inputs must match (see requireSameShape),
+ * so build the target from `a` and reject a mismatch rather than scribbling
+ * past it. */
 template <void (*Fn)(const tvdb_dense_grid *, const tvdb_dense_grid *, tvdb_dense_grid *)>
 DenseGridWrap compOp(const DenseGridWrap &a, const DenseGridWrap &b, const char *what) {
     if (!requireSameShape(a, b, what)) return DenseGridWrap();
