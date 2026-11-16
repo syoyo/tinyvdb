@@ -145,7 +145,8 @@ jobs:
           - arch: aarch64
             processor: ARM64
             tests: 'OFF'
-            pe_machine: Aarch64
+            # `file` spells this "Aarch64" in some versions and "ARM64" in others.
+            pe_machine: aarch64|arm64
     env:
       LLVM_MINGW_VERSION: '20260616'
       LLVM_MINGW_SHA256: 534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda
@@ -195,7 +196,7 @@ jobs:
       - name: Verify binaries
         run: |
           file build/vdbdump.exe build/vdbrender.exe
-          file build/vdbdump.exe | grep -q "PE32+ executable.*${{ matrix.pe_machine }}"
+          file build/vdbdump.exe | grep -qiE "PE32\+ executable.*(${{ matrix.pe_machine }})"
       - name: Run CPU regressions under Wine
         if: matrix.arch == 'x86_64'
         run: ctest --test-dir build --output-on-failure -j"$(nproc)"
