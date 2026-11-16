@@ -671,16 +671,34 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
 * Findings fixed in C: F1, F15, F2, F3, F4, F5, F7, F9, F11, F12, F13, F16
   (all regression-tested). Modelled/decided: F6, F10, F14. Documented
   deviation: F8.
-* Published: `origin/main` is at `f171874` (2026-11-16); nothing local is
-  ahead. Each push followed the AGENTS.md pre-push audit.
+* Published: `origin/main` is at `f171874` (2026-11-16). Local `main` is ahead
+  by three commits after 2026-11-16 (the tally refresh `1e99457`, the WASM
+  C++17 build fix `f2cf51f`, and this verification-status update); they have
+  not been pushed. Each push follows the AGENTS.md pre-push audit.
+* C matrix re-run on 2026-11-16 (fresh out-of-tree Ninja builds, `glslangValidator`
+  15.1.0 unpacked rootless): scalar ASan/UBSan/float-cast-overflow **53/53**,
+  SIMD+OpenMP **53/53** at `OMP_NUM_THREADS=1` and `=8`, GPU with generated
+  shaders **110 tests: 92 pass, 18 HIP skip**, no-glslang fallback
+  **74 pass + 36 skip**, and a clang GPU build (`CC=clang`, `-ffp-contract=off`
+  confirmed in the compile flags) **92 pass + 18 HIP skip** — including
+  `test_gpu_backend`. 0 failures in every leg.
+* **CUDA device arithmetic verified on this machine** (previously unverified):
+  NVIDIA GeForce RTX 5060 Ti, compute capability 12.0, driver 620.70.06,
+  `libcuda.so.1`/`libnvrtc` 13.2 load at runtime. All 17 CUDA-tagged GPU
+  tests pass on the device (e.g. `[gpu:cuda] device='NVIDIA GeForce RTX 5060 Ti'`;
+  `test_gpu_fp64_cuda` reports `fp64 supported=1`; `test_gpu_resident_poisson_cuda`
+  exercises the `TVDB_ERROR_INVALID_DATA` "nonfinite input or incompatible RHS
+  mean" branch as designed). The RADV `sparse_image` 3.3e-4 vs 3e-4 tolerance
+  failure does not reproduce on this NVIDIA host and is not device-verified
+  either way. **HIP remains unverified** — no AMD device here
+  (`rocm-smi`: amdgpu driver not initialized); the 18 HIP tests skip (77).
 * C-side follow-ups from the model's findings: the web wrapper
   (`web/tinyvdb_embind.cc`) now rejects voxel-size/origin mismatches in
   csgUnion/Intersection/Difference, consistent with F12; clang builds pass
   `-ffp-contract=off` so `tvdb_merge_grids` matches the GPU path (GCC in ISO
-  mode already did). C matrix at the tip: scalar sanitizer 53/53, SIMD+OpenMP
-  53/53 at OMP 1 and 8, GPU 92 pass + 18 HIP skips, no-glslang fallback
-  74 pass + 36 skips, clang 74 pass + 36 skips, 0 failures. CUDA device
-  arithmetic and HIP remain unverified (no device).
+  mode already did); the WASM module now builds as C++17 (Emscripten 5.x
+  rejects C++11 for embind; the CI pin 4.0.14 accepts C++17; local 5.0.1
+  build passes `web/test_wasm_smoke.js` 183/183).
 
 ## Findings awaiting model confirmation
 
