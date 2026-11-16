@@ -47,6 +47,26 @@ set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Floating-point contraction (fusing a*b+c into one FMA, which rounds once).
+# GCC's default depends on the language mode: with strict -std=c11/-std=c++11
+# (extensions are off, above) it is "off", so GCC never fuses on its own.
+# Clang's default is "on" whatever -std says, and the SIMD sources are built
+# with -mfma, so clang would fuse the scalar arithmetic in those files but not
+# in files built without -mfma. Identical expressions then round differently
+# from file to file; e.g. the merged-grid size computed by tvdb_merge_grids
+# (SIMD library) and tvdb_gpu_merge_grids (GPU library) differed by one voxel
+# under clang. Pin clang to GCC's effective behaviour so results do not depend
+# on the compiler or on which file an expression lives in. Explicit FMA
+# intrinsics in the SIMD kernels are unaffected.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+  if(CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    # clang-cl takes clang's own options behind /clang:.
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:/clang:-ffp-contract=off>")
+  else()
+    add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-ffp-contract=off>")
+  endif()
+endif()
+
 # The library in src/ is C11 and must stay that way: no C++ translation units,
 # no exceptions, no RTTI. Everything outside the library (examples, Python and
 # WebAssembly bindings) is C++ only because its host API demands it -- the

@@ -78,6 +78,15 @@
   voxels (and 0 along an axis of size 1); interior voxels are unchanged. The
   Vulkan stencil shaders and the CUDA/HIP kernels match. Boundary voxel values
   of these operators change, and are now exact for linear fields.
+- Builds with clang (including Apple clang and clang-cl) now pass
+  `-ffp-contract=off` for C and C++. GCC's default is already off under the
+  project's strict `-std=c11`, but clang's is on, so clang fused scalar
+  `a*b+c` into FMAs in the SIMD sources (built with `-mfma`) and nowhere else.
+  The same expression then rounded differently depending on which file it
+  lived in: `tvdb_merge_grids` and `tvdb_gpu_merge_grids` computed merged grids
+  one voxel apart (25 versus 26 in x for the `test_merge` case), which failed
+  `test_gpu_backend` under clang. Numeric results of clang builds now match
+  GCC's. Explicit FMA intrinsics are unchanged.
 
 ## 0.9.1 — 2026-10-28
 
