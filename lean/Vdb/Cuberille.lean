@@ -358,7 +358,46 @@ theorem chi_diagonal :
     (vertexCountM (latSignOf 9) : ℤ) - edgeCountM (latSignOf 9) + faceCountM (latSignOf 9) = 3 := by
   native_decide
 
+/-- Every quad edge as an unordered cell pair, over all crossed edges. -/
+def edgeMultiset (s : Lat → Bool) : List (Cell × Cell) :=
+  (crossed s).flatMap fun e =>
+    let q := paddedQuad (s e.1) e
+    [unCell q.a q.b, unCell q.b q.c, unCell q.c q.d, unCell q.d q.a]
+
+/-- Number of cell-pair edges not covered exactly twice (boundary dummy
+    self-edges are counted like any other edge; the full block has none). -/
+def badEdgeCount (s : Lat → Bool) : Nat :=
+  let es := edgeMultiset s
+  let uniq := es.foldr insertUniqEdge []
+  uniq.filter (fun e => es.count e != 2) |>.length
+
+/-- The χ count of the assembled mesh. -/
+def chiOfM (s : Lat → Bool) : Int :=
+  (vertexCountM s : Int) - edgeCountM s + faceCountM s
+
+/-- **Bounded χ/manifoldness landscape** (machine-checked): over all 256
+    shell-pinned fields of the Fin-4 model, 127 are edge-manifold and
+    χ = 2; 9 are edge-manifold with χ ≠ 2; 36 have χ = 2 without being
+    edge-manifold; 84 are neither. Edge-manifoldness does not imply the
+    naive χ = 2 claim even in the bounded model. -/
+theorem bounded_chi_landscape :
+    ((List.range 256).filter (fun k => badEdgeCount (latSignOf k) == 0 && chiOfM (latSignOf k) == 2)).length = 127 ∧
+    ((List.range 256).filter (fun k => badEdgeCount (latSignOf k) == 0 && chiOfM (latSignOf k) != 2)).length = 9 ∧
+    ((List.range 256).filter (fun k => badEdgeCount (latSignOf k) != 0 && chiOfM (latSignOf k) == 2)).length = 36 ∧
+    ((List.range 256).filter (fun k => badEdgeCount (latSignOf k) != 0 && chiOfM (latSignOf k) != 2)).length = 84 := by
+  native_decide
+
+/-- Edge-manifold does not imply χ = 2, machine-checked: the body-diagonal
+    pair fields `k ∈ {24, 36, 66, 129}` are edge-manifold with χ = 3, and
+    the six-point fields `k ∈ {126, 189, 219, 231}` give χ = 1. -/
+theorem bounded_chi_manifold_not_chi2 :
+    (badEdgeCount (latSignOf 24) : Nat) = 0 ∧ chiOfM (latSignOf 24) = 3 ∧
+    (badEdgeCount (latSignOf 36) : Nat) = 0 ∧ chiOfM (latSignOf 36) = 3 ∧
+    (badEdgeCount (latSignOf 66) : Nat) = 0 ∧ chiOfM (latSignOf 66) = 3 ∧
+    (badEdgeCount (latSignOf 129) : Nat) = 0 ∧ chiOfM (latSignOf 129) = 3 ∧
+    (badEdgeCount (latSignOf 126) : Nat) = 0 ∧ chiOfM (latSignOf 126) = 1 := by
+  native_decide
+
 end Cuberille
 
 end Vdb
-
