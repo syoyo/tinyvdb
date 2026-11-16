@@ -508,7 +508,8 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
    solids), F10 (decided: face-consistent, documented), the DMC-1 manifold
    facts (`Vdb/DmcManifold.lean`: even sign changes on 4-cycles, every face
    evenly crossed, bump field closed and edge-manifold, triangle vertex
-   belts; general padded-grid theorem remains open), the BVH
+   belts; the general DMC-1 padded-grid stitching theorem remains open;
+   the DMC-0 counterpart landed (`edgeClosed_general`, see the module table)), the BVH
    closest-triangle traversal (`Vdb/Bvh.lean`, **`search_eq_brute`**) and the
    narrow-band mesh→level-set covering bound (`Vdb/NarrowBand.lean`,
    **`band_complete`**).
