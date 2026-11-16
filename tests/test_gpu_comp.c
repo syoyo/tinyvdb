@@ -51,7 +51,7 @@ static void comp_case(const char* name, tvdb_gpu_context_t* ctx, int op,
   cpu_fn(&a, &b, &rc);
   tvdb_error_t e; memset(&e, 0, sizeof e);
   if (gpu_fn(ctx, &a, &b, &rg, &e) != TVDB_OK) {
-    printf("  FAIL %-22s %s\n", name, e.message ? e.message : "?"); fails++;
+    printf("  FAIL %-22s %s\n", name, e.message[0] ? e.message : "?"); fails++;
   } else if (!same_bits(rc.data, rg.data, n)) {
     printf("  FAIL %-22s values differ from CPU\n", name); fails++;
   } else {
@@ -149,7 +149,7 @@ int main(int argc, char** argv) {
     int ia = tvdb_solve_poisson_dd(&rhs, &a, 400, 1e-5);
     memset(&e, 0, sizeof e);
     int ib = tvdb_gpu_solve_poisson_dd(ctx, &rhs, &b, 400, 1e-5, &e);
-    if (e.status != TVDB_OK) { printf("  FAIL %-22s %s\n", "solve_poisson_dd", e.message ? e.message : "?"); fails++; }
+    if (e.status != TVDB_OK) { printf("  FAIL %-22s %s\n", "solve_poisson_dd", e.message[0] ? e.message : "?"); fails++; }
     else {
       double worst = 0;
       for (size_t i = 0; i < n; ++i) { double d = fabs(a.data[i] - b.data[i]); if (d > worst) worst = d; }

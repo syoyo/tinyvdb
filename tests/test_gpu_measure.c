@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
     char label[96];
     memset(&e, 0, sizeof e);
     if (tvdb_gpu_surface_area(ctx, &g, &gpu_area, &e) != TVDB_OK) {
-      printf("  FAIL %-20s surface_area: %s\n", cases[c].name, e.message ? e.message : "?"); fails++;
+      printf("  FAIL %-20s surface_area: %s\n", cases[c].name, e.message[0] ? e.message : "?"); fails++;
     } else {
       float cpu_area = tvdb_surface_area(&g);
       snprintf(label, sizeof label, "%s surface_area", cases[c].name);
@@ -123,7 +123,7 @@ int main(int argc, char** argv) {
     }
     memset(&e, 0, sizeof e);
     if (tvdb_gpu_volume(ctx, &g, &gpu_vol, &e) != TVDB_OK) {
-      printf("  FAIL %-20s volume: %s\n", cases[c].name, e.message ? e.message : "?"); fails++;
+      printf("  FAIL %-20s volume: %s\n", cases[c].name, e.message[0] ? e.message : "?"); fails++;
     } else {
       float cpu_vol = tvdb_volume(&g);
       snprintf(label, sizeof label, "%s volume", cases[c].name);
@@ -153,7 +153,7 @@ int main(int argc, char** argv) {
       double gpu_area_d = 0.0, gpu_vol_d = 0.0;
       memset(&e, 0, sizeof e);
       if (tvdb_gpu_surface_area_d(ctx, &gd, &gpu_area_d, &e) != TVDB_OK) {
-        printf("  FAIL %-20s surface_area_d: %s\n", cases[c].name, e.message ? e.message : "?"); fails++;
+        printf("  FAIL %-20s surface_area_d: %s\n", cases[c].name, e.message[0] ? e.message : "?"); fails++;
       } else {
         double cpu_area_d = tvdb_surface_area_d(&gd);
         snprintf(label, sizeof label, "%s surface_area_d", cases[c].name);
@@ -161,7 +161,7 @@ int main(int argc, char** argv) {
       }
       memset(&e, 0, sizeof e);
       if (tvdb_gpu_volume_d(ctx, &gd, &gpu_vol_d, &e) != TVDB_OK) {
-        printf("  FAIL %-20s volume_d: %s\n", cases[c].name, e.message ? e.message : "?"); fails++;
+        printf("  FAIL %-20s volume_d: %s\n", cases[c].name, e.message[0] ? e.message : "?"); fails++;
       } else {
         double cpu_vol_d = tvdb_volume_d(&gd);
         snprintf(label, sizeof label, "%s volume_d", cases[c].name);

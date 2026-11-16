@@ -5961,7 +5961,7 @@ static void tvdb_vk_destroy_sparse_image3d_dispatch(tvdb_gpu_vulkan_sparse_image
 static tvdb_status_t tvdb_vk_create_sparse_image3d_dispatch(tvdb_gpu_vulkan_sparse_image3d_t* image,
                                                             tvdb_error_t* err) {
   tvdb_gpu_context_t* ctx = image->ctx;
-  if (!kTvdbGpuSampleImageSpv || kTvdbGpuSampleImageSpv_len == 0) {
+  if (kTvdbGpuSampleImageSpv_len == 0) {
     tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan image sampler SPIR-V blob is unavailable");
     return TVDB_ERROR_UNIMPLEMENTED;
   }
