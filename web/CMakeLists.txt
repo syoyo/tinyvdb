@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.13)
 project(tinyvdb_wasm CXX C)
 
-set(CMAKE_CXX_STANDARD 11)
+# C++17, not 11: Emscripten 5.x rejects C++11 for embind (<embind.h> uses
+# C++17 constructs). CI pins Emscripten 4.0.14, which accepts C++17 too.
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)

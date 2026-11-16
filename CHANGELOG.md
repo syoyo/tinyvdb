@@ -87,6 +87,11 @@
   one voxel apart (25 versus 26 in x for the `test_merge` case), which failed
   `test_gpu_backend` under clang. Numeric results of clang builds now match
   GCC's. Explicit FMA intrinsics are unchanged.
+- The WASM module (`web/tinyvdb_embind.cc` via `web/CMakeLists.txt`) now builds
+  with `CMAKE_CXX_STANDARD 17` instead of 11. Emscripten 5.x rejects C++11 for
+  embind; 4.x (the CI pin) accepts C++17 too, so the bump is compatible both
+  ways. The local Emscripten 5.0.1 build passes the Node smoke test
+  (`web/test_wasm_smoke.js`, 183/183 checks).
 
 ## 0.9.1 — 2026-10-28
 
