@@ -34,13 +34,17 @@ welding and ownership, the general-`n` padded-grid DMC-0 edge-closure
 theorem (`balanced_general` / `edgeClosed_general`), and the dense-sampling
 coordinate change are all proved. The general-`n` DMC-0 mesh also has
 `E = 2F` and `χ = V − F` (`QuadEuler`, `QuadEulerPad`), a classification of the
-no-repeated-edge hypothesis as "no checkerboard face" (`DmcNodup`), and a
-machine-checked `χ = 3` family for every `n ≥ 3` (`QuadEulerEmbed`) — so
-"edge-manifold" and "`χ = 2`" are *false* in general, not merely unproved. The
+no-repeated-edge hypothesis as "no checkerboard face" (`DmcNodup`), a
+machine-checked `χ = 3` family for every `n ≥ 3` (`QuadEulerEmbed`), and the
+dual-vertex-pinch mechanism behind it (`DmcPinch`): the four anti-diagonal
+body-diagonal-pair fields decompose as two one-cell bumps (`χ = 2` each)
+sharing exactly the central dual vertex, so `χ = 3` by the abstract glue
+lemma (`euler_glue`) — so "edge-manifold" and "`χ = 2`" are *false* in
+general, not merely unproved. The
 staircase face-count overshoot on the octahedron is proved for every radius
 (`StaircaseClosed`). Findings F1–F18 are tracked in the ledger (F17/F18 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids, and
-an off-by-one in the bounded sign enumeration). The module tally is 90 (85
+an off-by-one in the bounded sign enumeration). The module tally is 91 (86
 under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
