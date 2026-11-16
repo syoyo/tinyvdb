@@ -50,9 +50,11 @@ landed identity is shown identically zero and the generic triple-product
 bound is attained (`WindingDipoleSharp`), and the closest-point cone
 expansion is machine-checked in closure form (`ConeExpansion`: `p − q` lies
 in the closure of the cone of tight face normals — the Farkas content of
-`p − q = Σ λᵢ nᵢ`). Findings F1–F18 are tracked in the ledger (F17/F18 are
+`p − q = Σ λᵢ nᵢ`) and in exact form (`ConeClosed`: a finitely generated
+pointed cone is closed, so `p − q = Σ λᵢ nᵢ` with `λᵢ ≥ 0` over the tight
+faces). Findings F1–F18 are tracked in the ledger (F17/F18 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids, and
-an off-by-one in the bounded sign enumeration). The module tally is 95 (90
+an off-by-one in the bounded sign enumeration). The module tally is 96 (91
 under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
