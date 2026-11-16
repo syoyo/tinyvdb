@@ -16,9 +16,12 @@
       n = 9, r = 4 : 246 faces   (true 110.85; ratio 2.22)
       n = 11, r = 5: 366 faces   (true 173.21; ratio 2.11)
 
-  overshoot the true area systematically, approaching a factor of `2` —
-  a concrete, reproducible witness of the direction-dependent rasterization
-  overshoot. The counts are machine-checked here by `native_decide`;
+  overshoot the true area systematically — a concrete, reproducible witness
+  of the direction-dependent rasterization overshoot. (Correction: the
+  counts follow the closed form `12 r² + 12 r + 6`, so against the true area
+  `4·√3·r²` the ratio tends to `12 / (4√3) = √3 ≈ 1.73`, not to `2`; the
+  closed form is machine-checked for `r = 1 … 16` below, and the overshoot
+  `faces ≥ √3 · area` is proved for every `r` *given* the closed form.) The counts are machine-checked here by `native_decide`;
   the true-area ratios are computed outside Lean and are recorded only in
   this comment and in `lean/VERIFICATION.md` (they involve `√3`, which is
   not needed for the formal statements).
@@ -31,6 +34,7 @@
   SPDX-License-Identifier: Apache-2.0
 -/
 import Mathlib.Tactic
+import Mathlib.Analysis.SpecialFunctions.Sqrt
 
 set_option linter.unusedSimpArgs false
 
@@ -67,6 +71,37 @@ theorem l1BallFaces_11_5 : l1BallFaces 11 5 = 366 := by native_decide
     contains strictly more directed faces than the octahedron's true face
     count scaled by a constant factor of two at the smaller radii. -/
 theorem l1BallFaces_increasing : 78 < 150 ∧ 150 < 246 ∧ 246 < 366 := by native_decide
+
+/-- **Closed form, bounded**: for `r = 1 … 16` (box side `2r + 1`) the directed
+    face count of the L¹ ball is `12 r² + 12 r + 6`. The general-`r` closed
+    form is *not* proved (it needs the L¹-shell counting argument; see
+    `lean/VERIFICATION.md`). -/
+theorem l1BallFaces_closed_bounded :
+    (List.range 16).all (fun i =>
+      l1BallFaces (2 * (i + 1) + 1) (i + 1) == 12 * (i + 1) ^ 2 + 12 * (i + 1) + 6) = true := by
+  native_decide
+
+/-- The overshoot, conditional on the closed form (any `r ≥ 0`): the staircase
+    count is at least `√3` times the true octahedron area `4·√3·r²`, because
+    `√3 · (4·√3·r²) = 12 r² ≤ 12 r² + 12 r + 6`. -/
+theorem overshoot_of_closed_form (r f : Nat) (h : f = 12 * r ^ 2 + 12 * r + 6) :
+    Real.sqrt 3 * (4 * Real.sqrt 3 * (r : ℝ) ^ 2) ≤ (f : ℝ) := by
+  have h3 : Real.sqrt 3 * Real.sqrt 3 = 3 := Real.mul_self_sqrt (by norm_num)
+  have hf : (f : ℝ) = 12 * (r : ℝ) ^ 2 + 12 * r + 6 := by
+    rw [h]; push_cast; ring
+  have hr : (0 : ℝ) ≤ r := Nat.cast_nonneg r
+  nlinarith [sq_nonneg (r : ℝ)]
+
+/-- The strict form: the count strictly exceeds the true area
+    `4·√3·r²` (`√3 < 7/4`). -/
+theorem strict_overshoot_of_closed_form (r f : Nat) (h : f = 12 * r ^ 2 + 12 * r + 6) :
+    4 * Real.sqrt 3 * (r : ℝ) ^ 2 < (f : ℝ) := by
+  have hs : Real.sqrt 3 < 7 / 4 := by
+    rw [Real.sqrt_lt' (by norm_num)]; norm_num
+  have hf : (f : ℝ) = 12 * (r : ℝ) ^ 2 + 12 * r + 6 := by
+    rw [h]; push_cast; ring
+  have hr : (0 : ℝ) ≤ r := Nat.cast_nonneg r
+  nlinarith [sq_nonneg (r : ℝ)]
 
 end StaircaseRatio
 
