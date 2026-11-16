@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Changed
+
+- **Breaking (C API/ABI and Python):** removed the dead
+  `tvdb_header_t.half_precision` member and the matching `half_precision`
+  key of the Python `VDBFile.header` dict. It was never set on read or write:
+  the file header has no such byte, and half precision is a per-grid property
+  (the `_HalfFloat` grid-type suffix and `is_saved_as_half_float` metadata),
+  which is unchanged.
+- The reader is stricter and now rejects inputs it used to accept:
+  - file versions above 225 (`TVDB_FILE_VERSION_HALF_GRID`) fail with
+    `TVDB_ERROR_UNSUPPORTED_VERSION` (only versions below 220 were rejected
+    before), and a grid descriptor whose `block_byte_offset` is not between
+    `grid_byte_offset` and `end_byte_offset` fails with
+    `TVDB_ERROR_INVALID_DATA`;
+  - grid-type strings must follow a strict grammar. Each `Tree_<type>_a_b_c`
+    level is one or two digits in `0..10`, separated by single `_`.
+    `Tree_float_5_4_3junk`, `5_4_`, `5__4_3` and `5_4_33` used to parse as
+    zero-sized extra levels and now fail with
+    `TVDB_ERROR_UNSUPPORTED_GRID_TYPE`;
+  - node masks are no longer allocated at the size the grid type claims before
+    checking it against the file: a claimed mask larger than the bytes left
+    below the grid's `end_byte_offset` is rejected, so a crafted
+    `Tree_float_10_10_10` can no longer force gigabyte-scale allocations, and
+    tree reads can no longer run past the grid's declared end.
+- Dense elementwise operations (`tvdb_csg_union`, `tvdb_csg_intersection`,
+  `tvdb_csg_difference`, `tvdb_comp_max/min/sum/mult`, morphology and
+  advection) now require both grids to have the same dimensions **and** the
+  same `voxel_size` and origin (exact float equality). Grids that only
+  matched in dimensions used to be blended voxel by voxel as if they
+  occupied the same space, which gave silently misaligned results; a
+  mismatch is now the documented no-op (the result grid is left untouched,
+  consistent with the void return of these functions). The contract is spelled
+  out in `tinyvdb_ops.h`.
+
 ### Fixed
 
 - Half-precision float writing is now round-to-nearest-even and NaN-preserving
@@ -12,6 +46,38 @@
   other and with OpenVDB's `truncateRealToHalf`. `tests/test_half_rounding.c`
   covers rounding, subnormal flushing, signed zero, Inf and NaN round trips
   and fails on the old scalar encoder when `TINYVDB_SIMD=OFF`.
+  The same encoder also evaluated an undefined 32-bit shift for floats with
+  binary exponent 94 (`[2^-33, 2^-32)`), which on x86-64 produced a bogus
+  non-zero half instead of +0; it is fixed and covered by the same test.
+- Writing a boolean leaf after loading a file wrote `{0,0,0}` as the leaf
+  origin, because the reader does not store node origins (they are implicit
+  in the child-mask slot) and the writer emitted the stored field. The
+  buffer-write traversal now computes the true origin, so load -> save keeps
+  boolean leaves at their voxel position (`tests/test_bool_leaf_origin.c`).
+- `tvdb_grid_to_nanovdb` and `tvdb_grid_to_nanovdb_float` now validate the
+  source tree (root and node types and levels, child indices, mask storage,
+  duplicated or cyclic children, leaf data) and return
+  `TVDB_ERROR_INVALID_DATA` for a malformed tree. Previously a corrupt
+  `child_indices` array could cause an out-of-bounds read, and children of
+  an unexpected node type were silently dropped from the output
+  (`tests/test_to_nanovdb_validation.c`).
+- The sign of dense mesh -> SDF values (CPU, and the Vulkan, CUDA and HIP
+  kernels) was taken from the closest *face's* normal. When the closest point
+  of the mesh was on an edge or vertex, the adjacent faces can disagree, so
+  voxels outside even a convex mesh could be signed negative, depending on the
+  traversal tie-break. The sign now uses the closest feature: the face normal
+  in a face interior, the sum of the two incident face normals on an edge, and
+  on a vertex the incident face whose normal pairs positively with the
+  offset to the query point (`tests/test_mesh_pseudo_normal.c`,
+  `tests/test_mesh_vertex_sign.c`). Output values change only where the old
+  sign was wrong.
+- Finite differences at the boundary of a dense grid used a clamped-neighbour
+  difference divided by `2h`, i.e. a one-cell difference at half strength.
+  `tvdb_gradient`, `tvdb_central_diff_x/y/z`, divergence, curl and the
+  closest-point transform now use a one-sided difference over `h` at boundary
+  voxels (and 0 along an axis of size 1); interior voxels are unchanged. The
+  Vulkan stencil shaders and the CUDA/HIP kernels match. Boundary voxel values
+  of these operators change, and are now exact for linear fields.
 
 ## 0.9.1 — 2026-10-28
 

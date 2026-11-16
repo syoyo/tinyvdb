@@ -9,7 +9,6 @@ typedef struct {
   uint32_t minor_version;
   // bool has_grid_offsets;
   bool is_compressed;
-  bool half_precision;
   std::string uuid;
   uint64_t offset_to_data;  // Byte offset to VDB data
 } VDBHeader;
