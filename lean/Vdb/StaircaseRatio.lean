@@ -20,8 +20,9 @@
   of the direction-dependent rasterization overshoot. (Correction: the
   counts follow the closed form `12 r² + 12 r + 6`, so against the true area
   `4·√3·r²` the ratio tends to `12 / (4√3) = √3 ≈ 1.73`, not to `2`; the
-  closed form is machine-checked for `r = 1 … 16` below, and the overshoot
-  `faces ≥ √3 · area` is proved for every `r` *given* the closed form.) The counts are machine-checked here by `native_decide`;
+  closed form is machine-checked for `r = 1 … 16` below, and proved for every
+  `r` in `Vdb/StaircaseClosed.lean` (`l1BallFaces_closed`), which also makes
+  the overshoot `faces ≥ √3 · area` unconditional.) The counts are machine-checked here by `native_decide`;
   the true-area ratios are computed outside Lean and are recorded only in
   this comment and in `lean/VERIFICATION.md` (they involve `√3`, which is
   not needed for the formal statements).
@@ -74,8 +75,7 @@ theorem l1BallFaces_increasing : 78 < 150 ∧ 150 < 246 ∧ 246 < 366 := by nati
 
 /-- **Closed form, bounded**: for `r = 1 … 16` (box side `2r + 1`) the directed
     face count of the L¹ ball is `12 r² + 12 r + 6`. The general-`r` closed
-    form is *not* proved (it needs the L¹-shell counting argument; see
-    `lean/VERIFICATION.md`). -/
+    form is `StaircaseClosed.l1BallFaces_closed`. -/
 theorem l1BallFaces_closed_bounded :
     (List.range 16).all (fun i =>
       l1BallFaces (2 * (i + 1) + 1) (i + 1) == 12 * (i + 1) ^ 2 + 12 * (i + 1) + 6) = true := by
