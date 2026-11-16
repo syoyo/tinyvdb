@@ -30,11 +30,12 @@ and building (`warningAsError` on, no `sorry`/`admit` in landed modules). The
 file round trip, tree model, mask-compression round trip, half-float
 encoding, winding-number and dipole far-field theory, narrow-band composition,
 geometry/SDF layer, CSG, Godunov/fast-sweeping/flood-fill/Euler theory, MC/DMC
-welding and ownership, and the dense-sampling coordinate change are all
-proved; the C code is checked against the model by differential harnesses
-(bit-exact for CSG and mesh→SDF). See `VERIFICATION.md` for the theorem
-inventory, the differential-harness results and the explicit list of what
-remains open or was abandoned with reasons.
+welding and ownership, the general-`n` padded-grid DMC-0 edge-closure
+theorem (`balanced_general` / `edgeClosed_general`), and the dense-sampling
+coordinate change are all proved; the C code is checked against the model by
+differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
+for the theorem inventory, the differential-harness results and the explicit
+list of what remains open or was abandoned with reasons.
 
 ## Conventions
 
