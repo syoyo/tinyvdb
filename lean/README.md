@@ -42,14 +42,18 @@ sharing exactly the central dual vertex, so `χ = 3` by the abstract glue
 lemma (`euler_glue`) — so "edge-manifold" and "`χ = 2`" are *false* in
 general, not merely unproved. The
 staircase face-count overshoot on the octahedron is proved for every radius
-(`StaircaseClosed`). Findings F1–F18 are tracked in the ledger (F17/F18 are
+(`StaircaseClosed`); general-set statements about the estimator
+(`StaircaseBoundary`: `adj6_connected`, `staircaseFaces_eq_zero_iff`,
+`staircaseFaces_le_exterior`/`_le_min`, the sharpness witness
+`staircaseFaces_six`) are landed — the consistency question for
+general sets remains open. Findings F1–F18 are tracked in the ledger (F17/F18 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids, and
-an off-by-one in the bounded sign enumeration). The module tally is 91 (86
+an off-by-one in the bounded sign enumeration). The module tally is 92 (87
 under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
 list of what remains open or was abandoned with reasons (general DMC-1
-manifold theorem, general Poincaré–Lefschetz, `staircaseFaces` for general
+manifold theorem, general Poincaré–Lefschetz, staircase-estimator consistency for general
 sets, Zhao 2005 / Phase C).
 
 ## Conventions

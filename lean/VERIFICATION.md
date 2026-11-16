@@ -90,6 +90,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vdb/FloodFill.lean` | signed flood fill on the dense lattice (`tvdb_signed_flood_fill`): `FarConn` (far-bounded 6-connected reachability as `ReflTransGen` of `FarStep`), `fillStep`/`fillIter` (the BFS closure as finite-iteration semantics), `mem_fillIter` (every closure point is seed-connected), `fillIter_stable` (the closure stabilizes by step `nx * ny * nz + 1`, by a cardinality pigeonhole), `fillIter_max` (**the top iterate is exactly the seed-connected far set** — the BFS/specification equality), `fillIter_far` (all visited points are far), `interior_adj_closed` (an interior point's far neighbours are interior), `interior_farconn` (**the state is constant on each 6-connected far component** — the rigorous content of "flood-fill marks components uniformly"), `fillSign_const_of_conn` (the sign is constant on components), and the volume theorems `interiorVolume_add` / `far_eq_interior_union_exterior` (interior + exterior far voxels = far volume, i.e. `#{v < 0} h³` for the filled level set). `staircaseFaces` is the staircase face-count estimator — documented as *not* consistent with the true surface area; the elementary count bound is proved (`staircaseFaces_le`: at most `6 · #interior`, by symbolic neighbour-slot enumeration), the consistency question is not. |
 | `Vdb/StaircaseRatio.lean` | the staircase face estimator, measured on the L¹ (octahedron) ball `|x−c|+|y−c|+|z−c| ≤ r`: `l1BallFaces` counts the directed faces from the deep cells to cells outside the ball, exactly, on `(2k+1)`-side grids (`native_decide`): `l1BallFaces_5_2` (78), `l1BallFaces_7_3` (150), `l1BallFaces_9_4` (246), `l1BallFaces_11_5` (366). The true octahedron area is `4√3·r²` (27.7 / 62.4 / 110.9 / 173.2 for r = 2..5), so the estimator overshoots by 2.8× / 2.4× / 2.2× / 2.1× — a concrete, reproducible witness that `staircaseFaces` is not consistent with the true area. The counts follow the closed form `12r² + 12r + 6` (machine-checked for `r = 1 … 16` by `l1BallFaces_closed_bounded`, and proved for every `r` in `Vdb/StaircaseClosed.lean`), so the ratio to the true area tends to `12/(4√3) = √3 ≈ 1.73` — the earlier "approaching a factor of 2" was wrong. `overshoot_of_closed_form`/`strict_overshoot_of_closed_form` prove `√3·area ≤ faces` and `area < faces` given the closed form, which `StaircaseClosed.l1BallFaces_closed` now supplies for every `r` (`l1BallFaces_overshoot`). The decimal ratios are computed outside Lean (they involve `√3`); the general `staircaseFaces_le` bound remains in `Vdb/FloodFill.lean`. |
 | `Vdb/StaircaseClosed.lean` | the **general-`r` closed form of the staircase face count**: `l1BallFaces_closed` — on the `(2r+1)`-box the L¹ ball of radius `r` has exactly `12 r² + 12 r + 6` directed faces, for **every** `r` (no `native_decide`; axioms `propext`, `Classical.choice`, `Quot.sound`). Proof: the count as a triple `Finset` sum (`l1BallFaces_eq_sum`, `allPoints_eq`), the per-point count split by axis (`G_eq`, six per-direction lemmas `gT_*`), the **line sum** (`line_sum`: along one axis a cross-section inside the diamond contributes exactly 2 exiting directions, one outside contributes 0 — a pointwise identity decided by `omega`), and the planar diamond count `2r² + 2r + 1` (`diamond_inner`, `weight_sum`, `diamond_card`); each of the three axes contributes `2·(2r²+2r+1)`. Corollaries `l1BallFaces_overshoot` and `l1BallFaces_strict_overshoot`: for every `r`, `faces ≥ √3 · (4√3 r²)` and `faces > 4√3 r²` — the staircase estimator provably overshoots the true octahedron area by a factor tending to `√3`. |
+| `Vdb/StaircaseBoundary.lean` | **general-set statements about the staircase estimator** (holds for every sign field / seed set, not just the octahedron). Grid connectedness `adj6_connected` (any two voxels of the box joined by an `adj6` path; `adj6_step_x/y/z` and `adj6_step_x'/y'/z'` monotone one-axis paths) and `adj6_path_exit` (a path from `a ∈ S` to `b ∉ S` yields a boundary edge `p' ∈ S`, `q' ∉ S`). From these, **`staircaseFaces_eq_zero_iff`**: the estimator vanishes exactly for the degenerate fills (empty or full box — i.e., a nonempty non-full fill always exposes an exterior voxel); `staircaseFaces_le_exterior` (at most `#exterior` — the union of exposed voxels is a subset of the exterior) and **`staircaseFaces_le_min`** (at most `min (6 · #interior) #exterior`); **`staircaseFaces_six`** (the `6 · #interior` bound is attained: a single isolated far voxel with empty seeds in a `3³` box has six exposed faces; `native_decide`); `mem_biUnion` (membership form) and `staircaseFaces_le` cross-checked via `FloodFill.staircaseFaces_le`. What remains open: consistency with any surface area; additivity over interior components (false in general); monotonicity in seeds (false). |
 | `Vdb/FastSweep.lean` | the fast-sweeping iteration abstractly (any `relax` satisfying the local lower bound): `sweepIter_mono` / `sweepIter_mono'` (pointwise non-increasing, T-FS-MONO), `sweepIter_frozen` (frozen boundary never changes, T-FS-FIX), `sweepIter_lb` (a lower bound on the initial data is preserved when the relaxation respects it, T-FS-SIGN), `sweepDrop_mono` / `sweepDrop_gap` / **`sweepIter_big_steps_card`** (the number of sweeps that lower some node by more than `tol > 0` is at most `(∑ v, (d₀ v − lb)) / tol`, so a `max_change ≤ tol` stop fires after finitely many sweeps — T-FS-TERM). The eikonal relaxation satisfies the `hrelax` hypothesis with `lb = 0` when the boundary is non-negative, so all four apply to the Godunov sweep. Convergence of the full 8-direction sweep to the exact solution (Zhao 2005) is *not* modelled. |
 | `Vdb/EikonalTop.lean` | the tree fast-sweeping relaxation (`sdf_eikonal` in `src/tinyvdb_sdf_tree.c`) with `⊤ = inactive`, over `WithTop ℝ`: `eikonalLo`/`eikonalMid`/`eikonalHi` (the internal three-way sort as a lattice computation), **`eikonalRelax a b c h`** (the C branch structure exactly: `⊤` for all-inactive triples, single finite → `a + h`, two finite → `a + h` or the 2-D solve, three finite → `a + h` / 2-D / 3-D solve with the `disc < 0` clamp), **`eikonalRelax_eq_godunov`** (sorted finite triples give exactly the `godunov` of `Vdb.Godunov` — the `max 0` clamps are identities on reachable branches, and `Real.sqrt` of a non-positive number is `0` anyway), **`eikonalRelax_nonneg`** (non-negative inputs, `⊤` allowed, give a non-negative result — the frozen-band-initialization argument), `godunov2D_nonneg`, `godunov2D_nonneg_of_nonneg`, `threeD_nonneg_of_nonneg`, `withTop_nonneg`, `eikonalRelax_top_top_top`. The C `sdf_eikonal` returns `INFINITY` when the smallest upwind value is `∞`; `eikonalRelax` mirrors it (first branch). |
 | `Vdb/TreeSweep.lean` | the tree sweep over a finite node set with a frozen band: `sweepStepT`/`sweepIterT` (frozen-band Gauss–Seidel-style pass), `sweepStepT_le`/`sweepIterT_mono'` (**T-FS-MONO**), **`sweepIterT_frozen`** (frozen voxels never change), **`sweepIterT_lb`** (a preserved lower bound is preserved; applied with `lb = 0` and the non-negative relaxation → **T-FS-SIGN**), **`fixedPoint_subsolution`** (**T-FS-FIX**, subsolution half: a fixed point of the sweep satisfies `d v ≤ relax d v` at every non-frozen node — the discrete Godunov-Eikonal inequality). Concrete instantiation: `treeRelax` (the per-node `eikonalRelax` on the min-neighbor triple, mirroring `sdf_eikonal(min x-nb, min y-nb, min z-nb, h)`), `tree_nonneg_of_nonneg` (T-FS-SIGN for the tree operator under a non-negativity-preserving stencil hypothesis), **`tree_fixed_point_subsolution`** (T-FS-FIX, tree case). The other half of T-FS-FIX (super-solution / comparison principle) is the Zhao 2005 problem and is **not** claimed; its bounded evidence is the `check_fastsweep.sh` differential. |
@@ -533,18 +534,21 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
      fast-sweeping theorems, T-FS-FIX (the fixed point solves the discrete
      Eikonal system), the full 8-direction convergence (Zhao 2005);
    * flood-fill `staircaseFaces` consistency (it is *not* a consistent
-     estimator; the definition is recorded and the elementary count bound is
-     **now landed** — `staircaseFaces_le` proves `staircaseFaces ≤ 6 · #interior`
-     by symbolic neighbour-slot enumeration; the overshoot is now also
-     **machine-checked** on the octahedron (`Vdb/StaircaseRatio.lean`: 78 /
-     150 / 246 / 366 directed faces vs `4√3·r²` true area — 2.8× / 2.4× /
-     2.2× / 2.1×; the counts match `12r² + 12r + 6`, so the limit ratio is
-     `√3`, not 2) — the closed form is machine-checked for `r = 1 … 16` and
-     **proved for every `r`** (`StaircaseClosed.l1BallFaces_closed`, by a
-     line-sum argument instead of an L¹-shell count), so the overshoot is
-     unconditional (`l1BallFaces_overshoot`). What remains open is a
-     statement for *general* sets (`staircaseFaces` is still not shown
-     inconsistent beyond this octahedron family);
+     estimator): besides `staircaseFaces_le` (`Vdb/FloodFill.lean`,
+     `staircaseFaces ≤ 6 · #interior`) and the octahedron overshoot
+     (`StaircaseRatio`/`StaircaseClosed`), **general-set statements are now
+     landed** (`Vdb/StaircaseBoundary.lean`): grid connectedness
+     (`adj6_connected`), the boundary-exit lemma (`adj6_path_exit`),
+     **`staircaseFaces_eq_zero_iff`** (the estimator vanishes exactly for the
+     degenerate empty/full fills), `staircaseFaces_le_exterior`,
+     `staircaseFaces_le_min` and the sharpness witness `staircaseFaces_six`
+     (a single isolated far voxel attains `6 · #interior`); the octahedron
+     overshoot is unconditional for every `r`
+     (`StaircaseClosed.l1BallFaces_closed`: counts `12r² + 12r + 6` vs
+     `4√3·r²` true area, ratios → √3). What remains open is consistency with
+     any surface area for general sets (no monotonicity/additivity — both
+     false), and any statement beyond the octahedron family for the
+     consistency question;
    * Poincaré–Lefschetz as a general theorem (checked only on two concrete
      solids), homology machinery;
    * MC welding (`T-MC-WELD`) — **LANDED** (`Vdb/McWeld.lean`); tree MC
@@ -654,7 +658,7 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
 
 ## Final tally
 
-* Landed Lean modules: 91 (86 under `Vdb/`, matched by the `Vdb.+` glob in
+* Landed Lean modules: 92 (87 under `Vdb/`, matched by the `Vdb.+` glob in
   `lakefile.lean`, + the `VdbSpec` library root + the four tool executables
   `VdbGen`, `VdbCheck`, `HalfCheck`, `MaskClassify`) — the library, the oracle
   generator and the differential tools, all with `warningAsError` on and
@@ -662,7 +666,7 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   stale 84/79 count; `Vdb/FilePrefix.lean`, `Vdb/GridBody.lean` and
   `Vdb/Cuberille.lean` were already covered by theorem rows but absent from
   the module tally.)
-* `lake build` green (9,134 jobs on 2026-11-16); `./lean/scripts/check_samples.sh`
+* `lake build` green (9,135 jobs on 2026-11-16); `./lean/scripts/check_samples.sh`
   **13/13**; `check_mask_classify.sh` **1,679,616/1,679,616** byte-exact;
   `check_half.sh`: **65,536/65,536** `h2f` + **192,940/192,940** `f2h`
   witnesses byte-exact (fiber audit clean over all 2³² inputs);
@@ -680,9 +684,11 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   (all regression-tested). Modelled/decided: F6, F10, F14. Documented
   deviation: F8.
 * Published: `origin/main` is at `f171874` (2026-11-16). Local `main` is ahead
-  by three commits after 2026-11-16 (the tally refresh `1e99457`, the WASM
-  C++17 build fix `f2cf51f`, and this verification-status update); they have
-  not been pushed. Each push follows the AGENTS.md pre-push audit.
+  by five commits after 2026-11-16 (`1e99457` tally refresh, `f2cf51f` WASM
+  C++17 build fix, `0fa0509` CUDA/RTX 5060 Ti verification record, `9f794ac`
+  DMC-0 dual-vertex-pinch module, and this staircase general-set module and
+  tally update); they have not been pushed. Each push follows the
+  AGENTS.md pre-push audit.
 * C matrix re-run on 2026-11-16 (fresh out-of-tree Ninja builds, `glslangValidator`
   15.1.0 unpacked rootless): scalar ASan/UBSan/float-cast-overflow **53/53**,
   SIMD+OpenMP **53/53** at `OMP_NUM_THREADS=1` and `=8`, GPU with generated
