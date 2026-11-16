@@ -1650,6 +1650,184 @@ theorem balanced_iff_local (n : Nat) (s : Lat → Bool) :
         uses_length_eq_localCount n s f true, uses_length_eq_localCount n s f false]
     exact h1
 
+/-! ### The candidate contribution lemmas (x faces)
+
+Each of the four live candidates of an x-normal face contributes to the local
+count exactly one boolean term: (a) the edge crosses the sign field, (b) the
+anchor is a genuine cell (the missing cases are the degenerate ones, e.g. a
+`Z = 0` anchor for candidate 2), and (c) the sign relation matches the
+direction. The two dead candidates never contribute
+(`e1_contributes_false_x`, `e2_contributes_false_x`).
+-/
+
+theorem ite_length {c : Prop} [Decidable c] {l r : List PadEdge} :
+    (if c then l else r).length = if c then l.length else r.length := by
+  split <;> rfl
+
+theorem ite_fst_pair {c : Prop} [Decidable c] {a b : Nat × Nat} :
+    (if c then a else b).1 = if c then a.1 else b.1 := by split <;> rfl
+
+theorem ite_snd_pair {c : Prop} [Decidable c] {a b : Nat × Nat} :
+    (if c then a else b).2 = if c then a.2 else b.2 := by split <;> rfl
+
+theorem hcontributes (n : Nat) (s : Lat → Bool) (f : Face) (dir : Bool) (e : PadEdge) :
+    contributes n s f dir e =
+      (crossedB n s e && (labels e.1 e.2 (s e.1)).contains ⟨f, dir⟩) := rfl
+
+theorem hcrossedB (n : Nat) (s : Lat → Bool) (e : PadEdge) :
+    crossedB n s e =
+      (decide (InLattice n e.1) && decide (InLattice n (succN e.1 e.2)) &&
+        (s e.1 != s (succN e.1 e.2))) := rfl
+
+theorem hAnchor1 (p : Lat) : anchorCell p 1 =
+    (if (decide (1 ≤ p.1) && decide (1 ≤ p.2.2)) = true then some (p.1 - 1, p.2.1, p.2.2 - 1) else none) := rfl
+
+theorem hAnchor2 (p : Lat) : anchorCell p 2 =
+    (if (decide (1 ≤ p.1) && decide (1 ≤ p.2.1)) = true then some (p.1 - 1, p.2.1 - 1, p.2.2) else none) := rfl
+
+theorem hAnchor0 (p : Lat) : anchorCell p 0 =
+    (if (decide (1 ≤ p.2.1) && decide (1 ≤ p.2.2)) = true then some (p.1, p.2.1 - 1, p.2.2 - 1) else none) := rfl
+
+theorem hLabels1 (p : Lat) (flip : Bool) : labels p 1 flip =
+    (if (decide (1 ≤ p.1) && decide (1 ≤ p.2.2)) = true then
+      match ij 1 flip with
+      | (i, j) =>
+        [⟨(addCell (p.1 - 1, p.2.1, p.2.2 - 1) j, i), false⟩, ⟨((p.1 - 1, p.2.1, p.2.2 - 1), j), false⟩,
+         ⟨((p.1 - 1, p.2.1, p.2.2 - 1), i), true⟩, ⟨(addCell (p.1 - 1, p.2.1, p.2.2 - 1) i, j), true⟩]
+    else []) := by
+  unfold labels
+  rw [hAnchor1 p]
+  by_cases hc : ((decide (1 ≤ p.1) && decide (1 ≤ p.2.2)) = true) <;> simp [hc]
+
+theorem hLabels2 (p : Lat) (flip : Bool) : labels p 2 flip =
+    (if (decide (1 ≤ p.1) && decide (1 ≤ p.2.1)) = true then
+      match ij 2 flip with
+      | (i, j) =>
+        [⟨(addCell (p.1 - 1, p.2.1 - 1, p.2.2) j, i), false⟩, ⟨((p.1 - 1, p.2.1 - 1, p.2.2), j), false⟩,
+         ⟨((p.1 - 1, p.2.1 - 1, p.2.2), i), true⟩, ⟨(addCell (p.1 - 1, p.2.1 - 1, p.2.2) i, j), true⟩]
+    else []) := by
+  unfold labels
+  rw [hAnchor2 p]
+  by_cases hc : ((decide (1 ≤ p.1) && decide (1 ≤ p.2.1)) = true) <;> simp [hc]
+
+theorem hLabels0 (p : Lat) (flip : Bool) : labels p 0 flip =
+    (if (decide (1 ≤ p.2.1) && decide (1 ≤ p.2.2)) = true then
+      match ij 0 flip with
+      | (i, j) =>
+        [⟨(addCell (p.1, p.2.1 - 1, p.2.2 - 1) j, i), false⟩, ⟨((p.1, p.2.1 - 1, p.2.2 - 1), j), false⟩,
+         ⟨((p.1, p.2.1 - 1, p.2.2 - 1), i), true⟩, ⟨(addCell (p.1, p.2.1 - 1, p.2.2 - 1) i, j), true⟩]
+    else []) := by
+  unfold labels
+  rw [hAnchor0 p]
+  by_cases hc : ((decide (1 ≤ p.2.1) && decide (1 ≤ p.2.2)) = true) <;> simp [hc]
+
+theorem hij1 : ∀ _flip : Bool, ij 1 _flip = if _flip then (0, 2) else (2, 0) := fun _flip => rfl
+theorem hij2 : ∀ _flip : Bool, ij 2 _flip = if _flip then (1, 0) else (0, 1) := fun _flip => rfl
+theorem hij0 : ∀ _flip : Bool, ij 0 _flip = if _flip then (2, 1) else (1, 2) := fun _flip => rfl
+
+theorem hadd0 : ∀ _c : Cell, addCell _c 0 = (_c.1 + 1, _c.2.1, _c.2.2) := fun _c => rfl
+theorem hadd1 : ∀ _c : Cell, addCell _c 1 = (_c.1, _c.2.1 + 1, _c.2.2) := fun _c => rfl
+theorem hadd2 : ∀ _c : Cell, addCell _c 2 = (_c.1, _c.2.1, _c.2.2 + 1) := fun _c => rfl
+
+theorem hsn0 : ∀ _p : Lat, succN _p 0 = (_p.1 + 1, _p.2.1, _p.2.2) := fun _p => rfl
+theorem hsn1 : ∀ _p : Lat, succN _p 1 = (_p.1, _p.2.1 + 1, _p.2.2) := fun _p => rfl
+theorem hsn2 : ∀ _p : Lat, succN _p 2 = (_p.1, _p.2.1, _p.2.2 + 1) := fun _p => rfl
+
+theorem contrib_x2 (n : Nat) (s : Lat → Bool) (X Y Z : Nat) (d : Bool) :
+    contributes n s ((X, Y, Z), 0) d ((X + 1, Y, Z), 1) =
+      (crossedB n s ((X + 1, Y, Z), 1) && decide (1 ≤ Z) && (s (X + 1, Y, Z) != d)) := by
+  rw [hcontributes, hLabels1]
+  simp only [decide_eq_true (show (1 ≤ X + 1) from by omega), Bool.true_and]
+  by_cases hc : (decide (1 ≤ Z) = true)
+  · rw [ite_eq_left hc]
+    simp only [decide_eq_true_eq] at hc
+    have hZ : Z - 1 + 1 = Z := by omega
+    rw [hij1]
+    cases he : s (X + 1, Y, Z) <;> cases d <;>
+      simp [Prod.mk.injEq, he, hadd2, hZ, hc] <;> omega
+  · rw [ite_eq_right hc]
+    simp [hc]
+
+theorem contrib_x3 (n : Nat) (s : Lat → Bool) (X Y Z : Nat) (d : Bool) :
+    contributes n s ((X, Y, Z), 0) d ((X + 1, Y, Z), 2) =
+      (crossedB n s ((X + 1, Y, Z), 2) && decide (1 ≤ Y) && (s (X + 1, Y, Z) == d)) := by
+  rw [hcontributes, hLabels2]
+  simp only [decide_eq_true (show (1 ≤ X + 1) from by omega), Bool.true_and]
+  by_cases hc : (decide (1 ≤ Y) = true)
+  · rw [ite_eq_left hc]
+    simp only [decide_eq_true_eq] at hc
+    have hY : Y - 1 + 1 = Y := by omega
+    rw [hij2]
+    cases he : s (X + 1, Y, Z) <;> cases d <;>
+      simp [Prod.mk.injEq, he, hadd0, hadd1, hY, hc] <;> omega
+  · rw [ite_eq_right hc]
+    simp [hc]
+
+theorem contrib_x4 (n : Nat) (s : Lat → Bool) (X Y Z : Nat) (d : Bool) :
+    contributes n s ((X, Y, Z), 0) d ((X + 1, Y, Z + 1), 1) =
+      (crossedB n s ((X + 1, Y, Z + 1), 1) && (s (X + 1, Y, Z + 1) == d)) := by
+  rw [hcontributes, hLabels1]
+  simp only [decide_eq_true (show (1 ≤ X + 1) from by omega),
+    decide_eq_true (show (1 ≤ Z + 1) from by omega), Bool.and_true, Bool.true_and, ite_true]
+  rw [hij1]
+  cases he : s (X + 1, Y, Z + 1) <;> cases d <;>
+    simp [Prod.mk.injEq, he, hadd0, hadd1, hadd2]
+
+theorem contrib_x5 (n : Nat) (s : Lat → Bool) (X Y Z : Nat) (d : Bool) :
+    contributes n s ((X, Y, Z), 0) d ((X + 1, Y + 1, Z), 2) =
+      (crossedB n s ((X + 1, Y + 1, Z), 2) && (s (X + 1, Y + 1, Z) != d)) := by
+  rw [hcontributes, hLabels2]
+  simp only [decide_eq_true (show (1 ≤ X + 1) from by omega),
+    decide_eq_true (show (1 ≤ Y + 1) from by omega), Bool.and_true, Bool.true_and, ite_true]
+  rw [hij2]
+  cases he : s (X + 1, Y + 1, Z) <;> cases d <;>
+    simp [Prod.mk.injEq, he, hadd0, hadd1, hadd2]
+
+/-- **Local count balance at an interior x-face**: all four corner lattice
+    points are in the interior (`X + 1 < n`, `1 ≤ Y, Z`, `Y + 1 ≤ n`,
+    `Z + 1 ≤ n`), so the InL̄ gates are all `true` and the equality reduces
+    to the machine-checked window identity. -/
+theorem localCount_x_interior (n : Nat) (s : Lat → Bool) (X Y Z : Nat)
+    (hX : X + 1 < n) (hY0 : 1 ≤ Y) (hZ0 : 1 ≤ Z) (hYn : Y + 1 ≤ n) (hZn : Z + 1 ≤ n) :
+    localCount n s ((X, Y, Z), 0) true = localCount n s ((X, Y, Z), 0) false := by
+  have hc : candidates ((X, Y, Z), 0) =
+      [((X + 1, Y - 1, Z), 2), ((X + 1, Y, Z - 1), 1),
+       ((X + 1, Y, Z), 1), ((X + 1, Y, Z), 2),
+       ((X + 1, Y, Z + 1), 1), ((X + 1, Y + 1, Z), 2)] := rfl
+  have iL2 : decide (InLattice n (X + 1, Y, Z)) = true := by
+    apply decide_eq_true_eq.mpr
+    show X + 1 ≤ n ∧ Y ≤ n ∧ Z ≤ n
+    exact ⟨by omega, by omega, by omega⟩
+  have iL2' : decide (InLattice n (X + 1, Y + 1, Z)) = true := by
+    apply decide_eq_true_eq.mpr
+    show X + 1 ≤ n ∧ Y + 1 ≤ n ∧ Z ≤ n
+    exact ⟨by omega, by omega, by omega⟩
+  have iL3' : decide (InLattice n (X + 1, Y, Z + 1)) = true := by
+    apply decide_eq_true_eq.mpr
+    show X + 1 ≤ n ∧ Y ≤ n ∧ Z + 1 ≤ n
+    exact ⟨by omega, by omega, by omega⟩
+  have iL4' : decide (InLattice n (X + 1, Y + 1, Z + 1)) = true := by
+    apply decide_eq_true_eq.mpr
+    show X + 1 ≤ n ∧ Y + 1 ≤ n ∧ Z + 1 ≤ n
+    exact ⟨by omega, by omega, by omega⟩
+  have hm2 : decide (1 ≤ Z) = true := decide_eq_true_eq.mpr hZ0
+  have hm3 : decide (1 ≤ Y) = true := decide_eq_true_eq.mpr hY0
+  unfold localCount
+  rw [hc]
+  simp only [List.filter_cons, List.filter_nil, ite_length, ite_false,
+    List.length_cons, List.length_nil, Bool.false_eq_true,
+    e1_contributes_false_x, e2_contributes_false_x]
+  simp only [contrib_x2, contrib_x3, contrib_x4, contrib_x5]
+  simp only [hcrossedB, hsn0, hsn1, hsn2, iL2, iL2', iL3', iL4', hm2, hm3,
+    Bool.and_true, Bool.true_and, ite_true, ite_false]
+  generalize he : s (X + 1, Y, Z) = e
+  generalize hf : s (X + 1, Y + 1, Z) = f
+  generalize hg : s (X + 1, Y, Z + 1) = g
+  generalize hh : s (X + 1, Y + 1, Z + 1) = h
+  clear he hf hg hh
+  revert e f g h
+  native_decide
+
 end PadGrid
 
 end Vdb
