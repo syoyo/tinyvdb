@@ -64,14 +64,20 @@ fields of the bounded `n = 3` padded grid (`DmcOnePad`: every quad has four
 distinct corners, mesh edge list is `EdgeClosed` and duplicate-free), its
 component count and `χ = 2 × #components` are machine-checked against the
 MC soup (`DmcOneDual`), and a seeded `n = 4` sample verifies the same
-invariants (`DmcOnePad4`) — and the general-`n` Euler
-characteristic `χ = V − F` is proven for the shell-pinned assembled mesh
+invariants (`DmcOnePad4`) — and the general-`n`
+stitching machinery is partially landed: the face framework
+(`DmcOneStitch`), the symbolic orientation law for all 24 boundary-edge
+instances (`DmcOneStitchOrient`), and the cube-local face-pairing
+enumerations machine-checked over all 256 cases × 3 normal axes × 2 sides
+(`DmcOneStitchEnum`: paired edges emit opposite-oriented F-sides; pairs are
+owned by one patch) — with the general-`n` Euler
+characteristic `χ = V − F` proven for the shell-pinned assembled mesh
 **conditional on the open watertight (`EdgeClosed`) wall**
 (`DmcOneEuler`: quads machine-checked well-formed, mesh loop-free,
 `|mesh| = 4·|crossed|`, fully proven; surrogate axioms only) — the
 general padded-grid DMC-1 manifold theorem remains open. Findings F1–F18 are tracked in the ledger (F17/F18 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids, and
-an off-by-one in the bounded sign enumeration). The module tally is 103 (98
+an off-by-one in the bounded sign enumeration). The module tally is 107 (102
 under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
