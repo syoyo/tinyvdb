@@ -125,5 +125,59 @@ theorem pairs_count_nontrivial :
     pairsCount 0 0 ≥ 100 ∧ pairsCount 2 0 ≥ 100 := by
   native_decide
 
+/-- Face corner bits of cell `k` in cyclic corner order, for the plus
+    (`side = 0`) and minus (`side = 1`) side frames. -/
+def maskPlus (na k : Nat) : List Nat :=
+  match na with
+  | 0 => [0, 3, 7, 4].map (caseBit k)
+  | 1 => [0, 1, 5, 4].map (caseBit k)
+  | _ => [0, 1, 2, 3].map (caseBit k)
+
+def maskMinus (na k : Nat) : List Nat :=
+  match na with
+  | 0 => [1, 2, 6, 5].map (caseBit k)
+  | 1 => [3, 2, 6, 7].map (caseBit k)
+  | _ => [4, 5, 6, 7].map (caseBit k)
+
+/-- The index of the frame-local edge `l` in the face's boundary-edge
+    list. Both frames traverse the face corners in the same cyclic
+    order, so the index is frame-independent. -/
+def edgeIndex (na side l : Nat) : Nat :=
+  (enumFaceEdges na side).findIdx? (· == l) |>.getD 0
+
+/-- The pairing of a case on a face, as index pairs (`min, max`-normalized). -/
+def pairsIdx (k : Nat) (na side : Nat) : List (Nat × Nat) :=
+  (pairsOnFace k na side).map fun (a, b) =>
+    let i := edgeIndex na side a; let j := edgeIndex na side b
+    if i ≤ j then (i, j) else (j, i)
+
+/-- Multiset equality of pair lists (small, 4 indices). -/
+def pairsMultiEq (l₁ l₂ : List (Nat × Nat)) : Bool :=
+  let allPairs := (List.range 4).flatMap fun i => (List.range 4).map fun j => (i, j)
+  allPairs.all fun p => l₁.count p == l₂.count p
+
+/-- **Cross-cell pairing correspondence** (machine-checked over all
+    256×256 pairs of cell cases, for every normal axis): two cells
+    whose shared face carries the same corner signs pair the same
+    geometric boundary edges — the paired-edge sets coincide index-wise
+    between the two local frames (which traverse the face corners in the
+    same cyclic order). -/
+def pairingCrossOk (na : Nat) : Bool :=
+  (List.range 256).all fun k1 =>
+    (List.range 256).all fun k2 =>
+      !(maskPlus na k1 == maskMinus na k2) || pairsMultiEq (pairsIdx k1 na 0) (pairsIdx k2 na 1)
+
+theorem pairing_cross_checked :
+    pairingCrossOk 0 = true ∧ pairingCrossOk 1 = true ∧ pairingCrossOk 2 = true := by
+  native_decide
+
+def pairingAgreeCount (na : Nat) : Nat :=
+  (List.range 256).foldl (fun acc k1 =>
+    acc + (List.range 256).countP (fun k2 => maskPlus na k1 == maskMinus na k2)) 0
+
+theorem pairing_agree_nontrivial :
+    1000 ≤ pairingAgreeCount 0 ∧ 1000 ≤ pairingAgreeCount 2 := by
+  native_decide
+
 end DmcOneStitch
 end Vdb
