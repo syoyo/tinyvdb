@@ -52,11 +52,13 @@ expansion is machine-checked in closure form (`ConeExpansion`: `p − q` lies
 in the closure of the cone of tight face normals — the Farkas content of
 `p − q = Σ λᵢ nᵢ`) and in exact form (`ConeClosed`: a finitely generated
 pointed cone is closed, so `p − q = Σ λᵢ nᵢ` with `λᵢ ≥ 0` over the tight
-faces), and the far-field asymptotic consistency of the dipole estimator is
+faces), and the angle-weighted (Bærentzen–Aanæs) apex normal pairs strictly
+positively at the F16 trap point (`AnglePseudoNormal`), and the far-field
+asymptotic consistency of the dipole estimator is
 machine-checked (`WindingFarField`: `t² · (solidAngle − faceDipole) → 0`
 along a ray). Findings F1–F18 are tracked in the ledger (F17/F18 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids, and
-an off-by-one in the bounded sign enumeration). The module tally is 97 (92
+an off-by-one in the bounded sign enumeration). The module tally is 98 (93
 under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
