@@ -61,11 +61,13 @@ decomposition is machine-checked over all 256 cases (`DmcOne`: patch counts
 `(2, 162, 82, 8, 2)`; every cube edge owned by at most one patch), and the
 assembled DMC-1 mesh is machine-checked watertight for all 256 shell-pinned
 fields of the bounded `n = 3` padded grid (`DmcOnePad`: every quad has four
-distinct corners, mesh edge list is `EdgeClosed` and duplicate-free) — the
-general padded-grid DMC-1 manifold theorem remains open. Findings F1–F18
-are tracked in the ledger (F17/F18 are
+distinct corners, mesh edge list is `EdgeClosed` and duplicate-free), its
+component count and `χ = 2 × #components` are machine-checked against the
+MC soup (`DmcOneDual`), and a seeded `n = 4` sample verifies the same
+invariants (`DmcOnePad4`) — the general padded-grid DMC-1 manifold theorem
+remains open. Findings F1–F18 are tracked in the ledger (F17/F18 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids, and
-an off-by-one in the bounded sign enumeration). The module tally is 100 (95
+an off-by-one in the bounded sign enumeration). The module tally is 102 (97
 under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
