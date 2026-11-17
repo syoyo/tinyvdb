@@ -143,5 +143,12 @@ theorem localEdge_faceEdges (na : Nat) (side : Nat) (p : Lat)
 
 
 
+/-- A cell case fits in 8 bits. -/
+theorem cellCase_lt_256 (s : Vdb.DmcOnePad.Lat → Bool) (c : Vdb.DmcOnePad.Cell) :
+    Vdb.DmcOnePad.cellCase s c < 256 := by
+  unfold Vdb.DmcOnePad.cellCase
+  split_ifs <;> omega
+
+
 end DmcOneStitch
 end Vdb
