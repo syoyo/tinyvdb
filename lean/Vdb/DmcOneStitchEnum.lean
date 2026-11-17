@@ -179,5 +179,67 @@ theorem pairing_agree_nontrivial :
     1000 ≤ pairingAgreeCount 0 ∧ 1000 ≤ pairingAgreeCount 2 := by
   native_decide
 
+
+
+/-- The cell case as a function of the 8 corner signs (in Bourke
+    corner order). -/
+def mkCase (b0 b1 b2 b3 b4 b5 b6 b7 : Bool) : Nat :=
+  (if b0 then 1 else 0) + (if b1 then 2 else 0) + (if b2 then 4 else 0) + (if b3 then 8 else 0)
+  + (if b4 then 16 else 0) + (if b5 then 32 else 0) + (if b6 then 64 else 0) + (if b7 then 128 else 0)
+
+/-- The `j`-th bit of the case is the `j`-th corner sign —
+    machine-checked over all 256 sign assignments. -/
+theorem mkCase_bit :
+    ∀ (b0 b1 b2 b3 b4 b5 b6 b7 : Bool) (j : Nat), j < 8 →
+      mkCase b0 b1 b2 b3 b4 b5 b6 b7 / 2 ^ j % 2 =
+        if ([b0, b1, b2, b3, b4, b5, b6, b7].getD j false) = true then 1 else 0 := by
+  native_decide
+
+
+/-- `caseBit` of a case built from sign bits — a symbolic accessor
+    bridge for the mask reasoning. -/
+theorem caseBit_mkCase :
+    ∀ (b0 b1 b2 b3 b4 b5 b6 b7 : Bool) (j : Nat), j < 8 →
+      caseBit (mkCase b0 b1 b2 b3 b4 b5 b6 b7) j =
+        if ([b0, b1, b2, b3, b4, b5, b6, b7].getD j false) = true then 1 else 0 := by
+  intro b0 b1 b2 b3 b4 b5 b6 b7 j hj
+  exact mkCase_bit b0 b1 b2 b3 b4 b5 b6 b7 j hj
+
+/-- The cell case as a function of the 8 corner sign values. -/
+theorem mkCase_eq_cellCase (s : Vdb.PadGrid.Lat → Bool) (c : Vdb.DmcOnePad.Cell) :
+    Vdb.DmcOnePad.cellCase s c =
+      mkCase (s (c.1, c.2.1, c.2.2)) (s (c.1 + 1, c.2.1, c.2.2)) (s (c.1 + 1, c.2.1 + 1, c.2.2))
+             (s (c.1, c.2.1 + 1, c.2.2)) (s (c.1, c.2.1, c.2.2 + 1)) (s (c.1 + 1, c.2.1, c.2.2 + 1))
+             (s (c.1 + 1, c.2.1 + 1, c.2.2 + 1)) (s (c.1, c.2.1 + 1, c.2.2 + 1)) := rfl
+
+/-- **Mask agreement across a shared face** (symbolic proof, all three
+    normal axes): the four corner signs of the shared face occupy the
+    same Bourke-corner bit positions in the two cells' unshared frames
+    up to the involutive corner correspondence, so the face masks are
+    literally equal. Holds for every sign field `s` and base point `p`
+    with `1 ≤ p`. -/
+theorem maskPlus_eq_maskMinus (na : Nat) (s : Vdb.PadGrid.Lat → Bool) (p : Vdb.PadGrid.Lat)
+    (hna : na < 3) (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2) :
+    maskPlus na (Vdb.DmcOnePad.cellCase s (facePlusCell na p)) =
+    maskMinus na (Vdb.DmcOnePad.cellCase s (faceMinusCell na p)) := by
+  interval_cases na
+  all_goals
+    dsimp only [maskPlus, maskMinus]
+  all_goals
+    simp [facePlusCell, faceMinusCell]
+  all_goals
+    simp only [mkCase_eq_cellCase]
+  all_goals
+    simp only [caseBit_mkCase _ _ _ _ _ _ _ _ (0 : Nat) (by decide),
+      caseBit_mkCase _ _ _ _ _ _ _ _ (1 : Nat) (by decide),
+      caseBit_mkCase _ _ _ _ _ _ _ _ (2 : Nat) (by decide),
+      caseBit_mkCase _ _ _ _ _ _ _ _ (3 : Nat) (by decide),
+      caseBit_mkCase _ _ _ _ _ _ _ _ (4 : Nat) (by decide),
+      caseBit_mkCase _ _ _ _ _ _ _ _ (5 : Nat) (by decide),
+      caseBit_mkCase _ _ _ _ _ _ _ _ (6 : Nat) (by decide),
+      caseBit_mkCase _ _ _ _ _ _ _ _ (7 : Nat) (by decide)]
+  all_goals
+    simp [Nat.sub_add_cancel hx.1, Nat.sub_add_cancel hx.2.1, Nat.sub_add_cancel hx.2.2]
+
 end DmcOneStitch
 end Vdb
