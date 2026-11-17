@@ -60,6 +60,7 @@ Toolchain: Lean `v4.35.0`, mathlib `v4.35.0`. Build gate: `lake build`
 | `Vdb/DmcOnePad.lean` | **DMC-1 (Nielson dual marching cubes) on the bounded padded grid — the assembled mesh, machine-checked over all 256 shell-pinned fields.** Model: `(n+1)^3` lattice (`n = 3`), shell pinned to `false`; cells carry their MC case from the 8 corner signs (`cellCase`, Bourke bit order); each crossed lattice edge emits one quad whose corners are the patch vertices of the four incident cells, in cyclic order (`incidentCells`, same cyclic order as the DMC-0 `labels`); the mesh's directed edge list is `quadDirectedEdges`. Machine-checked for **all 256 shell-pinned fields** (`native_decide`): **`fin3_quads_nodup`** (every quad has 4 pairwise-distinct corners); **`fin3_edgeClosed`** (the directed mesh edge list is `EdgeClosed` — watertightness of the assembled surface); **`fin3_mesh_nodup`** (no directed edge used more than once — no `badEdgeCount` pathology); **`fin3_loopless`**; and consequently `2·E = 4·F` and `χ = V − F` (`fin3_euler`, via `QuadEuler.two_mul_card_undirected`/`euler_eq_vertices_sub_faces`). Not claimed: arbitrary `n` (the general padded-grid DMC-1 manifold theorem remains open and multi-week; this is the bounded shell-pinned instance, the DMC-1 analogue of the bounded evidence in `Vdb/Cuberille.lean`); the χ landscape over the 256 fields is machine-checked: **167 χ = 2, 78 χ = 4, 8 χ = 6 (`[22, 41, 73, 97, 104, 134, 146, 148]`), 2 χ = 8 (`[105, 150]`), 1 χ = 0 (the empty field)** — χ is always even and ≥ 0 on this family, and edge-manifoldness does not pin χ = 2 (mirroring the DMC-0 finding); the DMC duality (`T-DMC1-DUAL`) is not claimed. |
 | `Vdb/DmcOneDual.lean` | **the DMC-1 mesh is dual to the MC soup — connected components and χ = 2 × components, machine-checked over all 256 shell-pinned fields.** `soupComponents` (union-find over the grid's ≤ 135 MC triangles, shared crossed-edge vertices) and `meshComponents` (union-find over the mesh's vertex graph) are computed for every shell-pinned field of the bounded `n = 3` padded grid; **`fin3_dual_components`**: mesh and soup have exactly the same number of connected components (all `native_decide`). **`fin3_chi_eq_two_mul_components`**: `χ = V − F = 2 × #components` — combined with `fin3_euler`, the machine-checked χ landscape is 167 fields × (1 component, χ = 2), 78 × (2 components, χ = 4), 8 × (3 components, χ = 6: `[22, 41, 73, 97, 104, 134, 146, 148]`), 2 × (4 components, χ = 8: `[105, 150]`), 1 empty field: **every component is a sphere as far as χ is concerned**, on this family. Not claimed: sphere-ness (genus is not computed), arbitrary `n`; `T-DMC1-DUAL` (the vertex ↔ quad bijection beyond connectivity) is not claimed. |
 | `Vdb/DmcOnePad4.lean` | **DMC-1 on the `n = 4` padded grid — a curated seeded sample (bounded evidence, not exhaustive).** The `n = 3` family is exhaustive (`Vdb/DmcOnePad.lean`); at `n = 4` the interior is `3³ = 27` points (`2^27` fields, infeasible), so this module machine-checks a curated sample covering sparse/dense/structured patterns: the **27 single-point fields** and eight seeds (`[3, 77, 424242, 3735928559, 4294967295, 267452175, 4042322160, 305419896]`) plus the two-cluster field `2^0 + 2^26`. **`fin4_sample_nodup`** / **`fin4_sample_edgeClosed`** / **`fin4_sample_loopless`** / **`fin4_sample_mesh_nodup`** — quads well-formed, mesh watertight (`EdgeClosed`), no loops, no repeated directed edge; **`fin4_sample_components`** — soup and mesh component counts agree on every sampled field (samples include 1-, 2- and 3-component fields); **`fin4_singles_*`** (the 27 single-point fields, one component each); **`fin4_two_cluster_chi`** — `χ = 4` (two spheres). Not claimed: exhaustive coverage of the `n = 4` family; arbitrary `n`; the DMC duality beyond sampled connectivity. |
+| `Vdb/DmcOneEuler.lean` | **the general-`n` DMC-1 mesh, and its Euler characteristic conditional on the (open) watertight theorem.** The assembled DMC-1 mesh is defined for **arbitrary** `n` (shell-pinned `n³`-cell padded grid). Machine-checked (no `native_decide`; axioms `propext`/`Classical.choice`/`Quot.sound`): **`anchorCell_of_pinned`** (the crossed edge's transverse anchor cell exists), **`incidentCells_nodup`** (the four incident cells are pairwise distinct), **`quad_ok`**/**`dmcOneQuadN`** (every crossed lattice edge emits a quad with four pairwise-distinct corners), **`quad_edges_ne`**, **`mesh_loopless`**, **`quadDirectedEdges_length`**, **`length_flatMap_quadDirectedEdges`**, **`dmcOneQuad_length`**, **`dmcOneQuads_length`**, **`mesh_length`** (`|mesh| = 4·|crossed|`). **`meshEdges_card_dmc1`** and **`euler_general_dmc1`**: under the shell-pinning hypothesis *plus* the hypothesis that the directed edges are duplicate-free and `EdgeClosed` (the exact content of the open wall), `2·|E| = 4·F` and **`χ = V − F` for every `n`**, mirroring `QuadEulerPad`'s general-`n` cuberille theorem. Not claimed: `EdgeClosed` for arbitrary `n` (the wall — the bounded `n = 3` exhaustive check and `n = 4` sample are evidence only); the duality `T-DMC1-DUAL` beyond connectivity; `χ = 2` (false in general). |
 | `Vdb/CellOwner.lean` | tree-MC ownership (`T-OWN-PART`): **`ownerOf`** — the owner of a crossing cell on the walked side `S` is `S.min'` (lowest-numbered corner on the walked side, the C `tool_ctz32(side)`); `owner_mem`, **`owner_least`** (below every other walked-side corner), **`unique_owner`** (exactly one of the walked-side visits passes the ownership test — the cell is classified at most once; the C `tool_insert` first-classification-survives map keeps it), **`owner_of_crosses`** (a crossing cell's walked side is nonempty). **`toolCornerOfBit`** (the C array `{0,1,3,2,4,5,7,6}`, corner-bit → `tool_corners` order) is a bijection (`tool_corner_of_bit_bij`, by `decide`). **Orientation**: `triangle_det_flip` (the signed volume of an `M`-imaged triangle scales by `det M`, i.e. `V3.triple` equivariance) and **`triangle_det_neg`** (`det M < 0` strictly flips the signed volume) — the orientation half of `T-OWN-PART`. The region-growing visitation invariant itself is **LANDED** in modelled form (`Vdb/OwnerWalk.lean`: exactly one position passes the C accept test `tool_corner_of_bit[i] == tool_ctz32(side)`). |
 | `Vdb/OwnerWalk.lean` | the MC visitation invariant (`T-OWN-PART`, owner side): **`ctz32`** (the C `tool_ctz32` index of the least set bit of the 8-bit walked-side mask, modelled over a nonempty `Fin 8`), **`sideMask`/`sideMask_spec`**/**`ctz32_sideMask`** (the C mask ↔ least-visited-corner equality), **`accept`** (the C accept test `tool_corner_of_bit[i] == ctz32(side)`), **`accept_subsingleton`**, **`accept_count_one`** (exactly one position passes the ownership test when the walked side is nonempty) and **`visit_implies_classify`** (the visitation invariant: a crossing cell whose walked side is reached classifies exactly once — under the collect walk's coverage contract as the hypothesis). Not modelled: the collect walk itself (`tool_regions_*`); its coverage of stored leaves is taken as the `hcover` hypothesis, documented. |
 | `Vdb/McAdapt.lean` | MC adaptive-vertex clustering (`tool_adapt`, `src/tinyvdb_sparse_tools.c`): the ℝ-level clustering guarantee over `Point = EuclideanSpace ℝ (Fin 3)`. **`SameCell`** (equal per-axis Morton keys `⌊vᵢ / step⌋`, the `memcmp` of the cluster record); **`floor_interval`** (shared floor bounds of two same-cell vertices per axis), **`same_cell_coord_abs_le`** (|uᵢ − vᵢ| ≤ step), **`same_cell_dist_le`** (same cell ⇒ `dist u v ≤ √3 · step`), **`same_cell_dist_le_tolerance`** (at the C clustering scale `step = tolerance / √3`, clustered vertices pair up within `tolerance` — the caller's promise), **`cellMidpoint`** (the per-axis `(⌊uᵢ / s⌋ + 1/2)·s` midpoint), **`cell_midpoint_coord_abs_le`** (≤ step/2), **`midpoint_dist_le`** (dist to midpoint ≤ √3/2 · step), **`midpoint_dist_le_half_tolerance`** (≤ tolerance/2 at the clustering scale). The Float floor/int64-key layer is now verified by executable twin + differential harness (`Vdb/McAdaptKey.lean`). Still not modelled as theorems: the IEEE-754 rounding semantics of `floor`/division (no rounding lemmas exist for `Float.Model`; crate note: the C's `safe` re-check is enforced by C, not a theorem), the Morton ordering, and the exact int64 `memcmp` equality is exercised only via the harness. |
@@ -537,8 +538,15 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
    and soup have the same component count; `χ = 2 × #components`; every
    component is a sphere as far as χ is concerned), and a **seeded `n = 4`
    sample** (single-point fields, structured seeds, two-cluster field)
-   verifies the same invariants (`Vdb/DmcOnePad4.lean`) —
-   the general DMC-1 padded-grid stitching theorem remains open;
+   verifies the same invariants (`Vdb/DmcOnePad4.lean`), and the
+   **general-`n` Euler theorem is proven conditional on the watertight
+   wall** (`Vdb/DmcOneEuler.lean`: the assembled mesh is defined for arbitrary
+   `n`; quads are machine-checked well-formed, the mesh is loop-free, and
+   `|mesh| = 4·|crossed|`; **`euler_general_dmc1`**: under shell pinning
+   plus `EdgeClosed` + no repeated directed edge, `χ = V − F` for every `n`;
+   fully proven, axioms `propext`/`Classical.choice`/`Quot.sound`) —
+   the general DMC-1 *stitching* theorem (`EdgeClosed` for arbitrary `n`)
+   remains the open wall;
    the DMC-0 counterpart landed (`edgeClosed_general`, see the module table)), the BVH
    closest-triangle traversal (`Vdb/Bvh.lean`, **`search_eq_brute`**) and the
    narrow-band mesh→level-set covering bound (`Vdb/NarrowBand.lean`,
@@ -698,7 +706,7 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
 
 ## Final tally
 
-* Landed Lean modules: 102 (97 under `Vdb/`, matched by the `Vdb.+` glob in
+* Landed Lean modules: 103 (98 under `Vdb/`, matched by the `Vdb.+` glob in
   `lakefile.lean`, + the `VdbSpec` library root + the five tool executables
   `VdbGen`, `VdbCheck`, `HalfCheck`, `MaskClassify`, `McAdaptKey`) — the library, the oracle
   generator and the differential tools, all with `warningAsError` on and
@@ -706,7 +714,7 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   stale 84/79 count; `Vdb/FilePrefix.lean`, `Vdb/GridBody.lean` and
   `Vdb/Cuberille.lean` were already covered by theorem rows but absent from
   the module tally.)
-* `lake build` green (9,145 jobs on 2026-11-17); `./lean/scripts/check_samples.sh`
+* `lake build` green (9,146 jobs on 2026-11-17); `./lean/scripts/check_samples.sh`
   **13/13**; `check_mask_classify.sh` **1,679,616/1,679,616** byte-exact;
   `check_half.sh`: **65,536/65,536** `h2f` + **192,940/192,940** `f2h`
   witnesses byte-exact (fiber audit clean over all 2³² inputs);
@@ -731,7 +739,7 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   skip in CI, no device) — the FMA-contraction class of clang-only numeric
   mismatch is pinned by CI, not just by the local pre-push matrix.
 * Published: `origin/main` is at `f171874` (2026-11-16). Local `main` is ahead
-  of `origin/main` by eighteen commits after 2026-11-16 (`1e99457` tally refresh,
+  of `origin/main` by nineteen commits after 2026-11-16 (`1e99457` tally refresh,
   `f2cf51f` WASM C++17 fix, `0fa0509` CUDA/RTX 5060 Ti verification record,
   `9f794ac` DMC-0 dual-vertex-pinch module, `6219d6d` staircase general-set
   module, `978c487` MC-adaptivity Float-key harness, `482c885` WindingDipoleSharp,
@@ -741,8 +749,9 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   count fix, `852e932` AnglePseudoNormal (F16 instance), `28c0593` DmcOne
   (cube-local DMC-1 patch table), `838dd10` DmcOnePad (assembled mesh,
   bounded watertight), `60746b3` ledger chi landscape, and the
-  `DmcOneDual` (component/chi duality) and `DmcOnePad4` (n = 4 seeded
-  sample) landings documented in this update); none have been pushed.
+  `DmcOneDual` (component/chi duality), `DmcOnePad4` (n = 4 seeded
+  sample) and `DmcOneEuler` (general-n conditional Euler, this update)
+  documented in this update); none have been pushed.
   Each push follows the AGENTS.md pre-push audit.
 * C matrix re-run on 2026-11-16 (fresh out-of-tree Ninja builds, `glslangValidator`
   15.1.0 unpacked rootless): scalar ASan/UBSan/float-cast-overflow **53/53**,
