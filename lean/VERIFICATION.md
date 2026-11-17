@@ -708,6 +708,10 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
 * Findings fixed in C: F1, F15, F2, F3, F4, F5, F7, F9, F11, F12, F13, F16
   (all regression-tested). Modelled/decided: F6, F10, F14. Documented
   deviation: F8.
+* CI: `linux-clang` job added (native clang, mirrors `linux-x64`, asserts
+  clang is the compiler and `-ffp-contract=off` reached the build; GPU tests
+  skip in CI, no device) — the FMA-contraction class of clang-only numeric
+  mismatch is pinned by CI, not just by the local pre-push matrix.
 * Published: `origin/main` is at `f171874` (2026-11-16). Local `main` is ahead
   of `origin/main` by ten commits after 2026-11-16 (`1e99457` tally refresh,
   `f2cf51f` WASM C++17 fix, `0fa0509` CUDA/RTX 5060 Ti verification record,

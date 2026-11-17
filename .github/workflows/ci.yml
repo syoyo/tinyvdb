@@ -38,6 +38,54 @@ jobs:
           ./build/vdbdump data/sphere-div2.vdb
 
   # ---------------------------------------------------------------------------
+  #  Linux x64 (clang)
+  #
+  #  The GCC job above never compiles with clang. The only CPU/GPU numeric
+  #  divergence ever found was clang fusing FMAs in `tvdb_merge_grids` (the
+  #  `test_merge` case of `test_gpu_backend`); the fix pins clang to
+  #  `-ffp-contract=off` in CMakeLists.txt
+  #  (`if(CMAKE_C_COMPILER_ID MATCHES "Clang")`). This job builds and runs the
+  #  same CPU suite under native clang on every push so the flag pin, the
+  #  clang build itself, and clang's warnings stay green. GPU tests are not
+  #  run: CI exposes no GPU device (GPU tests skip under the same configure
+  #  as GCC). The fixtures step mirrors linux-x64.
+  # ---------------------------------------------------------------------------
+  linux-clang:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Install clang OpenMP runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libomp-dev
+      - name: Configure
+        run: |
+          export CC=clang CXX=clang++
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DTINYVDB_BUILD_TVDBVIEW=OFF -DTINYVDB_BUILD_TESTS=ON \
+            -DTINYVDB_BUILD_GPU=OFF -DTINYVDB_OPENMP=ON
+      - name: Assert clang is the compiler and the FMA-contract pin reached the build
+        run: |
+          grep -q 'CMAKE_C_COMPILER_ID:INTERNAL=Clang' build/CMakeCache.txt
+          test "$(grep -c -- '-ffp-contract=off' build/build.ninja)" -ge 1
+      - name: Build
+        run: cmake --build build -j$(nproc)
+      - name: Verify binaries
+        run: |
+          test -x ./build/vdbdump
+          test -x ./build/vdbrender
+      - name: Run CPU regressions at one and eight threads
+        run: |
+          OMP_NUM_THREADS=1 ctest --test-dir build --output-on-failure
+          OMP_NUM_THREADS=8 ctest --test-dir build --output-on-failure
+      - name: Read maintained fixtures
+        run: |
+          ./build/vdbdump data/sphere-div1.vdb
+          ./build/vdbdump data/sphere-div2.vdb
+
+  # ---------------------------------------------------------------------------
   #  Linux arm64 (cross-compile)
   # ---------------------------------------------------------------------------
   linux-arm64:
