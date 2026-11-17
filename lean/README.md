@@ -62,7 +62,7 @@ differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
 list of what remains open or was abandoned with reasons (general DMC-1
 manifold theorem, general Poincaré–Lefschetz, staircase-estimator consistency for general
-sets, the dipole estimator's asymptotic consistency in C, Zhao 2005 / Phase C).
+sets, Zhao 2005 / Phase C).
 
 ## Conventions
 
