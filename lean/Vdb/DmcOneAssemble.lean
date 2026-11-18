@@ -37,7 +37,8 @@ open Vdb.DmcOnePad
 theorem mesh_edge_of_quad (n : Nat) (s : Lat → Bool)
     (hpin : ∀ p, PadGrid.isShell n p = true → s p = false) {a b : V}
     (hmem : (a, b) ∈ Vdb.DmcOneEuler.dmcOneMeshEdges n s) :
-    ∃ e : PadEdge, ∃ (_ : PadGrid.InLattice n e.1) (_ : e.2 < 3),
+    ∃ e : PadEdge, ∃ (_ : PadGrid.InLattice n e.1) (_ : PadGrid.InLattice n (PadGrid.succN e.1 e.2)) (_ : e.2 < 3),
+      (∃ q, PadGrid.anchorCell e.1 e.2 = some q) ∧
       (s e.1 ≠ s (PadGrid.succN e.1 e.2)) ∧
       (a, b) ∈ DmcOnePad.quadDirectedEdges (Vdb.DmcOneEuler.dmcOneQuadN s e) := by
   unfold Vdb.DmcOneEuler.dmcOneMeshEdges at hmem
@@ -55,11 +56,26 @@ theorem mesh_edge_of_quad (n : Nat) (s : Lat → Bool)
   · have hne : s p ≠ s (PadGrid.succN p d) := by
       have hc := (Bool.and_eq_true _ _).mp hcond
       simpa [bne_iff_ne] using hc.2
+    have hpSucc : PadGrid.InLattice n (PadGrid.succN p d) := by
+      have hc := (Bool.and_eq_true _ _).mp hcond
+      simpa [decide_eq_true_eq] using hc.1
     have hqE : Vdb.DmcOneEuler.dmcOneQuadN s (p, d) = q := by
       have h1 := hqeq
       rw [ite_eq_left hcond] at h1
       exact Option.some.inj h1
-    exact ⟨(p, d), hp3, hd3, hne, by
+    have hbne' : (s p == s (PadGrid.succN p d)) = false := by
+      cases h1 : s p <;> cases h2 : s (PadGrid.succN p d) <;> simp_all
+    have hanch : ∃ q, PadGrid.anchorCell p d = some q := by
+      cases ha : PadGrid.anchorCell p d with
+      | none =>
+        exfalso
+        have hqnil : Vdb.DmcOneEuler.dmcOneQuadN s (p, d) = [] := by
+          simp [Vdb.DmcOneEuler.dmcOneQuadN, DmcOnePad.incidentCells, hbne', ha]
+        rw [← hqE] at hedgemem
+        rw [hqnil] at hedgemem
+        simp [DmcOnePad.quadDirectedEdges] at hedgemem
+      | some q => exact ⟨q, rfl⟩
+    exact ⟨(p, d), hp3, hpSucc, hd3, hanch, hne, by
       rw [← hqE] at hedgemem
       exact hedgemem⟩
   · rw [ite_eq_right (by simpa using hcond)] at hqeq
@@ -73,7 +89,7 @@ theorem mesh_edge_side_cells (n : Nat) (s : Lat → Bool)
       ∃ (cA cB : Cell),
         (a = DmcOnePad.cellPatchVertex s cA e.1 e.2 ∧ b = DmcOnePad.cellPatchVertex s cB e.1 e.2) ∨
         (b = DmcOnePad.cellPatchVertex s cA e.1 e.2 ∧ a = DmcOnePad.cellPatchVertex s cB e.1 e.2) := by
-  obtain ⟨e, hp3, hd3, hne, hm⟩ := mesh_edge_of_quad n s hpin hmem
+  obtain ⟨e, hp3, hpSucc, hd3, hanch, hne, hm⟩ := mesh_edge_of_quad n s hpin hmem
   obtain ⟨p, d⟩ := e
   obtain ⟨hnodup, hlen⟩ := Vdb.DmcOneEuler.incidentCells_nodup n s hpin p d hd3 hp3 hne
   obtain ⟨q, hq⟩ := Vdb.DmcOneEuler.anchorCell_of_pinned n s hpin p d hd3 hp3 hne
@@ -374,7 +390,8 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
     (i : Nat) (hi : i < 4)
     (e : PadEdge) (he : e = (faceBoundaryEdges na p).getD i (p, 0))
     (hcross : s e.1 ≠ s (PadGrid.succN e.1 e.2)) :
-    ∃ (e' : PadEdge) (b : Bool),
+    ∃ (j : Nat) (_ : j < 4) (e' : PadEdge)
+      (he' : e' = (faceBoundaryEdges na p).getD j (p, 0)) (b : Bool),
       s e'.1 ≠ s (PadGrid.succN e'.1 e'.2) ∧
       sideDir s e' (facePlusCell na p) (faceMinusCell na p) = some b ∧
       b = !flipDir i (s e.1) ∧
@@ -465,7 +482,8 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
       simpa [hbA2, hsj] using hdir2
     rw [dirAt_eq_flipDir ⟨i, hi⟩ (s e.1), dirAt_eq_flipDir jF (s e'.1)] at hdir'
     cases hfi : flipDir i (s e.1) <;> cases hfj : flipDir jF.val (s e'.1) <;> simp_all
-  refine ⟨e', flipDir jF.val (s e'.1), hcrossE', ?_, hb', hvA, hvB⟩
+  refine ⟨jF.val, jF.isLt, e', rfl, flipDir jF.val (s e'.1),
+    hcrossE', ?_, hb', hvA, hvB⟩
   exact edge_dir_p na hna jF.val jF.isLt s p (hEdge jF.val hcrossE')
 
 /-- Ring-pair classification for d=0, s p = false. -/
