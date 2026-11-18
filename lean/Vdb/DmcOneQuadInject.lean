@@ -166,5 +166,25 @@ theorem dmcOneQuads_eq_map_crossed (n : Nat) (s : Lat → Bool) :
   · simp [h]
   · simp [h]
 
+
+theorem dmcOneQuads_nodup (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, PadGrid.isShell n p = true → s p = false) :
+    (dmcOneQuads n s).Nodup := by
+  rw [dmcOneQuads_eq_map_crossed]
+  have hcross' : List.Pairwise
+      (fun a b : PadEdge => a ≠ b ∧ dmcOneQuadN s a ≠ dmcOneQuadN s b)
+      (PadGrid.crossed n s) := by
+    apply List.Pairwise.imp_of_mem ?_ (PadGrid.nodup_crossed n s)
+    intro a b ha hb hne
+    refine ⟨hne, ?_⟩
+    intro hq
+    rcases a with ⟨p,d⟩
+    rcases b with ⟨p',d'⟩
+    obtain ⟨hd3, hp3, _, hneA⟩ := PadGrid.crossed_spec n s ha
+    obtain ⟨hd'3, hp'3, _, hneB⟩ := PadGrid.crossed_spec n s hb
+    have he : (p,d) = (p',d') := dmcOneQuadN_inj n s hpin hd3 hd'3 hp3 hp'3 hneA hneB hq
+    exact hne he
+  exact List.Pairwise.map (fun e => dmcOneQuadN s e) (fun a b h => h.2) hcross'
+
 end DmcOneEuler
 end Vdb
