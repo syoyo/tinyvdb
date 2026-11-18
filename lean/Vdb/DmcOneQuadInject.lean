@@ -126,5 +126,22 @@ theorem incidentCells_inj (n : Nat) (s : Lat → Bool)
   subst d'
   rfl
 
+
+theorem dmcOneQuadN_inj (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
+    {p p' : Lat} {d d' : Nat} (hd : d < 3) (hd' : d' < 3)
+    (hp : PadGrid.InLattice n p) (hp' : PadGrid.InLattice n p')
+    (hne : s p ≠ s (PadGrid.succN p d)) (hne' : s p' ≠ s (PadGrid.succN p' d'))
+    (hquad : dmcOneQuadN s (p, d) = dmcOneQuadN s (p', d')) :
+    (p, d) = (p', d') := by
+  have hbne : (s p == s (PadGrid.succN p d)) = false := by
+    cases h1 : s p <;> cases h2 : s (PadGrid.succN p d) <;> simp_all
+  have hbne' : (s p' == s (PadGrid.succN p' d')) = false := by
+    cases h1 : s p' <;> cases h2 : s (PadGrid.succN p' d') <;> simp_all
+  have hcells : DmcOnePad.incidentCells s (p,d) = DmcOnePad.incidentCells s (p',d') := by
+    have h1 := congrArg (List.map Prod.fst) hquad
+    simpa [dmcOneQuadN, hbne, hbne', DmcOnePad.cellPatchVertex, Function.comp_def] using h1
+  exact incidentCells_inj n s hpin hd hd' hp hp' hne hne' hcells
+
 end DmcOneEuler
 end Vdb
