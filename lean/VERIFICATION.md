@@ -628,10 +628,17 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
      `patch_checked`), and the assembled-mesh lemmas — every mesh edge comes
      from a crossed lattice edge's quad and each side joins ring-consecutive
      incident cells (`Vdb/DmcOneAssemble.lean`: `mesh_edge_of_quad`,
-     `mesh_edge_side_cells`, `localEdge_faceEdges`). Still open: the
-     cross-cell pairing correspondence (cells sharing a face pair the same
-     global boundary edges) and the assembly into `EdgeClosed` for arbitrary
-     `n`; the χ statement via `euler_general_dmc1` follows once `EdgeClosed`
+     `mesh_edge_side_cells`, `localEdge_faceEdges`), the Prop-form partner
+     extraction (`crossed_has_partner`, `paired_dirAt_ne`, `paired_patch_eq`,
+     `pairing_cross_fin`), the uniform orientation dispatch (`edge_dir_fin`,
+     all 24 instances), the per-face partner reversal (`face_reverse`,
+     `side_of_sideDir`), and the 24 ring/mesh-edge classification lemmas.
+     Still open: assembling these into `EdgeClosed` for arbitrary `n` —
+     the remaining obstacle is that the classification lemmas currently
+     demand transverse bounds that follow from shell pinning only for
+     *crossed* face edges, so the per-edge bound function must be derived
+     from each edge's crossing rather than assumed as a blanket bound.
+     The χ statement via `euler_general_dmc1` follows once `EdgeClosed`
      lands. The staircase face estimator is The plan's
      escape hatch (`T-DMC1-DUAL`, explicitly not landable on the Fin 2
      torus — MC 16 triangles vs DMC 6 quads) stays open for the same reason;
