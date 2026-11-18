@@ -302,5 +302,141 @@ theorem side_of_sideDir (s : Lat → Bool) (e : PadEdge) (A B : Cell) (b : Bool)
                 DmcOnePad.quadDirectedEdges, DmcOnePad.cellPatchVertex]
           | cons _ _ => simp [hcs] at h
 
+/-- Point-form wrappers for the sign bridges. -/
+theorem bitOf_start_sign_p (na : Fin 3) (side : Fin 2) (i : Fin 4) (s : Lat → Bool)
+    (p : Lat) (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2) :
+    caseBit (Vdb.DmcOnePad.cellCase s (if side.val = 0 then facePlusCell na p else faceMinusCell na p))
+      (bitOf na side i) =
+      (if s ((faceBoundaryEdges na p).getD i (p, 0)).1 then 1 else 0) := by
+  rcases p with ⟨x, y, z⟩
+  dsimp at hx ⊢
+  rw [← startCornerId_eq_bitOf na side i]
+  exact bitOf_start_sign na side i s x y z hx.1 hx.2.1 hx.2.2
+
+theorem endBitOf_end_sign_p (na : Fin 3) (side : Fin 2) (i : Fin 4) (s : Lat → Bool)
+    (p : Lat) (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2) :
+    caseBit (Vdb.DmcOnePad.cellCase s (if side.val = 0 then facePlusCell na p else faceMinusCell na p))
+      (endBitOf na side i) =
+      (if s (Vdb.PadGrid.succN ((faceBoundaryEdges na p).getD i (p, 0)).1
+        ((faceBoundaryEdges na p).getD i (p, 0)).2) then 1 else 0) := by
+  rcases p with ⟨x, y, z⟩
+  dsimp at hx ⊢
+  rw [← endCornerId_eq_endBitOf na side i]
+  exact endBitOf_start_sign na side i s x y z hx.1 hx.2.1 hx.2.2
+
+/-- Uniform orientation law, point form. -/
+theorem edge_dir_p (na : Nat) (hna : na < 3) (i : Nat) (hi : i < 4)
+    (s : Lat → Bool) (p : Lat) (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2) :
+    sideDir s ((faceBoundaryEdges na p).getD i (p, 0))
+      (facePlusCell na p) (faceMinusCell na p)
+      = some (flipDir i (s ((faceBoundaryEdges na p).getD i (p, 0)).1)) := by
+  rcases p with ⟨x, y, z⟩
+  dsimp at hx ⊢
+  exact edge_dir na hna i hi s x y z hx.1 hx.2.1 hx.2.2
+
+/-- **Partner reversal across an interior face.** For any crossed
+    boundary edge `e` of the face at base `p` with normal `na`, there
+    is a crossed boundary edge `e'` of the same face whose quad side
+    joins the same two patch vertices in the *opposite* direction. -/
+theorem face_reverse (n : Nat) (s : Lat → Bool)
+    (_hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
+    (na : Nat) (hna : na < 3) (p : Lat) (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2)
+    (i : Nat) (hi : i < 4)
+    (e : PadEdge) (he : e = (faceBoundaryEdges na p).getD i (p, 0))
+    (hcross : s e.1 ≠ s (PadGrid.succN e.1 e.2)) :
+    ∃ (e' : PadEdge) (b : Bool),
+      s e'.1 ≠ s (PadGrid.succN e'.1 e'.2) ∧
+      sideDir s e' (facePlusCell na p) (faceMinusCell na p) = some b ∧
+      b = !flipDir i (s e.1) ∧
+      DmcOnePad.cellPatchVertex s (facePlusCell na p) e'.1 e'.2 =
+        DmcOnePad.cellPatchVertex s (facePlusCell na p) e.1 e.2 ∧
+      DmcOnePad.cellPatchVertex s (faceMinusCell na p) e'.1 e'.2 =
+        DmcOnePad.cellPatchVertex s (faceMinusCell na p) e.1 e.2 := by
+  let A : Cell := facePlusCell na p
+  let B : Cell := faceMinusCell na p
+  let naF : Fin 3 := ⟨na, hna⟩
+  let sideA : Fin 2 := ⟨0, by decide⟩
+  let sideB : Fin 2 := ⟨1, by decide⟩
+  let iF : Fin 4 := ⟨i, hi⟩
+  let kA : Fin 256 := ⟨Vdb.DmcOnePad.cellCase s A, cellCase_lt_256 s A⟩
+  let kB : Fin 256 := ⟨Vdb.DmcOnePad.cellCase s B, cellCase_lt_256 s B⟩
+  have hbA : caseBit kA.val (bitOf naF sideA iF) = (if s e.1 then 1 else 0) := by
+    have h := bitOf_start_sign_p naF sideA iF s p hx
+    dsimp [kA, A, naF, sideA, iF] at h ⊢
+    rw [he]
+    exact h
+  have heA : caseBit kA.val (endBitOf naF sideA iF) =
+      (if s (PadGrid.succN e.1 e.2) then 1 else 0) := by
+    have h := endBitOf_end_sign_p naF sideA iF s p hx
+    dsimp [kA, A, naF, sideA, iF] at h ⊢
+    rw [he]
+    exact h
+  have hcrossA : caseBit kA.val (bitOf naF sideA iF) ≠ caseBit kA.val (endBitOf naF sideA iF) := by
+    rw [hbA, heA]
+    cases h1 : s e.1 <;> cases h2 : s (PadGrid.succN e.1 e.2) <;> simp_all
+  obtain ⟨jF, hjne, hjpair⟩ := crossed_has_partner naF sideA kA iF hcrossA
+  let e' : PadEdge := (faceBoundaryEdges na p).getD jF.val (p, 0)
+  have hcrossE' : s e'.1 ≠ s (PadGrid.succN e'.1 e'.2) := by
+    have hpc := paired_crossed naF sideA kA jF iF (by
+      simpa [Nat.min_comm, Nat.max_comm] using hjpair)
+    have hs := bitOf_start_sign_p naF sideA jF s p hx
+    have hend := endBitOf_end_sign_p naF sideA jF s p hx
+    dsimp [kA, A, naF, sideA] at hpc hs hend
+    have heq : (faceBoundaryEdges na p).getD jF.val (p, 0) = e' := rfl
+    rw [heq] at hs hend
+    rw [hs, hend] at hpc
+    cases h1 : s e'.1 <;> cases h2 : s (PadGrid.succN e'.1 e'.2) <;> simp_all
+  have hdir := paired_dirAt_ne naF sideA kA iF jF hjpair
+  have hpatchA := paired_patch_eq naF sideA kA iF jF hjpair
+  have hmask : maskPlus na kA.val = maskMinus na kB.val := by
+    dsimp [kA, kB, A, B]
+    exact maskPlus_eq_maskMinus na s p hna hx
+  have hmulti := pairing_cross_fin naF kA kB hmask
+  have hpairB : (min i jF.val, max i jF.val) ∈ pairsIdx kB.val na 1 := by
+    exact mem_of_pairsMultiEq hmulti hjpair (by omega) (by omega)
+  have hpatchB := paired_patch_eq naF sideB kB iF jF (by
+    simpa [sideB] using hpairB)
+  have hvA : DmcOnePad.cellPatchVertex s A e'.1 e'.2 = DmcOnePad.cellPatchVertex s A e.1 e.2 := by
+    apply cellPatchVertex_eq_of_patches s A e' e
+    dsimp [e', A]
+    have hle_j : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD jF.val (p, 0)).1
+        (facePlusCell na p) ((faceBoundaryEdges na p).getD jF.val (p, 0)).2 =
+        localEdgeAt na 0 jF.val := by
+      simpa using localEdge_faceEdges na 0 p jF.val hna jF.isLt hx (by decide)
+    have hle_i : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD i (p, 0)).1
+        (facePlusCell na p) ((faceBoundaryEdges na p).getD i (p, 0)).2 =
+        localEdgeAt na 0 i := by
+      simpa using localEdge_faceEdges na 0 p i hna hi hx (by decide)
+    rw [he, hle_j, hle_i]
+    simpa [edgeId, localEdgeAt, A, naF, sideA, iF, kA] using hpatchA.symm
+  have hvB : DmcOnePad.cellPatchVertex s B e'.1 e'.2 = DmcOnePad.cellPatchVertex s B e.1 e.2 := by
+    apply cellPatchVertex_eq_of_patches s B e' e
+    dsimp [e', B]
+    have hle_j : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD jF.val (p, 0)).1
+        (faceMinusCell na p) ((faceBoundaryEdges na p).getD jF.val (p, 0)).2 =
+        localEdgeAt na 1 jF.val := by
+      simpa using localEdge_faceEdges na 1 p jF.val hna jF.isLt hx (by decide)
+    have hle_i : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD i (p, 0)).1
+        (faceMinusCell na p) ((faceBoundaryEdges na p).getD i (p, 0)).2 =
+        localEdgeAt na 1 i := by
+      simpa using localEdge_faceEdges na 1 p i hna hi hx (by decide)
+    rw [he, hle_j, hle_i]
+    simpa [edgeId, localEdgeAt, B, naF, sideB, iF, kB] using hpatchB.symm
+  have hbAbit : (if s e.1 then 1 else 0) = caseBit kA.val (bitOf naF sideA iF) := hbA.symm
+  have hsj := bitOf_start_sign_p naF sideA jF s p hx
+  dsimp [kA, A, naF, sideA] at hsj
+  have heq : (faceBoundaryEdges na p).getD jF.val (p, 0) = e' := rfl
+  rw [heq] at hsj
+  have hb' : flipDir jF.val (s e'.1) = !flipDir i (s e.1) := by
+    have hdir2 := hdir
+    have hbA2 := hbA
+    dsimp [kA, A, naF, sideA, iF] at hdir2 hbA2
+    have hdir' : dirAt i (if s e.1 then 1 else 0) ≠ dirAt jF.val (if s e'.1 then 1 else 0) := by
+      simpa [hbA2, hsj] using hdir2
+    rw [dirAt_eq_flipDir ⟨i, hi⟩ (s e.1), dirAt_eq_flipDir jF (s e'.1)] at hdir'
+    cases hfi : flipDir i (s e.1) <;> cases hfj : flipDir jF.val (s e'.1) <;> simp_all
+  refine ⟨e', flipDir jF.val (s e'.1), hcrossE', ?_, hb', hvA, hvB⟩
+  exact edge_dir_p na hna jF.val jF.isLt s p hx
+
 end DmcOneStitch
 end Vdb
