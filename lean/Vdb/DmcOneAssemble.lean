@@ -3213,5 +3213,26 @@ theorem euler_general_dmc1_unconditional (n : Nat) (s : Lat → Bool)
         - (PadGrid.crossed n s).length :=
   Vdb.DmcOneEuler.euler_general_dmc1 n s hpin (edgeClosed_general n s hpin) hnd
 
+
+theorem quadDirectedEdges_nodup {q : List V} (hn : q.Nodup) (hl : q.length = 4) :
+    (quadDirectedEdges q).Nodup := by
+  cases q with
+  | nil => simp at hl
+  | cons v0 q =>
+    cases q with
+    | nil => simp at hl
+    | cons v1 q =>
+      cases q with
+      | nil => simp at hl
+      | cons v2 q =>
+        cases q with
+        | nil => simp at hl
+        | cons v3 q =>
+          cases q with
+          | nil =>
+            simp [quadDirectedEdges] at hn ⊢
+            tauto
+          | cons _ _ => simp at hl
+
 end DmcOneStitch
 end Vdb

@@ -27,6 +27,8 @@ import Vdb.PadGrid
 import Vdb.QuadEuler
 import Mathlib.Tactic
 
+set_option linter.unusedSimpArgs false
+
 namespace Vdb
 namespace DmcOneEuler
 
@@ -204,5 +206,190 @@ theorem badFaceConfigs_length :
 theorem badFaceConfig_counterexample : badFaceConfig 0 62 61 = true := by
   native_decide
 
+
+/-- The patch component of the plus/minus cell's vertex at the i-th boundary
+    edge equals the case-level patch id used by `badFaceConfig`. -/
+lemma patchAt_boundary (s : Lat → Bool) {na : Nat} (hna : na < 3) {p : Lat}
+    (hx : FaceBaseOK na p) {i : Nat} (hi : i < 4) (side : Nat) (hside : side < 2) :
+    (DmcOnePad.cellPatchVertex s
+      (if side = 0 then facePlusCell na p else faceMinusCell na p)
+      ((faceBoundaryEdges na p).getD i (p, 0)).1
+      ((faceBoundaryEdges na p).getD i (p, 0)).2).2 =
+      (Vdb.patchesUsing (DmcOnePad.cellCase s
+        (if side = 0 then facePlusCell na p else faceMinusCell na p))
+        ((if side = 0 then localFacePlus na else localFaceMinus na).getD i 0)).headD 0 := by
+  unfold DmcOnePad.cellPatchVertex
+  dsimp
+  rw [localEdge_faceEdges na side p i hna hi hx hside]
+  rfl
+
+lemma cfgDir_eq_dir (s : Lat → Bool) {na : Nat} (hna : na < 3) {p : Lat}
+    (hx : FaceBaseOK na p) {i : Nat} (hi : i < 4) {dir : Bool}
+    (hdir : flipDir i (s ((faceBoundaryEdges na p).getD i (p, 0)).1) = dir) :
+    (cfgDir (DmcOnePad.cellCase s (facePlusCell na p)) na i == dir) = true := by
+  unfold cfgDir
+  let naF : Fin 3 := ⟨na, hna⟩
+  let sideF : Fin 2 := ⟨0, by decide⟩
+  let iF : Fin 4 := ⟨i, hi⟩
+  have hbnd : if naF.val = 0 then 1 ≤ p.1 else if naF.val = 1 then 1 ≤ p.2.1 else 1 ≤ p.2.2 := by
+    simpa [FaceBaseOK, naF] using hx
+  have hsi := bitOf_start_sign naF sideF iF s p.1 p.2.1 p.2.2 hbnd
+  dsimp [naF, sideF, iF] at hsi ⊢
+  rw [hsi]
+  unfold flipDir at hdir
+  by_cases hi1 : i ≤ 1 <;>
+    cases hsg : s ((faceBoundaryEdges na p).getD i (p, 0)).1 <;>
+    simp [hi1, hsg] at hdir ⊢ <;> simp_all
+
+lemma same_pair_badFace {s : Lat → Bool}
+    {na : Nat} (hna : na < 3) {pF : Lat} (hx' : FaceBaseOK na pF)
+    {i i' : Nat} (hi : i < 4) (hi' : i' < 4) (hiilt : i < i')
+    {hcross : s ((faceBoundaryEdges na pF).getD i (pF, 0)).1 ≠
+      s (PadGrid.succN ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+                       ((faceBoundaryEdges na pF).getD i (pF, 0)).2)}
+    {hcross' : s ((faceBoundaryEdges na pF).getD i' (pF, 0)).1 ≠
+      s (PadGrid.succN ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+                       ((faceBoundaryEdges na pF).getD i' (pF, 0)).2)}
+    {dir dir' : Bool}
+    (hdir : flipDir i (s ((faceBoundaryEdges na pF).getD i (pF, 0)).1) = dir)
+    (hdir' : flipDir i' (s ((faceBoundaryEdges na pF).getD i' (pF, 0)).1) = dir')
+    {a b : V}
+    (hpair : (a, b) = if dir then
+          (DmcOnePad.cellPatchVertex s (facePlusCell na pF)
+            ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+            ((faceBoundaryEdges na pF).getD i (pF, 0)).2,
+           DmcOnePad.cellPatchVertex s (faceMinusCell na pF)
+            ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+            ((faceBoundaryEdges na pF).getD i (pF, 0)).2)
+        else
+          (DmcOnePad.cellPatchVertex s (faceMinusCell na pF)
+            ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+            ((faceBoundaryEdges na pF).getD i (pF, 0)).2,
+           DmcOnePad.cellPatchVertex s (facePlusCell na pF)
+            ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+            ((faceBoundaryEdges na pF).getD i (pF, 0)).2))
+    (hpair' : (a, b) = if dir' then
+          (DmcOnePad.cellPatchVertex s (facePlusCell na pF)
+            ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+            ((faceBoundaryEdges na pF).getD i' (pF, 0)).2,
+           DmcOnePad.cellPatchVertex s (faceMinusCell na pF)
+            ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+            ((faceBoundaryEdges na pF).getD i' (pF, 0)).2)
+        else
+          (DmcOnePad.cellPatchVertex s (faceMinusCell na pF)
+            ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+            ((faceBoundaryEdges na pF).getD i' (pF, 0)).2,
+           DmcOnePad.cellPatchVertex s (facePlusCell na pF)
+            ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+            ((faceBoundaryEdges na pF).getD i' (pF, 0)).2)) :
+    badFaceConfig na (DmcOnePad.cellCase s (facePlusCell na pF))
+      (DmcOnePad.cellCase s (faceMinusCell na pF)) = true := by
+  have hpm_ne : facePlusCell na pF ≠ faceMinusCell na pF := by
+    rcases pF with ⟨x,y,z⟩
+    interval_cases na <;> simp [facePlusCell, faceMinusCell, FaceBaseOK] at hx' ⊢ <;> omega
+  have hdirs : dir = dir' := by
+    by_cases hd : dir <;> by_cases hd' : dir'
+    · simp [hd, hd']
+    · have hf : facePlusCell na pF = faceMinusCell na pF := by
+        have h12 := congrArg Prod.fst (congrArg Prod.fst (hpair.symm.trans hpair'))
+        dsimp [DmcOnePad.cellPatchVertex] at h12
+        simpa [hd, hd'] using h12
+      exact False.elim (hpm_ne hf)
+    · have hf : faceMinusCell na pF = facePlusCell na pF := by
+        have h12 := congrArg Prod.fst (congrArg Prod.fst (hpair.symm.trans hpair'))
+        dsimp [DmcOnePad.cellPatchVertex] at h12
+        simpa [hd, hd'] using h12
+      exact False.elim (hpm_ne hf.symm)
+    · simp [hd, hd']
+  rw [← hdirs] at hpair'
+  have hpatchA : (DmcOnePad.cellPatchVertex s (facePlusCell na pF)
+      ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+      ((faceBoundaryEdges na pF).getD i (pF, 0)).2).2 =
+      (DmcOnePad.cellPatchVertex s (facePlusCell na pF)
+      ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+      ((faceBoundaryEdges na pF).getD i' (pF, 0)).2).2 := by
+    have hp1 := hpair
+    have hp2 := hpair'
+    by_cases hd : dir
+    · simp [hd] at hp1 hp2
+      exact congrArg Prod.snd (hp1.1.symm.trans hp2.1)
+    · simp [hd] at hp1 hp2
+      exact congrArg Prod.snd (hp1.2.symm.trans hp2.2)
+  have hpatchB : (DmcOnePad.cellPatchVertex s (faceMinusCell na pF)
+      ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+      ((faceBoundaryEdges na pF).getD i (pF, 0)).2).2 =
+      (DmcOnePad.cellPatchVertex s (faceMinusCell na pF)
+      ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+      ((faceBoundaryEdges na pF).getD i' (pF, 0)).2).2 := by
+    have hp1 := hpair
+    have hp2 := hpair'
+    by_cases hd : dir
+    · simp [hd] at hp1 hp2
+      exact congrArg Prod.snd (hp1.2.symm.trans hp2.2)
+    · simp [hd] at hp1 hp2
+      exact congrArg Prod.snd (hp1.1.symm.trans hp2.1)
+  have hcrossB : cfgCrossed (DmcOnePad.cellCase s (facePlusCell na pF)) na i = true := by
+    unfold cfgCrossed
+    let naF : Fin 3 := ⟨na, hna⟩
+    let sideF : Fin 2 := ⟨0, by decide⟩
+    let iF : Fin 4 := ⟨i, hi⟩
+    have hbnd : if naF.val = 0 then 1 ≤ pF.1 else if naF.val = 1 then 1 ≤ pF.2.1 else 1 ≤ pF.2.2 := by
+      simpa [FaceBaseOK, naF] using hx'
+    have hs := bitOf_start_sign naF sideF iF s pF.1 pF.2.1 pF.2.2 hbnd
+    have he := endBitOf_start_sign naF sideF iF s pF.1 pF.2.1 pF.2.2 hbnd
+    dsimp [naF, sideF, iF] at hs he ⊢
+    rw [hs, he]
+    cases h1 : s ((faceBoundaryEdges na pF).getD i (pF, 0)).1 <;>
+      cases h2 : s (PadGrid.succN ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+                                   ((faceBoundaryEdges na pF).getD i (pF, 0)).2) <;> simp_all
+  have hcrossB' : cfgCrossed (DmcOnePad.cellCase s (facePlusCell na pF)) na i' = true := by
+    unfold cfgCrossed
+    let naF : Fin 3 := ⟨na, hna⟩
+    let sideF : Fin 2 := ⟨0, by decide⟩
+    let iF : Fin 4 := ⟨i', hi'⟩
+    have hbnd : if naF.val = 0 then 1 ≤ pF.1 else if naF.val = 1 then 1 ≤ pF.2.1 else 1 ≤ pF.2.2 := by
+      simpa [FaceBaseOK, naF] using hx'
+    have hs := bitOf_start_sign naF sideF iF s pF.1 pF.2.1 pF.2.2 hbnd
+    have he := endBitOf_start_sign naF sideF iF s pF.1 pF.2.1 pF.2.2 hbnd
+    dsimp [naF, sideF, iF] at hs he ⊢
+    rw [hs, he]
+    cases h1 : s ((faceBoundaryEdges na pF).getD i' (pF, 0)).1 <;>
+      cases h2 : s (PadGrid.succN ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+                                   ((faceBoundaryEdges na pF).getD i' (pF, 0)).2) <;> simp_all
+  have hpA : cfgPatch (DmcOnePad.cellCase s (facePlusCell na pF)) na 0 i =
+             cfgPatch (DmcOnePad.cellCase s (facePlusCell na pF)) na 0 i' := by
+    unfold cfgPatch
+    have hb := hpatchA
+    dsimp [DmcOnePad.cellPatchVertex] at hb
+    simp at hb
+    have hle := localEdge_faceEdges na 0 pF i hna hi hx' (by decide)
+    have hle' := localEdge_faceEdges na 0 pF i' hna hi' hx' (by decide)
+    simp at hle hle'
+    rw [hle, hle'] at hb
+    simpa [localEdgeAt, edgeId, enumFaceEdges] using hb
+  have hpB : cfgPatch (DmcOnePad.cellCase s (faceMinusCell na pF)) na 1 i =
+             cfgPatch (DmcOnePad.cellCase s (faceMinusCell na pF)) na 1 i' := by
+    unfold cfgPatch
+    have hb := hpatchB
+    dsimp [DmcOnePad.cellPatchVertex] at hb
+    simp at hb
+    have hle := localEdge_faceEdges na 1 pF i hna hi hx' (by decide)
+    have hle' := localEdge_faceEdges na 1 pF i' hna hi' hx' (by decide)
+    simp at hle hle'
+    rw [hle, hle'] at hb
+    simpa [localEdgeAt, edgeId, enumFaceEdges] using hb
+  have hdirEq : cfgDir (DmcOnePad.cellCase s (facePlusCell na pF)) na i =
+                cfgDir (DmcOnePad.cellCase s (facePlusCell na pF)) na i' := by
+    have hdi := cfgDir_eq_dir s hna hx' hi hdir
+    have hdj := cfgDir_eq_dir s hna hx' hi' hdir'
+    cases hdirs
+    simp at hdi hdj
+    rw [hdi, hdj]
+  unfold badFaceConfig
+  rw [List.any_eq_true]
+  refine ⟨i, by simp [hi], ?_⟩
+  rw [List.any_eq_true]
+  refine ⟨i', by simp [hi'], ?_⟩
+  simp [hiilt, hcrossB, hcrossB', hpA, hpB, hdirEq]
 end DmcOneStitch
 end Vdb
