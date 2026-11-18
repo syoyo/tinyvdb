@@ -257,5 +257,50 @@ theorem cellPatchVertex_eq_of_patches (s : Lat → Bool) (c : Cell) (e e' : PadE
        (c, (Vdb.patchesUsing (Vdb.DmcOnePad.cellCase s c) (Vdb.DmcOnePad.localEdge e'.1 c e'.2)).headD 0)
   rw [h]
 
+theorem side_of_sideDir (s : Lat → Bool) (e : PadEdge) (A B : Cell) (b : Bool)
+    (hcross : s e.1 ≠ s (PadGrid.succN e.1 e.2))
+    (h : sideDir s e A B = some b) :
+    (if b then (DmcOnePad.cellPatchVertex s A e.1 e.2, DmcOnePad.cellPatchVertex s B e.1 e.2)
+          else (DmcOnePad.cellPatchVertex s B e.1 e.2, DmcOnePad.cellPatchVertex s A e.1 e.2))
+      ∈ DmcOnePad.quadDirectedEdges (Vdb.DmcOneEuler.dmcOneQuadN s e) := by
+  have hbne : (s e.1 == s (PadGrid.succN e.1 e.2)) = false := by
+    cases h1 : s e.1 <;> cases h2 : s (PadGrid.succN e.1 e.2) <;> simp_all
+  unfold sideDir at h
+  cases hcs : DmcOnePad.incidentCells s e with
+  | nil => simp [hcs] at h
+  | cons c0 r1 =>
+    cases r1 with
+    | nil => simp [hcs] at h
+    | cons c1 r2 =>
+      cases r2 with
+      | nil => simp [hcs] at h
+      | cons c2 r3 =>
+        cases r3 with
+        | nil => simp [hcs] at h
+        | cons c3 r4 =>
+          cases r4 with
+          | nil =>
+            simp only [hcs, Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq] at h
+            split_ifs at h with hb1 hb2
+            · have hb : b = true := by cases h; rfl
+              subst b
+              have hb1p : ((((A = c0) ∧ (B = c1)) ∨ ((A = c1) ∧ (B = c2))) ∨
+                    ((A = c2) ∧ (B = c3))) ∨ ((A = c3) ∧ (B = c0)) := by
+                simpa [Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq] using hb1
+              rcases hb1p with ((hcase | hcase) | hcase) | hcase
+              all_goals rcases hcase with ⟨rfl, rfl⟩
+              all_goals simp [Vdb.DmcOneEuler.dmcOneQuadN, hcs, hbne,
+                DmcOnePad.quadDirectedEdges, DmcOnePad.cellPatchVertex]
+            · have hb : b = false := by cases h; rfl
+              subst b
+              have hb2p : ((((B = c0) ∧ (A = c1)) ∨ ((B = c1) ∧ (A = c2))) ∨
+                    ((B = c2) ∧ (A = c3))) ∨ ((B = c3) ∧ (A = c0)) := by
+                simpa [Bool.or_eq_true, Bool.and_eq_true, beq_iff_eq] using hb2
+              rcases hb2p with ((hcase | hcase) | hcase) | hcase
+              all_goals rcases hcase with ⟨rfl, rfl⟩
+              all_goals simp [Vdb.DmcOneEuler.dmcOneQuadN, hcs, hbne,
+                DmcOnePad.quadDirectedEdges, DmcOnePad.cellPatchVertex]
+          | cons _ _ => simp [hcs] at h
+
 end DmcOneStitch
 end Vdb
