@@ -150,5 +150,101 @@ theorem cellCase_lt_256 (s : Vdb.DmcOnePad.Lat → Bool) (c : Vdb.DmcOnePad.Cell
   split_ifs <;> omega
 
 
+def flipDir (i : Nat) (b : Bool) : Bool := if i ≤ 1 then b else !b
+
+theorem edge_dir_fin (na : Fin 3) (i : Fin 4) (s : Lat → Bool) (x y z : Nat)
+    (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z) :
+    sideDir s ((faceBoundaryEdges na (x, y, z)).getD i ((x, y, z), 0))
+      (facePlusCell na (x, y, z)) (faceMinusCell na (x, y, z))
+      = some (flipDir i (s ((faceBoundaryEdges na (x, y, z)).getD i ((x, y, z), 0)).1)) := by
+  fin_cases na <;> fin_cases i
+  · -- na=0 i=0
+    by_cases hb : s (x, y, z)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_0_0_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_0_0 s x y z hx hy hz (by simpa using hb))
+  · -- na=0 i=1
+    by_cases hb : s (x, y + 1, z)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_0_1_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_0_1 s x y z hx hy hz (by simpa using hb))
+  · -- na=0 i=2
+    by_cases hb : s (x, y, z + 1)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_0_2_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_0_2 s x y z hx hy hz (by simpa using hb))
+  · -- na=0 i=3
+    by_cases hb : s (x, y, z)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_0_3_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_0_3 s x y z hx hy hz (by simpa using hb))
+  · -- na=1 i=0
+    by_cases hb : s (x, y, z)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_1_0_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_1_0 s x y z hx hy hz (by simpa using hb))
+  · -- na=1 i=1
+    by_cases hb : s (x, y, z + 1)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_1_1_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_1_1 s x y z hx hy hz (by simpa using hb))
+  · -- na=1 i=2
+    by_cases hb : s (x + 1, y, z)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_1_2_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_1_2 s x y z hx hy hz (by simpa using hb))
+  · -- na=1 i=3
+    by_cases hb : s (x, y, z)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_1_3_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_1_3 s x y z hx hy hz (by simpa using hb))
+  · -- na=2 i=0
+    by_cases hb : s (x, y, z)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_2_0_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_2_0 s x y z hx hy hz (by simpa using hb))
+  · -- na=2 i=1
+    by_cases hb : s (x + 1, y, z)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_2_1_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_2_1 s x y z hx hy hz (by simpa using hb))
+  · -- na=2 i=2
+    by_cases hb : s (x, y + 1, z)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_2_2_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_2_2 s x y z hx hy hz (by simpa using hb))
+  · -- na=2 i=3
+    by_cases hb : s (x, y, z)
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_2_3_pos s x y z hx hy hz (by simpa using hb))
+    · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
+        (orient_2_3 s x y z hx hy hz (by simpa using hb))
+
+/-- Nat wrapper for the uniform orientation law. -/
+theorem edge_dir (na : Nat) (hna : na < 3) (i : Nat) (hi : i < 4)
+    (s : Lat → Bool) (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z) :
+    sideDir s ((faceBoundaryEdges na (x, y, z)).getD i ((x, y, z), 0))
+      (facePlusCell na (x, y, z)) (faceMinusCell na (x, y, z))
+      = some (flipDir i (s ((faceBoundaryEdges na (x, y, z)).getD i ((x, y, z), 0)).1)) := by
+  exact edge_dir_fin ⟨na, hna⟩ ⟨i, hi⟩ s x y z hx hy hz
+
+/-- The enumeration's `dirAt` agrees with the orientation law's
+    `flipDir` (machine-checked over the finite domains). -/
+theorem dirAt_eq_flipDir :
+    ∀ (i : Fin 4) (b : Bool),
+      dirAt i (if b then 1 else 0) = if flipDir i b then 1 else 0 := by
+  native_decide
+
 end DmcOneStitch
 end Vdb
