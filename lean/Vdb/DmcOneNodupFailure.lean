@@ -433,25 +433,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
@@ -462,25 +462,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
@@ -501,25 +501,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
@@ -530,25 +530,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
@@ -569,25 +569,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
@@ -598,25 +598,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
