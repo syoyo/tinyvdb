@@ -83,7 +83,7 @@ and failing χ is machine-checked in `Vdb/DmcOneNodupFailure.lean`
 tracked in the ledger (F17–F19 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids,
 an off-by-one in the bounded sign enumeration, and the DMC-1 `Nodup`
-counterexample). The module tally is 108 (103
+counterexample). The module tally is 110 (104
 under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
