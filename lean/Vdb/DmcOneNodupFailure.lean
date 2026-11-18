@@ -401,7 +401,7 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
     {a b : V} (hmem : (a, b) ∈ Vdb.DmcOneEuler.dmcOneMeshEdges n s) :
     ∃ (na : Nat) (hna : na < 3) (pF : Lat) (hx' : FaceBaseOK na pF)
       (i : Nat) (hi : i < 4) (e : PadEdge)
-      (heq : e = (faceBoundaryEdges na pF).getD i (pF, 0)) (dir : Bool),
+      (heq : e = (faceBoundaryEdges na pF).getD i (pF, 0)) (ep : PadEdge) (heqraw : e = ep) (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
       (a, b) = if dir then
@@ -436,25 +436,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair⟩
     ·
       have hsT : s (x, y, z) = true := by
         cases hh : s (x, y, z) <;> simp_all
@@ -465,25 +465,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair⟩
   ·
     have hpSucc0 := hpSucc
     simp [PadGrid.InLattice, PadGrid.succN] at hpSucc
@@ -504,25 +504,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair⟩
     ·
       have hsT : s (x, y, z) = true := by
         cases hh : s (x, y, z) <;> simp_all
@@ -533,25 +533,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair⟩
   ·
     have hpSucc0 := hpSucc
     simp [PadGrid.InLattice, PadGrid.succN] at hpSucc
@@ -572,25 +572,25 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair⟩
     ·
       have hsT : s (x, y, z) = true := by
         cases hh : s (x, y, z) <;> simp_all
@@ -601,25 +601,329 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair⟩
       · rcases hcase with ⟨ha, hbS⟩
 
         obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
-        exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
+        exact ⟨na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair⟩
+
+
+/-- If two mesh memberships classify to different boundary-edge indices,
+    a bad face configuration must be present; otherwise the two
+    classifications coincide. -/
+
+theorem classify_mesh_edgeQ (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
+    {a b : V} (hmem : (a, b) ∈ Vdb.DmcOneEuler.dmcOneMeshEdges n s) :
+    ∃ (q0 : List V) (hq0 : q0 ∈ Vdb.DmcOneEuler.dmcOneQuads n s),
+    ∃ (na : Nat) (hna : na < 3) (pF : Lat) (hx' : FaceBaseOK na pF)
+      (i : Nat) (hi : i < 4) (e : PadEdge)
+      (heq : e = (faceBoundaryEdges na pF).getD i (pF, 0)) (ep : PadEdge) (heqraw : e = ep) (dir : Bool),
+      s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
+      flipDir i (s e.1) = dir ∧
+      (a, b) = (if dir then
+          (DmcOnePad.cellPatchVertex s (facePlusCell na pF) e.1 e.2,
+           DmcOnePad.cellPatchVertex s (faceMinusCell na pF) e.1 e.2)
+        else
+          (DmcOnePad.cellPatchVertex s (faceMinusCell na pF) e.1 e.2,
+           DmcOnePad.cellPatchVertex s (facePlusCell na pF) e.1 e.2)) ∧
+      Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+  obtain ⟨q0, hq0, e, hp3, hpSucc, hd3, hanch, hne0, hqE0, hm⟩ := mesh_edge_of_quadQ n s hpin hmem
+  rcases e with ⟨⟨x, y, z⟩, d⟩
+  have hne' : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) d) := by simpa using hne0
+  have hb := PadGrid.pinned_transverse n s hpin hp3 hne'
+  interval_cases d
+  all_goals simp at hp3 hpSucc hne0 hm hb
+  ·
+    have hpSucc0 := hpSucc
+    simp [PadGrid.InLattice, PadGrid.succN] at hpSucc
+    rcases hb with ⟨hb1, hb2, hb3, hb4⟩
+    rcases hpSucc with ⟨hpS1, hpS2, hpS3⟩
+    have hx : 0 ≤ x := Nat.zero_le x
+    have hy : 1 ≤ y := by omega
+    have hz : 1 ≤ z := by omega
+    have hxN : x < n := by omega
+    have hyN : y < n := by omega
+    have hzN : z < n := by omega
+    by_cases hs : s (x, y, z) = false
+    ·
+      have hR := ring_pair_0_false s x y z hx hy hz hs hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_0_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_0_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_0_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_0_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair, hqE⟩
+    ·
+      have hsT : s (x, y, z) = true := by
+        cases hh : s (x, y, z) <;> simp_all
+      have hR := ring_pair_0_true s x y z hx hy hz hsT hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_0_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_0_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_0_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_0_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 0), heqraw, dir, hcross, hdir, hpair, hqE⟩
+  ·
+    have hpSucc0 := hpSucc
+    simp [PadGrid.InLattice, PadGrid.succN] at hpSucc
+    rcases hb with ⟨hb1, hb2, hb3, hb4⟩
+    rcases hpSucc with ⟨hpS1, hpS2, hpS3⟩
+    have hx : 1 ≤ x := by omega
+    have hy : 0 ≤ y := Nat.zero_le y
+    have hz : 1 ≤ z := by omega
+    have hxN : x < n := by omega
+    have hyN : y < n := by omega
+    have hzN : z < n := by omega
+    by_cases hs : s (x, y, z) = false
+    ·
+      have hR := ring_pair_1_false s x y z hx hy hz hs hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_1_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_1_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_1_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_1_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair, hqE⟩
+    ·
+      have hsT : s (x, y, z) = true := by
+        cases hh : s (x, y, z) <;> simp_all
+      have hR := ring_pair_1_true s x y z hx hy hz hsT hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_1_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_1_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_1_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_1_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 1), heqraw, dir, hcross, hdir, hpair, hqE⟩
+  ·
+    have hpSucc0 := hpSucc
+    simp [PadGrid.InLattice, PadGrid.succN] at hpSucc
+    rcases hb with ⟨hb1, hb2, hb3, hb4⟩
+    rcases hpSucc with ⟨hpS1, hpS2, hpS3⟩
+    have hx : 1 ≤ x := by omega
+    have hy : 1 ≤ y := by omega
+    have hz : 0 ≤ z := Nat.zero_le z
+    have hxN : x < n := by omega
+    have hyN : y < n := by omega
+    have hzN : z < n := by omega
+    by_cases hs : s (x, y, z) = false
+    ·
+      have hR := ring_pair_2_false s x y z hx hy hz hs hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_2_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_2_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_2_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_2_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair, hqE⟩
+    ·
+      have hsT : s (x, y, z) = true := by
+        cases hh : s (x, y, z) <;> simp_all
+      have hR := ring_pair_2_true s x y z hx hy hz hsT hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_2_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_2_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_2_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair, hqE⟩
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
+          classify_2_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        have hqE : Vdb.DmcOneEuler.dmcOneQuadN s e = q0 := by
+          rw [heqraw]
+          exact hqE0
+        exact ⟨q0, hq0, na, hna, pF, hx', i, hi, e, heq, ((x, y, z), 2), heqraw, dir, hcross, hdir, hpair, hqE⟩
 
 
 /-- If two mesh memberships classify to different boundary-edge indices,
@@ -633,9 +937,9 @@ theorem two_edges_same_pair_badFace (n : Nat) (s : Lat → Bool)
       (i : Nat) (hi : i < 4) (i' : Nat) (hi' : i' < 4),
       badFaceConfig na (DmcOnePad.cellCase s (facePlusCell na pF))
         (DmcOnePad.cellCase s (faceMinusCell na pF)) = true ∨ i = i' := by
-  obtain ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+  obtain ⟨na, hna, pF, hx', i, hi, e, heq, ep, heqraw, dir, hcross, hdir, hpair⟩ :=
     classify_mesh_edge n s hpin hmem
-  obtain ⟨na', hna', pF', hxF', i', hi', e', heq', dir', hcross', hdir', hpair'⟩ :=
+  obtain ⟨na', hna', pF', hxF', i', hi', e', heq', ep', heqraw', dir', hcross', hdir', hpair'⟩ :=
     classify_mesh_edge n s hpin hmem'
   have hc1 := congrArg (fun v : V => v.1) (congrArg Prod.fst (hpair.symm.trans hpair'))
   have hc2 := congrArg (fun v : V => v.1) (congrArg Prod.snd (hpair.symm.trans hpair'))
