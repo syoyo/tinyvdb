@@ -81,6 +81,58 @@ theorem mesh_edge_of_quad (n : Nat) (s : Lat → Bool)
   · rw [ite_eq_right (by simpa using hcond)] at hqeq
     simp at hqeq
 
+
+theorem mesh_edge_of_quadQ (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, PadGrid.isShell n p = true → s p = false) {a b : V}
+    (hmem : (a, b) ∈ Vdb.DmcOneEuler.dmcOneMeshEdges n s) :
+    ∃ q : List V, ∃ (_ : q ∈ Vdb.DmcOneEuler.dmcOneQuads n s),
+    ∃ e : PadEdge, ∃ (_ : PadGrid.InLattice n e.1) (_ : PadGrid.InLattice n (PadGrid.succN e.1 e.2)) (_ : e.2 < 3),
+      (∃ q, PadGrid.anchorCell e.1 e.2 = some q) ∧
+      (s e.1 ≠ s (PadGrid.succN e.1 e.2)) ∧
+      Vdb.DmcOneEuler.dmcOneQuadN s e = q ∧
+      (a, b) ∈ DmcOnePad.quadDirectedEdges (Vdb.DmcOneEuler.dmcOneQuadN s e) := by
+  unfold Vdb.DmcOneEuler.dmcOneMeshEdges at hmem
+  rw [List.mem_flatMap] at hmem
+  obtain ⟨q, hqmem, hedgemem⟩ := hmem
+  have hqmem0 : q ∈ Vdb.DmcOneEuler.dmcOneQuads n s := hqmem
+  unfold Vdb.DmcOneEuler.dmcOneQuads at hqmem
+  rw [List.mem_flatMap] at hqmem
+  obtain ⟨p, hpmem, hdmem⟩ := hqmem
+  rw [List.mem_filterMap] at hdmem
+  obtain ⟨d, hdmem', hqeq⟩ := hdmem
+  have hd3 : d < 3 := List.mem_range.mp hdmem'
+  have hp3 : PadGrid.InLattice n p := PadGrid.mem_latAll.mp hpmem
+  by_cases hcond : (decide (PadGrid.InLattice n (PadGrid.succN p d)) &&
+      (s p != s (PadGrid.succN p d))) = true
+  · have hne : s p ≠ s (PadGrid.succN p d) := by
+      have hc := (Bool.and_eq_true _ _).mp hcond
+      simpa [bne_iff_ne] using hc.2
+    have hpSucc : PadGrid.InLattice n (PadGrid.succN p d) := by
+      have hc := (Bool.and_eq_true _ _).mp hcond
+      simpa [decide_eq_true_eq] using hc.1
+    have hqE : Vdb.DmcOneEuler.dmcOneQuadN s (p, d) = q := by
+      have h1 := hqeq
+      rw [ite_eq_left hcond] at h1
+      exact Option.some.inj h1
+    have hbne' : (s p == s (PadGrid.succN p d)) = false := by
+      cases h1 : s p <;> cases h2 : s (PadGrid.succN p d) <;> simp_all
+    have hanch : ∃ q, PadGrid.anchorCell p d = some q := by
+      cases ha : PadGrid.anchorCell p d with
+      | none =>
+        exfalso
+        have hqnil : Vdb.DmcOneEuler.dmcOneQuadN s (p, d) = [] := by
+          simp [Vdb.DmcOneEuler.dmcOneQuadN, DmcOnePad.incidentCells, hbne', ha]
+        rw [← hqE] at hedgemem
+        rw [hqnil] at hedgemem
+        simp [DmcOnePad.quadDirectedEdges] at hedgemem
+      | some q => exact ⟨q, rfl⟩
+    have hlast : (a, b) ∈ DmcOnePad.quadDirectedEdges (Vdb.DmcOneEuler.dmcOneQuadN s (p, d)) := by
+      rw [hqE]
+      exact hedgemem
+    exact ⟨q, hqmem0, (p, d), hp3, hpSucc, hd3, hanch, hne, hqE, hlast⟩
+  · rw [ite_eq_right (by simpa using hcond)] at hqeq
+    simp at hqeq
+
 /-- Which cell pair a mesh edge side connects (orientation of the ring). -/
 theorem mesh_edge_side_cells (n : Nat) (s : Lat → Bool)
     (hpin : ∀ p, PadGrid.isShell n p = true → s p = false) {a b : V}
