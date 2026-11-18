@@ -246,5 +246,16 @@ theorem dirAt_eq_flipDir :
       dirAt i (if b then 1 else 0) = if flipDir i b then 1 else 0 := by
   native_decide
 
+/-- Two edges owned by the same patch of a cell yield the same DMC-1
+    vertex in that cell. -/
+theorem cellPatchVertex_eq_of_patches (s : Lat → Bool) (c : Cell) (e e' : PadEdge)
+    (h : Vdb.patchesUsing (Vdb.DmcOnePad.cellCase s c) (Vdb.DmcOnePad.localEdge e.1 c e.2) =
+         Vdb.patchesUsing (Vdb.DmcOnePad.cellCase s c) (Vdb.DmcOnePad.localEdge e'.1 c e'.2)) :
+    Vdb.DmcOnePad.cellPatchVertex s c e.1 e.2 = Vdb.DmcOnePad.cellPatchVertex s c e'.1 e'.2 := by
+  unfold Vdb.DmcOnePad.cellPatchVertex
+  show (c, (Vdb.patchesUsing (Vdb.DmcOnePad.cellCase s c) (Vdb.DmcOnePad.localEdge e.1 c e.2)).headD 0) =
+       (c, (Vdb.patchesUsing (Vdb.DmcOnePad.cellCase s c) (Vdb.DmcOnePad.localEdge e'.1 c e'.2)).headD 0)
+  rw [h]
+
 end DmcOneStitch
 end Vdb

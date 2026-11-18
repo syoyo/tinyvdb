@@ -241,5 +241,65 @@ theorem maskPlus_eq_maskMinus (na : Nat) (s : Vdb.PadGrid.Lat → Bool) (p : Vdb
   all_goals
     simp [Nat.sub_add_cancel hx.1, Nat.sub_add_cancel hx.2.1, Nat.sub_add_cancel hx.2.2]
 
+/-- The local cube-edge id of the `i`-th face boundary edge. -/
+def edgeId (na side i : Nat) : Nat := (enumFaceEdges na side).getD i 0
+
+/-- The Bourke corner bit at the start of the `i`-th face boundary
+    edge, in the given cell frame. -/
+def bitOf (na side i : Nat) : Nat := (enumEdgeInfo na side (edgeId na side i)).2
+
+/-- The other endpoint's case bit, derived from the embedded MC
+    edge table (`mcEdgeVerts`) so it cannot drift from the table. -/
+def endBitOf (na side i : Nat) : Nat :=
+  let l := edgeId na side i
+  let (a, b) := Vdb.McTable.mcEdgeVerts[l]!
+  let s := (enumEdgeInfo na side l).2
+  if s == a then b else a
+
+theorem crossed_has_partner :
+    ∀ (na : Fin 3) (side : Fin 2) (k : Fin 256) (i : Fin 4),
+      caseBit k (bitOf na side i) ≠ caseBit k (endBitOf na side i) →
+        ∃ j : Fin 4, j ≠ i ∧
+          (min i.val j.val, max i.val j.val) ∈ pairsIdx k.val na.val side.val := by
+  native_decide
+
+/-- Paired boundary edges emit opposite-oriented F-sides. -/
+theorem paired_dirAt_ne :
+    ∀ (na : Fin 3) (side : Fin 2) (k : Fin 256) (i j : Fin 4),
+      (min i.val j.val, max i.val j.val) ∈ pairsIdx k.val na.val side.val →
+        dirAt i.val (caseBit k.val (bitOf na.val side.val i.val)) ≠
+        dirAt j.val (caseBit k.val (bitOf na.val side.val j.val)) := by
+  native_decide
+
+/-- The two boundary edges of a paired segment are owned by the same
+    patch of the cell's soup. -/
+theorem paired_patch_eq :
+    ∀ (na : Fin 3) (side : Fin 2) (k : Fin 256) (i j : Fin 4),
+      (min i.val j.val, max i.val j.val) ∈ pairsIdx k.val na.val side.val →
+        Vdb.patchesUsing k.val (edgeId na.val side.val i.val) =
+        Vdb.patchesUsing k.val (edgeId na.val side.val j.val) := by
+  native_decide
+
+/-- Cross-cell pairing correspondence, Prop form. -/
+theorem pairing_cross_fin :
+    ∀ (na : Fin 3) (kA kB : Fin 256),
+      maskPlus na.val kA.val = maskMinus na.val kB.val →
+        pairsMultiEq (pairsIdx kA.val na.val 0) (pairsIdx kB.val na.val 1) := by
+  native_decide
+
+/-- Membership transfer through multiset equality. -/
+theorem mem_of_pairsMultiEq {l₁ l₂ : List (Nat × Nat)} (h : pairsMultiEq l₁ l₂ = true)
+    {p : Nat × Nat} (hp : p ∈ l₁) (hp1 : p.1 < 4) (hp2 : p.2 < 4) : p ∈ l₂ := by
+  unfold pairsMultiEq at h
+  rw [List.all_eq_true] at h
+  have hc := h p (List.mem_flatMap.mpr ⟨p.1, List.mem_range.mpr hp1,
+    List.mem_map.mpr ⟨p.2, List.mem_range.mpr hp2, rfl⟩⟩)
+  rw [beq_iff_eq] at hc
+  by_contra hn
+  have hc0 : List.count p l₂ = 0 := List.count_eq_zero.mpr hn
+  have hc1 : List.count p l₁ = 0 := by rwa [hc0] at hc
+  exact (List.count_eq_zero.mp hc1) hp
+
+
 end DmcOneStitch
 end Vdb
