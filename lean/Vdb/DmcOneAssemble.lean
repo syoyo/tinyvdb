@@ -179,102 +179,107 @@ theorem edge_dir_fin (na : Fin 3) (i : Fin 4) (s : Lat → Bool) (x y z : Nat)
       = some (flipDir i (s ((faceBoundaryEdges na (x, y, z)).getD i ((x, y, z), 0)).1)) := by
   fin_cases na <;> fin_cases i
   · -- na=0 i=0
-    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.1
-    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hx : 1 ≤ x := hb.1
+    have hz : 1 ≤ z := hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_0_pos s x y z hx hz (by simpa using hb))
+        (orient_0_0_pos s x y z hx hz)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_0 s x y z hx hz (by simpa using hb))
+        (orient_0_0 s x y z hx hz)
   · -- na=0 i=1
-    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.1
-    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hx : 1 ≤ x := hb
     by_cases hb : s (x, y + 1, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_1_pos s x y z hx hy (by simpa using hb))
+        (orient_0_1_pos s x y z hx)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_1 s x y z hx hy (by simpa using hb))
+        (orient_0_1 s x y z hx)
   · -- na=0 i=2
-    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.1
-    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hx : 1 ≤ x := hb
     by_cases hb : s (x, y, z + 1)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_2_pos s x y z hx hz (by simpa using hb))
+        (orient_0_2_pos s x y z hx)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_2 s x y z hx hz (by simpa using hb))
+        (orient_0_2 s x y z hx)
   · -- na=0 i=3
-    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.1
-    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hx : 1 ≤ x := hb.1
+    have hy : 1 ≤ y := hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_3_pos s x y z hx hy (by simpa using hb))
+        (orient_0_3_pos s x y z hx hy)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_3 s x y z hx hy (by simpa using hb))
+        (orient_0_3 s x y z hx hy)
   · -- na=1 i=0
-    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.1
-    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hx : 1 ≤ x := hb.1
+    have hy : 1 ≤ y := hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_0_pos s x y z hx hy (by simpa using hb))
+        (orient_1_0_pos s x y z hx hy)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_0 s x y z hx hy (by simpa using hb))
+        (orient_1_0 s x y z hx hy)
   · -- na=1 i=1
-    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.1
-    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hy : 1 ≤ y := hb
     by_cases hb : s (x, y, z + 1)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_1_pos s x y z hy hz (by simpa using hb))
+        (orient_1_1_pos s x y z hy)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_1 s x y z hy hz (by simpa using hb))
+        (orient_1_1 s x y z hy)
   · -- na=1 i=2
-    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.1
-    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hy : 1 ≤ y := hb
     by_cases hb : s (x + 1, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_2_pos s x y z hx hy (by simpa using hb))
+        (orient_1_2_pos s x y z hy)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_2 s x y z hx hy (by simpa using hb))
+        (orient_1_2 s x y z hy)
   · -- na=1 i=3
-    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.1
-    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hy : 1 ≤ y := hb.1
+    have hz : 1 ≤ z := hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_3_pos s x y z hy hz (by simpa using hb))
+        (orient_1_3_pos s x y z hy hz)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_3 s x y z hy hz (by simpa using hb))
+        (orient_1_3 s x y z hy hz)
   · -- na=2 i=0
-    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.1
-    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hy : 1 ≤ y := hb.1
+    have hz : 1 ≤ z := hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_0_pos s x y z hy hz (by simpa using hb))
+        (orient_2_0_pos s x y z hy hz)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_0 s x y z hy hz (by simpa using hb))
+        (orient_2_0 s x y z hy hz)
   · -- na=2 i=1
-    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.1
-    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hz : 1 ≤ z := hb
     by_cases hb : s (x + 1, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_1_pos s x y z hx hz (by simpa using hb))
+        (orient_2_1_pos s x y z hz)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_1 s x y z hx hz (by simpa using hb))
+        (orient_2_1 s x y z hz)
   · -- na=2 i=2
-    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.1
-    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hz : 1 ≤ z := hb
     by_cases hb : s (x, y + 1, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_2_pos s x y z hy hz (by simpa using hb))
+        (orient_2_2_pos s x y z hz)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_2 s x y z hy hz (by simpa using hb))
+        (orient_2_2 s x y z hz)
   · -- na=2 i=3
-    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.1
-    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.2
+    simp [EdgeBaseOK] at hb
+    have hx : 1 ≤ x := hb.1
+    have hz : 1 ≤ z := hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_3_pos s x y z hx hz (by simpa using hb))
+        (orient_2_3_pos s x y z hx hz)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_3 s x y z hx hz (by simpa using hb))
-
+        (orient_2_3 s x y z hx hz)
 /-- Nat wrapper for the uniform orientation law. -/
 theorem edge_dir (na : Nat) (hna : na < 3) (i : Nat) (hi : i < 4)
     (s : Lat → Bool) (x y z : Nat) (hb : EdgeBaseOK na i (x, y, z)) :
@@ -375,6 +380,143 @@ theorem edge_dir_p (na : Nat) (hna : na < 3) (i : Nat) (hi : i < 4)
   rcases p with ⟨x, y, z⟩
   exact edge_dir na hna i hi s x y z (by simpa using hb)
 
+/-- A crossed boundary edge's face base satisfies the orientation bounds. -/
+theorem edgeBaseOK_of_crossed (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
+    (px py pz : Nat) (na j : Nat) (hna : na < 3) (hj : j < 4)
+    (hcross : s ((faceBoundaryEdges na (px, py, pz)).getD j ((px, py, pz), 0)).1 ≠
+      s (PadGrid.succN ((faceBoundaryEdges na (px, py, pz)).getD j ((px, py, pz), 0)).1
+                       ((faceBoundaryEdges na (px, py, pz)).getD j ((px, py, pz), 0)).2)) :
+    EdgeBaseOK na j (px, py, pz) := by
+  interval_cases na <;> interval_cases j <;>
+    simp [EdgeBaseOK, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN]
+  ·
+    constructor
+    · by_contra hle
+      have h0 : px = 0 := by omega
+      apply hcross
+      have hs1 : s (0, py, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (0, py + 1, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+    · by_contra hle
+      have h0 : pz = 0 := by omega
+      apply hcross
+      have hs1 : s (px, py, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px, py + 1, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    · by_contra hle
+      have h0 : px = 0 := by omega
+      apply hcross
+      have hs1 : s (0, py + 1, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (0, py + 1, pz + 1) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    · by_contra hle
+      have h0 : px = 0 := by omega
+      apply hcross
+      have hs1 : s (0, py, pz + 1) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (0, py + 1, pz + 1) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    constructor
+    · by_contra hle
+      have h0 : px = 0 := by omega
+      apply hcross
+      have hs1 : s (0, py, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (0, py, pz + 1) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+    · by_contra hle
+      have h0 : py = 0 := by omega
+      apply hcross
+      have hs1 : s (px, 0, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px, 0, pz + 1) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    constructor
+    · by_contra hle
+      have h0 : px = 0 := by omega
+      apply hcross
+      have hs1 : s (0, py, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (0, py, pz + 1) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+    · by_contra hle
+      have h0 : py = 0 := by omega
+      apply hcross
+      have hs1 : s (px, 0, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px, 0, pz + 1) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    · by_contra hle
+      have h0 : py = 0 := by omega
+      apply hcross
+      have hs1 : s (px, 0, pz + 1) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px + 1, 0, pz + 1) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    · by_contra hle
+      have h0 : py = 0 := by omega
+      apply hcross
+      have hs1 : s (px + 1, 0, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px + 1, 0, pz + 1) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    constructor
+    · by_contra hle
+      have h0 : py = 0 := by omega
+      apply hcross
+      have hs1 : s (px, 0, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px + 1, 0, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+    · by_contra hle
+      have h0 : pz = 0 := by omega
+      apply hcross
+      have hs1 : s (px, py, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px + 1, py, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    constructor
+    · by_contra hle
+      have h0 : py = 0 := by omega
+      apply hcross
+      have hs1 : s (px, 0, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px + 1, 0, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+    · by_contra hle
+      have h0 : pz = 0 := by omega
+      apply hcross
+      have hs1 : s (px, py, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px + 1, py, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    · by_contra hle
+      have h0 : pz = 0 := by omega
+      apply hcross
+      have hs1 : s (px + 1, py, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px + 1, py + 1, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    · by_contra hle
+      have h0 : pz = 0 := by omega
+      apply hcross
+      have hs1 : s (px, py + 1, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px + 1, py + 1, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+  ·
+    constructor
+    · by_contra hle
+      have h0 : px = 0 := by omega
+      apply hcross
+      have hs1 : s (0, py, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (0, py + 1, pz) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+    · by_contra hle
+      have h0 : pz = 0 := by omega
+      apply hcross
+      have hs1 : s (px, py, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      have hs2 : s (px, py + 1, 0) = false := hpin _ (by simp [PadGrid.isShell, h0])
+      simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN, h0, hs1, hs2]
+
 /-- **Partner reversal across an interior face.** For any crossed
     boundary edge `e` of the face at base `p` with normal `na`, there
     is a crossed boundary edge `e'` of the same face whose quad side
@@ -382,11 +524,11 @@ theorem edge_dir_p (na : Nat) (hna : na < 3) (i : Nat) (hi : i < 4)
 theorem face_reverse (n : Nat) (s : Lat → Bool)
     (hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
     (na : Nat) (hna : na < 3) (p : Lat) (hx : FaceBaseOK na p)
-    (hEdge : ∀ j : Nat,
-      s ((faceBoundaryEdges na p).getD j (p, 0)).1 ≠
-        s (PadGrid.succN ((faceBoundaryEdges na p).getD j (p, 0)).1
-                         ((faceBoundaryEdges na p).getD j (p, 0)).2) →
-      EdgeBaseOK na j p)
+    (hLat : ∀ j : Nat, j < 4 →
+      PadGrid.InLattice n ((faceBoundaryEdges na p).getD j (p, 0)).1 ∧
+      PadGrid.InLattice n (PadGrid.succN
+        ((faceBoundaryEdges na p).getD j (p, 0)).1
+        ((faceBoundaryEdges na p).getD j (p, 0)).2))
     (i : Nat) (hi : i < 4)
     (e : PadEdge) (he : e = (faceBoundaryEdges na p).getD i (p, 0))
     (hcross : s e.1 ≠ s (PadGrid.succN e.1 e.2)) :
@@ -484,7 +626,12 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
     cases hfi : flipDir i (s e.1) <;> cases hfj : flipDir jF.val (s e'.1) <;> simp_all
   refine ⟨jF.val, jF.isLt, e', rfl, flipDir jF.val (s e'.1),
     hcrossE', ?_, hb', hvA, hvB⟩
-  exact edge_dir_p na hna jF.val jF.isLt s p (hEdge jF.val hcrossE')
+  have hEdgeJ : EdgeBaseOK na jF.val p := by
+    have hc' := hcrossE'
+    rw [← heq] at hc'
+    apply edgeBaseOK_of_crossed n s hpin p.1 p.2.1 p.2.2 na jF.val hna jF.isLt
+    simpa using hc'
+  exact edge_dir_p na hna jF.val jF.isLt s p hEdgeJ
 
 /-- Ring-pair classification for d=0, s p = false. -/
 theorem ring_pair_0_false (s : Lat → Bool)
@@ -667,11 +814,6 @@ theorem classify_0_false_0 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y - 1, z - 1) (x, y, z) 0)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 0) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -688,12 +830,10 @@ theorem classify_0_false_0 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨1, by decide, (x, y, z - 1), ?_, ?_, ?_, 1, by decide,
+  refine ⟨1, by decide, (x, y, z - 1), ?_, ?_, 1, by decide,
     ((x, y, z), 0), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -726,11 +866,6 @@ theorem classify_0_false_1 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 0)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 0) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -747,12 +882,10 @@ theorem classify_0_false_1 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨2, by decide, (x, y, z), ?_, ?_, ?_, 0, by decide,
+  refine ⟨2, by decide, (x, y, z), ?_, ?_, 0, by decide,
     ((x, y, z), 0), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -785,11 +918,6 @@ theorem classify_0_false_2 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 0)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 0) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -806,12 +934,10 @@ theorem classify_0_false_2 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨1, by decide, (x, y, z), ?_, ?_, ?_, 3, by decide,
+  refine ⟨1, by decide, (x, y, z), ?_, ?_, 3, by decide,
     ((x, y, z), 0), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -844,11 +970,6 @@ theorem classify_0_false_3 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 0)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y - 1, z - 1) (x, y, z) 0) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -865,12 +986,10 @@ theorem classify_0_false_3 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨2, by decide, (x, y - 1, z), ?_, ?_, ?_, 2, by decide,
+  refine ⟨2, by decide, (x, y - 1, z), ?_, ?_, 2, by decide,
     ((x, y, z), 0), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -903,11 +1022,6 @@ theorem classify_0_true_0 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y - 1, z - 1) (x, y, z) 0)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 0) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -924,12 +1038,10 @@ theorem classify_0_true_0 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨2, by decide, (x, y - 1, z), ?_, ?_, ?_, 2, by decide,
+  refine ⟨2, by decide, (x, y - 1, z), ?_, ?_, 2, by decide,
     ((x, y, z), 0), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -962,11 +1074,6 @@ theorem classify_0_true_1 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 0)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 0) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -983,12 +1090,10 @@ theorem classify_0_true_1 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨1, by decide, (x, y, z), ?_, ?_, ?_, 3, by decide,
+  refine ⟨1, by decide, (x, y, z), ?_, ?_, 3, by decide,
     ((x, y, z), 0), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1021,11 +1126,6 @@ theorem classify_0_true_2 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 0)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 0) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1042,12 +1142,10 @@ theorem classify_0_true_2 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨2, by decide, (x, y, z), ?_, ?_, ?_, 0, by decide,
+  refine ⟨2, by decide, (x, y, z), ?_, ?_, 0, by decide,
     ((x, y, z), 0), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1080,11 +1178,6 @@ theorem classify_0_true_3 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 0)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y - 1, z - 1) (x, y, z) 0) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1101,12 +1194,10 @@ theorem classify_0_true_3 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨1, by decide, (x, y, z - 1), ?_, ?_, ?_, 1, by decide,
+  refine ⟨1, by decide, (x, y, z - 1), ?_, ?_, 1, by decide,
     ((x, y, z), 0), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1139,11 +1230,6 @@ theorem classify_1_false_0 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x - 1, y, z - 1) (x, y, z) 1)
     (hb : b = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 1) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1160,12 +1246,10 @@ theorem classify_1_false_0 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨2, by decide, (x - 1, y, z), ?_, ?_, ?_, 1, by decide,
+  refine ⟨2, by decide, (x - 1, y, z), ?_, ?_, 1, by decide,
     ((x, y, z), 1), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1198,11 +1282,6 @@ theorem classify_1_false_1 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 1)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 1) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1219,12 +1298,10 @@ theorem classify_1_false_1 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨0, by decide, (x, y, z), ?_, ?_, ?_, 0, by decide,
+  refine ⟨0, by decide, (x, y, z), ?_, ?_, 0, by decide,
     ((x, y, z), 1), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1257,11 +1334,6 @@ theorem classify_1_false_2 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 1)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 1) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1278,12 +1350,10 @@ theorem classify_1_false_2 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨2, by decide, (x, y, z), ?_, ?_, ?_, 3, by decide,
+  refine ⟨2, by decide, (x, y, z), ?_, ?_, 3, by decide,
     ((x, y, z), 1), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1316,11 +1386,6 @@ theorem classify_1_false_3 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 1)
     (hb : b = DmcOnePad.cellPatchVertex s (x - 1, y, z - 1) (x, y, z) 1) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1337,12 +1402,10 @@ theorem classify_1_false_3 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨0, by decide, (x, y, z - 1), ?_, ?_, ?_, 2, by decide,
+  refine ⟨0, by decide, (x, y, z - 1), ?_, ?_, 2, by decide,
     ((x, y, z), 1), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1375,11 +1438,6 @@ theorem classify_1_true_0 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x - 1, y, z - 1) (x, y, z) 1)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 1) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1396,12 +1454,10 @@ theorem classify_1_true_0 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨0, by decide, (x, y, z - 1), ?_, ?_, ?_, 2, by decide,
+  refine ⟨0, by decide, (x, y, z - 1), ?_, ?_, 2, by decide,
     ((x, y, z), 1), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1434,11 +1490,6 @@ theorem classify_1_true_1 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 1)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 1) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1455,12 +1506,10 @@ theorem classify_1_true_1 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨2, by decide, (x, y, z), ?_, ?_, ?_, 3, by decide,
+  refine ⟨2, by decide, (x, y, z), ?_, ?_, 3, by decide,
     ((x, y, z), 1), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1493,11 +1542,6 @@ theorem classify_1_true_2 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 1)
     (hb : b = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 1) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1514,12 +1558,10 @@ theorem classify_1_true_2 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨0, by decide, (x, y, z), ?_, ?_, ?_, 0, by decide,
+  refine ⟨0, by decide, (x, y, z), ?_, ?_, 0, by decide,
     ((x, y, z), 1), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1552,11 +1594,6 @@ theorem classify_1_true_3 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 1)
     (hb : b = DmcOnePad.cellPatchVertex s (x - 1, y, z - 1) (x, y, z) 1) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1573,12 +1610,10 @@ theorem classify_1_true_3 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨2, by decide, (x - 1, y, z), ?_, ?_, ?_, 1, by decide,
+  refine ⟨2, by decide, (x - 1, y, z), ?_, ?_, 1, by decide,
     ((x, y, z), 1), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1611,11 +1646,6 @@ theorem classify_2_false_0 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x - 1, y - 1, z) (x, y, z) 2)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 2) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1632,12 +1662,10 @@ theorem classify_2_false_0 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨0, by decide, (x, y - 1, z), ?_, ?_, ?_, 1, by decide,
+  refine ⟨0, by decide, (x, y - 1, z), ?_, ?_, 1, by decide,
     ((x, y, z), 2), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1670,11 +1698,6 @@ theorem classify_2_false_1 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 2)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 2) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1691,12 +1714,10 @@ theorem classify_2_false_1 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨1, by decide, (x, y, z), ?_, ?_, ?_, 0, by decide,
+  refine ⟨1, by decide, (x, y, z), ?_, ?_, 0, by decide,
     ((x, y, z), 2), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1729,11 +1750,6 @@ theorem classify_2_false_2 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 2)
     (hb : b = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 2) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1750,12 +1766,10 @@ theorem classify_2_false_2 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨0, by decide, (x, y, z), ?_, ?_, ?_, 3, by decide,
+  refine ⟨0, by decide, (x, y, z), ?_, ?_, 3, by decide,
     ((x, y, z), 2), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1788,11 +1802,6 @@ theorem classify_2_false_3 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 2)
     (hb : b = DmcOnePad.cellPatchVertex s (x - 1, y - 1, z) (x, y, z) 2) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1809,12 +1818,10 @@ theorem classify_2_false_3 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨1, by decide, (x - 1, y, z), ?_, ?_, ?_, 2, by decide,
+  refine ⟨1, by decide, (x - 1, y, z), ?_, ?_, 2, by decide,
     ((x, y, z), 2), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1847,11 +1854,6 @@ theorem classify_2_true_0 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x - 1, y - 1, z) (x, y, z) 2)
     (hb : b = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 2) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1868,12 +1870,10 @@ theorem classify_2_true_0 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨1, by decide, (x - 1, y, z), ?_, ?_, ?_, 2, by decide,
+  refine ⟨1, by decide, (x - 1, y, z), ?_, ?_, 2, by decide,
     ((x, y, z), 2), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1906,11 +1906,6 @@ theorem classify_2_true_1 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 2)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 2) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1927,12 +1922,10 @@ theorem classify_2_true_1 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨0, by decide, (x, y, z), ?_, ?_, ?_, 3, by decide,
+  refine ⟨0, by decide, (x, y, z), ?_, ?_, 3, by decide,
     ((x, y, z), 2), ?_, false, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -1965,11 +1958,6 @@ theorem classify_2_true_2 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 2)
     (hb : b = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 2) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -1986,12 +1974,10 @@ theorem classify_2_true_2 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨1, by decide, (x, y, z), ?_, ?_, ?_, 0, by decide,
+  refine ⟨1, by decide, (x, y, z), ?_, ?_, 0, by decide,
     ((x, y, z), 2), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
@@ -2024,11 +2010,6 @@ theorem classify_2_true_3 (n : Nat) (s : Lat → Bool)
     (ha : a = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 2)
     (hb : b = DmcOnePad.cellPatchVertex s (x - 1, y - 1, z) (x, y, z) 2) :
     ∃ (na : Nat) (hna : na < 3) (pF' : Lat) (hx' : FaceBaseOK na pF')
-      (hEdge : ∀ j : Nat,
-        s ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ≠
-          s (PadGrid.succN ((faceBoundaryEdges na pF').getD j (pF', 0)).1
-                           ((faceBoundaryEdges na pF').getD j (pF', 0)).2) →
-        EdgeBaseOK na j pF')
       (hlat : ∀ j : Nat, j < 4 →
         PadGrid.InLattice n ((faceBoundaryEdges na pF').getD j (pF', 0)).1 ∧
         PadGrid.InLattice n (PadGrid.succN
@@ -2045,12 +2026,10 @@ theorem classify_2_true_3 (n : Nat) (s : Lat → Bool)
         else
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
-  refine ⟨0, by decide, (x, y - 1, z), ?_, ?_, ?_, 1, by decide,
+  refine ⟨0, by decide, (x, y - 1, z), ?_, ?_, 1, by decide,
     ((x, y, z), 2), ?_, true, ?_⟩
   · simp [FaceBaseOK]
     omega
-  · intro j hj
-    by_cases hje : j % 2 = 0 <;> simp [EdgeBaseOK, hje] <;> constructor <;> first | assumption | omega
   · intro j hj
     interval_cases j <;> simp [PadGrid.InLattice, faceBoundaryEdges, iaOf, ibOf, PadGrid.succN] at hpSucc ⊢
     all_goals rcases hp3 with ⟨hx3, hy3, hz3⟩
