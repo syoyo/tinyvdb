@@ -61,5 +61,70 @@ theorem incidentCells_third (n : Nat) (s : Lat → Bool)
     simp [DmcOnePad.incidentCells, hq, PadGrid.ij, PadGrid.addCell, hsp]
     all_goals ext <;> simp_all <;> omega
 
+
+theorem incidentCells_inj (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
+    {p p' : Lat} {d d' : Nat} (hd : d < 3) (hd' : d' < 3)
+    (hp : PadGrid.InLattice n p) (hp' : PadGrid.InLattice n p')
+    (hne : s p ≠ s (PadGrid.succN p d)) (hne' : s p' ≠ s (PadGrid.succN p' d'))
+    (h : DmcOnePad.incidentCells s (p,d) = DmcOnePad.incidentCells s (p',d')) :
+    (p,d) = (p',d') := by
+  have hp_eq : p = p' := by
+    have h3 := congrArg (fun l : List Cell => l.getD 2 (0,0,0)) h
+    rw [incidentCells_third n s hpin hd hp hne] at h3
+    rw [incidentCells_third n s hpin hd' hp' hne'] at h3
+    exact h3
+  subst p'
+  have hq := anchorCell_eq_pinned n s hpin hd hp hne
+  have hq' := anchorCell_eq_pinned n s hpin hd' hp hne'
+  have hfirst := congrArg (fun l : List Cell => l.getD 0 (0,0,0)) h
+  simp [DmcOnePad.incidentCells] at hfirst
+  rw [hq, hq'] at hfirst
+  have hd_eq : d = d' := by
+    have ht := PadGrid.pinned_transverse n s hpin hp hne
+    have ht' := PadGrid.pinned_transverse n s hpin hp hne'
+    interval_cases d <;> interval_cases d'
+    · rfl
+    · have hb1 : 1 ≤ p.2.1 := by simpa using (ht.1 rfl).1
+      have hb2 : 1 ≤ p.2.2 := by simpa using (ht.1 rfl).2.2.1
+      have hb3 : 1 ≤ p.1 := by simpa using (ht'.2.1 rfl).1
+      have hb4 : 1 ≤ p.2.2 := by simpa using (ht'.2.1 rfl).2.2.1
+      simp [hq, hq'] at hfirst
+      omega
+    · have hb1 : 1 ≤ p.2.1 := by simpa using (ht.1 rfl).1
+      have hb2 : 1 ≤ p.2.2 := by simpa using (ht.1 rfl).2.2.1
+      have hb3 : 1 ≤ p.1 := by simpa using (ht'.2.2 rfl).1
+      have hb4 : 1 ≤ p.2.1 := by simpa using (ht'.2.2 rfl).2.2.1
+      simp [hq, hq'] at hfirst
+      omega
+    · have hb1 : 1 ≤ p.1 := by simpa using (ht.2.1 rfl).1
+      have hb2 : 1 ≤ p.2.2 := by simpa using (ht.2.1 rfl).2.2.1
+      have hb3 : 1 ≤ p.2.1 := by simpa using (ht'.1 rfl).1
+      have hb4 : 1 ≤ p.2.2 := by simpa using (ht'.1 rfl).2.2.1
+      simp [hq, hq'] at hfirst
+      omega
+    · rfl
+    · have hb1 : 1 ≤ p.1 := by simpa using (ht.2.1 rfl).1
+      have hb2 : 1 ≤ p.2.2 := by simpa using (ht.2.1 rfl).2.2.1
+      have hb3 : 1 ≤ p.1 := by simpa using (ht'.2.2 rfl).1
+      have hb4 : 1 ≤ p.2.1 := by simpa using (ht'.2.2 rfl).2.2.1
+      simp [hq, hq'] at hfirst
+      omega
+    · have hb1 : 1 ≤ p.1 := by simpa using (ht.2.2 rfl).1
+      have hb2 : 1 ≤ p.2.1 := by simpa using (ht.2.2 rfl).2.2.1
+      have hb3 : 1 ≤ p.2.1 := by simpa using (ht'.1 rfl).1
+      have hb4 : 1 ≤ p.2.2 := by simpa using (ht'.1 rfl).2.2.1
+      simp [hq, hq'] at hfirst
+      omega
+    · have hb1 : 1 ≤ p.1 := by simpa using (ht.2.2 rfl).1
+      have hb2 : 1 ≤ p.2.1 := by simpa using (ht.2.2 rfl).2.2.1
+      have hb3 : 1 ≤ p.1 := by simpa using (ht'.2.1 rfl).1
+      have hb4 : 1 ≤ p.2.2 := by simpa using (ht'.2.1 rfl).2.2.1
+      simp [hq, hq'] at hfirst
+      omega
+    · rfl
+  subst d'
+  rfl
+
 end DmcOneEuler
 end Vdb
