@@ -873,6 +873,7 @@ theorem classify_0_false_0 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 0))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -883,7 +884,7 @@ theorem classify_0_false_0 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨1, by decide, (x, y, z - 1), ?_, ?_, 1, by decide,
-    ((x, y, z), 0), ?_, false, ?_⟩
+    ((x, y, z), 0), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -924,6 +925,7 @@ theorem classify_0_false_1 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 0))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -934,7 +936,7 @@ theorem classify_0_false_1 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨2, by decide, (x, y, z), ?_, ?_, 0, by decide,
-    ((x, y, z), 0), ?_, false, ?_⟩
+    ((x, y, z), 0), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -975,6 +977,7 @@ theorem classify_0_false_2 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 0))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -985,7 +988,7 @@ theorem classify_0_false_2 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨1, by decide, (x, y, z), ?_, ?_, 3, by decide,
-    ((x, y, z), 0), ?_, true, ?_⟩
+    ((x, y, z), 0), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1026,6 +1029,7 @@ theorem classify_0_false_3 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 0))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1036,7 +1040,7 @@ theorem classify_0_false_3 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨2, by decide, (x, y - 1, z), ?_, ?_, 2, by decide,
-    ((x, y, z), 0), ?_, true, ?_⟩
+    ((x, y, z), 0), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1077,6 +1081,7 @@ theorem classify_0_true_0 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 0))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1087,7 +1092,7 @@ theorem classify_0_true_0 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨2, by decide, (x, y - 1, z), ?_, ?_, 2, by decide,
-    ((x, y, z), 0), ?_, false, ?_⟩
+    ((x, y, z), 0), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1128,6 +1133,7 @@ theorem classify_0_true_1 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 0))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1138,7 +1144,7 @@ theorem classify_0_true_1 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨1, by decide, (x, y, z), ?_, ?_, 3, by decide,
-    ((x, y, z), 0), ?_, false, ?_⟩
+    ((x, y, z), 0), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1179,6 +1185,7 @@ theorem classify_0_true_2 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 0))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1189,7 +1196,7 @@ theorem classify_0_true_2 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨2, by decide, (x, y, z), ?_, ?_, 0, by decide,
-    ((x, y, z), 0), ?_, true, ?_⟩
+    ((x, y, z), 0), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1230,6 +1237,7 @@ theorem classify_0_true_3 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 0))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1240,7 +1248,7 @@ theorem classify_0_true_3 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨1, by decide, (x, y, z - 1), ?_, ?_, 1, by decide,
-    ((x, y, z), 0), ?_, true, ?_⟩
+    ((x, y, z), 0), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1281,6 +1289,7 @@ theorem classify_1_false_0 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 1))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1291,7 +1300,7 @@ theorem classify_1_false_0 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨2, by decide, (x - 1, y, z), ?_, ?_, 1, by decide,
-    ((x, y, z), 1), ?_, false, ?_⟩
+    ((x, y, z), 1), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1332,6 +1341,7 @@ theorem classify_1_false_1 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 1))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1342,7 +1352,7 @@ theorem classify_1_false_1 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨0, by decide, (x, y, z), ?_, ?_, 0, by decide,
-    ((x, y, z), 1), ?_, false, ?_⟩
+    ((x, y, z), 1), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1383,6 +1393,7 @@ theorem classify_1_false_2 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 1))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1393,7 +1404,7 @@ theorem classify_1_false_2 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨2, by decide, (x, y, z), ?_, ?_, 3, by decide,
-    ((x, y, z), 1), ?_, true, ?_⟩
+    ((x, y, z), 1), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1434,6 +1445,7 @@ theorem classify_1_false_3 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 1))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1444,7 +1456,7 @@ theorem classify_1_false_3 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨0, by decide, (x, y, z - 1), ?_, ?_, 2, by decide,
-    ((x, y, z), 1), ?_, true, ?_⟩
+    ((x, y, z), 1), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1485,6 +1497,7 @@ theorem classify_1_true_0 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 1))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1495,7 +1508,7 @@ theorem classify_1_true_0 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨0, by decide, (x, y, z - 1), ?_, ?_, 2, by decide,
-    ((x, y, z), 1), ?_, false, ?_⟩
+    ((x, y, z), 1), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1536,6 +1549,7 @@ theorem classify_1_true_1 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 1))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1546,7 +1560,7 @@ theorem classify_1_true_1 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨2, by decide, (x, y, z), ?_, ?_, 3, by decide,
-    ((x, y, z), 1), ?_, false, ?_⟩
+    ((x, y, z), 1), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1587,6 +1601,7 @@ theorem classify_1_true_2 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 1))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1597,7 +1612,7 @@ theorem classify_1_true_2 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨0, by decide, (x, y, z), ?_, ?_, 0, by decide,
-    ((x, y, z), 1), ?_, true, ?_⟩
+    ((x, y, z), 1), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1638,6 +1653,7 @@ theorem classify_1_true_3 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 1))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1648,7 +1664,7 @@ theorem classify_1_true_3 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨2, by decide, (x - 1, y, z), ?_, ?_, 1, by decide,
-    ((x, y, z), 1), ?_, true, ?_⟩
+    ((x, y, z), 1), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1689,6 +1705,7 @@ theorem classify_2_false_0 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 2))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1699,7 +1716,7 @@ theorem classify_2_false_0 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨0, by decide, (x, y - 1, z), ?_, ?_, 1, by decide,
-    ((x, y, z), 2), ?_, false, ?_⟩
+    ((x, y, z), 2), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1741,6 +1758,7 @@ theorem classify_2_false_1 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 2))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1751,7 +1769,7 @@ theorem classify_2_false_1 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨1, by decide, (x, y, z), ?_, ?_, 0, by decide,
-    ((x, y, z), 2), ?_, false, ?_⟩
+    ((x, y, z), 2), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1793,6 +1811,7 @@ theorem classify_2_false_2 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 2))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1803,7 +1822,7 @@ theorem classify_2_false_2 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨0, by decide, (x, y, z), ?_, ?_, 3, by decide,
-    ((x, y, z), 2), ?_, true, ?_⟩
+    ((x, y, z), 2), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1845,6 +1864,7 @@ theorem classify_2_false_3 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 2))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1855,7 +1875,7 @@ theorem classify_2_false_3 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨1, by decide, (x - 1, y, z), ?_, ?_, 2, by decide,
-    ((x, y, z), 2), ?_, true, ?_⟩
+    ((x, y, z), 2), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1897,6 +1917,7 @@ theorem classify_2_true_0 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 2))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1907,7 +1928,7 @@ theorem classify_2_true_0 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨1, by decide, (x - 1, y, z), ?_, ?_, 2, by decide,
-    ((x, y, z), 2), ?_, false, ?_⟩
+    ((x, y, z), 2), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -1949,6 +1970,7 @@ theorem classify_2_true_1 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 2))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -1959,7 +1981,7 @@ theorem classify_2_true_1 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨0, by decide, (x, y, z), ?_, ?_, 3, by decide,
-    ((x, y, z), 2), ?_, false, ?_⟩
+    ((x, y, z), 2), ?_, rfl, false, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -2001,6 +2023,7 @@ theorem classify_2_true_2 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 2))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -2011,7 +2034,7 @@ theorem classify_2_true_2 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨1, by decide, (x, y, z), ?_, ?_, 0, by decide,
-    ((x, y, z), 2), ?_, true, ?_⟩
+    ((x, y, z), 2), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -2053,6 +2076,7 @@ theorem classify_2_true_3 (n : Nat) (s : Lat → Bool)
           ((faceBoundaryEdges na pF').getD j (pF', 0)).2))
       (i : Nat) (hi : i < 4) (e : PadEdge)
       (heq : e = (faceBoundaryEdges na pF').getD i (pF', 0))
+      (heqraw : e = ((x, y, z), 2))
       (dir : Bool),
       s e.1 ≠ s (PadGrid.succN e.1 e.2) ∧
       flipDir i (s e.1) = dir ∧
@@ -2063,7 +2087,7 @@ theorem classify_2_true_3 (n : Nat) (s : Lat → Bool)
           (DmcOnePad.cellPatchVertex s (faceMinusCell na pF') e.1 e.2,
            DmcOnePad.cellPatchVertex s (facePlusCell na pF') e.1 e.2) := by
   refine ⟨0, by decide, (x, y - 1, z), ?_, ?_, 1, by decide,
-    ((x, y, z), 2), ?_, true, ?_⟩
+    ((x, y, z), 2), ?_, rfl, true, ?_⟩
   · simp [FaceBaseOK]
     omega
   · intro j hj
@@ -2113,7 +2137,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2158,7 +2182,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2203,7 +2227,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2248,7 +2272,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2298,7 +2322,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2343,7 +2367,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2388,7 +2412,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2433,7 +2457,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_0_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2494,7 +2518,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2539,7 +2563,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2584,7 +2608,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2629,7 +2653,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2679,7 +2703,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2724,7 +2748,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2769,7 +2793,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2814,7 +2838,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_1_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2875,7 +2899,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2920,7 +2944,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -2965,7 +2989,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -3010,7 +3034,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hs hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -3060,7 +3084,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
       rcases hR with hcase | hcase | hcase | hcase
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -3105,7 +3129,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -3150,7 +3174,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
@@ -3195,7 +3219,7 @@ theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
             rw [ite_eq_left hcond]
       · rcases hcase with ⟨ha, hbS⟩
 
-        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, heqraw, dir, hcross, hdir, hpair⟩ :=
           classify_2_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
             hsT hne' a b ha hbS
         obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
