@@ -62,6 +62,12 @@ def iaOf (na : Nat) : Nat := (na + 1) % 3
 /-- The second in-plane axis of a face with normal axis `na`. -/
 def ibOf (na : Nat) : Nat := (na + 2) % 3
 
+/-- The only coordinate of a face base that must be positive is the
+    normal coordinate: `faceMinusCell na p` subtracts 1 from that
+    coordinate alone. -/
+def FaceBaseOK (na : Nat) (p : Lat) : Prop :=
+  if na = 0 then 1 ≤ p.1 else if na = 1 then 1 ≤ p.2.1 else 1 ≤ p.2.2
+
 /-- The `+na` side cell of the face at lattice base `p` (na-coord = k). -/
 def facePlusCell (_na : Nat) (p : Lat) : Cell := p
 /-- The `−na` side cell of the face. -/

@@ -219,7 +219,7 @@ theorem mkCase_eq_cellCase (s : Vdb.PadGrid.Lat → Bool) (c : Vdb.DmcOnePad.Cel
     literally equal. Holds for every sign field `s` and base point `p`
     with `1 ≤ p`. -/
 theorem maskPlus_eq_maskMinus (na : Nat) (s : Vdb.PadGrid.Lat → Bool) (p : Vdb.PadGrid.Lat)
-    (hna : na < 3) (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2) :
+    (hna : na < 3) (hx : FaceBaseOK na p) :
     maskPlus na (Vdb.DmcOnePad.cellCase s (facePlusCell na p)) =
     maskMinus na (Vdb.DmcOnePad.cellCase s (faceMinusCell na p)) := by
   interval_cases na
@@ -239,7 +239,7 @@ theorem maskPlus_eq_maskMinus (na : Nat) (s : Vdb.PadGrid.Lat → Bool) (p : Vdb
       caseBit_mkCase _ _ _ _ _ _ _ _ (6 : Nat) (by decide),
       caseBit_mkCase _ _ _ _ _ _ _ _ (7 : Nat) (by decide)]
   all_goals
-    simp [Nat.sub_add_cancel hx.1, Nat.sub_add_cancel hx.2.1, Nat.sub_add_cancel hx.2.2]
+    simp [Nat.sub_add_cancel (by simpa [FaceBaseOK] using hx)]
 
 /-- The local cube-edge id of the `i`-th face boundary edge. -/
 def edgeId (na side i : Nat) : Nat := (enumFaceEdges na side).getD i 0
@@ -318,7 +318,8 @@ theorem startCornerId_eq_bitOf : ∀ (na : Fin 3) (side : Fin 2) (i : Fin 4),
 /-- The case bit at the start corner of boundary edge `i` is exactly
     the sign at that edge's global start point. -/
 theorem bitOf_start_sign (na : Fin 3) (side : Fin 2) (i : Fin 4) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z) :
+    (x y z : Nat)
+    (hb : if na.val = 0 then 1 ≤ x else if na.val = 1 then 1 ≤ y else 1 ≤ z) :
     caseBit (Vdb.DmcOnePad.cellCase s (if side.val = 0 then facePlusCell na (x,y,z) else faceMinusCell na (x,y,z)))
       (startCornerId na side i) =
       (if s ((faceBoundaryEdges na (x,y,z)).getD i ((x,y,z),0)).1 then 1 else 0) := by
@@ -327,8 +328,7 @@ theorem bitOf_start_sign (na : Fin 3) (side : Fin 2) (i : Fin 4) (s : Lat → Bo
     rw [mkCase_eq_cellCase, caseBit_mkCase]
     all_goals
       simp_all [startCornerId, faceBoundaryEdges, iaOf, ibOf,
-        facePlusCell, faceMinusCell, Vdb.PadGrid.succN, Nat.sub_add_cancel hx,
-        Nat.sub_add_cancel hy, Nat.sub_add_cancel hz]
+        facePlusCell, faceMinusCell, Vdb.PadGrid.succN, Nat.sub_add_cancel hb]
 
 /-- If-based start-corner table (simp-friendly), with a machine-checked
     bridge to `enumEdgeInfo`. -/
@@ -347,7 +347,8 @@ theorem endCornerId_eq_endBitOf : ∀ (na : Fin 3) (side : Fin 2) (i : Fin 4),
 /-- The case bit at the start corner of boundary edge `i` is exactly
     the sign at that edge's global end point. -/
 theorem endBitOf_start_sign (na : Fin 3) (side : Fin 2) (i : Fin 4) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z) :
+    (x y z : Nat)
+    (hb : if na.val = 0 then 1 ≤ x else if na.val = 1 then 1 ≤ y else 1 ≤ z) :
     caseBit (Vdb.DmcOnePad.cellCase s (if side.val = 0 then facePlusCell na (x,y,z) else faceMinusCell na (x,y,z)))
       (endCornerId na side i) =
       (if s (Vdb.PadGrid.succN ((faceBoundaryEdges na (x,y,z)).getD i ((x,y,z),0)).1
@@ -357,8 +358,16 @@ theorem endBitOf_start_sign (na : Fin 3) (side : Fin 2) (i : Fin 4) (s : Lat →
     rw [mkCase_eq_cellCase, caseBit_mkCase]
     all_goals
       simp_all [endCornerId, faceBoundaryEdges, iaOf, ibOf,
-        facePlusCell, faceMinusCell, Vdb.PadGrid.succN, Nat.sub_add_cancel hx,
-        Nat.sub_add_cancel hy, Nat.sub_add_cancel hz]
+        facePlusCell, faceMinusCell, Vdb.PadGrid.succN, Nat.sub_add_cancel hb]
+
+
+/-- Paired boundary edges are crossed (their endpoint signs differ). -/
+theorem paired_crossed :
+    ∀ (na : Fin 3) (side : Fin 2) (k : Fin 256) (i j : Fin 4),
+      (min i.val j.val, max i.val j.val) ∈ pairsIdx k.val na.val side.val →
+        caseBit k.val (bitOf na.val side.val i.val) ≠
+        caseBit k.val (endBitOf na.val side.val i.val) := by
+  native_decide
 
 end DmcOneStitch
 end Vdb

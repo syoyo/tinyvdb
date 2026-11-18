@@ -125,7 +125,7 @@ def faceCornerBits (na side : Nat) (k : Nat) : List Nat :=
     four global indices.** -/
 theorem localEdge_faceEdges (na : Nat) (side : Nat) (p : Lat)
     (i : Nat) (hna : na < 3) (hi : i < 4)
-    (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2) (hside : side < 2) :
+    (hx : FaceBaseOK na p) (hside : side < 2) :
     localEdge ((faceBoundaryEdges na p).getD i (p, 0)).1
       (if side = 0 then facePlusCell na p else faceMinusCell na p)
       ((faceBoundaryEdges na p).getD i (p, 0)).2
@@ -135,6 +135,8 @@ theorem localEdge_faceEdges (na : Nat) (side : Nat) (p : Lat)
     interval_cases na
   all_goals
     interval_cases side
+  all_goals
+    simp [FaceBaseOK] at hx
   all_goals
     simp only [localEdgeAt]
     simp [localEdge, faceBoundaryEdges, iaOf, ibOf, enumFaceEdges, localFacePlus,
@@ -304,25 +306,23 @@ theorem side_of_sideDir (s : Lat → Bool) (e : PadEdge) (A B : Cell) (b : Bool)
 
 /-- Point-form wrappers for the sign bridges. -/
 theorem bitOf_start_sign_p (na : Fin 3) (side : Fin 2) (i : Fin 4) (s : Lat → Bool)
-    (p : Lat) (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2) :
+    (p : Lat) (hx : FaceBaseOK na p) :
     caseBit (Vdb.DmcOnePad.cellCase s (if side.val = 0 then facePlusCell na p else faceMinusCell na p))
       (bitOf na side i) =
       (if s ((faceBoundaryEdges na p).getD i (p, 0)).1 then 1 else 0) := by
   rcases p with ⟨x, y, z⟩
-  dsimp at hx ⊢
   rw [← startCornerId_eq_bitOf na side i]
-  exact bitOf_start_sign na side i s x y z hx.1 hx.2.1 hx.2.2
+  exact bitOf_start_sign na side i s x y z (by simpa [FaceBaseOK] using hx)
 
 theorem endBitOf_end_sign_p (na : Fin 3) (side : Fin 2) (i : Fin 4) (s : Lat → Bool)
-    (p : Lat) (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2) :
+    (p : Lat) (hx : FaceBaseOK na p) :
     caseBit (Vdb.DmcOnePad.cellCase s (if side.val = 0 then facePlusCell na p else faceMinusCell na p))
       (endBitOf na side i) =
       (if s (Vdb.PadGrid.succN ((faceBoundaryEdges na p).getD i (p, 0)).1
         ((faceBoundaryEdges na p).getD i (p, 0)).2) then 1 else 0) := by
   rcases p with ⟨x, y, z⟩
-  dsimp at hx ⊢
   rw [← endCornerId_eq_endBitOf na side i]
-  exact endBitOf_start_sign na side i s x y z hx.1 hx.2.1 hx.2.2
+  exact endBitOf_start_sign na side i s x y z (by simpa [FaceBaseOK] using hx)
 
 /-- Uniform orientation law, point form. -/
 theorem edge_dir_p (na : Nat) (hna : na < 3) (i : Nat) (hi : i < 4)
@@ -352,6 +352,9 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
         DmcOnePad.cellPatchVertex s (facePlusCell na p) e.1 e.2 ∧
       DmcOnePad.cellPatchVertex s (faceMinusCell na p) e'.1 e'.2 =
         DmcOnePad.cellPatchVertex s (faceMinusCell na p) e.1 e.2 := by
+  have hxFace : FaceBaseOK na p := by
+    simp [FaceBaseOK]
+    interval_cases na <;> simp_all
   let A : Cell := facePlusCell na p
   let B : Cell := faceMinusCell na p
   let naF : Fin 3 := ⟨na, hna⟩
@@ -361,13 +364,13 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
   let kA : Fin 256 := ⟨Vdb.DmcOnePad.cellCase s A, cellCase_lt_256 s A⟩
   let kB : Fin 256 := ⟨Vdb.DmcOnePad.cellCase s B, cellCase_lt_256 s B⟩
   have hbA : caseBit kA.val (bitOf naF sideA iF) = (if s e.1 then 1 else 0) := by
-    have h := bitOf_start_sign_p naF sideA iF s p hx
+    have h := bitOf_start_sign_p naF sideA iF s p hxFace
     dsimp [kA, A, naF, sideA, iF] at h ⊢
     rw [he]
     exact h
   have heA : caseBit kA.val (endBitOf naF sideA iF) =
       (if s (PadGrid.succN e.1 e.2) then 1 else 0) := by
-    have h := endBitOf_end_sign_p naF sideA iF s p hx
+    have h := endBitOf_end_sign_p naF sideA iF s p hxFace
     dsimp [kA, A, naF, sideA, iF] at h ⊢
     rw [he]
     exact h
@@ -379,8 +382,8 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
   have hcrossE' : s e'.1 ≠ s (PadGrid.succN e'.1 e'.2) := by
     have hpc := paired_crossed naF sideA kA jF iF (by
       simpa [Nat.min_comm, Nat.max_comm] using hjpair)
-    have hs := bitOf_start_sign_p naF sideA jF s p hx
-    have hend := endBitOf_end_sign_p naF sideA jF s p hx
+    have hs := bitOf_start_sign_p naF sideA jF s p hxFace
+    have hend := endBitOf_end_sign_p naF sideA jF s p hxFace
     dsimp [kA, A, naF, sideA] at hpc hs hend
     have heq : (faceBoundaryEdges na p).getD jF.val (p, 0) = e' := rfl
     rw [heq] at hs hend
@@ -390,7 +393,7 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
   have hpatchA := paired_patch_eq naF sideA kA iF jF hjpair
   have hmask : maskPlus na kA.val = maskMinus na kB.val := by
     dsimp [kA, kB, A, B]
-    exact maskPlus_eq_maskMinus na s p hna hx
+    exact maskPlus_eq_maskMinus na s p hna hxFace
   have hmulti := pairing_cross_fin naF kA kB hmask
   have hpairB : (min i jF.val, max i jF.val) ∈ pairsIdx kB.val na 1 := by
     exact mem_of_pairsMultiEq hmulti hjpair (by omega) (by omega)
@@ -402,11 +405,11 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
     have hle_j : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD jF.val (p, 0)).1
         (facePlusCell na p) ((faceBoundaryEdges na p).getD jF.val (p, 0)).2 =
         localEdgeAt na 0 jF.val := by
-      simpa using localEdge_faceEdges na 0 p jF.val hna jF.isLt hx (by decide)
+      simpa using localEdge_faceEdges na 0 p jF.val hna jF.isLt hxFace (by decide)
     have hle_i : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD i (p, 0)).1
         (facePlusCell na p) ((faceBoundaryEdges na p).getD i (p, 0)).2 =
         localEdgeAt na 0 i := by
-      simpa using localEdge_faceEdges na 0 p i hna hi hx (by decide)
+      simpa using localEdge_faceEdges na 0 p i hna hi hxFace (by decide)
     rw [he, hle_j, hle_i]
     simpa [edgeId, localEdgeAt, A, naF, sideA, iF, kA] using hpatchA.symm
   have hvB : DmcOnePad.cellPatchVertex s B e'.1 e'.2 = DmcOnePad.cellPatchVertex s B e.1 e.2 := by
@@ -415,15 +418,15 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
     have hle_j : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD jF.val (p, 0)).1
         (faceMinusCell na p) ((faceBoundaryEdges na p).getD jF.val (p, 0)).2 =
         localEdgeAt na 1 jF.val := by
-      simpa using localEdge_faceEdges na 1 p jF.val hna jF.isLt hx (by decide)
+      simpa using localEdge_faceEdges na 1 p jF.val hna jF.isLt hxFace (by decide)
     have hle_i : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD i (p, 0)).1
         (faceMinusCell na p) ((faceBoundaryEdges na p).getD i (p, 0)).2 =
         localEdgeAt na 1 i := by
-      simpa using localEdge_faceEdges na 1 p i hna hi hx (by decide)
+      simpa using localEdge_faceEdges na 1 p i hna hi hxFace (by decide)
     rw [he, hle_j, hle_i]
     simpa [edgeId, localEdgeAt, B, naF, sideB, iF, kB] using hpatchB.symm
   have hbAbit : (if s e.1 then 1 else 0) = caseBit kA.val (bitOf naF sideA iF) := hbA.symm
-  have hsj := bitOf_start_sign_p naF sideA jF s p hx
+  have hsj := bitOf_start_sign_p naF sideA jF s p hxFace
   dsimp [kA, A, naF, sideA] at hsj
   have heq : (faceBoundaryEdges na p).getD jF.val (p, 0) = e' := rfl
   rw [heq] at hsj
@@ -437,6 +440,174 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
     cases hfi : flipDir i (s e.1) <;> cases hfj : flipDir jF.val (s e'.1) <;> simp_all
   refine ⟨e', flipDir jF.val (s e'.1), hcrossE', ?_, hb', hvA, hvB⟩
   exact edge_dir_p na hna jF.val jF.isLt s p hx
+
+/-- Ring-pair classification for d=0, s p = false. -/
+theorem ring_pair_0_false (s : Lat → Bool)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (hs : s (x, y, z) = false)
+    (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 0))
+    (a b : V)
+    (hm : (a, b) ∈ DmcOnePad.quadDirectedEdges (Vdb.DmcOneEuler.dmcOneQuadN s ((x, y, z), 0))) :
+    (a = DmcOnePad.cellPatchVertex s (x, y - 1, z - 1) (x, y, z) 0 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 0) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 0 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 0) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 0 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 0) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 0 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y - 1, z - 1) (x, y, z) 0) := by
+  have hq : PadGrid.anchorCell (x, y, z) 0 = some (x, y - 1, z - 1) := by
+    simp [PadGrid.anchorCell, hy, hz]
+  have hcells : DmcOnePad.incidentCells s ((x, y, z), 0) = [(x, y - 1, z - 1), (x, y, z - 1), (x, y, z), (x, y - 1, z)] := by
+    simp [DmcOnePad.incidentCells, hq, PadGrid.ij, hs, PadGrid.addCell,
+    Nat.sub_add_cancel hx, Nat.sub_add_cancel hy, Nat.sub_add_cancel hz]
+  have hbne : (s (x, y, z) == s (PadGrid.succN (x, y, z) 0)) = false := by
+    cases h1 : s (x, y, z) <;> cases h2 : s (PadGrid.succN (x, y, z) 0) <;> simp_all
+  unfold Vdb.DmcOneEuler.dmcOneQuadN at hm
+  rw [hbne] at hm
+  simp only [ite_false, hcells, List.map_cons, List.map_nil] at hm
+  simp [DmcOnePad.quadDirectedEdges] at hm
+  rcases hm with h | h | h | h <;> rcases h with ⟨rfl, rfl⟩ <;> simp
+
+/-- Ring-pair classification for d=0, s p = true. -/
+theorem ring_pair_0_true (s : Lat → Bool)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (hs : s (x, y, z) = true)
+    (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 0))
+    (a b : V)
+    (hm : (a, b) ∈ DmcOnePad.quadDirectedEdges (Vdb.DmcOneEuler.dmcOneQuadN s ((x, y, z), 0))) :
+    (a = DmcOnePad.cellPatchVertex s (x, y - 1, z - 1) (x, y, z) 0 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 0) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 0 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 0) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 0 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 0) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 0 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y - 1, z - 1) (x, y, z) 0) := by
+  have hq : PadGrid.anchorCell (x, y, z) 0 = some (x, y - 1, z - 1) := by
+    simp [PadGrid.anchorCell, hy, hz]
+  have hcells : DmcOnePad.incidentCells s ((x, y, z), 0) = [(x, y - 1, z - 1), (x, y - 1, z), (x, y, z), (x, y, z - 1)] := by
+    simp [DmcOnePad.incidentCells, hq, PadGrid.ij, hs, PadGrid.addCell,
+    Nat.sub_add_cancel hx, Nat.sub_add_cancel hy, Nat.sub_add_cancel hz]
+  have hbne : (s (x, y, z) == s (PadGrid.succN (x, y, z) 0)) = false := by
+    cases h1 : s (x, y, z) <;> cases h2 : s (PadGrid.succN (x, y, z) 0) <;> simp_all
+  unfold Vdb.DmcOneEuler.dmcOneQuadN at hm
+  rw [hbne] at hm
+  simp only [ite_false, hcells, List.map_cons, List.map_nil] at hm
+  simp [DmcOnePad.quadDirectedEdges] at hm
+  rcases hm with h | h | h | h <;> rcases h with ⟨rfl, rfl⟩ <;> simp
+
+/-- Ring-pair classification for d=1, s p = false. -/
+theorem ring_pair_1_false (s : Lat → Bool)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (hs : s (x, y, z) = false)
+    (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 1))
+    (a b : V)
+    (hm : (a, b) ∈ DmcOnePad.quadDirectedEdges (Vdb.DmcOneEuler.dmcOneQuadN s ((x, y, z), 1))) :
+    (a = DmcOnePad.cellPatchVertex s (x - 1, y, z - 1) (x, y, z) 1 ∧
+     b = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 1) ∨
+    (a = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 1 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 1) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 1 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 1) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 1 ∧
+     b = DmcOnePad.cellPatchVertex s (x - 1, y, z - 1) (x, y, z) 1) := by
+  have hq : PadGrid.anchorCell (x, y, z) 1 = some (x - 1, y, z - 1) := by
+    simp [PadGrid.anchorCell, hx, hz]
+  have hcells : DmcOnePad.incidentCells s ((x, y, z), 1) = [(x - 1, y, z - 1), (x - 1, y, z), (x, y, z), (x, y, z - 1)] := by
+    simp [DmcOnePad.incidentCells, hq, PadGrid.ij, hs, PadGrid.addCell,
+    Nat.sub_add_cancel hx, Nat.sub_add_cancel hy, Nat.sub_add_cancel hz]
+  have hbne : (s (x, y, z) == s (PadGrid.succN (x, y, z) 1)) = false := by
+    cases h1 : s (x, y, z) <;> cases h2 : s (PadGrid.succN (x, y, z) 1) <;> simp_all
+  unfold Vdb.DmcOneEuler.dmcOneQuadN at hm
+  rw [hbne] at hm
+  simp only [ite_false, hcells, List.map_cons, List.map_nil] at hm
+  simp [DmcOnePad.quadDirectedEdges] at hm
+  rcases hm with h | h | h | h <;> rcases h with ⟨rfl, rfl⟩ <;> simp
+
+/-- Ring-pair classification for d=1, s p = true. -/
+theorem ring_pair_1_true (s : Lat → Bool)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (hs : s (x, y, z) = true)
+    (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 1))
+    (a b : V)
+    (hm : (a, b) ∈ DmcOnePad.quadDirectedEdges (Vdb.DmcOneEuler.dmcOneQuadN s ((x, y, z), 1))) :
+    (a = DmcOnePad.cellPatchVertex s (x - 1, y, z - 1) (x, y, z) 1 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 1) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y, z - 1) (x, y, z) 1 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 1) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 1 ∧
+     b = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 1) ∨
+    (a = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 1 ∧
+     b = DmcOnePad.cellPatchVertex s (x - 1, y, z - 1) (x, y, z) 1) := by
+  have hq : PadGrid.anchorCell (x, y, z) 1 = some (x - 1, y, z - 1) := by
+    simp [PadGrid.anchorCell, hx, hz]
+  have hcells : DmcOnePad.incidentCells s ((x, y, z), 1) = [(x - 1, y, z - 1), (x, y, z - 1), (x, y, z), (x - 1, y, z)] := by
+    simp [DmcOnePad.incidentCells, hq, PadGrid.ij, hs, PadGrid.addCell,
+    Nat.sub_add_cancel hx, Nat.sub_add_cancel hy, Nat.sub_add_cancel hz]
+  have hbne : (s (x, y, z) == s (PadGrid.succN (x, y, z) 1)) = false := by
+    cases h1 : s (x, y, z) <;> cases h2 : s (PadGrid.succN (x, y, z) 1) <;> simp_all
+  unfold Vdb.DmcOneEuler.dmcOneQuadN at hm
+  rw [hbne] at hm
+  simp only [ite_false, hcells, List.map_cons, List.map_nil] at hm
+  simp [DmcOnePad.quadDirectedEdges] at hm
+  rcases hm with h | h | h | h <;> rcases h with ⟨rfl, rfl⟩ <;> simp
+
+/-- Ring-pair classification for d=2, s p = false. -/
+theorem ring_pair_2_false (s : Lat → Bool)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (hs : s (x, y, z) = false)
+    (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 2))
+    (a b : V)
+    (hm : (a, b) ∈ DmcOnePad.quadDirectedEdges (Vdb.DmcOneEuler.dmcOneQuadN s ((x, y, z), 2))) :
+    (a = DmcOnePad.cellPatchVertex s (x - 1, y - 1, z) (x, y, z) 2 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 2) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 2 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 2) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 2 ∧
+     b = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 2) ∨
+    (a = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 2 ∧
+     b = DmcOnePad.cellPatchVertex s (x - 1, y - 1, z) (x, y, z) 2) := by
+  have hq : PadGrid.anchorCell (x, y, z) 2 = some (x - 1, y - 1, z) := by
+    simp [PadGrid.anchorCell, hx, hy]
+  have hcells : DmcOnePad.incidentCells s ((x, y, z), 2) = [(x - 1, y - 1, z), (x, y - 1, z), (x, y, z), (x - 1, y, z)] := by
+    simp [DmcOnePad.incidentCells, hq, PadGrid.ij, hs, PadGrid.addCell,
+    Nat.sub_add_cancel hx, Nat.sub_add_cancel hy, Nat.sub_add_cancel hz]
+  have hbne : (s (x, y, z) == s (PadGrid.succN (x, y, z) 2)) = false := by
+    cases h1 : s (x, y, z) <;> cases h2 : s (PadGrid.succN (x, y, z) 2) <;> simp_all
+  unfold Vdb.DmcOneEuler.dmcOneQuadN at hm
+  rw [hbne] at hm
+  simp only [ite_false, hcells, List.map_cons, List.map_nil] at hm
+  simp [DmcOnePad.quadDirectedEdges] at hm
+  rcases hm with h | h | h | h <;> rcases h with ⟨rfl, rfl⟩ <;> simp
+
+/-- Ring-pair classification for d=2, s p = true. -/
+theorem ring_pair_2_true (s : Lat → Bool)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (hs : s (x, y, z) = true)
+    (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 2))
+    (a b : V)
+    (hm : (a, b) ∈ DmcOnePad.quadDirectedEdges (Vdb.DmcOneEuler.dmcOneQuadN s ((x, y, z), 2))) :
+    (a = DmcOnePad.cellPatchVertex s (x - 1, y - 1, z) (x, y, z) 2 ∧
+     b = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 2) ∨
+    (a = DmcOnePad.cellPatchVertex s (x - 1, y, z) (x, y, z) 2 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 2) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y, z) (x, y, z) 2 ∧
+     b = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 2) ∨
+    (a = DmcOnePad.cellPatchVertex s (x, y - 1, z) (x, y, z) 2 ∧
+     b = DmcOnePad.cellPatchVertex s (x - 1, y - 1, z) (x, y, z) 2) := by
+  have hq : PadGrid.anchorCell (x, y, z) 2 = some (x - 1, y - 1, z) := by
+    simp [PadGrid.anchorCell, hx, hy]
+  have hcells : DmcOnePad.incidentCells s ((x, y, z), 2) = [(x - 1, y - 1, z), (x - 1, y, z), (x, y, z), (x, y - 1, z)] := by
+    simp [DmcOnePad.incidentCells, hq, PadGrid.ij, hs, PadGrid.addCell,
+    Nat.sub_add_cancel hx, Nat.sub_add_cancel hy, Nat.sub_add_cancel hz]
+  have hbne : (s (x, y, z) == s (PadGrid.succN (x, y, z) 2)) = false := by
+    cases h1 : s (x, y, z) <;> cases h2 : s (PadGrid.succN (x, y, z) 2) <;> simp_all
+  unfold Vdb.DmcOneEuler.dmcOneQuadN at hm
+  rw [hbne] at hm
+  simp only [ite_false, hcells, List.map_cons, List.map_nil] at hm
+  simp [DmcOnePad.quadDirectedEdges] at hm
+  rcases hm with h | h | h | h <;> rcases h with ⟨rfl, rfl⟩ <;> simp
 
 end DmcOneStitch
 end Vdb
