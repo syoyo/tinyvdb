@@ -93,6 +93,28 @@ def faceMinusCell (na : Nat) (p : Lat) : Cell :=
   else if na = 1 then (p.1, p.2.1 - 1, p.2.2)
   else (p.1, p.2.1, p.2.2 - 1)
 
+/-- A cell pair that are the two sides of an interior face determine the
+    normal axis and the face base uniquely. -/
+theorem facePair_unique {na na' : Nat} (hna : na < 3) (hna' : na' < 3)
+    {pF pF' : Lat} (hb : FaceBaseOK na pF) (hb' : FaceBaseOK na' pF')
+    (h : (facePlusCell na pF = facePlusCell na' pF' ∧ faceMinusCell na pF = faceMinusCell na' pF')
+       ∨ (facePlusCell na pF = faceMinusCell na' pF' ∧ faceMinusCell na pF = facePlusCell na' pF')) :
+    na = na' ∧ pF = pF' := by
+  rcases h with h | h
+  · -- plus=plus, minus=minus
+    rcases pF with ⟨x,y,z⟩
+    rcases pF' with ⟨x',y',z'⟩
+    simp [FaceBaseOK] at hb hb'
+    dsimp [facePlusCell, faceMinusCell] at h ⊢
+    interval_cases na <;> interval_cases na' <;> simp_all <;> omega
+  · -- swapped
+    rcases pF with ⟨x,y,z⟩
+    rcases pF' with ⟨x',y',z'⟩
+    simp [FaceBaseOK] at hb hb'
+    dsimp [facePlusCell, faceMinusCell] at h ⊢
+    interval_cases na <;> interval_cases na' <;> simp_all <;> omega
+
+
 /-- The four boundary lattice edges of the face, in cyclic corner order:
     `c0 → c1` (axis `ia`), `c1 → c2` (axis `ib`), `c3 → c2` (axis `ia`),
     `c0 → c3` (axis `ib`), with `c0 = p`, `c1 = p + e_ia`, `c3 = p + e_ib`,

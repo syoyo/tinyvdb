@@ -22,6 +22,7 @@
 import Vdb.DmcOneEuler
 import Vdb.DmcOneAssemble
 import Vdb.DmcOnePad
+import Vdb.DmcOneStitchEnum
 import Vdb.PadGrid
 import Vdb.QuadEuler
 import Mathlib.Tactic
@@ -142,5 +143,66 @@ theorem nodupFailure_euler_fails :
         - (PadGrid.crossed 4 nodupFailureField).length := by
   native_decide
 
+
+/-! ### The local obstruction (machine-checked enumeration)
+
+    A directed DMC-1 edge is a pair of cell-patch vertices `((C,p),(D,q))`,
+    so two crossed boundary edges of the face shared by `C` and `D` emit
+    the same directed edge exactly when they carry the same patch id in
+    both cells and emit the same direction. The enumeration below counts
+    those local configurations over all `256 × 256` compatible cell-case
+    pairs (for each normal axis). Finding F19's field realizes one of
+    them; no `n = 3` field realizes any (`fin3_mesh_nodup`).
+-/
+
 end DmcOneEuler
+
+-- namespace Vdb already open
+namespace DmcOneStitch
+
+/-- Crossedness of the `i`-th boundary edge of a `+na` face, from the
+    case's corner bits. -/
+def cfgCrossed (k na i : Nat) : Bool :=
+  caseBit k (startCornerId na 0 i) != caseBit k (endCornerId na 0 i)
+
+/-- The patch id at the `i`-th boundary edge, in the `+na` / `-na` frame. -/
+def cfgPatch (k na side i : Nat) : Nat :=
+  (patchesUsing k ((if side = 0 then localFacePlus na else localFaceMinus na).getD i 0)).headD 0
+
+/-- The emitted direction token, from the `+na` frame. -/
+def cfgDir (k na i : Nat) : Bool := if i ≤ 1 then caseBit k (startCornerId na 0 i) = 1
+  else caseBit k (startCornerId na 0 i) = 0
+
+/-- The local duplicate configuration: two distinct crossed boundary
+    edges with the same patch id in both cells and the same direction. -/
+def badFaceConfig (na kA kB : Nat) : Bool :=
+  (List.range 4).any fun i => (List.range 4).any fun j =>
+    i < j && cfgCrossed kA na i && cfgCrossed kA na j &&
+    cfgPatch kA na 0 i == cfgPatch kA na 0 j &&
+    cfgPatch kB na 1 i == cfgPatch kB na 1 j &&
+    cfgDir kA na i == cfgDir kA na j
+
+/-- All bad configurations (`kA`, `kB`, `i*4+j`) for compatible case pairs. -/
+def badFaceConfigs (na : Nat) : List (Nat × Nat × Nat) :=
+  (List.range 256).flatMap fun kA => (List.range 256).flatMap fun kB =>
+    if maskPlus na kA == maskMinus na kB then
+      (List.range 4).flatMap fun i => (List.range 4).filterMap fun j =>
+        if i < j && cfgCrossed kA na i && cfgCrossed kA na j &&
+           cfgPatch kA na 0 i == cfgPatch kA na 0 j &&
+           cfgPatch kB na 1 i == cfgPatch kB na 1 j &&
+           cfgDir kA na i == cfgDir kA na j
+        then some (kA, kB, i * 4 + j) else none
+    else []
+
+theorem badFaceConfigs_length :
+    (badFaceConfigs 0).length = 36 ∧
+    (badFaceConfigs 1).length = 36 ∧
+    (badFaceConfigs 2).length = 36 := by
+  native_decide
+
+/-- The `n = 4` counterexample's two cell cases form a bad configuration. -/
+theorem badFaceConfig_counterexample : badFaceConfig 0 62 61 = true := by
+  native_decide
+
+end DmcOneStitch
 end Vdb
