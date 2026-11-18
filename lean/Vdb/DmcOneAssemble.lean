@@ -3202,8 +3202,10 @@ theorem edgeClosed_general (n : Nat) (s : Lat → Bool)
 
 /-- **Euler characteristic of the general-`n` DMC-1 mesh** with the
     watertight wall discharged: under shell pinning and no repeated
-    directed edge, χ = V − F for every `n`. -/
-theorem euler_general_dmc1_unconditional (n : Nat) (s : Lat → Bool)
+    directed edge, χ = V − F for every `n`. The no-repeat hypothesis is
+    essential (`Vdb/DmcOneNodupFailure`), so this theorem is intentionally
+    named `*_of_nodup`, not `*_unconditional`. -/
+theorem euler_general_dmc1_of_nodup (n : Nat) (s : Lat → Bool)
     (hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
     (hnd : (Vdb.DmcOneEuler.dmcOneMeshEdges n s).Nodup) :
     ((QuadEuler.vertices (Vdb.DmcOneEuler.dmcOneMeshEdges n s)).card : Int)

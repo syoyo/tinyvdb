@@ -74,7 +74,7 @@ owned by one patch) — with the general-`n` watertight theorem **proved**
 (`DmcOneAssemble.edgeClosed_general`: the shell-pinned DMC-1 mesh is
 `EdgeClosed` for every `n`) and the general Euler characteristic
 `χ = V − F` proven **conditional on no repeated directed edge**
-(`DmcOneEuler.euler_general_dmc1` / `DmcOneAssemble.euler_general_dmc1_unconditional`;
+(`DmcOneEuler.euler_general_dmc1` / `DmcOneAssemble.euler_general_dmc1_of_nodup`;
 quads machine-checked well-formed, mesh loop-free, `|mesh| = 4·|crossed|`,
 fully proven; surrogate axioms only). That no-repeat condition is **not
 automatic** — a concrete shell-pinned `n = 4` field with repeated edges

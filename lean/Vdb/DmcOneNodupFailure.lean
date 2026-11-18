@@ -8,7 +8,7 @@
   directed edge. Consequently `2·|E| ≠ 4·F` and the Euler identity
   `χ = V − F` genuinely fails for this field, so the `Nodup`
   hypothesis of `DmcOneEuler.euler_general_dmc1` (and of
-  `DmcOneAssemble.euler_general_dmc1_unconditional`) cannot be removed.
+  `DmcOneAssemble.euler_general_dmc1_of_nodup`) cannot be removed.
 
   The field is the local configuration found by enumerating the two
   cell cases `62` (plus cell at `(2,1,1)`) and `61` (minus cell at
