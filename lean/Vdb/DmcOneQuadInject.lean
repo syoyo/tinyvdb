@@ -143,5 +143,28 @@ theorem dmcOneQuadN_inj (n : Nat) (s : Lat → Bool)
     simpa [dmcOneQuadN, hbne, hbne', DmcOnePad.cellPatchVertex, Function.comp_def] using h1
   exact incidentCells_inj n s hpin hd hd' hp hp' hne hne' hcells
 
+
+/-- The quads of a shell-pinned field are exactly the image of the crossed
+    lattice edges under the quad map. -/
+theorem dmcOneQuads_eq_map_crossed (n : Nat) (s : Lat → Bool) :
+    dmcOneQuads n s = (PadGrid.crossed n s).map (fun e => dmcOneQuadN s e) := by
+  have map_flatMap : ∀ (l : List Lat), ∀ (f : Lat → List PadEdge),
+      (l.flatMap f).map (fun e => dmcOneQuadN s e) =
+      l.flatMap (fun p => (f p).map (fun e => dmcOneQuadN s e)) := by
+    intro l f
+    induction l with
+    | nil => rfl
+    | cons a l ih => simp [List.flatMap, Function.comp_def]
+  unfold dmcOneQuads PadGrid.crossed
+  rw [map_flatMap]
+  apply List.flatMap_congr
+  intro p hp
+  rw [List.map_filterMap]
+  apply List.filterMap_congr
+  intro d hd
+  by_cases h : (decide (PadGrid.InLattice n (PadGrid.succN p d)) && (s p != s (PadGrid.succN p d))) = true
+  · simp [h]
+  · simp [h]
+
 end DmcOneEuler
 end Vdb
