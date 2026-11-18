@@ -75,7 +75,7 @@ characteristic `χ = V − F` proven for the shell-pinned assembled mesh
 **conditional on the open watertight (`EdgeClosed`) wall**
 (`DmcOneEuler`: quads machine-checked well-formed, mesh loop-free,
 `|mesh| = 4·|crossed|`, fully proven; surrogate axioms only) — the
-general padded-grid DMC-1 manifold theorem remains open. Findings F1–F18 are tracked in the ledger (F17/F18 are
+general padded-grid DMC-1 watertight theorem is now proved (`EdgeClosed` for the shell-pinned mesh, `edgeClosed_general`); the no-repeat (`Nodup`) condition for arbitrary `n` remains open. Findings F1–F18 are tracked in the ledger (F17/F18 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids, and
 an off-by-one in the bounded sign enumeration). The module tally is 107 (102
 under `Vdb/`); the C code is checked against the model by

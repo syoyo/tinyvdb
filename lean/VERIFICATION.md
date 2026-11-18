@@ -633,13 +633,13 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
      `pairing_cross_fin`), the uniform orientation dispatch (`edge_dir_fin`,
      all 24 instances), the per-face partner reversal (`face_reverse`,
      `side_of_sideDir`), and the 24 ring/mesh-edge classification lemmas.
-     Still open: assembling these into `EdgeClosed` for arbitrary `n` —
-     the remaining obstacle is that the classification lemmas currently
-     demand transverse bounds that follow from shell pinning only for
-     *crossed* face edges, so the per-edge bound function must be derived
-     from each edge's crossing rather than assumed as a blanket bound.
-     The χ statement via `euler_general_dmc1` follows once `EdgeClosed`
-     lands. The staircase face estimator is The plan's
+     The wall is now **LANDED**: `edgeClosed_general` proves
+     `EdgeClosed` for the general-`n` shell-pinned DMC-1 mesh, using
+     `edgeBaseOK_of_crossed` (bounds for crossed edges from shell
+     pinning), the 24 classification lemmas and `face_reverse`.
+     `euler_general_dmc1_unconditional` derives χ = V − F under shell
+     pinning plus no repeated directed edge (the remaining open
+     `Nodup` condition). The staircase face estimator is The plan's
      escape hatch (`T-DMC1-DUAL`, explicitly not landable on the Fin 2
      torus — MC 16 triangles vs DMC 6 quads) stays open for the same reason;
      the staircase face estimator is documented as *not* consistent with

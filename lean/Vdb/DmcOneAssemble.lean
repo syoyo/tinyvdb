@@ -635,7 +635,7 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
 
 /-- Ring-pair classification for d=0, s p = false. -/
 theorem ring_pair_0_false (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (x y z : Nat) (hx : 0 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
     (hs : s (x, y, z) = false)
     (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 0))
     (a b : V)
@@ -663,7 +663,7 @@ theorem ring_pair_0_false (s : Lat → Bool)
 
 /-- Ring-pair classification for d=0, s p = true. -/
 theorem ring_pair_0_true (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (x y z : Nat) (hx : 0 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
     (hs : s (x, y, z) = true)
     (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 0))
     (a b : V)
@@ -691,7 +691,7 @@ theorem ring_pair_0_true (s : Lat → Bool)
 
 /-- Ring-pair classification for d=1, s p = false. -/
 theorem ring_pair_1_false (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
     (hs : s (x, y, z) = false)
     (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 1))
     (a b : V)
@@ -719,7 +719,7 @@ theorem ring_pair_1_false (s : Lat → Bool)
 
 /-- Ring-pair classification for d=1, s p = true. -/
 theorem ring_pair_1_true (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
     (hs : s (x, y, z) = true)
     (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 1))
     (a b : V)
@@ -747,7 +747,7 @@ theorem ring_pair_1_true (s : Lat → Bool)
 
 /-- Ring-pair classification for d=2, s p = false. -/
 theorem ring_pair_2_false (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
     (hs : s (x, y, z) = false)
     (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 2))
     (a b : V)
@@ -775,7 +775,7 @@ theorem ring_pair_2_false (s : Lat → Bool)
 
 /-- Ring-pair classification for d=2, s p = true. -/
 theorem ring_pair_2_true (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
     (hs : s (x, y, z) = true)
     (hne : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) 2))
     (a b : V)
@@ -803,8 +803,8 @@ theorem ring_pair_2_true (s : Lat → Bool)
 
 /-- Classification branch d=0, s p = false, ring side 0. -/
 theorem classify_0_false_0 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 0 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 0))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -841,8 +841,7 @@ theorem classify_0_false_0 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
-      show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),]
   · have hs' : s ((x + 1, y, z) : Lat) = true := by
       cases h1 : s ((x + 1, y, z) : Lat) <;> simp_all
     constructor
@@ -855,8 +854,8 @@ theorem classify_0_false_0 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=0, s p = false, ring side 1. -/
 theorem classify_0_false_1 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 0 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 0))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -893,8 +892,7 @@ theorem classify_0_false_1 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
-      show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),]
   · have hs' : s ((x + 1, y, z) : Lat) = true := by
       cases h1 : s ((x + 1, y, z) : Lat) <;> simp_all
     constructor
@@ -907,8 +905,8 @@ theorem classify_0_false_1 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=0, s p = false, ring side 2. -/
 theorem classify_0_false_2 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 0 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 0))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -945,8 +943,7 @@ theorem classify_0_false_2 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
-      show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),]
   · have hs' : s ((x + 1, y, z) : Lat) = true := by
       cases h1 : s ((x + 1, y, z) : Lat) <;> simp_all
     constructor
@@ -959,8 +956,8 @@ theorem classify_0_false_2 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=0, s p = false, ring side 3. -/
 theorem classify_0_false_3 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 0 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 0))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -997,8 +994,7 @@ theorem classify_0_false_3 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
-      show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),]
   · have hs' : s ((x + 1, y, z) : Lat) = true := by
       cases h1 : s ((x + 1, y, z) : Lat) <;> simp_all
     constructor
@@ -1011,8 +1007,8 @@ theorem classify_0_false_3 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=0, s p = true, ring side 0. -/
 theorem classify_0_true_0 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 0 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 0))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1049,8 +1045,7 @@ theorem classify_0_true_0 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
-      show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),]
   · have hs' : s ((x + 1, y, z) : Lat) = false := by
       cases h1 : s ((x + 1, y, z) : Lat) <;> simp_all
     constructor
@@ -1063,8 +1058,8 @@ theorem classify_0_true_0 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=0, s p = true, ring side 1. -/
 theorem classify_0_true_1 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 0 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 0))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1101,8 +1096,7 @@ theorem classify_0_true_1 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
-      show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),]
   · have hs' : s ((x + 1, y, z) : Lat) = false := by
       cases h1 : s ((x + 1, y, z) : Lat) <;> simp_all
     constructor
@@ -1115,8 +1109,8 @@ theorem classify_0_true_1 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=0, s p = true, ring side 2. -/
 theorem classify_0_true_2 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 0 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 0))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1153,8 +1147,7 @@ theorem classify_0_true_2 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
-      show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),]
   · have hs' : s ((x + 1, y, z) : Lat) = false := by
       cases h1 : s ((x + 1, y, z) : Lat) <;> simp_all
     constructor
@@ -1167,8 +1160,8 @@ theorem classify_0_true_2 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=0, s p = true, ring side 3. -/
 theorem classify_0_true_3 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 0 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 0))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1205,8 +1198,7 @@ theorem classify_0_true_3 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
-      show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),]
   · have hs' : s ((x + 1, y, z) : Lat) = false := by
       cases h1 : s ((x + 1, y, z) : Lat) <;> simp_all
     constructor
@@ -1219,8 +1211,8 @@ theorem classify_0_true_3 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=1, s p = false, ring side 0. -/
 theorem classify_1_false_0 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1257,7 +1249,6 @@ theorem classify_1_false_0 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y + 1, z) : Lat) = true := by
       cases h1 : s ((x, y + 1, z) : Lat) <;> simp_all
@@ -1271,8 +1262,8 @@ theorem classify_1_false_0 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=1, s p = false, ring side 1. -/
 theorem classify_1_false_1 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1309,7 +1300,6 @@ theorem classify_1_false_1 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y + 1, z) : Lat) = true := by
       cases h1 : s ((x, y + 1, z) : Lat) <;> simp_all
@@ -1323,8 +1313,8 @@ theorem classify_1_false_1 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=1, s p = false, ring side 2. -/
 theorem classify_1_false_2 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1361,7 +1351,6 @@ theorem classify_1_false_2 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y + 1, z) : Lat) = true := by
       cases h1 : s ((x, y + 1, z) : Lat) <;> simp_all
@@ -1375,8 +1364,8 @@ theorem classify_1_false_2 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=1, s p = false, ring side 3. -/
 theorem classify_1_false_3 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1413,7 +1402,6 @@ theorem classify_1_false_3 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y + 1, z) : Lat) = true := by
       cases h1 : s ((x, y + 1, z) : Lat) <;> simp_all
@@ -1427,8 +1415,8 @@ theorem classify_1_false_3 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=1, s p = true, ring side 0. -/
 theorem classify_1_true_0 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1465,7 +1453,6 @@ theorem classify_1_true_0 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y + 1, z) : Lat) = false := by
       cases h1 : s ((x, y + 1, z) : Lat) <;> simp_all
@@ -1479,8 +1466,8 @@ theorem classify_1_true_0 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=1, s p = true, ring side 1. -/
 theorem classify_1_true_1 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1517,7 +1504,6 @@ theorem classify_1_true_1 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y + 1, z) : Lat) = false := by
       cases h1 : s ((x, y + 1, z) : Lat) <;> simp_all
@@ -1531,8 +1517,8 @@ theorem classify_1_true_1 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=1, s p = true, ring side 2. -/
 theorem classify_1_true_2 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1569,7 +1555,6 @@ theorem classify_1_true_2 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y + 1, z) : Lat) = false := by
       cases h1 : s ((x, y + 1, z) : Lat) <;> simp_all
@@ -1583,8 +1568,8 @@ theorem classify_1_true_2 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=1, s p = true, ring side 3. -/
 theorem classify_1_true_3 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1621,7 +1606,6 @@ theorem classify_1_true_3 (n : Nat) (s : Lat → Bool)
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
       show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
-      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y + 1, z) : Lat) = false := by
       cases h1 : s ((x, y + 1, z) : Lat) <;> simp_all
@@ -1635,8 +1619,8 @@ theorem classify_1_true_3 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=2, s p = false, ring side 0. -/
 theorem classify_2_false_0 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1672,7 +1656,7 @@ theorem classify_2_false_0 (n : Nat) (s : Lat → Bool)
     all_goals rcases hpSucc with ⟨hxS, hyS, hzS⟩
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
-      show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y, z + 1) : Lat) = true := by
@@ -1687,8 +1671,8 @@ theorem classify_2_false_0 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=2, s p = false, ring side 1. -/
 theorem classify_2_false_1 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1724,7 +1708,7 @@ theorem classify_2_false_1 (n : Nat) (s : Lat → Bool)
     all_goals rcases hpSucc with ⟨hxS, hyS, hzS⟩
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
-      show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y, z + 1) : Lat) = true := by
@@ -1739,8 +1723,8 @@ theorem classify_2_false_1 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=2, s p = false, ring side 2. -/
 theorem classify_2_false_2 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1776,7 +1760,7 @@ theorem classify_2_false_2 (n : Nat) (s : Lat → Bool)
     all_goals rcases hpSucc with ⟨hxS, hyS, hzS⟩
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
-      show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y, z + 1) : Lat) = true := by
@@ -1791,8 +1775,8 @@ theorem classify_2_false_2 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=2, s p = false, ring side 3. -/
 theorem classify_2_false_3 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1828,7 +1812,7 @@ theorem classify_2_false_3 (n : Nat) (s : Lat → Bool)
     all_goals rcases hpSucc with ⟨hxS, hyS, hzS⟩
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
-      show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y, z + 1) : Lat) = true := by
@@ -1843,8 +1827,8 @@ theorem classify_2_false_3 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=2, s p = true, ring side 0. -/
 theorem classify_2_true_0 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1880,7 +1864,7 @@ theorem classify_2_true_0 (n : Nat) (s : Lat → Bool)
     all_goals rcases hpSucc with ⟨hxS, hyS, hzS⟩
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
-      show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y, z + 1) : Lat) = false := by
@@ -1895,8 +1879,8 @@ theorem classify_2_true_0 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=2, s p = true, ring side 1. -/
 theorem classify_2_true_1 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1932,7 +1916,7 @@ theorem classify_2_true_1 (n : Nat) (s : Lat → Bool)
     all_goals rcases hpSucc with ⟨hxS, hyS, hzS⟩
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
-      show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y, z + 1) : Lat) = false := by
@@ -1947,8 +1931,8 @@ theorem classify_2_true_1 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=2, s p = true, ring side 2. -/
 theorem classify_2_true_2 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1984,7 +1968,7 @@ theorem classify_2_true_2 (n : Nat) (s : Lat → Bool)
     all_goals rcases hpSucc with ⟨hxS, hyS, hzS⟩
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
-      show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y, z + 1) : Lat) = false := by
@@ -1999,8 +1983,8 @@ theorem classify_2_true_2 (n : Nat) (s : Lat → Bool)
 
 /-- Classification branch d=2, s p = true, ring side 3. -/
 theorem classify_2_true_3 (n : Nat) (s : Lat → Bool)
-    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z)
-    (h2x : 2 ≤ x) (h2y : 2 ≤ y) (h2z : 2 ≤ z)
+    (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
+    
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -2036,7 +2020,7 @@ theorem classify_2_true_3 (n : Nat) (s : Lat → Bool)
     all_goals rcases hpSucc with ⟨hxS, hyS, hzS⟩
     all_goals (repeat' (first | constructor | omega))
   · simp [faceBoundaryEdges, iaOf, ibOf, PadGrid.succN,
-      show z - 1 + 1 = z from Nat.sub_add_cancel (by omega),
+      show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show y - 1 + 1 = y from Nat.sub_add_cancel (by omega),
       show x - 1 + 1 = x from Nat.sub_add_cancel (by omega)]
   · have hs' : s ((x, y, z + 1) : Lat) = false := by
@@ -2048,6 +2032,1186 @@ theorem classify_2_true_3 (n : Nat) (s : Lat → Bool)
       · simp [ha, hb, facePlusCell, faceMinusCell, faceBoundaryEdges, iaOf, ibOf,
           PadGrid.succN]
         all_goals omega
+
+
+theorem edgeClosed_forward (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
+    {a b : V} (hmem : (a, b) ∈ Vdb.DmcOneEuler.dmcOneMeshEdges n s) :
+    (b, a) ∈ Vdb.DmcOneEuler.dmcOneMeshEdges n s := by
+  obtain ⟨e, hp3, hpSucc, hd3, hanch, hne0, hm⟩ := mesh_edge_of_quad n s hpin hmem
+  rcases e with ⟨⟨x, y, z⟩, d⟩
+  have hne' : s (x, y, z) ≠ s (PadGrid.succN (x, y, z) d) := by simpa using hne0
+  have hb := PadGrid.pinned_transverse n s hpin hp3 hne'
+  interval_cases d
+  all_goals simp at hp3 hpSucc hne0 hm hb
+  ·
+    have hpSucc0 := hpSucc
+    simp [PadGrid.InLattice, PadGrid.succN] at hpSucc
+    rcases hb with ⟨hb1, hb2, hb3, hb4⟩
+    rcases hpSucc with ⟨hpS1, hpS2, hpS3⟩
+    have hx : 0 ≤ x := Nat.zero_le x
+    have hy : 1 ≤ y := by omega
+    have hz : 1 ≤ z := by omega
+    have hxN : x < n := by omega
+    have hyN : y < n := by omega
+    have hzN : z < n := by omega
+    by_cases hs : s (x, y, z) = false
+    ·
+      have hR := ring_pair_0_false s x y z hx hy hz hs hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_0_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_0_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_0_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_0_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+    ·
+      have hsT : s (x, y, z) = true := by
+        cases hh : s (x, y, z) <;> simp_all
+      have hR := ring_pair_0_true s x y z hx hy hz hsT hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_0_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_0_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_0_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_0_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+
+  ·
+    have hpSucc0 := hpSucc
+    simp [PadGrid.InLattice, PadGrid.succN] at hpSucc
+    rcases hb with ⟨hb1, hb2, hb3, hb4⟩
+    rcases hpSucc with ⟨hpS1, hpS2, hpS3⟩
+    have hx : 1 ≤ x := by omega
+    have hy : 0 ≤ y := Nat.zero_le y
+    have hz : 1 ≤ z := by omega
+    have hxN : x < n := by omega
+    have hyN : y < n := by omega
+    have hzN : z < n := by omega
+    by_cases hs : s (x, y, z) = false
+    ·
+      have hR := ring_pair_1_false s x y z hx hy hz hs hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_1_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_1_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_1_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_1_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+    ·
+      have hsT : s (x, y, z) = true := by
+        cases hh : s (x, y, z) <;> simp_all
+      have hR := ring_pair_1_true s x y z hx hy hz hsT hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_1_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_1_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_1_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_1_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+
+  ·
+    have hpSucc0 := hpSucc
+    simp [PadGrid.InLattice, PadGrid.succN] at hpSucc
+    rcases hb with ⟨hb1, hb2, hb3, hb4⟩
+    rcases hpSucc with ⟨hpS1, hpS2, hpS3⟩
+    have hx : 1 ≤ x := by omega
+    have hy : 1 ≤ y := by omega
+    have hz : 0 ≤ z := Nat.zero_le z
+    have hxN : x < n := by omega
+    have hyN : y < n := by omega
+    have hzN : z < n := by omega
+    by_cases hs : s (x, y, z) = false
+    ·
+      have hR := ring_pair_2_false s x y z hx hy hz hs hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_2_false_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_2_false_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_2_false_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_2_false_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hs hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+    ·
+      have hsT : s (x, y, z) = true := by
+        cases hh : s (x, y, z) <;> simp_all
+      have hR := ring_pair_2_true s x y z hx hy hz hsT hne' a b hm
+      rcases hR with hcase | hcase | hcase | hcase
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_2_true_0 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_2_true_1 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_2_true_2 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+      · rcases hcase with ⟨ha, hbS⟩
+
+        obtain ⟨na, hna, pF, hx', hlat, i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+          classify_2_true_3 n s x y z hx hy hz hp3 hpSucc0 hxN hyN hzN
+            hsT hne' a b ha hbS
+        obtain ⟨j, hj, e', he', bb, hcrossE', hsideE', hb', hvA, hvB⟩ :=
+          face_reverse n s hpin na hna pF hx' hlat i hi e heq hcross
+        let A := facePlusCell na pF
+        let B := faceMinusCell na pF
+        have hsd := side_of_sideDir s e' A B bb hcrossE' hsideE'
+        have hEq : (if bb = true then (DmcOnePad.cellPatchVertex s A e'.1 e'.2,
+                              DmcOnePad.cellPatchVertex s B e'.1 e'.2)
+                       else (DmcOnePad.cellPatchVertex s B e'.1 e'.2,
+                             DmcOnePad.cellPatchVertex s A e'.1 e'.2)) = (b, a) := by
+          rw [hb', hdir]
+          by_cases hd : dir <;> simp [hd] at hpair ⊢
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+          · rw [← hvA, ← hvB] at hpair
+            exact ⟨hpair.2.symm, hpair.1.symm⟩
+        rw [hEq] at hsd
+        unfold Vdb.DmcOneEuler.dmcOneMeshEdges
+        rw [List.mem_flatMap]
+        refine ⟨Vdb.DmcOneEuler.dmcOneQuadN s e', ?_, hsd⟩
+        unfold Vdb.DmcOneEuler.dmcOneQuads
+        rw [List.mem_flatMap]
+        refine ⟨e'.1, ?_, ?_⟩
+        · apply PadGrid.mem_latAll.mpr
+          rw [he']
+          exact (hlat j hj).1
+        · rw [List.mem_filterMap]
+          refine ⟨e'.2, ?_, ?_⟩
+          · have hdlt : e'.2 < 3 := by
+              rw [he']
+              interval_cases j <;> simp [faceBoundaryEdges, iaOf, ibOf] <;> omega
+            exact List.mem_range.mpr hdlt
+          · have hcond : (decide (PadGrid.InLattice n (PadGrid.succN e'.1 e'.2)) &&
+                (s e'.1 != s (PadGrid.succN e'.1 e'.2))) = true := by
+              rw [Bool.and_eq_true]
+              constructor
+              · apply decide_eq_true_eq.mpr
+                rw [he']
+                exact (hlat j hj).2
+              · simpa [bne_iff_ne] using hcrossE'
+            rw [ite_eq_left hcond]
+
+
+/-- **The general padded-grid DMC-1 watertight theorem.** -/
+theorem edgeClosed_general (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, PadGrid.isShell n p = true → s p = false) :
+    EdgeClosed (Vdb.DmcOneEuler.dmcOneMeshEdges n s) := by
+  intro a b
+  constructor
+  · intro h
+    exact edgeClosed_forward n s hpin h
+  · intro h
+    exact edgeClosed_forward n s hpin h
+
+
+/-- **Euler characteristic of the general-`n` DMC-1 mesh** with the
+    watertight wall discharged: under shell pinning and no repeated
+    directed edge, χ = V − F for every `n`. -/
+theorem euler_general_dmc1_unconditional (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
+    (hnd : (Vdb.DmcOneEuler.dmcOneMeshEdges n s).Nodup) :
+    ((QuadEuler.vertices (Vdb.DmcOneEuler.dmcOneMeshEdges n s)).card : Int)
+        - (QuadEuler.undirected (Vdb.DmcOneEuler.dmcOneMeshEdges n s)).card
+        + (PadGrid.crossed n s).length
+      = (QuadEuler.vertices (Vdb.DmcOneEuler.dmcOneMeshEdges n s)).card
+        - (PadGrid.crossed n s).length :=
+  Vdb.DmcOneEuler.euler_general_dmc1 n s hpin (edgeClosed_general n s hpin) hnd
 
 end DmcOneStitch
 end Vdb
