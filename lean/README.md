@@ -70,19 +70,26 @@ stitching machinery is partially landed: the face framework
 instances (`DmcOneStitchOrient`), and the cube-local face-pairing
 enumerations machine-checked over all 256 cases × 3 normal axes × 2 sides
 (`DmcOneStitchEnum`: paired edges emit opposite-oriented F-sides; pairs are
-owned by one patch) — with the general-`n` Euler
-characteristic `χ = V − F` proven for the shell-pinned assembled mesh
-**conditional on the open watertight (`EdgeClosed`) wall**
-(`DmcOneEuler`: quads machine-checked well-formed, mesh loop-free,
-`|mesh| = 4·|crossed|`, fully proven; surrogate axioms only) — the
-general padded-grid DMC-1 watertight theorem is now proved (`EdgeClosed` for the shell-pinned mesh, `edgeClosed_general`); the no-repeat (`Nodup`) condition for arbitrary `n` remains open. Findings F1–F18 are tracked in the ledger (F17/F18 are
-Lean-side: the cell-sign torus model does not transfer to bounded grids, and
-an off-by-one in the bounded sign enumeration). The module tally is 107 (102
+owned by one patch) — with the general-`n` watertight theorem **proved**
+(`DmcOneAssemble.edgeClosed_general`: the shell-pinned DMC-1 mesh is
+`EdgeClosed` for every `n`) and the general Euler characteristic
+`χ = V − F` proven **conditional on no repeated directed edge**
+(`DmcOneEuler.euler_general_dmc1` / `DmcOneAssemble.euler_general_dmc1_unconditional`;
+quads machine-checked well-formed, mesh loop-free, `|mesh| = 4·|crossed|`,
+fully proven; surrogate axioms only). That no-repeat condition is **not
+automatic** — a concrete shell-pinned `n = 4` field with repeated edges
+and failing χ is machine-checked in `Vdb/DmcOneNodupFailure.lean`
+(finding F19), so the hypothesis cannot be dropped. Findings F1–F19 are
+tracked in the ledger (F17–F19 are
+Lean-side: the cell-sign torus model does not transfer to bounded grids,
+an off-by-one in the bounded sign enumeration, and the DMC-1 `Nodup`
+counterexample). The module tally is 108 (103
 under `Vdb/`); the C code is checked against the model by
 differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
 for the theorem inventory, the differential-harness results and the explicit
-list of what remains open or was abandoned with reasons (general DMC-1
-manifold theorem, general Poincaré–Lefschetz, staircase-estimator consistency for general
+list of what remains open or was abandoned with reasons (a general
+checkerboard-free-style criterion for DMC-1 duplicate edges, general
+Poincaré–Lefschetz, staircase-estimator consistency for general
 sets, Zhao 2005 / Phase C).
 
 ## Conventions
