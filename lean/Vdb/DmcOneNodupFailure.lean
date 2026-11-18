@@ -621,5 +621,77 @@ theorem classify_mesh_edge (n : Nat) (s : Lat → Bool)
             hsT hne' a b ha hbS
         exact ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩
 
+
+/-- If two mesh memberships classify to different boundary-edge indices,
+    a bad face configuration must be present; otherwise the two
+    classifications coincide. -/
+theorem two_edges_same_pair_badFace (n : Nat) (s : Lat → Bool)
+    (hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
+    {a b : V} (hmem hmem' : (a, b) ∈ Vdb.DmcOneEuler.dmcOneMeshEdges n s)
+    (hedge_ne : True) :
+    ∃ (na : Nat) (hna : na < 3) (pF : Lat) (hx : FaceBaseOK na pF)
+      (i : Nat) (hi : i < 4) (i' : Nat) (hi' : i' < 4),
+      badFaceConfig na (DmcOnePad.cellCase s (facePlusCell na pF))
+        (DmcOnePad.cellCase s (faceMinusCell na pF)) = true ∨ i = i' := by
+  obtain ⟨na, hna, pF, hx', i, hi, e, heq, dir, hcross, hdir, hpair⟩ :=
+    classify_mesh_edge n s hpin hmem
+  obtain ⟨na', hna', pF', hxF', i', hi', e', heq', dir', hcross', hdir', hpair'⟩ :=
+    classify_mesh_edge n s hpin hmem'
+  have hc1 := congrArg (fun v : V => v.1) (congrArg Prod.fst (hpair.symm.trans hpair'))
+  have hc2 := congrArg (fun v : V => v.1) (congrArg Prod.snd (hpair.symm.trans hpair'))
+  dsimp [DmcOnePad.cellPatchVertex] at hc1 hc2
+  have hcells : (facePlusCell na pF = facePlusCell na' pF' ∧ faceMinusCell na pF = faceMinusCell na' pF')
+      ∨ (facePlusCell na pF = faceMinusCell na' pF' ∧ faceMinusCell na pF = facePlusCell na' pF') := by
+    by_cases hd : dir <;> by_cases hd' : dir'
+    · left; simpa [hd, hd'] using And.intro hc1 hc2
+    · right; simpa [hd, hd'] using And.intro hc1 hc2
+    · right; simpa [hd, hd'] using And.intro hc2 hc1
+    · left; simpa [hd, hd'] using And.intro hc2 hc1
+  have hface := facePair_unique hna hna' hx' hxF' hcells
+  rcases hface with ⟨hnaeq, hpFeq⟩
+  subst na'
+  subst pF'
+  have hcA : s ((faceBoundaryEdges na pF).getD i (pF, 0)).1 ≠
+      s (PadGrid.succN ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+                       ((faceBoundaryEdges na pF).getD i (pF, 0)).2) := by
+    simpa [heq] using hcross
+  have hcB : s ((faceBoundaryEdges na pF).getD i' (pF, 0)).1 ≠
+      s (PadGrid.succN ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+                       ((faceBoundaryEdges na pF).getD i' (pF, 0)).2) := by
+    simpa [heq'] using hcross'
+  have hdA : flipDir i (s ((faceBoundaryEdges na pF).getD i (pF, 0)).1) = dir := by
+    simpa [heq] using hdir
+  have hdB : flipDir i' (s ((faceBoundaryEdges na pF).getD i' (pF, 0)).1) = dir' := by
+    simpa [heq'] using hdir'
+  have hpA : (a, b) = if dir then
+      (DmcOnePad.cellPatchVertex s (facePlusCell na pF) ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+         ((faceBoundaryEdges na pF).getD i (pF, 0)).2,
+       DmcOnePad.cellPatchVertex s (faceMinusCell na pF) ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+         ((faceBoundaryEdges na pF).getD i (pF, 0)).2)
+    else
+      (DmcOnePad.cellPatchVertex s (faceMinusCell na pF) ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+         ((faceBoundaryEdges na pF).getD i (pF, 0)).2,
+       DmcOnePad.cellPatchVertex s (facePlusCell na pF) ((faceBoundaryEdges na pF).getD i (pF, 0)).1
+         ((faceBoundaryEdges na pF).getD i (pF, 0)).2) := by
+    simpa [heq] using hpair
+  have hpB : (a, b) = if dir' then
+      (DmcOnePad.cellPatchVertex s (facePlusCell na pF) ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+         ((faceBoundaryEdges na pF).getD i' (pF, 0)).2,
+       DmcOnePad.cellPatchVertex s (faceMinusCell na pF) ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+         ((faceBoundaryEdges na pF).getD i' (pF, 0)).2)
+    else
+      (DmcOnePad.cellPatchVertex s (faceMinusCell na pF) ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+         ((faceBoundaryEdges na pF).getD i' (pF, 0)).2,
+       DmcOnePad.cellPatchVertex s (facePlusCell na pF) ((faceBoundaryEdges na pF).getD i' (pF, 0)).1
+         ((faceBoundaryEdges na pF).getD i' (pF, 0)).2) := by
+    simpa [heq'] using hpair'
+  by_cases hii : i = i'
+  · exact ⟨na, hna, pF, hx', i, hi, i', hi', Or.inr hii⟩
+  · rcases lt_or_gt_of_ne hii with hlt | hlt
+    · have hbad := same_pair_badFace hna hx' hi hi' hlt (hcross := hcA) (hcross' := hcB) hdA hdB hpA hpB
+      exact ⟨na, hna, pF, hx', i, hi, i', hi', Or.inl hbad⟩
+    · have hbad := same_pair_badFace hna hx' hi' hi hlt (hcross := hcB) (hcross' := hcA) hdB hdA hpB hpA
+      exact ⟨na, hna, pF, hx', i, hi, i', hi', Or.inl hbad⟩
+
 end DmcOneStitch
 end Vdb
