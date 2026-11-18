@@ -68,6 +68,18 @@ def ibOf (na : Nat) : Nat := (na + 2) % 3
 def FaceBaseOK (na : Nat) (p : Lat) : Prop :=
   if na = 0 then 1 ≤ p.1 else if na = 1 then 1 ≤ p.2.1 else 1 ≤ p.2.2
 
+/-- The two coordinate bounds an interior face's boundary edge needs
+    for its orientation lemma: the normal coordinate (for
+    `faceMinusCell`) and one in-plane coordinate (for `anchorCell`
+    transverse to that edge). -/
+def EdgeBaseOK (na i : Nat) (p : Lat) : Prop :=
+  if na = 0 then
+    1 ≤ p.1 ∧ (if i % 2 = 0 then 1 ≤ p.2.2 else 1 ≤ p.2.1)
+  else if na = 1 then
+    1 ≤ p.2.1 ∧ (if i % 2 = 0 then 1 ≤ p.1 else 1 ≤ p.2.2)
+  else
+    1 ≤ p.2.2 ∧ (if i % 2 = 0 then 1 ≤ p.2.1 else 1 ≤ p.1)
+
 /-- The `+na` side cell of the face at lattice base `p` (na-coord = k). -/
 def facePlusCell (_na : Nat) (p : Lat) : Cell := p
 /-- The `−na` side cell of the face. -/

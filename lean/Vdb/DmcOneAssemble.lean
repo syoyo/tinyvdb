@@ -155,91 +155,115 @@ theorem cellCase_lt_256 (s : Vdb.DmcOnePad.Lat → Bool) (c : Vdb.DmcOnePad.Cell
 def flipDir (i : Nat) (b : Bool) : Bool := if i ≤ 1 then b else !b
 
 theorem edge_dir_fin (na : Fin 3) (i : Fin 4) (s : Lat → Bool) (x y z : Nat)
-    (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z) :
+    (hb : EdgeBaseOK na i (x, y, z)) :
     sideDir s ((faceBoundaryEdges na (x, y, z)).getD i ((x, y, z), 0))
       (facePlusCell na (x, y, z)) (faceMinusCell na (x, y, z))
       = some (flipDir i (s ((faceBoundaryEdges na (x, y, z)).getD i ((x, y, z), 0)).1)) := by
   fin_cases na <;> fin_cases i
   · -- na=0 i=0
+    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.1
+    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_0_pos s x y z hx hy hz (by simpa using hb))
+        (orient_0_0_pos s x y z hx hz (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_0 s x y z hx hy hz (by simpa using hb))
+        (orient_0_0 s x y z hx hz (by simpa using hb))
   · -- na=0 i=1
+    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.1
+    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x, y + 1, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_1_pos s x y z hx hy hz (by simpa using hb))
+        (orient_0_1_pos s x y z hx hy (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_1 s x y z hx hy hz (by simpa using hb))
+        (orient_0_1 s x y z hx hy (by simpa using hb))
   · -- na=0 i=2
+    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.1
+    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x, y, z + 1)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_2_pos s x y z hx hy hz (by simpa using hb))
+        (orient_0_2_pos s x y z hx hz (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_2 s x y z hx hy hz (by simpa using hb))
+        (orient_0_2 s x y z hx hz (by simpa using hb))
   · -- na=0 i=3
+    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.1
+    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_3_pos s x y z hx hy hz (by simpa using hb))
+        (orient_0_3_pos s x y z hx hy (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_0_3 s x y z hx hy hz (by simpa using hb))
+        (orient_0_3 s x y z hx hy (by simpa using hb))
   · -- na=1 i=0
+    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.1
+    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_0_pos s x y z hx hy hz (by simpa using hb))
+        (orient_1_0_pos s x y z hx hy (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_0 s x y z hx hy hz (by simpa using hb))
+        (orient_1_0 s x y z hx hy (by simpa using hb))
   · -- na=1 i=1
+    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.1
+    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x, y, z + 1)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_1_pos s x y z hx hy hz (by simpa using hb))
+        (orient_1_1_pos s x y z hy hz (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_1 s x y z hx hy hz (by simpa using hb))
+        (orient_1_1 s x y z hy hz (by simpa using hb))
   · -- na=1 i=2
+    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.1
+    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x + 1, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_2_pos s x y z hx hy hz (by simpa using hb))
+        (orient_1_2_pos s x y z hx hy (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_2 s x y z hx hy hz (by simpa using hb))
+        (orient_1_2 s x y z hx hy (by simpa using hb))
   · -- na=1 i=3
+    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.1
+    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_3_pos s x y z hx hy hz (by simpa using hb))
+        (orient_1_3_pos s x y z hy hz (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_1_3 s x y z hx hy hz (by simpa using hb))
+        (orient_1_3 s x y z hy hz (by simpa using hb))
   · -- na=2 i=0
+    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.1
+    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_0_pos s x y z hx hy hz (by simpa using hb))
+        (orient_2_0_pos s x y z hy hz (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_0 s x y z hx hy hz (by simpa using hb))
+        (orient_2_0 s x y z hy hz (by simpa using hb))
   · -- na=2 i=1
+    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.1
+    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x + 1, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_1_pos s x y z hx hy hz (by simpa using hb))
+        (orient_2_1_pos s x y z hx hz (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_1 s x y z hx hy hz (by simpa using hb))
+        (orient_2_1 s x y z hx hz (by simpa using hb))
   · -- na=2 i=2
+    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.1
+    have hy : 1 ≤ y := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x, y + 1, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_2_pos s x y z hx hy hz (by simpa using hb))
+        (orient_2_2_pos s x y z hy hz (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_2 s x y z hx hy hz (by simpa using hb))
+        (orient_2_2 s x y z hy hz (by simpa using hb))
   · -- na=2 i=3
+    have hz : 1 ≤ z := by simpa [EdgeBaseOK] using hb.1
+    have hx : 1 ≤ x := by simpa [EdgeBaseOK] using hb.2
     by_cases hb : s (x, y, z)
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_3_pos s x y z hx hy hz (by simpa using hb))
+        (orient_2_3_pos s x y z hx hz (by simpa using hb))
     · simpa [faceBoundaryEdges, iaOf, ibOf, flipDir, PadGrid.succN, hb] using
-        (orient_2_3 s x y z hx hy hz (by simpa using hb))
+        (orient_2_3 s x y z hx hz (by simpa using hb))
 
 /-- Nat wrapper for the uniform orientation law. -/
 theorem edge_dir (na : Nat) (hna : na < 3) (i : Nat) (hi : i < 4)
-    (s : Lat → Bool) (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 1 ≤ z) :
+    (s : Lat → Bool) (x y z : Nat) (hb : EdgeBaseOK na i (x, y, z)) :
     sideDir s ((faceBoundaryEdges na (x, y, z)).getD i ((x, y, z), 0))
       (facePlusCell na (x, y, z)) (faceMinusCell na (x, y, z))
       = some (flipDir i (s ((faceBoundaryEdges na (x, y, z)).getD i ((x, y, z), 0)).1)) := by
-  exact edge_dir_fin ⟨na, hna⟩ ⟨i, hi⟩ s x y z hx hy hz
+  exact edge_dir_fin ⟨na, hna⟩ ⟨i, hi⟩ s x y z hb
 
 /-- The enumeration's `dirAt` agrees with the orientation law's
     `flipDir` (machine-checked over the finite domains). -/
@@ -326,13 +350,12 @@ theorem endBitOf_end_sign_p (na : Fin 3) (side : Fin 2) (i : Fin 4) (s : Lat →
 
 /-- Uniform orientation law, point form. -/
 theorem edge_dir_p (na : Nat) (hna : na < 3) (i : Nat) (hi : i < 4)
-    (s : Lat → Bool) (p : Lat) (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2) :
+    (s : Lat → Bool) (p : Lat) (hb : EdgeBaseOK na i p) :
     sideDir s ((faceBoundaryEdges na p).getD i (p, 0))
       (facePlusCell na p) (faceMinusCell na p)
       = some (flipDir i (s ((faceBoundaryEdges na p).getD i (p, 0)).1)) := by
   rcases p with ⟨x, y, z⟩
-  dsimp at hx ⊢
-  exact edge_dir na hna i hi s x y z hx.1 hx.2.1 hx.2.2
+  exact edge_dir na hna i hi s x y z (by simpa using hb)
 
 /-- **Partner reversal across an interior face.** For any crossed
     boundary edge `e` of the face at base `p` with normal `na`, there
@@ -340,7 +363,8 @@ theorem edge_dir_p (na : Nat) (hna : na < 3) (i : Nat) (hi : i < 4)
     joins the same two patch vertices in the *opposite* direction. -/
 theorem face_reverse (n : Nat) (s : Lat → Bool)
     (_hpin : ∀ p, PadGrid.isShell n p = true → s p = false)
-    (na : Nat) (hna : na < 3) (p : Lat) (hx : 1 ≤ p.1 ∧ 1 ≤ p.2.1 ∧ 1 ≤ p.2.2)
+    (na : Nat) (hna : na < 3) (p : Lat) (hx : FaceBaseOK na p)
+    (hEdge : ∀ j : Nat, EdgeBaseOK na j p)
     (i : Nat) (hi : i < 4)
     (e : PadEdge) (he : e = (faceBoundaryEdges na p).getD i (p, 0))
     (hcross : s e.1 ≠ s (PadGrid.succN e.1 e.2)) :
@@ -352,9 +376,6 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
         DmcOnePad.cellPatchVertex s (facePlusCell na p) e.1 e.2 ∧
       DmcOnePad.cellPatchVertex s (faceMinusCell na p) e'.1 e'.2 =
         DmcOnePad.cellPatchVertex s (faceMinusCell na p) e.1 e.2 := by
-  have hxFace : FaceBaseOK na p := by
-    simp [FaceBaseOK]
-    interval_cases na <;> simp_all
   let A : Cell := facePlusCell na p
   let B : Cell := faceMinusCell na p
   let naF : Fin 3 := ⟨na, hna⟩
@@ -364,13 +385,13 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
   let kA : Fin 256 := ⟨Vdb.DmcOnePad.cellCase s A, cellCase_lt_256 s A⟩
   let kB : Fin 256 := ⟨Vdb.DmcOnePad.cellCase s B, cellCase_lt_256 s B⟩
   have hbA : caseBit kA.val (bitOf naF sideA iF) = (if s e.1 then 1 else 0) := by
-    have h := bitOf_start_sign_p naF sideA iF s p hxFace
+    have h := bitOf_start_sign_p naF sideA iF s p hx
     dsimp [kA, A, naF, sideA, iF] at h ⊢
     rw [he]
     exact h
   have heA : caseBit kA.val (endBitOf naF sideA iF) =
       (if s (PadGrid.succN e.1 e.2) then 1 else 0) := by
-    have h := endBitOf_end_sign_p naF sideA iF s p hxFace
+    have h := endBitOf_end_sign_p naF sideA iF s p hx
     dsimp [kA, A, naF, sideA, iF] at h ⊢
     rw [he]
     exact h
@@ -382,8 +403,8 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
   have hcrossE' : s e'.1 ≠ s (PadGrid.succN e'.1 e'.2) := by
     have hpc := paired_crossed naF sideA kA jF iF (by
       simpa [Nat.min_comm, Nat.max_comm] using hjpair)
-    have hs := bitOf_start_sign_p naF sideA jF s p hxFace
-    have hend := endBitOf_end_sign_p naF sideA jF s p hxFace
+    have hs := bitOf_start_sign_p naF sideA jF s p hx
+    have hend := endBitOf_end_sign_p naF sideA jF s p hx
     dsimp [kA, A, naF, sideA] at hpc hs hend
     have heq : (faceBoundaryEdges na p).getD jF.val (p, 0) = e' := rfl
     rw [heq] at hs hend
@@ -393,7 +414,7 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
   have hpatchA := paired_patch_eq naF sideA kA iF jF hjpair
   have hmask : maskPlus na kA.val = maskMinus na kB.val := by
     dsimp [kA, kB, A, B]
-    exact maskPlus_eq_maskMinus na s p hna hxFace
+    exact maskPlus_eq_maskMinus na s p hna hx
   have hmulti := pairing_cross_fin naF kA kB hmask
   have hpairB : (min i jF.val, max i jF.val) ∈ pairsIdx kB.val na 1 := by
     exact mem_of_pairsMultiEq hmulti hjpair (by omega) (by omega)
@@ -405,11 +426,11 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
     have hle_j : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD jF.val (p, 0)).1
         (facePlusCell na p) ((faceBoundaryEdges na p).getD jF.val (p, 0)).2 =
         localEdgeAt na 0 jF.val := by
-      simpa using localEdge_faceEdges na 0 p jF.val hna jF.isLt hxFace (by decide)
+      simpa using localEdge_faceEdges na 0 p jF.val hna jF.isLt hx (by decide)
     have hle_i : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD i (p, 0)).1
         (facePlusCell na p) ((faceBoundaryEdges na p).getD i (p, 0)).2 =
         localEdgeAt na 0 i := by
-      simpa using localEdge_faceEdges na 0 p i hna hi hxFace (by decide)
+      simpa using localEdge_faceEdges na 0 p i hna hi hx (by decide)
     rw [he, hle_j, hle_i]
     simpa [edgeId, localEdgeAt, A, naF, sideA, iF, kA] using hpatchA.symm
   have hvB : DmcOnePad.cellPatchVertex s B e'.1 e'.2 = DmcOnePad.cellPatchVertex s B e.1 e.2 := by
@@ -418,15 +439,15 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
     have hle_j : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD jF.val (p, 0)).1
         (faceMinusCell na p) ((faceBoundaryEdges na p).getD jF.val (p, 0)).2 =
         localEdgeAt na 1 jF.val := by
-      simpa using localEdge_faceEdges na 1 p jF.val hna jF.isLt hxFace (by decide)
+      simpa using localEdge_faceEdges na 1 p jF.val hna jF.isLt hx (by decide)
     have hle_i : DmcOnePad.localEdge ((faceBoundaryEdges na p).getD i (p, 0)).1
         (faceMinusCell na p) ((faceBoundaryEdges na p).getD i (p, 0)).2 =
         localEdgeAt na 1 i := by
-      simpa using localEdge_faceEdges na 1 p i hna hi hxFace (by decide)
+      simpa using localEdge_faceEdges na 1 p i hna hi hx (by decide)
     rw [he, hle_j, hle_i]
     simpa [edgeId, localEdgeAt, B, naF, sideB, iF, kB] using hpatchB.symm
   have hbAbit : (if s e.1 then 1 else 0) = caseBit kA.val (bitOf naF sideA iF) := hbA.symm
-  have hsj := bitOf_start_sign_p naF sideA jF s p hxFace
+  have hsj := bitOf_start_sign_p naF sideA jF s p hx
   dsimp [kA, A, naF, sideA] at hsj
   have heq : (faceBoundaryEdges na p).getD jF.val (p, 0) = e' := rfl
   rw [heq] at hsj
@@ -439,7 +460,7 @@ theorem face_reverse (n : Nat) (s : Lat → Bool)
     rw [dirAt_eq_flipDir ⟨i, hi⟩ (s e.1), dirAt_eq_flipDir jF (s e'.1)] at hdir'
     cases hfi : flipDir i (s e.1) <;> cases hfj : flipDir jF.val (s e'.1) <;> simp_all
   refine ⟨e', flipDir jF.val (s e'.1), hcrossE', ?_, hb', hvA, hvB⟩
-  exact edge_dir_p na hna jF.val jF.isLt s p hx
+  exact edge_dir_p na hna jF.val jF.isLt s p (hEdge jF.val)
 
 /-- Ring-pair classification for d=0, s p = false. -/
 theorem ring_pair_0_false (s : Lat → Bool)
