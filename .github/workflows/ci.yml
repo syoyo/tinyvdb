@@ -69,7 +69,14 @@ jobs:
       - name: Assert clang is the compiler and the FMA-contract pin reached the build
         run: |
           grep -q 'CMAKE_C_COMPILER_ID:INTERNAL=Clang' build/CMakeCache.txt
-          test "$(grep -c -- '-ffp-contract=off' build/build.ninja)" -ge 1
+          # The default generator is Unix Makefiles on ubuntu-latest (no -G
+          # Ninja here), so assert the pin in whichever build file CMake wrote:
+          # build.ninja for Ninja, CMakeFiles/*.dir/flags.make for Makefiles.
+          if [ -f build/build.ninja ]; then
+            test "$(grep -c -- '-ffp-contract=off' build/build.ninja)" -ge 1
+          else
+            test "$(grep -r -c -- '-ffp-contract=off' build/CMakeFiles --include=flags.make | awk -F: '{s += $2} END {print s+0}')" -ge 1
+          fi
       - name: Build
         run: cmake --build build -j$(nproc)
       - name: Verify binaries
