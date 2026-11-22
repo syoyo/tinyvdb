@@ -8,7 +8,7 @@ differential harnesses (see `plan-lean.md` in the repository root).
 The scope, phase plan, theorem targets and current findings are tracked in
 [VERIFICATION.md](VERIFICATION.md).
 
-* Lean `v4.35.0` (`lean-toolchain`), mathlib pinned at `v4.35.0`.
+* Lean `v4.36.0` (`lean-toolchain`), mathlib pinned at `v4.36.0` (upgraded from v4.35.0 on 2026-11-20; `lake update mathlib` + `lake exe cache get`).
 * Every file carries the Apache-2.0 SPDX header (this repository's license).
 * No `sorry` in landed modules. The axiom profile is audited mechanically.
 
@@ -53,7 +53,9 @@ in the closure of the cone of tight face normals — the Farkas content of
 `p − q = Σ λᵢ nᵢ`) and in exact form (`ConeClosed`: a finitely generated
 pointed cone is closed, so `p − q = Σ λᵢ nᵢ` with `λᵢ ≥ 0` over the tight
 faces), and the angle-weighted (Bærentzen–Aanæs) apex normal pairs strictly
-positively at the F16 trap point (`AnglePseudoNormal`), and the far-field
+positively at the F16 trap point (`AnglePseudoNormal`), whose general convex
+theorem is now proved conditional on the named per-face positivity seam (with
+unconditional non-obtuse and two-face planar instances), and the far-field
 asymptotic consistency of the dipole estimator is
 machine-checked (`WindingFarField`: `t² · (solidAngle − faceDipole) → 0`
 along a ray), and the cube-local DMC-1 (Nielson dual marching cubes) patch
@@ -65,7 +67,7 @@ distinct corners, mesh edge list is `EdgeClosed` and duplicate-free), its
 component count and `χ = 2 × #components` are machine-checked against the
 MC soup (`DmcOneDual`), and a seeded `n = 4` sample verifies the same
 invariants (`DmcOnePad4`) — and the general-`n`
-stitching machinery is partially landed: the face framework
+stitching machinery is landed: the face framework
 (`DmcOneStitch`), the symbolic orientation law for all 24 boundary-edge
 instances (`DmcOneStitchOrient`), and the cube-local face-pairing
 enumerations machine-checked over all 256 cases × 3 normal axes × 2 sides
@@ -73,24 +75,45 @@ enumerations machine-checked over all 256 cases × 3 normal axes × 2 sides
 owned by one patch) — with the general-`n` watertight theorem **proved**
 (`DmcOneAssemble.edgeClosed_general`: the shell-pinned DMC-1 mesh is
 `EdgeClosed` for every `n`) and the general Euler characteristic
-`χ = V − F` proven **conditional on no repeated directed edge**
-(`DmcOneEuler.euler_general_dmc1` / `DmcOneAssemble.euler_general_dmc1_of_nodup`;
-quads machine-checked well-formed, mesh loop-free, `|mesh| = 4·|crossed|`,
-fully proven; surrogate axioms only). That no-repeat condition is **not
-automatic** — a concrete shell-pinned `n = 4` field with repeated edges
-and failing χ is machine-checked in `Vdb/DmcOneNodupFailure.lean`
-(finding F19), so the hypothesis cannot be dropped. Findings F1–F19 are
+`χ = V − F` proven under the checkable no-repeat criterion
+(`DmcOneEuler.euler_general_dmc1_of_nodup` plus
+`DmcOneNodupCriterion.euler_general_dmc1_of_noBadFace`; quads machine-checked
+well-formed, mesh loop-free, `|mesh| = 4·|crossed|`, fully proven; surrogate
+axioms only). No-repeat is **not automatic** — a concrete shell-pinned `n = 4`
+field with repeated edges and failing χ is machine-checked in
+`Vdb/DmcOneNodupFailure.lean` (finding F19), so the criterion is essential.
+Findings F1–F19 are
 tracked in the ledger (F17–F19 are
 Lean-side: the cell-sign torus model does not transfer to bounded grids,
 an off-by-one in the bounded sign enumeration, and the DMC-1 `Nodup`
-counterexample). The module tally is 110 (104
+counterexample). The global DMC-1 criterion is now proven in
+`Vdb/DmcOneNodupCriterion.lean`: `mesh_nodup_iff_noBadFace` and
+`euler_general_dmc1_of_noBadFace` discharge the no-repeat hypothesis for every
+`n`. `T-DMC1-DUAL` is fully proved for every `n`: MC-vertex↔DMC-quad and
+patch↔vertex bijections, incidence preservation and χ duality (the cube-local
+ingredients are machine-checked over all 256 cases, the lifting is kernel-proof).
+The seam (S) additionally holds for isosceles three-face vertices
+(`AngleVertexFigure`, machine-checked over the algebraic spherical-triangle
+argument); the three-face case is now completely unconditional
+(`sphericalProj_unconditional`, including the `p+r=0`/cyclic slices via a
+continuity argument); arbitrary `n > 3` face figures are proved conditionally on `sphericalBarycenter`
+(`AngleNFace`), now shown equivalent to (S) itself, with unconditional simplicial
+and non-obtuse instances and a non-vacuous `n = 4` fan-cancellation theorem
+(`AngleNFaceTangent` additionally records why the fixed-tangent strategy fails
+and reduces (S) to a co-normal flux identity). Winding degree theory is landed
+as a conditional reduction with unconditional continuity/constancy facts
+(`WindingDegree`). The C↔Lean DMC-1 topology differential matches all six invariants
+(crossed/verts/quads/comps/closed/χ) on all 256 shell-pinned fields.
+The module tally is 142 (135
 under `Vdb/`); the C code is checked against the model by
-differential harnesses (bit-exact for CSG and mesh→SDF). See `VERIFICATION.md`
-for the theorem inventory, the differential-harness results and the explicit
-list of what remains open or was abandoned with reasons (a general
-checkerboard-free-style criterion for DMC-1 duplicate edges, general
-Poincaré–Lefschetz, staircase-estimator consistency for general
-sets, Zhao 2005 / Phase C).
+differential harnesses (bit-exact for CSG and mesh→SDF). Remaining work is
+reorganized into voxel-surface lanes VS-0…VS-4a in `../plan-lean.md` (plumbing,
+mesh→volume differential completeness, C dual MC, DMC Nodup/duality, general
+angle-weighted signs); each proof group has a 10-minute wall-clock cap with a
+split-or-document escalation ladder. See `VERIFICATION.md` for the theorem
+inventory, the voxel-surface coverage matrix, the differential-harness results
+and the explicit list of walls (general Poincaré–Lefschetz, staircase-estimator
+consistency for general sets, Zhao 2005 / Phase C).
 
 ## Conventions
 
@@ -124,8 +147,27 @@ grep -rn '\bsorry\b' Vdb/      # must be empty
 ./lean/scripts/check_fastsweep.sh        # 102,400/102,400 (1e-5·h, exact sign)
 ./lean/scripts/check_csg.sh              # 614,400/614,400 op outputs bit-exact
 ./lean/scripts/check_meshsdf.sh          # 6,488/6,488 voxels bit-exact (mesh→SDF arm)
+./lean/scripts/check_meshsdf_bvh.sh     # 280 cell-centre queries: C BVH vs exact-Q pruned search
+./lean/scripts/check_treemeshsdf.sh      # 2 meshes x 729 voxels, bounded tree path + negative control
 ./lean/scripts/check_winding.sh          # 194/194 points, degree 1 on closed meshes
+./lean/scripts/check_mc_adapt.sh         # 3,000,000 axis evals, C/Lean Float-key twin bit-exact
+./lean/scripts/check_mc_topology.sh     # 258 fields x 2 windings: welded MC topology exact
+./lean/scripts/check_dmc1_topology.sh   # 256 shell-pinned DMC-1 fields: six topology invariants exact
+./lean/scripts/check_mc_sparse_topology.sh # sparse/tree tool_mesh topology vs exact-Q twin
+./lean/scripts/check_meshsdf_double.sh  # 16 fallback cases: exact RNE binary64->binary32 cast
+./lean/scripts/check_mc_face.py          # 192 ambiguous MC face instances face-consistent
 ./lean/scripts/check_vdbgen.sh           # 2,500/2,500 corpus files: vdbcheck vs vdbdump
 ```
 
-None of the harnesses are wired into CTest — run them directly.
+All harnesses above are wired into CTest under `-DTINYVDB_BUILD_LEAN_DIFF=ON`
+as `lean_diff` and `lean_diff_*` (twenty tests, including `lean_diff_meshsdf_bvh`,
+`lean_diff_meshsdf_bvh_ties`,
+`lean_diff_meshsdf_double`, `lean_diff_mc_sparse_topology`,
+`lean_diff_dmc1_topology`, `lean_diff_mc_topology`, `lean_diff_treemeshsdf`
+and `lean_diff_mc_face`).
+Each shell harness exits **77** ("skipped", not "passed") when `lake` is absent;
+a real checker failure still fails the test. Every harness also exports
+`ELAN_TOOLCHAIN` from `lean/lean-toolchain` so CTest (which runs from the build
+directory) uses the pinned Lean 4.36 rather than an ambient toolchain. With the
+Lean toolchain present, run `ctest --test-dir <build> --output-on-failure
+-R '^lean_diff'`.

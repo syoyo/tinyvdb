@@ -118,6 +118,7 @@ add_library(tinyvdb STATIC ${TINYVDB_C_SOURCES})
 # Mesh/ops C helper library
 add_library(tinyvdb_mesh_ops STATIC
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_mesh.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_mesh_dual.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_ops.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_poisson.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_sample.c
@@ -546,7 +547,9 @@ if(TINYVDB_BUILD_TESTS)
     VERBATIM)
   add_custom_target(tinyvdb_test_fixture ALL DEPENDS "${TINYVDB_TEST_FIXTURE}")
   foreach(_test test_thread_pool test_sdf_tree test_mesh_conversion test_mesh_conversion_failure
-                test_mesh_level_set test_tetmesh test_tet_float_range test_graded_stencil test_volume test_tree_accessor)
+                test_mesh_level_set test_mesh_dual test_mesh_dual_tree test_mesh_dual_patch
+                test_mesh_dual_one test_mesh_dual_tree_one test_mesh_degenerate_sdf test_tetmesh
+                test_tet_float_range test_graded_stencil test_volume test_tree_accessor)
     add_executable(${_test} ${PROJECT_SOURCE_DIR}/tests/${_test}.c)
     target_link_libraries(${_test} PRIVATE tinyvdb_mesh_ops)
     add_test(NAME ${_test} COMMAND ${_test} ${TINYVDB_TEST_FIXTURE})
@@ -556,8 +559,55 @@ if(TINYVDB_BUILD_TESTS)
   add_test(NAME test_half_rounding COMMAND test_half_rounding ${TINYVDB_TEST_FIXTURE})
 
   if(TINYVDB_BUILD_LEAN_DIFF)
+    # Opt-in Lean differential gates. Each script exits 77 (CTest "skipped",
+    # not "passed") when the Lean toolchain is missing; a real checker
+    # failure still fails the test. See lean/VERIFICATION.md for the coverage
+    # matrix and the expected pass counters.
     add_test(NAME lean_diff
       COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_samples.sh)
+    add_test(NAME lean_diff_mask_classify
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_mask_classify.sh)
+    add_test(NAME lean_diff_half
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_half.sh)
+    add_test(NAME lean_diff_godunov
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_godunov.sh)
+    add_test(NAME lean_diff_fill
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_fill.sh)
+    add_test(NAME lean_diff_euler
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_euler.sh)
+    add_test(NAME lean_diff_fastsweep
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_fastsweep.sh)
+    add_test(NAME lean_diff_csg
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_csg.sh)
+    add_test(NAME lean_diff_meshsdf
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_meshsdf.sh)
+    add_test(NAME lean_diff_treemeshsdf
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_treemeshsdf.sh)
+    add_test(NAME lean_diff_meshsdf_bvh
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_meshsdf_bvh.sh)
+    add_test(NAME lean_diff_meshsdf_double
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_meshsdf_double.sh)
+    add_test(NAME lean_diff_meshsdf_bvh_ties
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_meshsdf_bvh_ties.sh)
+    add_test(NAME lean_diff_mc_topology
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_mc_topology.sh)
+    add_test(NAME lean_diff_dmc1_topology
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_dmc1_topology.sh)
+    add_test(NAME lean_diff_mc_sparse_topology
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_mc_sparse_topology.sh)
+    add_test(NAME lean_diff_winding
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_winding.sh)
+    add_test(NAME lean_diff_mc_adapt
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_mc_adapt.sh)
+    add_test(NAME lean_diff_vdbgen
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_vdbgen.sh)
+    find_program(LEAN_DIFF_PYTHON python3)
+    if(LEAN_DIFF_PYTHON)
+      add_test(NAME lean_diff_mc_face
+        COMMAND ${LEAN_DIFF_PYTHON} ${PROJECT_SOURCE_DIR}/lean/scripts/check_mc_face.py)
+    endif()
+    add_test(NAME lean_axioms
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_axioms.sh)
   endif()
 
   add_executable(test_graded_refine tests/test_graded_refine.c)

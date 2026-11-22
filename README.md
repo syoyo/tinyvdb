@@ -321,10 +321,22 @@ field magnitudes and overflowing float differences on CPU, Vulkan and CUDA.
 `tvdb_make_manifold` now produces outward faces and keeps its intermediate grid
 off the output arena. Conversion still uses classic marching cubes, including
 ambiguous cases and degenerate triangles at exact-isovalue samples. Mesh-to-SDF
-sign comes from the closest face normal; sharp corners, open surfaces and
-inconsistent face orientation can cause sign artifacts. Degenerate faces have
-zero normals and contribute unsigned distances. The `_vdb` sign-method argument
-remains advisory. Neither API promises a watertight manifold reconstruction.
+sign uses the closest feature: the face normal in a face interior, the summed
+normals of the two incident faces on an edge, and on a vertex the incident face
+whose normal pairs positively with the offset to the query point. Open surfaces
+and inconsistent face orientation can still cause sign artifacts, and degenerate
+faces have zero normals contributing unsigned distances. The `_vdb` sign-method
+argument remains advisory. Neither API promises a watertight manifold
+reconstruction.
+
+`tvdb_sdf_to_mesh_dual_ex` (and its `tvdb_sdf_to_mesh_dual` wrapper) is a staged
+**DMC-0 / surface-nets** alternative: one dual vertex per crossed cell at the
+centroid of its edge crossings, one quad per sign-changing primal edge. It
+follows the same `_ex` contract as the marching-cubes conversion and is
+deterministic across worker counts. It is not Nielson DMC-1 (no per-cube patch
+decomposition), and it performs no boundary padding, so watertightness requires
+the crossing surface to be strictly inside the lattice; it does not yet match
+the Lean DMC-1 vectors.
 
 ## Features
 

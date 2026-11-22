@@ -50,6 +50,7 @@ import Mathlib.Tactic
 
 
 set_option linter.unusedSimpArgs false
+set_option maxHeartbeats 2000000
 
 namespace Vdb
 

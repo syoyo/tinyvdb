@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### Added
+
+- A staged dense dual marching cubes API: `tvdb_sdf_to_mesh_dual_ex` (plus the
+  `tvdb_sdf_to_mesh_dual` wrapper) emits one dual vertex per crossed cell and
+  one quad per sign-changing primal edge into a new owning `tvdb_quad_mesh`
+  (`src/tinyvdb_mesh_dual.h`). This first slice is **DMC-0 / surface nets**, not
+  Nielson DMC-1: it has no per-cube MC patch decomposition, so its topology does
+  not match the Lean DMC-1 vectors yet. It follows the `_ex` contract (status +
+  error, output preserved on failure, arena rollback, alias rejection,
+  deterministic emission), counts in parallel and emits in a fixed raster
+  order. `tvdb_grid_volume_to_mesh_dual_ex` adds the sparse/tree variant with
+  the same contract, using the grid transform and an active-bbox + margin scan
+  (with a cell budget). It is still DMC-0, not Nielson DMC-1, and does not
+  reproduce the Lean DMC-1 index vectors. `tests/test_mesh_dual.c` and
+  `tests/test_mesh_dual_tree.c` check independent counts, watertightness,
+  outward winding, determinism across worker pools and failure preservation.
+  `tests/test_mesh_degenerate_sdf.c` adds mesh→SDF robustness coverage for
+  degenerate/collinear faces, large coordinates and failure preservation; the
+  double-precision closest-point fallback remains a documented limit of the
+  Lean differential twin. An internal cube-local MC patch decomposition helper
+  (`tvdb_dual_patch_compute`) and `tests/test_mesh_dual_patch.c` verify the
+  256-case patch facts. A staged dense DMC-1 API
+  (`tvdb_sdf_to_mesh_dual_one_ex`, `tvdb_sdf_to_mesh_dual_one`) now emits one
+  vertex per (cell, MC patch) and one quad per crossed primal edge. Vertex
+  placement minimises the QEF of the crossing planes (interpolated gradients,
+  Cramer solve, centroid fallback and in-cell clamp).
+  `tvdb_sdf_to_mesh_dual_one_padded_ex` (and its wrapper) adds a shell-pinned
+  outside voxel around the lattice, so watertightness no longer requires the
+  crossing surface to be strictly interior; the CTest regression shows an
+  open 2,352-quad mesh becoming a closed 2,688-quad mesh on a boundary-touching
+  sphere. `tvdb_grid_volume_to_mesh_dual_one_ex` (and its wrapper) adds the
+  sparse/tree DMC-1 variant with index-space QEF placement and unconditional
+  shell pinning; `tests/test_mesh_dual_tree_one.c` checks counts, watertightness
+  (interior and boundary-touching spheres), determinism and the `_ex` contract.
+  A C↔Lean DMC-1 topology differential (`lean/scripts/check_dmc1_topology.sh`)
+  compares crossed-edge count, vertex count, quad count, component count,
+  directed-edge closure and χ on all 256 shell-pinned fields; vertex indices,
+  positions and patch ids are deliberately not compared.
+  `tests/test_mesh_dual_one.c`
+  checks counts, watertightness, winding and determinism on four analytic
+  fields. The original DMC-0 functions are byte-identical.
+
 ### Changed
 
 - **Breaking (C API/ABI and Python):** removed the dead

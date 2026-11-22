@@ -91,7 +91,7 @@ theorem convex_halfSpaces {ι : Type*} {n : ι → F} {b : ι → ℝ} :
 theorem projection_exists {K : Set F} (hne : K.Nonempty) (hclosed : IsClosed K)
     (hconv : Convex ℝ K) :
     ∀ u : F, ∃ v ∈ K, ‖u - v‖ = ⨅ w : K, ‖u - w‖ := by
-  have := FiniteDimensional.complete (𝕜 := ℝ) (E := F)
+  have := FiniteDimensional.completeSpace (𝕜 := ℝ) (E := F)
   exact exists_norm_eq_iInf_of_complete_convex hne hclosed.isComplete hconv
 
 /-! ### Tight constraints and admissible directions -/
@@ -260,7 +260,7 @@ def b : Fin 4 → ℝ
   | _ => 1
 
 /-- The tetrahedron as a half-space intersection. -/
-def K : Set (EuclideanSpace ℝ (Fin 3)) :=
+noncomputable def K : Set (EuclideanSpace ℝ (Fin 3)) :=
   halfSpaces (fun i => match i with | 0 => n1 | 1 => n2 | 2 => n3 | _ => n4) b
 
 /-- The outside point on the `n₁` ray (`t > 0`) pairs strictly positively

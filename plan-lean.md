@@ -4,7 +4,7 @@ Target repo: `tinyvdbio` (C11 core, Apache-2.0). Hand-off plan for an implementi
 coding agent. Read `AGENTS.md` (repo root) first; its pre-push procedure applies
 and **nothing is pushed without explicit authorization**.
 
-Reference precedent: `~/work/tinyexr/lean/` (Lean v4.35.0 + mathlib v4.35.0,
+Reference precedent: `~/work/tinyexr/lean/` (Lean v4.35.0 + mathlib v4.35.0 at creation; this project now pins v4.36.0,
 `warningAsError`, executable oracles `exrcheck`/`exrgen`/`codecgen`, differential
 harnesses, `VERIFICATION.md`, `AxiomAudit.lean`). Mirror its layout, gates and
 conventions; do not copy EXR-specific code.
@@ -82,9 +82,9 @@ Treat each as a hypothesis; record outcome in `lean/VERIFICATION.md`.
 ### 0.3 Dual marching cubes — scope decision
 TinyVDB currently implements **only classic MC** (dense and tree). DMC is new.
 Plan: (a) formalize DMC first as a Lean spec + executable reference with
-proofs; (b) optional phase P6 adds a C implementation
+proofs; (b) lane VS-3 (P6) adds a C implementation
 `tvdb_grid_volume_to_mesh_dual` (+ dense variant) validated by the Lean oracle.
-P6 is approved (§11.3).
+P6 is approved and scheduled in parallel with VS-1 (§4.1, §11.3).
 
 ---
 
@@ -92,8 +92,8 @@ P6 is approved (§11.3).
 
 ```
 lean/
-  lean-toolchain            leanprover/lean4:v4.35.0   (match tinyexr; elan has it)
-  lakefile.lean             package vdbSpec; mathlib @ v4.35.0; warningAsError
+  lean-toolchain            leanprover/lean4:v4.36.0   (upgraded from v4.35.0)
+  lakefile.lean             package vdbSpec; mathlib @ v4.36.0; warningAsError
   lake-manifest.json        committed (pins)
   README.md                 modules table, build/validate, axiom profile
   VERIFICATION.md           theorem inventory, boundaries, findings, gate results
@@ -409,161 +409,85 @@ F1–F9 each resolved as "C fixed + regression test" or "documented deviation"
 
 ---
 
-## 4. Phase P3 — Volume → mesh
+## 4. Voxel-surface workstream (mesh ↔ volume)
 
-### 4.1 Mesh model (`Mesh/Types`, `Mesh/Closed`)
-- `TriMesh`/`QuadMesh` with `Fin n` vertex indices; undirected edges; oriented
-  half-edges. `boundary₂ : Mesh → (Edge →₀ ZMod 2)`; oriented boundary over ℤ.
-- `Watertight m :↔ boundary₂ m = 0`; `Oriented m :↔ orientedBoundary m = 0`;
-  `EdgeManifold m :↔ every edge has exactly 0 or 2 incident faces`;
-  `VertexManifold` (single fan). Euler `χ = V − E + F`.
+This section supersedes the former P3 (volume → mesh), P4 (mesh → volume), P5
+(composition) and P6 (C dual MC) phase split. Those phases are consolidated
+into one workstream because their theorems and harnesses share the same
+lattice, topology and sign machinery. The format work (§2) and level-set ops
+(§3) remain the baseline. Findings are still resolved as in §0.3: a model/C
+disagreement becomes a C fix with a regression test, or a documented deviation.
 
-### 4.2 Marching cubes (existing C) (`Mesh/McTable`, `Mesh/MarchingCubes`)
-- Encode corner order `{000,100,110,010,001,101,111,011}`, edges
-  `{0-1,1-2,2-3,3-0,4-5,5-6,6-7,7-4,0-4,1-5,2-6,3-7}`, classification
-  `bit c ⇔ value < iso` (equal ⇒ outside).
-- Table theorems by `decide` over 256 cases:
-  - `T-MC-EDGE`: every edge used by `TRI_TABLE[k]` is set in `EDGE_TABLE[k]`
-    and is a sign-change edge of case k; and conversely every sign-change edge
-    is used (no dangling crossing).
-  - `T-MC-COUNT`: ≤ 5 triangles; −1 terminator well-formed.
-  - `T-MC-CELL-BOUNDARY`: the mod-2 boundary of case k's triangles, restricted
-    to the cube, lies on the cube faces, and on each face equals the face's
-    segment set determined by the **face sign pattern + the table's choice**.
-  - `T-MC-FACE-CONSISTENT` (F10): for each of the 6 ambiguous face patterns,
-    both neighbouring cube cases choose the **same** segment pairing ⇒ the MC
-    mesh is watertight on any grid without iso-equal samples. **Expectation:
-    the classic table can fail this** — if `decide` finds counterexamples,
-    record them (case pairs), add a C regression test reproducing a crack on a
-    2×1×1-cell grid, and apply the consistent face rule fix (§11.2).
-  - Orientation: `TABLE` winding faces the negative phase; `OUTWARD` is the
-    `(v0,v2,v1)` permutation; prove oriented boundary cancellation per face
-    given consistency.
-- Geometry: edge parameter `t = (iso−v0)/(v1−v0) ∈ [0,1]` on crossing edges
-  (no division by zero since signs differ); vertex lies on the segment;
-  interpolation is exact for linear fields (vertex is the true zero).
-- Welding: vertex key = (lower corner, axis); `T-MC-WELD`: #vertices =
-  #sign-change grid edges exactly; key → vertex injective; output independent
-  of traversal/worker partition (`T-MC-DET`: emission in raster order is a
-  function of the grid only).
-- Tree MC (`tool_mesh`): ownership rule (lowest corner via ctz) partitions
-  crossing cells exactly once (`T-OWN-PART`); affine map with `det(M) > 0`
-  triangle flip keeps outward orientation (prove orientation of
-  `M`-image flips iff det < 0).
-- Adaptivity (vertex clustering): only prove "every output vertex within tol of
-  every merged input vertex" + degenerate-face removal; explicitly not
-  topology-preserving.
+### 4.0 Proof budgeting (mandatory for every lane)
 
-### 4.3 Dual marching cubes (`Mesh/DualMC`) — new
-Two levels:
-- **DMC-0 (surface nets / cuberille dual)**: one vertex per crossing cell
-  (any vertex position rule), one quad per sign-change **grid edge**, joining
-  the 4 cells sharing that edge (boundary edges with < 4 cells handled as open).
-  - `T-DMC0-CYCLE`: on a grid with no boundary crossings (or padded with the
-    outside sign), the quad mesh is watertight: it is the boundary of the
-    union of dual cubes of inside samples, and ∂∂ = 0 over ZMod 2.
-  - `T-DMC0-ORIENT`: quad orientation from edge direction + sign is a ℤ-cycle
-    (outward normals).
-  - `T-DMC0-χ`: χ(mesh) = 2·χ(solid) when edge-manifold.
-  - Non-manifold edges occur exactly at the 2 ambiguous diagonal face/edge
-    configurations — characterize them (`decide` on 2×2×2 neighbourhoods).
-  - Vertex placement: (a) mean of edge crossings → lies in the cell (convexity);
-    (b) QEF/dual contouring is out of scope except "clamped to cell" lemma.
-- **DMC-1 (Nielson dual marching cubes)**: per cell, one vertex **per MC
-  patch** (component of case k's surface), from the same 256-case table;
-  quads join the patch-vertices owning the edge.
-  - `T-DMC1-MANIFOLD`: with face-consistent ambiguity resolution (proven table
-    property from §4.2 or the fixed table), the mesh is edge- and
-    vertex-manifold and watertight on padded grids.
-  - `T-DMC1-DUAL`: DMC-1 is combinatorially dual to the MC mesh: bijection
-    MC triangle-patches ↔ DMC vertices, MC vertices ↔ DMC quads; χ equal.
-- Executable reference over ℚ in `OpsGen` producing quads + vertices for
-  vector sets (spheres, tori, checkerboards, random signs, all 256 single-cell
-  cases padded).
+- **Proof group** = one commit-sized theorem cluster, normally one
+  `lean/Vdb/*.lean` module, so a timeout is attributable to one claim.
+- **Cap**: 10 minutes wall-clock per group, measured as
+  `cd lean && timeout 600 lake build Vdb.X` (`lake build -v` for per-job
+  timing). Harness *runtime* is tracked separately, not under this cap.
+- **Lane checkpoint**: after every 10 minutes of accumulated proof effort in
+  a lane, re-assess: land, split, fall back, or wall. No lane absorbs
+  unbounded time.
+- **Fail fast**: start each group with a local `set_option maxHeartbeats
+  800000 in` (tune down), so a runaway tactic exits in seconds. Keep
+  `warningAsError` and 0 `sorry`.
+- **Escalation ladder on timeout** — never land a weakened claim:
+  1. Split at the abstraction seam: combinatorics vs. ℝ analysis; per-axis
+     and per-case lemmas into separate modules; extract Prop-form witnesses
+     before the assembly step (the `DmcOneStitch*` pattern).
+  2. Restrict the model: prove the bounded `native_decide` instance first
+     (`n=3` exhaustive, `n=4` seeded, all 256 cases) and land it as evidence
+     with the general gap named.
+  3. Hypothesize the hard step: state the missing lemma as an explicit premise
+     (as `band_complete`, `hcover` and `Nodup` already do), prove everything
+     downstream of it.
+  4. Wall it: after two splits still time out, record statement, attempted
+     approach, command and elapsed time in `lean/VERIFICATION.md`, then move
+     on. Each group's outcome (pass / split / bounded / wall) gets one ledger
+     line with its measured time.
 
-### P3 differential tests
-- MC: Lean ℚ vs C dense + tree MC — faces equal as index lists (bit-exact
-  topology), positions ≤ 2e-6; all 256 cases + random grids ≤ 12³.
-- DMC: only Lean until P6; validate Lean topological invariants on the vectors
-  (watertight, χ) as executable checks and cross-check χ with
-  `tvdb_level_set_euler_characteristic` on the same grid.
+### 4.1 Lane definitions
 
----
+| Lane | Scope and deliverables | Depends on | Done when |
+| --- | --- | --- | --- |
+| **VS-0 — Plumbing + ledger** (first) | Wire the Lean harnesses into CTest under `TINYVDB_BUILD_LEAN_DIFF=ON` (exit 77 = skipped when `lake` is absent); fix the 110/104 module tally and F14 row order; refresh the stale publication paragraph after `git fetch` (no push); add the voxel-surface coverage matrix to `VERIFICATION.md` | — | `lake build`, 0 `sorry`, harnesses green, CTest skip list explicit, ledger counts match reality |
+| **VS-1 — Mesh→volume differential completeness** (parallel with VS-3) | Sparse/tree mesh→volume harness (seeding, dilation, keep-rule, flood fill, prune; exercises `band_complete_tree` + `signedFill_eq_clamp`); BVH-vs-Lean differential (currently brute force on both sides); degenerate/huge-coordinate corpus for `mesh_triangle_double` (or a loud documented limit); wider winding mesh set (non-convex, genus > 0) | VS-0 | new harnesses pass with negative controls; every untested path either covered or explicitly scoped |
+| **VS-2 — DMC closedness / χ** | Global DMC-1 Nodup criterion (consume `badFaceConfig` / `same_pair_badFace`), upgrade Euler to unconditional-given-criterion with F19 as negative witness; `T-DMC1-DUAL` beyond connectivity; DMC-0 genus/χ content | VS-1 vectors for cross-check | theorems proven sorry-free, or a documented boundary after the 10-min/timebox ladder — never a weakened claim |
+| **VS-3 — P6 C DMC** (parallel with VS-1) | Implement `tvdb_grid_volume_to_mesh_dual` + dense variant with the existing `_ex` contract (status, output preserved on failure, arena rollback, alias rejection, deterministic across workers); CTest registration; docs + CHANGELOG; C↔Lean MC/DMC mesh harness (topology as index lists, positions tolerance). No GPU port | current Lean vectors: `n=3` exhaustive, `n=4` seeded, cube-local patch table | topology bit-exact vs Lean DMC-1 vectors; C matrix subset green; docs updated. χ claims stay in the conditional (no-repeat) form until VS-2 lands |
+| **VS-4a — General angle-weighted sign proof** (promoted from stretch) | General convex-polyhedra soundness of the angle-weighted (Bærentzen–Aanæs) pseudo-normal at closest points, building on `ConeClosed` (`p − q = Σ λᵢ nᵢ`), `NormalCone`, and the F16 instance in `AnglePseudoNormal.lean`. Model result: **no C change implied** (C keeps the max-dot F16 rule) | `ConeClosed`, `AnglePseudoNormal` | theorem proven, or a precise 2D/vertex-figure case plus a documented convex gap |
 
-## 5. Phase P4 — Mesh → volume
+Ordering: `VS-0 → (VS-1 ∥ VS-3) → (VS-2 ∥ VS-4a)`. Parked walls are unchanged.
 
-### 5.1 Closest point on triangle (`Mesh/Triangle`)
-- Spec: `dist(p, T) = inf_{q∈T} |p−q|` with T = convex hull of 3 points.
-- Executable Ericson region test (7 Voronoi regions) over ℚ/ℝ.
-  `T-CP-CORRECT`: for non-degenerate T the returned q ∈ T and
-  `|p−q| = dist(p,T)` (via first-order optimality on each region).
-  Degenerate (collinear/coincident) faces: reduce to segment/point, theorem
-  matching the C double fallback semantics.
-- Mesh distance: `dist(p, M) = min_f dist(p, T_f)`; tie-break lowest face
-  index (`T-TIE`: argmin is unique under the order).
+### 4.2 Group decomposition (each group ≤ 10 min)
 
-### 5.2 BVH (`Mesh/Bvh`)
-- AABB lower bound `aabbDist(p, box) ≤ dist(p, T)` for T ⊆ box.
-- `T-BVH-SOUND`: pruned traversal with strict `>` + seed best face returns the
-  same (distance, face) as brute force — the C claim "bit-for-bit equal to
-  brute force" becomes a theorem over ℚ; tested bit-exactly over Float.
-- Build properties (median split, ≤ 4 per leaf, depth ≤ 64) only as
-  well-formedness invariants (partition of face set).
+| Lane | Groups (one module each where possible) | Fallback tier |
+| --- | --- | --- |
+| VS-0 | plumbing/docs only — no proofs | n/a |
+| VS-1 | sparse/tree generator twin; keep-rule/feature twin; reuse `signedFill_eq_clamp` + prune lemmas (no new proof); BVH twin; degenerate/huge-coordinate corpus | bounded grids + documented untested fallback |
+| VS-3 | **landed**: dense + sparse/tree DMC-0 `_ex` APIs, 256-case patch decomposition parity, and a dense DMC-1 API (QEF vertices + Nielson quads) validated on sphere/torus/box/ripple with watertightness/winding/determinism, a QEF-optimum regression and a shell-pinned padded variant that closes boundary-touching surfaces, and a sparse/tree DMC-1 variant (index-space QEF + unconditional shell pinning), and a C↔Lean topology differential matching six invariants on all 256 shell-pinned fields; remaining: exact index-vector parity (C ordering/placement differs; not claimed) | C validated against current `n=3`/`n=4` vectors once the comparator lands |
+| VS-2 | **2a** per-face bad-config classification; face-pair uniqueness; global Nodup criterion; **2b** Euler under criterion (compose the existing theorem — small); **2c** patch↔vertex bijection, quad↔MC-vertex, incidence preservation, χ equality; **2d** DMC-0 genus content | **2a+2b+2c landed in full**: `Vdb/DmcOneNodupCriterion.lean` proves `mesh_nodup_iff_noBadFace`, `euler_general_dmc1_of_noBadFace` and F19's negative witness; `Vdb/DmcOneDual.lean` proves `mcVertexQuadEquiv`, `patchVertexEquivN`, `mcIncident_iff_dmcIncident` and `chi_dual_eq` for every `n` (cube-local facts machine-checked over 256 cases, global lifting kernel-proof, ~34 s per group). Remaining: 2d genus (needs homology) |
+| VS-4a | corner-angle positivity; cone-expansion pairing via `ConeClosed`; **hard seam** — quadratic-form strict positivity for angle-weighted normals (2D vertex figure first); assemble convex theorem | **landed**: general convex theorem conditional on `hface`, unconditional for non-obtuse and two-face planar figures (`AnglePseudoNormal`, ~7 s) and for isosceles three-face vertices (`AngleVertexFigure`, ~24 s); four 10-min groups generalised the algebra (~34 s), proved `sphericalProj_general` off the diagonal hyperplanes (~33 s), and closed those slices by continuity (~29 s); the three-face seam (S) is fully unconditional (`sphericalProj_unconditional`, `three_face_face_pos_unconditional`); arbitrary `n > 3` face figures are conditional on `sphericalBarycenter`, which is proved equivalent to (S) itself (singleton certificate); unconditional simplicial/non-obtuse instances and a non-vacuous `n = 4` fan theorem landed; (S) for general `n` remains walled |
 
-### 5.3 Sign (`Mesh/Winding`, `Mesh/MeshToVolume`)
-- Face-normal sign rule (dense C path): formalize; **counterexample** theorem
-  showing wrong sign near a convex edge/vertex (F11), and positive theorem: if
-  the closest point lies in a face's interior the rule is correct for a closed
-  oriented manifold mesh locally (half-space argument). Propose angle-weighted
-  pseudonormals (Bærentzen–Aanæs) as the fix and prove their sign rule at
-  edge/vertex closest points for **convex** meshes (full non-convex proof is a
-  stretch).
-- Generalized winding number: `w(p) = Σ_f Ω_f(p)/(4π)` with Van
-  Oosterom–Strackee `Ω = 2·atan2(a·(b×c), |a||b||c|+(a·b)|c|+(b·c)|a|+(c·a)|b|)`.
-  Theorems: orientation flip negates; additivity; translation/rotation
-  invariance; `|Ω_f| < 2π`. Integer-valuedness on closed meshes is a stretch
-  (needs degree theory; mark explicitly if not done) — instead verify
-  executably on vectors (|w−round(w)| < 1e−9 for closed test meshes).
-- Barnes–Hut far-field (dipole) approximation: prove the dipole term is the
-  first-order Taylor term of Σ Ω_f; give an explicit error bound only as stretch.
+### 4.3 C dual-MC contract (VS-3)
 
-### 5.4 Narrow band and lattice
-- Dense: `origin = bbox_min − band`, `n = max(1, ceil((extent+2band)/h))`
-  (cap 2048): covers bbox ⊕ band (`T-LATTICE-COVER`); value
-  `clamp(±dist, −band, band)`.
-- Tree: seeding by barycentric samples with step ≤ h/2 + dilation by
-  `ceil(√3·max(ext,int)/h)+2` layers: `T-BAND-COMPLETE`: every voxel with
-  `dist < width` is in the candidate set (the key correctness lemma for
-  sparse mesh→volume; prove from sample spacing + dilation radius).
-- Keep rule `d < (inside ? interior : exterior)`; stored `−d` never −0.
-- Composition: final tree after flood fill + prune `denote`s to
-  `clamp(signedDist, −in, ext)` on the band and ±width outside (given correct
-  sign oracle).
+- API follows the existing `_ex` convention: status return + `tvdb_error_t`,
+  output preserved on failure, arena rollback, alias rejection, deterministic
+  across worker partitions, matching C/CTest conventions in §9.
+- Validate topology bit-exactly against the Lean DMC-1 index-quad vectors and
+  positions with the existing tolerance; add a CTest entry and gate it with
+  `TINYVDB_BUILD_LEAN_DIFF` so a missing Lean toolchain skips (77).
+- Update public docs, CHANGELOG and `VERIFICATION.md` coverage matrix.
+- GPU port is explicitly out of scope.
 
-### P4 differential tests
-- Distances: ℚ exact vs C (`2e-5` / bit-exact face index); random triangles
-  incl. degenerate and huge coordinates (overflow fallback).
-- BVH vs brute force: face index bit-exact.
-- Winding: exact mode vs Lean Float within 1e-9; fast mode 1e-2 outside.
-- Sign counterexample meshes (F11) reproduced in C as a regression test.
+### 4.4 Parked walls (not in scope without explicit go-ahead)
 
----
-
-## 6. Phase P5 — Composition / end-to-end
-- `level_set_rebuild`: MC (→ mesh) then mesh→SDF then re-sign; theorem for
-  linear (planar) fields: rebuild reproduces the plane SDF within band (exact
-  over ℚ); general case: tested only.
-- Volume ↔ file: `vdbcheck` on files written by `tvdb_mesh_to_level_set` →
-  write → read; theorem-level reuse of `T-SEM-RT`.
-- NanoVDB conversion (optional): spec only for `0/5/4/3` layout node packing
-  of float trees + lookup equivalence; F9 checked against `WellFormed`.
-
-## 7. Phase P6 (approved) — C DMC implementation
-- New API `tvdb_grid_volume_to_mesh_dual` (+ dense `tvdb_sdf_to_mesh_dual_ex`)
-  following existing `_ex` contracts (status + `tvdb_error_t`, output preserved
-  on failure, arena rollback, alias rejection, deterministic across workers).
-- Validated against Lean DMC-1 vectors (topology bit-exact, positions tol);
-  CTest + docs + CHANGELOG; GPU port not included.
+Zhao 2005 convergence and the super-solution half of T-FS-FIX; general
+Poincaré–Lefschetz / homology; staircase-estimator consistency for general
+sets; aggregate Barnes–Hut tree claim; Float IEEE-rounding theorems. The
+general convex angle-weighted sign proof (VS-4a) is the one wall promoted
+into scope by user decision; its first slice landed a conditional general
+theorem plus unconditional non-obtuse and two-face planar cases, leaving only
+the obtuse geometric seam (S) walled.
 
 ---
 
@@ -575,18 +499,18 @@ Two levels:
 | 2 | P1 tree model + semantics + lookup equivalence | M | medium (rank/indices proofs) |
 | 3 | P1 MaskCompress + Half + Chunk | M | medium |
 | 4 | P1 parse/emit + file round trip + vdbcheck/vdbgen + C diff | L | **high** (writer canonicalization, legacy versions) |
-| 5 | P3 MC table theorems (decide) | S–M | medium (F10 outcome) |
-| 6 | P2 SDF/CSG/sampling/Godunov | M | low–medium |
-| 7 | P2 fast sweeping + flood fill + χ | M–L | medium |
-| 8 | P3 DMC-0 then DMC-1 | L | medium–high |
-| 9 | P4 triangle/BVH/sign/winding/band | L | high (geometry proofs) |
-| 10 | P5 composition, P6 C DMC | M–L | medium |
+| 5 | MC table theorems + F10 decision | S–M | done |
+| 6 | P2 SDF/CSG/sampling/Godunov + harnesses | M | done |
+| 7 | P2 fast sweeping + flood fill + χ + harnesses | M–L | done |
+| 8 | VS-0 plumbing + ledger | S | landed (this update) |
+| 9 | VS-1 mesh→volume differential ∥ VS-3 C DMC | L / M–L | medium–high |
+| 10 | VS-2 DMC Nodup/duality/χ ∥ VS-4a angle-weighted signs | L | high (topology/geometry proofs) |
 
-- Each phase: land theorem + executable + differential vectors together;
+- Each lane: land theorem + executable + differential vectors together;
   checkpoint commits locally; **no push** without authorization.
-- If a proof stalls > ~1 day of effort: weaken to an executable `decide`/
-  exhaustive check on bounded sizes, record the gap in VERIFICATION.md
-  ("Theorem boundary"), continue.
+- Proof timeouts follow the mandatory protocol in §4.0: 10-minute cap per
+  proof group, split / bounded instance / explicit hypothesis / documented
+  wall. Never land a weakened claim to satisfy a budget.
 - Mathlib geometry (`EuclideanSpace`, `Metric.infDist`, `convexHull`) is the
   basis for P2/P4; avoid building custom real analysis.
 - Floating point: never claim a Float theorem; label float-level evidence as
@@ -604,20 +528,46 @@ Two levels:
    oracle philosophy) and a pointer in `README.md`.
 5. `git diff --check`; no build products / generated `.vdb` / `.lake` tracked.
 
-## 10. Definition of done
-- `lean/` builds sorry-free with documented axiom profile.
-- P1 theorems T-FILE-RT, T-SEM-RT, T-EMIT-PARSE-WF, mask-compression round
-  trip, slot bijection, lookup equivalence: proven.
-- P2: exact-SDF theorems (sphere, box, torus, capsule), CSG set semantics,
-  T-GOD-EQ/T-GOD-DISC, T-FS-MONO/SIGN/FIX, flood-fill spec: proven.
-- P3: MC table theorems proven; F10 decided; DMC-0 watertight + oriented
-  proven; DMC-1 manifold theorem proven or boundary documented.
-- P4: T-CP-CORRECT, T-BVH-SOUND, T-BAND-COMPLETE proven; F11 decided.
-- Differential gates wired into CTest (skip 77 without Lean) with 0
-  unexplained disagreements; findings F1–F13 each resolved (F1/F3/F7 fixed in
-  C; F10 fixed via consistent face rule if confirmed).
-- P6 C DMC shipped with tests matching Lean DMC-1 vectors.
-- Stretch items explicitly listed as done / not done in VERIFICATION.md.
+## 10. Definition of done — status 2026-11-21
+
+Toolchain: Lean/mathlib **v4.36.0** (upgraded from v4.35.0; `lean/AxiomAudit.lean`
+audits 4,164 `Vdb.*` declarations with `collectAxioms`, profile
+`propext`/`Classical.choice`/`Quot.sound` + `native_decide`/`bv_decide`
+certificates only). 135 Lean modules (128 under `Vdb/`), 0 `sorry`. Final
+verified run: `lake build` 18,508 jobs; CTest **80/80** (19 Lean differential
+gates + `lean_axioms` + 60 C tests). Scalar ASan/UBSan, SIMD+OpenMP (OMP 1/8)
+and clang matrices **59/59** each; GPU fallback passes with skips; the
+generated-shader GPU leg is unavailable here (no glslangValidator).
+
+- **P1/P2 format + level-set core** — done: T-FILE-RT, T-SEM-RT,
+  T-EMIT-PARSE-WF, mask-compression round trip, slot bijection, lookup
+  equivalence; exact SDFs, CSG set semantics, Godunov/Eikonal/fast-sweep/flood
+  fill, grid sizing. Harnesses (samples, mask, half, Godunov, fill, Euler,
+  fast sweep, CSG, MC face) all green.
+- **VS-0 plumbing** — done: ~21 opt-in CTest entries with 77 skips, axiom
+  gate, coverage matrix, toolchain pin, F1–F19 ledger.
+- **VS-1 mesh→volume** — done as verified tiers: tree-path + BVH + BVH-ties
+  (148 exact ties explained, 11 disagreements resolved) + double-fallback
+  (48/48 exact RNE) + dense/sparse MC topology twin; seed spacing proved
+  (`SeedCoverage`), seed stage mirrored bit-exactly. Remaining stages printed
+  in an unmirrored banner.
+- **VS-2 DMC theory** — done: general-`n` `EdgeClosed`, Nodup criterion, Euler
+  under criterion, and full `T-DMC1-DUAL` (both bijections, incidence, χ);
+  genus/PL duality remains the documented homology wall.
+- **VS-3 C dual MC** — done at DMC-0 dense+tree and staged DMC-1 (QEF +
+  shell padding) with contract/topology tests and C↔Lean differential; exact
+  index-vector parity intentionally not claimed.
+- **VS-4a angle-weighted signs** — three-face (S) unconditional; arbitrary-`n`
+  reduced to named `FanCertificate` / spherical flux; non-obtuse and simplicial
+  instances unconditional. Full geometric existence is the documented wall.
+- **Section A (advanced) walls** — precisely named, not weakened: n-face fan
+  existence / spherical Stokes, winding far-point (circular without degree
+  theory), genus / Poincaré–Lefschetz (no Euler–Poincaré or cubical bridge even
+  in 4.36), Zhao 2005 convergence, universal native-Float32 agreement.
+- **Findings F1–F19** resolved; differential gates have 0 unexplained
+  disagreements; each budget timeout/wall recorded in `VERIFICATION.md`.
+- **Publication** is the only remaining process item and requires explicit
+  authorization plus the AGENTS.md pre-push audit; nothing has been pushed.
 
 ## 11. User decisions (resolved)
 1. **Fix in C** the on-disk-behaviour findings (F1 half rounding/NaN, F3
@@ -635,7 +585,22 @@ Two levels:
    `Mesh/McTable.lean`, and prove `T-MC-FACE-CONSISTENT` and watertightness on the
    new table. DMC-1 uses the same rule.
 3. **P6 approved**: implement C DMC (`tvdb_grid_volume_to_mesh_dual` + dense
-   `tvdb_sdf_to_mesh_dual_ex`) after DMC-1 in Lean is done.
+   `tvdb_sdf_to_mesh_dual_ex`) as lane VS-3, in parallel with VS-1 (user
+   decision 2026-11-18); validate against the already landed `n=3`/`n=4` Lean
+   DMC-1 vectors. The general Lean Nodup criterion (VS-2) may land afterwards.
 4. **CI: local checks only for now.** Do not add a Lean CI job. Lean gates run
    locally through scripts and the CTest option `TINYVDB_BUILD_LEAN_DIFF`
    (default OFF).
+5. **Lane priority (2026-11-18):** VS-0 first, then VS-1 and VS-3 in parallel,
+   then VS-2 and VS-4a. The planning artifact is this file plus the refreshed
+   `lean/VERIFICATION.md` and `lean/README.md` (no separate out-of-repo plan).
+6. **Proof budget:** 10-minute wall-clock cap per proof group, with the
+   split / bounded / hypothesize / wall ladder of §4.0. A stalled proof is
+   never weakened to a false or `sorry`-carrying claim.
+7. **Wall promotion:** the general angle-weighted (Bærentzen–Aanæs) sign proof
+   (VS-4a) is in scope; Zhao 2005, general Poincaré–Lefschetz, staircase
+   consistency and the aggregate Barnes–Hut claim stay parked.
+8. **Instrumentation fix (2026-11-18):** all `lean/scripts/check_*.sh` export
+   `ELAN_TOOLCHAIN` from `lean/lean-toolchain`, because CTest invokes them from
+   the build directory and elan would otherwise select the ambient (4.36)
+   toolchain instead of the pinned 4.36 and corrupt the mathlib cache.

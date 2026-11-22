@@ -16,7 +16,7 @@ import Lake
 open Lake DSL
 
 require mathlib from git
-  "https://github.com/leanprover-community/mathlib4.git" @ "v4.35.0"
+  "https://github.com/leanprover-community/mathlib4.git" @ "v4.36.0"
 
 package vdbSpec where
   -- Formalization artifact; proofs must stay sorry-free.
@@ -64,6 +64,36 @@ lean_exe csgcheck where
     `scripts/check_meshsdf.sh`). -/
 lean_exe meshsdfcheck where
   root := `Vdb.MeshSdfCheck
+
+/-- Model-side dense mesh→SDF BVH differential twin (driven by
+    `scripts/check_meshsdf_bvh.sh`). -/
+lean_exe meshsdfbvhcheck where
+  root := `Vdb.MeshSdfBvhCheck
+
+/-- Model-side dense marching-cubes topology twin (driven by
+    `scripts/check_mc_topology.sh`). -/
+lean_exe mctopocheck where
+  root := `Vdb.McTopologyCheck
+
+/-- Model-side Float32 BVH tie-explanation twin (driven by
+    `scripts/check_meshsdf_bvh_ties.sh`). -/
+lean_exe meshsdfbvhtiecheck where
+  root := `Vdb.MeshSdfBvhTieCheck
+
+/-- Model-side mesh→SDF double-fallback/RNE twin (driven by
+    `scripts/check_meshsdf_double.sh`). -/
+lean_exe meshsdfdoublecheck where
+  root := `Vdb.MeshSdfDoubleCheck
+
+/-- Model-side sparse/tree marching-cubes topology twin (driven by
+    `scripts/check_mc_sparse_topology.sh`). -/
+lean_exe mcsparsetopocheck where
+  root := `Vdb.McSparseTopologyCheck
+
+/-- Model-side DMC-1 topology differential twin (driven by
+    `scripts/check_dmc1_topology.sh`). -/
+lean_exe dmc1topocheck where
+  root := `Vdb.Dmc1TopologyCheck
 
 /-- Model-side winding-number executable check (driven by `scripts/check_winding.sh`). -/
 lean_exe windingcheck where

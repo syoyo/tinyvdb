@@ -44,6 +44,7 @@
 -/
 import Vdb.PseudoNormal
 import Vdb.WindingDipole
+import Vdb.ConeClosed
 import Mathlib.Analysis.SpecialFunctions.Trigonometric.Inverse
 
 open Vdb Vdb.V3
@@ -51,6 +52,8 @@ open Vdb Vdb.V3
 namespace Vdb
 
 open Vdb Vdb.V3
+open Classical
+open scoped RealInnerProductSpace
 
 /-! ### Corner angles -/
 
@@ -209,5 +212,236 @@ theorem angle_weighted_apex_dot_eq {t : ℝ} :
   rw [angleWeightedApex, cornerAngle_face1, cornerAngle_face2, cornerAngle_face3]
   norm_num [pnSmul, pnN1, pnN2, pnN3, pnP, V3.add, V3.dot]
   ring
+
+/-! ### General angle-weighted pairing (lane VS-4a)
+
+This section lifts the F16 instance to a *general* inner-product-space
+statement. The cone expansion is already available exactly
+(`ConeClosed.farkas_closest_direction_exact`): an outside point's closest
+direction is a finite nonneg combination `p − q = Σ λᵢ nᵢ` of the tight
+face normals. The angle-weighted normal `ν = Σ θᵢ nᵢ` then pairs as
+
+    ⟪ν, p − q⟫ = Σⱼ λⱼ · (Σᵢ θᵢ ⟪nᵢ, nⱼ⟫).                       (∗)
+
+So positivity follows as soon as each *face* pairing `Σᵢ θᵢ ⟪nᵢ, nⱼ⟫`
+is strictly positive. That per-face strict positivity is the hard seam of
+the general convex claim (it fails for the unweighted sum on F16, and is
+what the `arccos` comparison establishes there); it is **not** claimed
+here in full generality. Instead:
+
+* `angleWeightedNormal_pairs_pos` proves (∗) and the conclusion from the
+  per-face hypothesis (escalation tier 3: the hard step is an explicit
+  premise);
+* `angleWeighted_convex_pairs_pos_of_face_pos` assembles this with the
+  exact cone expansion into the general convex theorem under that named
+  premise;
+* `face_pos_of_nonobtuse` discharges the premise unconditionally when the
+  tight normals are pairwise non-obtuse, giving an unconditional convex
+  theorem for acute/non-obtuse vertices;
+* `planar_cone_two_face_pairs_pos` and `planar_cone_two_face_face_pos`
+  discharge it in the two-face planar vertex figure with equal (symmetric)
+  corner-angle weights — the bounded/planar tier for the obtuse case.
+-/
+
+variable {F : Type*} [NormedAddCommGroup F] [InnerProductSpace ℝ F]
+
+/-- The angle-weighted (Bærentzen–Aanæs) normal with weights `θ` on the
+    unit face normals `n`. -/
+noncomputable def angleWeightedNormal {ι : Type*} [Fintype ι]
+    (θ : ι → ℝ) (n : ι → F) : F := ∑ i, θ i • n i
+
+/-- The exact pairing identity `⟪ν, Σ λⱼ nⱼ⟫ = Σⱼ λⱼ (Σᵢ θᵢ ⟪nᵢ, nⱼ⟫)`
+    (using symmetry `⟪nᵢ, nⱼ⟫ = ⟪nⱼ, nᵢ⟫` of the real inner product). -/
+theorem angleWeightedNormal_inner_conic {ι : Type*} [Fintype ι]
+    (θ ell : ι → ℝ) (n : ι → F) :
+    ⟪angleWeightedNormal θ n, ∑ j, ell j • n j⟫ =
+      ∑ j, ell j * (∑ i, θ i * ⟪n i, n j⟫) := by
+  unfold angleWeightedNormal
+  rw [inner_sum Finset.univ (fun j => ell j • n j)]
+  apply Finset.sum_congr rfl
+  intro j _
+  rw [real_inner_smul_right]
+  congr 1
+  rw [sum_inner Finset.univ (fun i => θ i • n i)]
+  apply Finset.sum_congr rfl
+  intro i _
+  rw [real_inner_smul_left]
+
+/-- **Cone pairing lemma (hard seam as an explicit premise)**: if
+    `p − q = Σ λᵢ nᵢ` with `λᵢ ≥ 0`, not all zero, and each face pairing
+    `Σᵢ θᵢ ⟪nᵢ, nⱼ⟫` is strictly positive, then the angle-weighted normal
+    pairs strictly positively with `p − q`. -/
+theorem angleWeightedNormal_pairs_pos {ι : Type*} [Fintype ι]
+    (θ ell : ι → ℝ) (n : ι → F)
+    (hell : ∀ j, 0 ≤ ell j) (hellpos : ∃ j, 0 < ell j)
+    (hface : ∀ j, 0 < ∑ i, θ i * ⟪n i, n j⟫) :
+    0 < ⟪angleWeightedNormal θ n, ∑ j, ell j • n j⟫ := by
+  rw [angleWeightedNormal_inner_conic]
+  apply Finset.sum_pos'
+  · intro j _
+    exact mul_nonneg (hell j) (le_of_lt (hface j))
+  · obtain ⟨j, hj⟩ := hellpos
+    exact ⟨j, Finset.mem_univ j, mul_pos hj (hface j)⟩
+
+/-- The per-face positivity holds unconditionally when the face normals
+    are pairwise non-obtuse (every dihedral angle is at most a right
+    angle): the diagonal term `θⱼ·1` is positive and all other terms are
+    nonneg. -/
+theorem face_pos_of_nonobtuse {ι : Type*} [Fintype ι] [DecidableEq ι]
+    (θ : ι → ℝ) (hθ : ∀ i, 0 < θ i) (n : ι → F) (hn : ∀ i, ‖n i‖ = 1)
+    (hnonobtuse : ∀ i j, i ≠ j → 0 ≤ ⟪n i, n j⟫) (j : ι) :
+    0 < ∑ i, θ i * ⟪n i, n j⟫ := by
+  apply Finset.sum_pos'
+  · intro i _
+    by_cases hij : i = j
+    · rw [hij, real_inner_self_eq_norm_sq, hn j, one_pow, mul_one]
+      exact le_of_lt (hθ j)
+    · exact mul_nonneg (le_of_lt (hθ i)) (hnonobtuse i j hij)
+  · refine ⟨j, Finset.mem_univ j, ?_⟩
+    rw [real_inner_self_eq_norm_sq, hn j, one_pow, mul_one]
+    exact hθ j
+
+/-! ### The general convex theorem, modulo the named face-positivity seam -/
+
+/-- **General convex angle-weighted sign theorem (conditional)**: for a
+    convex polyhedron `K` with nonempty interior, an outside point `p`
+    whose closest point `q` is a vertex with tight faces and strictly
+    positive corner-angle weights `θ`, the angle-weighted pseudo-normal
+    `ν = Σ θᵢ nᵢ` pairs strictly positively with `p − q`. The single
+    hypothesis `hface` is the hard seam (per-face strict positivity of the
+    quadratic form); everything else — the exact cone expansion, the
+    outside/closest-point setup and the pairing algebra — is proved. -/
+theorem angleWeighted_convex_pairs_pos_of_face_pos
+    {ι : Type*} [Fintype ι] [DecidableEq ι] {F : Type*}
+    [NormedAddCommGroup F] [InnerProductSpace ℝ F] [FiniteDimensional ℝ F]
+    {n : ι → F} {b : ι → ℝ} {p q : F}
+    (θ : {i // Tight n b q i} → ℝ) (hθ : ∀ i, 0 < θ i)
+    (hq : q ∈ halfSpaces n b)
+    (hint : ∃ r ∈ halfSpaces n b, ∀ i, ⟪n i, r⟫ < b i)
+    (hm : ‖p - q‖ = ⨅ w : (halfSpaces n b), ‖p - w‖)
+    (hp : p ∉ halfSpaces n b)
+    (hface : ∀ j, 0 < ∑ i, θ i * ⟪tightNormals n b q i, tightNormals n b q j⟫) :
+    0 < ⟪angleWeightedNormal θ (tightNormals n b q), p - q⟫ := by
+  classical
+  have _ := hθ
+  have hpq_ne : p - q ≠ 0 := by
+    intro h
+    apply hp
+    have heq : p = q := sub_eq_zero.mp h
+    simpa [heq] using hq
+  obtain ⟨ell, hell0, helleq⟩ := farkas_closest_direction_exact hq hint hm
+  have hellpos : ∃ j, 0 < ell j := by
+    by_contra hcon
+    push Not at hcon
+    have hellz : ∀ j, ell j = 0 := fun j => le_antisymm (hcon j) (hell0 j)
+    have hzero : p - q = 0 := by
+      rw [helleq]
+      simp [hellz]
+    exact hpq_ne hzero
+  rw [helleq]
+  exact angleWeightedNormal_pairs_pos θ ell (tightNormals n b q) hell0 hellpos hface
+
+/-- **Unconditional corollary** for non-obtuse tight normals: the angle
+    sign rule is sound at any such vertex of a convex polyhedron. -/
+theorem angleWeighted_convex_pairs_pos_nonobtuse
+    {ι : Type*} [Fintype ι] [DecidableEq ι] {F : Type*}
+    [NormedAddCommGroup F] [InnerProductSpace ℝ F] [FiniteDimensional ℝ F]
+    {n : ι → F} {b : ι → ℝ} {p q : F}
+    (θ : {i // Tight n b q i} → ℝ) (hθ : ∀ i, 0 < θ i)
+    (hnunit : ∀ i, ‖n i‖ = 1)
+    (hnonobtuse : ∀ i j : {i // Tight n b q i}, i ≠ j →
+      ⟪tightNormals n b q i, tightNormals n b q j⟫ ≥ 0)
+    (hq : q ∈ halfSpaces n b)
+    (hint : ∃ r ∈ halfSpaces n b, ∀ i, ⟪n i, r⟫ < b i)
+    (hm : ‖p - q‖ = ⨅ w : (halfSpaces n b), ‖p - w‖)
+    (hp : p ∉ halfSpaces n b) :
+    0 < ⟪angleWeightedNormal θ (tightNormals n b q), p - q⟫ := by
+  classical
+  apply angleWeighted_convex_pairs_pos_of_face_pos θ hθ hq hint hm hp
+  exact fun j => face_pos_of_nonobtuse θ hθ (tightNormals n b q)
+    (fun i => hnunit i) hnonobtuse j
+
+/-! ### The two-face planar vertex figure (obtuse case, bounded tier)
+
+At a planar cone vertex with two incident faces, the hard seam reduces to
+two scalar inequalities. With symmetric (equal) corner-angle weights the
+seam is discharged by the single geometric fact that two distinct unit
+normals are not antipodal (`-1 < ⟪n₁, n₂⟫`), so the whole pairing is
+positive — including obtuse dihedral angles such as the F16 tetrahedron's
+apex (`⟪n₁, n₂⟫ = -2/3`). -/
+
+/-- The two-face face-positivities with equal weights `θ` and a non-antipodal
+    pair of unit normals. -/
+theorem planar_cone_two_face_face_pos
+    {F : Type*} [NormedAddCommGroup F] [InnerProductSpace ℝ F]
+    (n₁ n₂ : F) (hn₁ : ‖n₁‖ = 1) (hn₂ : ‖n₂‖ = 1)
+    (hc : -1 < ⟪n₁, n₂⟫) (θ : ℝ) (hθ : 0 < θ) :
+    0 < θ * ⟪n₁, n₁⟫ + θ * ⟪n₂, n₁⟫ ∧
+      0 < θ * ⟪n₁, n₂⟫ + θ * ⟪n₂, n₂⟫ := by
+  have h11 : ⟪n₁, n₁⟫ = 1 := by rw [real_inner_self_eq_norm_sq, hn₁]; norm_num
+  have h22 : ⟪n₂, n₂⟫ = 1 := by rw [real_inner_self_eq_norm_sq, hn₂]; norm_num
+  have h21 : ⟪n₂, n₁⟫ = ⟪n₁, n₂⟫ := real_inner_comm _ _
+  constructor
+  · rw [h11, h21]
+    nlinarith
+  · rw [h22]
+    nlinarith
+
+/-- **Planar (two-face) vertex-figure lemma**: with equal angle weights a
+    two-face vertex has a strictly positive pairing with every nonneg
+    combination `λ₁ n₁ + λ₂ n₂` that is not zero, even when the two
+    outward normals are obtuse. -/
+theorem planar_cone_two_face_pairs_pos
+    {F : Type*} [NormedAddCommGroup F] [InnerProductSpace ℝ F]
+    (n₁ n₂ : F) (hn₁ : ‖n₁‖ = 1) (hn₂ : ‖n₂‖ = 1)
+    (hc : -1 < ⟪n₁, n₂⟫) (θ : ℝ) (hθ : 0 < θ)
+    (e1 e2 : ℝ) (he1 : 0 ≤ e1) (he2 : 0 ≤ e2) (hepos : 0 < e1 ∨ 0 < e2) :
+    0 < ⟪θ • n₁ + θ • n₂, e1 • n₁ + e2 • n₂⟫ := by
+  have hseam := planar_cone_two_face_face_pos n₁ n₂ hn₁ hn₂ hc θ hθ
+  have h11 : ⟪n₁, n₁⟫ = 1 := by rw [real_inner_self_eq_norm_sq, hn₁]; norm_num
+  have h22 : ⟪n₂, n₂⟫ = 1 := by rw [real_inner_self_eq_norm_sq, hn₂]; norm_num
+  have h21 : ⟪n₂, n₁⟫ = ⟪n₁, n₂⟫ := real_inner_comm _ _
+  rw [inner_add_left, inner_add_right, inner_add_right]
+  simp_rw [real_inner_smul_left, real_inner_smul_right]
+  rw [h11, h22, h21]
+  rw [h11, h22, h21] at hseam
+  have hs : 0 < θ * (1 + ⟪n₁, n₂⟫) := by nlinarith [hseam.1]
+  have hcpos : 0 < 1 + ⟪n₁, n₂⟫ := pos_of_mul_pos_right hs (le_of_lt hθ)
+  have hsum : 0 < e1 + e2 := by rcases hepos with hpos | hpos <;> nlinarith
+  have hgoal :
+      θ * (e1 * 1) + θ * (e2 * ⟪n₁, n₂⟫) + (θ * (e1 * ⟪n₁, n₂⟫) + θ * (e2 * 1))
+        = θ * (e1 + e2) * (1 + ⟪n₁, n₂⟫) := by ring
+  rw [hgoal]
+  exact mul_pos (mul_pos hθ hsum) hcpos
+
+/-! ### Remaining gap (recorded for `lean/VERIFICATION.md`)
+
+**Statement not proved** (the hard seam, tier-4 wall for this slice): for
+a finite family of unit vectors `n : ι → F` that positively span a pointed
+cone with nonempty interior (the tight normals of a convex vertex) and
+strictly positive *geometric* corner angles `θ`, prove
+
+    ∀ j : ι, 0 < ∑ i, θ i * ⟪n i, n j⟫.                              (S)
+
+Given (S), `angleWeighted_convex_pairs_pos_of_face_pos` completes the full
+general convex theorem; the F16 instance and the two-face planar figure
+verify (S) in their respective cases, and `face_pos_of_nonobtuse` proves it
+when all dihedral angles are non-obtuse.
+
+**Why it is not automatic**: `∑ i, θ i ⟪n i, n j⟫` is a quadratic form whose
+off-diagonal terms are negative for obtuse dihedral angles (F16:
+`⟪n₁, n₂⟫ = -2/3`), so the diagonal positivity alone is insufficient. The
+geometric content is spherical: the vertex figure is a convex spherical
+polygon with edges of length `θᵢ` and outward co-normals `nᵢ`, and the
+identity `∑ θᵢ nᵢ = -2 ∫_P x dA` makes (S) equivalent to the elementary
+spherical fact `∫_P ⟪x, nⱼ⟫ dA < 0`. Formalizing that identity needs the
+spherical Stokes/divergence theorem and surface measure, which is outside
+this proof group's budget (no such lemma is available in the imported
+mathlib slice).
+
+**Budget record** (plan-lean.md §4.0): `cd lean && timeout 600 lake build
+Vdb.AnglePseudoNormal` — no timeout, ~7 s of Lean compilation (12 s wall
+including dependency replay); the 10-minute cap was not approached. No
+proof holes introduced; `warningAsError` on. -/
 
 end Vdb

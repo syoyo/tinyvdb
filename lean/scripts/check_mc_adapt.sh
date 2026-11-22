@@ -10,7 +10,19 @@
 #
 # Usage: check_mc_adapt.sh [n]   (default 1000000 vertices = 3n axis evaluations)
 set -euo pipefail
+
+# CTest maps 77 to "skipped", not passed. Skip cleanly if the Lean
+# toolchain is absent; a real build/check failure still exits non-77.
+if ! command -v lake >/dev/null 2>&1; then
+  echo "SKIP: Lean toolchain (lake) is not available"
+  exit 77
+fi
 here=$(cd "$(dirname "$0")/.." && pwd)
+
+# The package pins its Lean toolchain in lean/lean-toolchain. CTest invokes
+# these scripts from the build directory, where elan would otherwise select
+# the ambient toolchain (possibly incompatible with the pinned mathlib).
+export ELAN_TOOLCHAIN="$(cat "$here/lean-toolchain")"
 
 n=${1:-1000000}
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/mc_adapt.XXXXXX")
