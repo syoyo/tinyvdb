@@ -75,7 +75,7 @@ jobs:
           if [ -f build/build.ninja ]; then
             test "$(grep -c -- '-ffp-contract=off' build/build.ninja)" -ge 1
           else
-            test "$(grep -r -c -- '-ffp-contract=off' build/CMakeFiles --include=flags.make | awk -F: '{s += $2} END {print s+0}')" -ge 1
+            test "$(find build/CMakeFiles -name flags.make -exec grep -l -- '-ffp-contract=off' {} + 2>/dev/null | wc -l)" -ge 1
           fi
       - name: Build
         run: cmake --build build -j$(nproc)
