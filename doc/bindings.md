@@ -100,4 +100,3 @@ main();
 ```
 
 For browser usage, see the [WebAssembly demo](../web/demo.html).
-

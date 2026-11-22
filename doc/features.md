@@ -214,4 +214,3 @@ remains the convenience wrapper for grids built with the default allocator.
   covariance and pinhole Jacobian (including the z variance), three-sigma
   radius from the major axis, culled splats zeroed
 * [x] PLY I/O for splat scenes (load + save)
-

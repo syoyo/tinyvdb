@@ -329,4 +329,3 @@ deterministic across worker counts. It is not Nielson DMC-1 (no per-cube patch
 decomposition), and it performs no boundary padding, so watertightness requires
 the crossing surface to be strictly inside the lattice; it does not yet match
 the Lean DMC-1 vectors.
-

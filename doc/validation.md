@@ -56,4 +56,3 @@ passing on whichever thread count the host happened to default to.
 | 223 | BLOSC compression, point index grid |
 | 224 | Multipass I/O |
 | 225 | Half-float grid type |
-

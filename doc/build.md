@@ -99,4 +99,3 @@ Grid[0]: "surface"
   Nodes: 10 leaf, 5 lower, 2 upper
   Tiles: 0 level0, 0 level1, 0 level2
 ```
-

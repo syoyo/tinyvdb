@@ -143,4 +143,3 @@ if (tvdb_ops::RayCastSDF(grid, origin, dir, max_t, &hit)) {
 | `TVDB_HAVE_BLOSC` | Route NanoVDB BLOSC decompression through system libblosc (set automatically by `TINYVDB_USE_SYSTEM_BLOSC=ON`) |
 | `TVDB_USE_ZSTD` | Enable ZSTD inside BLOSC frames |
 | `TVDB_NO_MMAP` | Disable mmap; always read into heap buffer |
-
