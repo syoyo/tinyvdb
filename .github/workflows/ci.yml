@@ -68,7 +68,10 @@ jobs:
             -DTINYVDB_BUILD_GPU=OFF -DTINYVDB_OPENMP=ON
       - name: Assert clang is the compiler and the FMA-contract pin reached the build
         run: |
-          grep -q 'CMAKE_C_COMPILER_ID:INTERNAL=Clang' build/CMakeCache.txt
+          # CMake records CMAKE_C_COMPILER_ID in CMakeFiles/<ver>/CMakeCCompiler.cmake,
+          # not in CMakeCache.txt; check the compiler path as well.
+          grep -q 'set(CMAKE_C_COMPILER_ID "Clang")' build/CMakeFiles/*/CMakeCCompiler.cmake
+          grep -E '^CMAKE_C_COMPILER:FILEPATH=.*/clang($|[^[:alnum:]])' build/CMakeCache.txt
           # The default generator is Unix Makefiles on ubuntu-latest (no -G
           # Ninja here), so assert the pin in whichever build file CMake wrote:
           # build.ninja for Ninja, CMakeFiles/*.dir/flags.make for Makefiles.
