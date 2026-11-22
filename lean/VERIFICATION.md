@@ -1,7 +1,8 @@
 # Formalization and verification status
 
-Scope and phase plan: `../plan-lean.md`. This file records what is **proven**,
-what is deliberately partial, and the findings raised against the C code.
+Scope and phase plan: `../plan-lean.md`. A short overview is in
+[`../LEAN.md`](../LEAN.md). This file records what is **proven**, what is
+deliberately partial, and the findings raised against the C code.
 
 Toolchain: Lean `v4.36.0`, mathlib `v4.36.0` (upgraded 2026-11-20 from v4.35.0; `lake update mathlib` + `lake exe cache get`; compatibility fixes in `NormalCone`, `WindingNumber`, `StaircaseDiagonal`, `EikonalTop`, `DmcOneDual`, `ConeExpansion`). Build gate: `lake build`
 (`warningAsError` on). `sorry` count in landed modules: **0**.
