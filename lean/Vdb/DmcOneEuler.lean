@@ -336,5 +336,3 @@ theorem euler_general_dmc1 (n : Nat) (s : Lat → Bool)
       = (QuadEuler.vertices (dmcOneMeshEdges n s)).card - (PadGrid.crossed n s).length :=
   QuadEuler.euler_eq_vertices_sub_faces _ _ hnd hcl (fun _a _b h => mesh_loopless n s hpin h)
     (mesh_length n s hpin)
-
-

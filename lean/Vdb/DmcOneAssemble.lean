@@ -1272,7 +1272,7 @@ theorem classify_0_true_3 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=1, s p = false, ring side 0. -/
 theorem classify_1_false_0 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1324,7 +1324,7 @@ theorem classify_1_false_0 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=1, s p = false, ring side 1. -/
 theorem classify_1_false_1 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1376,7 +1376,7 @@ theorem classify_1_false_1 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=1, s p = false, ring side 2. -/
 theorem classify_1_false_2 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1428,7 +1428,7 @@ theorem classify_1_false_2 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=1, s p = false, ring side 3. -/
 theorem classify_1_false_3 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1480,7 +1480,7 @@ theorem classify_1_false_3 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=1, s p = true, ring side 0. -/
 theorem classify_1_true_0 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1532,7 +1532,7 @@ theorem classify_1_true_0 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=1, s p = true, ring side 1. -/
 theorem classify_1_true_1 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1584,7 +1584,7 @@ theorem classify_1_true_1 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=1, s p = true, ring side 2. -/
 theorem classify_1_true_2 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1636,7 +1636,7 @@ theorem classify_1_true_2 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=1, s p = true, ring side 3. -/
 theorem classify_1_true_3 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 0 ≤ y) (hz : 1 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 1))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1688,7 +1688,7 @@ theorem classify_1_true_3 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=2, s p = false, ring side 0. -/
 theorem classify_2_false_0 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1741,7 +1741,7 @@ theorem classify_2_false_0 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=2, s p = false, ring side 1. -/
 theorem classify_2_false_1 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1794,7 +1794,7 @@ theorem classify_2_false_1 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=2, s p = false, ring side 2. -/
 theorem classify_2_false_2 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1847,7 +1847,7 @@ theorem classify_2_false_2 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=2, s p = false, ring side 3. -/
 theorem classify_2_false_3 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1900,7 +1900,7 @@ theorem classify_2_false_3 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=2, s p = true, ring side 0. -/
 theorem classify_2_true_0 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -1953,7 +1953,7 @@ theorem classify_2_true_0 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=2, s p = true, ring side 1. -/
 theorem classify_2_true_1 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -2006,7 +2006,7 @@ theorem classify_2_true_1 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=2, s p = true, ring side 2. -/
 theorem classify_2_true_2 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
@@ -2059,7 +2059,7 @@ theorem classify_2_true_2 (n : Nat) (s : Lat → Bool)
 /-- Classification branch d=2, s p = true, ring side 3. -/
 theorem classify_2_true_3 (n : Nat) (s : Lat → Bool)
     (x y z : Nat) (hx : 1 ≤ x) (hy : 1 ≤ y) (hz : 0 ≤ z)
-    
+
     (hp3 : PadGrid.InLattice n (x, y, z))
     (hpSucc : PadGrid.InLattice n (PadGrid.succN (x, y, z) 2))
     (hxN : x < n) (hyN : y < n) (hzN : z < n)
