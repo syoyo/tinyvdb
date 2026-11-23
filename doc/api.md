@@ -321,6 +321,36 @@ faces have zero normals contributing unsigned distances. The `_vdb` sign-method
 argument remains advisory. Neither API promises a watertight manifold
 reconstruction.
 
+`tvdb_mesh_sphere_contacts_ex` (and its `tvdb_mesh_sphere_contacts` wrapper)
+generates contacts between a sphere and a triangle mesh: for every triangle
+within the radius it emits the closest point, the unit normal toward the
+sphere centre and the penetration depth. Contacts are sorted by decreasing
+depth (face index breaks ties) and greedily reduced so no two kept points are
+closer than `merge_dist`; the result is deterministic. Invalid radii and bad
+face indices fail with the output preserved.
+
+`tvdb_mesh_convex_decompose_ex` (and its `tvdb_mesh_convex_decompose` wrapper)
+splits a mesh into convex collision parts: faces sharing a vertex are unioned
+into a component, and each component gets the axis-aligned box of its vertices
+plus a part label per vertex. Parts are ordered by their lowest source vertex
+index, so the result is deterministic. Boxes are convex by construction; the
+lean model proves the part partition and coverage contracts. Invalid face
+indices fail with the output preserved.
+
+`tvdb_mesh_simplify_ex` (and its `tvdb_mesh_simplify` wrapper) builds a
+collision proxy: a lower-face-count triangle mesh from an input mesh. It ranks
+undirected edges by the accumulated quadric (squared distance to the incident
+triangles' planes) at the edge midpoint and collapses them in a deterministic
+`(cost, i, j)` order, retargeting the second endpoint and dropping degenerate or
+duplicate faces. Boundary edges and edges failing the link test (the endpoints
+must share exactly the two opposite vertices) can be skipped, and the result is
+accepted only if it is closed, loop-free and free of repeated directed edges.
+The collapse target is the midpoint, not the full QEM optimum. The API follows
+the `_ex` contract: status plus error, output preserved on failure, arena
+rollback, alias rejection, and deterministic serial emission independent of any
+worker pool. Face-count targets that cannot be reached with a closed result are
+reported as `TVDB_ERROR_INVALID_DATA` rather than returning a broken mesh.
+
 `tvdb_sdf_to_mesh_dual_ex` (and its `tvdb_sdf_to_mesh_dual` wrapper) is a staged
 **DMC-0 / surface-nets** alternative: one dual vertex per crossed cell at the
 centroid of its edge crossings, one quad per sign-changing primal edge. It

@@ -4,6 +4,34 @@
 
 ### Added
 
+- Sphere/mesh contact generation with manifold reduction:
+  `tvdb_mesh_sphere_contacts_ex` (and its wrapper) in
+  `src/tinyvdb_contact.{h,c}` emits a contact for every triangle within the
+  sphere radius, sorts by depth and reduces the manifold greedily by a merge
+  distance. `tests/test_contact.c` and the `check_contact.sh` C↔Lean gate cover
+  the geometry, reduction and failure contract.
+- Collision-proxy simplification: `tvdb_mesh_simplify_ex` (plus the
+  `tvdb_mesh_simplify` wrapper) in `src/tinyvdb_mesh_simplify.{h,c}` builds a
+  low-face-count triangle mesh from an input mesh by deterministic QEM-ranked
+  edge collapse. The ranking uses the accumulated squared plane distance at the
+  edge midpoint; the collapse target is the midpoint rather than the full QEM
+  optimum (documented deviation). Boundary edges and edges failing the link test
+  can be skipped, and the result is checked for closed, loop-free, duplicate-free
+  topology before being accepted. It follows the `_ex` contract (status+error,
+  output preserved on failure, arena rollback, alias rejection, deterministic
+  serial emission). `tests/test_mesh_simplify.c` checks the contract and the
+  `check_proxy.sh` C↔Lean gate compares the output `(V,F)` on nine cases.
+- Convex part decomposition: `tvdb_mesh_convex_decompose_ex` (plus the
+  `tvdb_mesh_convex_decompose` wrapper) in `src/tinyvdb_convex_decomp.{h,c}`
+  groups triangles by shared-vertex connectivity and emits one axis-aligned
+  box part per component, with per-vertex part labels. Parts are ordered by
+  lowest source vertex index and the output is deterministic. `tests/test_convex_decomp.c`
+  and the `check_convex_parts.sh` C↔Lean gate cover coverage and box/label parity.
+- The Lean physics track lands `Vdb/PhysMesh`, `Vdb/SdfMask`,
+  `Vdb/Segmentation`, `Vdb/GenusMeasure`, `Vdb/Cpt`, `Vdb/Qem`,
+  `Vdb/EdgeCollapse`, `Vdb/CollisionProxy`, and the executable twins
+  `Vdb/SdfPartsCheck`/`Vdb/CollisionProxyCheck`; gates `lean_diff_sdf_parts` and
+  `lean_diff_proxy` are registered under `TINYVDB_BUILD_LEAN_DIFF`.
 - A staged dense dual marching cubes API: `tvdb_sdf_to_mesh_dual_ex` (plus the
   `tvdb_sdf_to_mesh_dual` wrapper) emits one dual vertex per crossed cell and
   one quad per sign-changing primal edge into a new owning `tvdb_quad_mesh`

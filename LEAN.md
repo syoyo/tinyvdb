@@ -8,19 +8,19 @@ theorem inventory, boundaries, findings and gate results are in
 [`lean/VERIFICATION.md`](lean/VERIFICATION.md); the scope and phase plan are in
 [`plan-lean.md`](plan-lean.md).
 
-**Last verified: 2026-11-22 (local, no CI job by decision).**
+**Last verified: 2026-11-23 (local, no CI job by decision).**
 
 ## At a glance
 
 | Item | Status |
 | --- | --- |
 | Toolchain | Lean / mathlib **v4.36.0** (`lean/lean-toolchain`, `lean/lakefile.lean`) |
-| Modules | **142** Lean files (135 under `lean/Vdb/`), `warningAsError` on |
+| Modules | **162** Lean files (155 under `lean/Vdb/`), `warningAsError` on |
 | `sorry` / `admit` | **0** in landed modules |
-| `lake build` | **18,522 jobs**, success |
-| CTest | **80/80** (19 Lean differential gates + `lean_axioms` + 60 C tests) |
-| Axiom audit | 4,164 `Vdb.*` declarations; only `propext`, `Classical.choice`, `Quot.sound` plus `native_decide`/`bv_decide` certificates |
-| C matrix | scalar ASan/UBSan **59/59**, SIMD+OpenMP **59/59** at OMP 1 and 8, clang **59/59**, GPU fallback passes with skips |
+| `lake build` | **18,562 jobs**, success |
+| CTest | **88/88** (24 Lean differential gates + `lean_axioms` + 63 C tests; `TINYVDB_BUILD_EXAMPLES=ON` for `vdbdump`, out-of-tree runs pass `VDBDUMP=<build>/vdbdump`) |
+| Axiom audit | 4,669 `Vdb.*` declarations; only `propext`, `Classical.choice`, `Quot.sound` plus `native_decide`/`bv_decide` certificates |
+| C matrix | scalar ASan/UBSan **60/60**, SIMD+OpenMP and clang **59/59** full suite (new `test_mesh_simplify` additionally passed at OMP 1/8 and under clang), GPU fallback passes with skips |
 
 ## What is covered
 
@@ -39,6 +39,12 @@ theorem inventory, boundaries, findings and gate results are in
 - **Advanced results**: staircase-estimator inconsistency families, winding
   dipole/far-field theory, comparison-principle tier for fast sweeping,
   general-`n` angle-weighted sign seam reduced to local convexity data.
+- **Physics processing (PH track, in progress)**: shared index-mesh foundation
+  with watertightness/Euler counting and a quad→triangle bridge; fog/interior
+  masks, SDF component/cavity decomposition, genus/χ arithmetic and closest-
+  point projection. Collision-proxy simplification, convex decomposition and
+  contact/manifold queries are planned (see `plan-lean.md` §5 and the coverage
+  matrix in `lean/VERIFICATION.md`).
 
 ## Boundaries and known walls
 

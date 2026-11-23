@@ -104,16 +104,17 @@ and reduces (S) to a co-normal flux identity). Winding degree theory is landed
 as a conditional reduction with unconditional continuity/constancy facts
 (`WindingDegree`). The C↔Lean DMC-1 topology differential matches all six invariants
 (crossed/verts/quads/comps/closed/χ) on all 256 shell-pinned fields.
-The module tally is 142 (135
-under `Vdb/`); the C code is checked against the model by
-differential harnesses (bit-exact for CSG and mesh→SDF). Remaining work is
-reorganized into voxel-surface lanes VS-0…VS-4a in `../plan-lean.md` (plumbing,
-mesh→volume differential completeness, C dual MC, DMC Nodup/duality, general
-angle-weighted signs); each proof group has a 10-minute wall-clock cap with a
-split-or-document escalation ladder. See `VERIFICATION.md` for the theorem
-inventory, the voxel-surface coverage matrix, the differential-harness results
-and the explicit list of walls (general Poincaré–Lefschetz, staircase-estimator
-consistency for general sets, Zhao 2005 / Phase C).
+The module tally is 162 (155 under `Vdb/`); the C code is checked against the
+model by differential harnesses (bit-exact for CSG and mesh→SDF). Remaining work
+is reorganized into voxel-surface lanes VS-0…VS-4a and the physics-processing
+lanes PH-0…PH-5 in `../plan-lean.md` (mesh foundation and SDF/part-decomposition
+modules landed; collision-proxy simplification, convex decomposition and
+contact/manifold queries planned); each proof group has a 10-minute wall-clock
+cap with a split-or-document escalation ladder. See `VERIFICATION.md` for the
+theorem inventory, the voxel-surface and physics coverage matrices, the
+differential-harness results and the explicit list of walls (general
+Poincaré–Lefschetz, staircase-estimator consistency for general sets, Zhao 2005
+/ Phase C, the general-n sign seam (S)).
 
 ## Conventions
 

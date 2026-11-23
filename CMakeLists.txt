@@ -142,6 +142,9 @@ add_library(tinyvdb_mesh_ops STATIC
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_tetmesh.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_tet_refine.c
   ${PROJECT_SOURCE_DIR}/src/tinyvdb_volume.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_mesh_simplify.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_convex_decomp.c
+  ${PROJECT_SOURCE_DIR}/src/tinyvdb_contact.c
   ${PROJECT_SOURCE_DIR}/src/tvdb_memory.c)
 target_link_libraries(tinyvdb_mesh_ops PUBLIC tinyvdb_math)
 # tinyvdb_sparse_tree depends on tinyvdb_io.h types (and tvdb_file_open at runtime)
@@ -549,7 +552,9 @@ if(TINYVDB_BUILD_TESTS)
   foreach(_test test_thread_pool test_sdf_tree test_mesh_conversion test_mesh_conversion_failure
                 test_mesh_level_set test_mesh_dual test_mesh_dual_tree test_mesh_dual_patch
                 test_mesh_dual_one test_mesh_dual_tree_one test_mesh_degenerate_sdf test_tetmesh
-                test_tet_float_range test_graded_stencil test_volume test_tree_accessor)
+                test_mesh_simplify test_convex_decomp test_contact
+                test_tet_float_range test_graded_stencil test_volume
+                test_tree_accessor)
     add_executable(${_test} ${PROJECT_SOURCE_DIR}/tests/${_test}.c)
     target_link_libraries(${_test} PRIVATE tinyvdb_mesh_ops)
     add_test(NAME ${_test} COMMAND ${_test} ${TINYVDB_TEST_FIXTURE})
@@ -579,6 +584,16 @@ if(TINYVDB_BUILD_TESTS)
       COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_fastsweep.sh)
     add_test(NAME lean_diff_csg
       COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_csg.sh)
+    add_test(NAME lean_diff_sdf_parts
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_sdf_parts.sh)
+    add_test(NAME lean_diff_proxy
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_proxy.sh)
+    add_test(NAME lean_diff_convex_parts
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_convex_parts.sh)
+    add_test(NAME lean_diff_contact
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_contact.sh)
+    add_test(NAME lean_diff_ray_dda
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_ray_dda.sh)
     add_test(NAME lean_diff_meshsdf
       COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_meshsdf.sh)
     add_test(NAME lean_diff_treemeshsdf

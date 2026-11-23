@@ -56,3 +56,21 @@ import Vdb.McTable
 import Vdb.TreeSweep
 import Vdb.PadGrid
 import Vdb.PadGridBoundary
+import Vdb.PhysMesh
+import Vdb.SdfMask
+import Vdb.Segmentation
+-- `Vdb.GenusMeasure` is deliberately not imported here: it depends on
+-- `Vdb.Euler`, whose `Vdb.C3` name collides with `Vdb.CubeGrid.C3` (both are in
+-- the root import). Like `Vdb.Euler` itself it is built by the `Vdb.+` glob but
+-- stays a standalone module.
+import Vdb.Cpt
+import Vdb.Qem
+import Vdb.EdgeCollapse
+import Vdb.CollisionProxy
+import Vdb.Convex
+import Vdb.ConvexDecomp
+import Vdb.Contact
+import Vdb.Manifold
+import Vdb.RayDda
+import Vdb.RaySdf
+import Vdb.TetStuffing

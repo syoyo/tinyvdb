@@ -104,6 +104,29 @@ lean_exe windingcheck where
 lean_exe mckeycheck where
   root := `Vdb.McAdaptKey
 
+/-- Model-side ray-DDA twin (driven by `scripts/check_ray_dda.sh`). -/
+lean_exe rayddacheck where
+  root := `Vdb.RayDdaCheck
+
+/-- Model-side sphere/mesh contact twin (driven by `scripts/check_contact.sh`). -/
+lean_exe contactcheck where
+  root := `Vdb.ContactCheck
+
+/-- Model-side convex-part decomposition twin (driven by
+    `scripts/check_convex_parts.sh`). -/
+lean_exe convexcheck where
+  root := `Vdb.ConvexDecompCheck
+
+/-- Model-side collision-proxy differential twin (driven by
+    `scripts/check_proxy.sh`). -/
+lean_exe proxycheck where
+  root := `Vdb.CollisionProxyCheck
+
+/-- Model-side SDF part/cavity differential twin (driven by
+    `scripts/check_sdf_parts.sh`). -/
+lean_exe sdfpartcheck where
+  root := `Vdb.SdfPartsCheck
+
 /-- Seeded well-formed `.vdb` generator (differential harness, model half). -/
 lean_exe vdbgen where
   root := `VdbGen

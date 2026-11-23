@@ -491,6 +491,60 @@ the obtuse geometric seam (S) walled.
 
 ---
 
+## 5. Physics-processing workstream (PH)
+
+This workstream extends the verified model to the geometry needed by a physics
+pipeline: **signed distance → part decomposition → collision proxy (simplified
+mesh) → contact/manifold queries**. Tet-mesh generation for simulation is a
+parked, optional lane. The C code is checked differentially; nothing here is a
+proof about the C implementation. User decisions 9–12 in §11 fix the scope.
+
+### 5.0 Scope and C-surface inventory
+
+| Physics stage | C entry points | Lean coverage before PH |
+| --- | --- | --- |
+| signed distance | `tvdb_level_set_*`, `tvdb_mesh_to_sdf*`, `tvdb_cpt`, `tvdb_level_set_rebuild` | extensive (P1/P2/VS), `cpt` not modelled |
+| part decomposition (SDF) | `tvdb_sdf_segmentation`, `tvdb_sdf_extract_enclosed_regions`, `tvdb_level_set_genus` | foundations only (`FloodFill`, `Euler`) |
+| collision proxy | *no C API exists* | none (`PhysMesh` foundation added in PH-0) |
+| convex decomposition | *no C API exists* | none |
+| contact / manifold queries | *no C API exists*; ray helpers `tvdb_voxels_along_ray_dense`, `tvdb_segments_along_ray` | `Bvh`, `MeshDistance`, `WindingNumber` |
+| simulation tets (optional) | `tvdb_sdf_to_tet_mesh`, `tvdb_level_set_to_tet_mesh`, graded/refine | none |
+
+### 5.1 Lane definitions
+
+| Lane | Scope and deliverables | Depends on | Done when |
+| --- | --- | --- | --- |
+| **PH-0 — mesh foundation + ledger** | shared `Vdb/PhysMesh.lean` index-mesh type (positions abstract, oriented triangles), `Watertight`/`Loopless`/`Nodup`, half-edge count and `2·χ = 2V − F`, quad→triangle watertightness bridge; physics coverage matrix in `VERIFICATION.md` | VS lanes | landed (2026-11-23) |
+| **PH-1 — SDF gaps + part decomposition (SDF)** | `SdfMask` (fog/interior mask), `Segmentation` (6/26 components, per-part field, cavities), `GenusMeasure` (χ/genus arithmetic under `HasInteriorDuality`), `Cpt` (closest-point projection); differential harness for segmentation/cavities | PH-0 | Lean modules landed; C↔Lean part/cavity harness green with negative controls |
+| **PH-2 — collision proxy by simplification (C + Lean)** | new C QEM/edge-collapse `_ex` API (status, output preserved on failure, alias rejection, arena rollback, worker-independent determinism); `Qem`, `EdgeCollapse`, `CollisionProxy` modules and a C↔Lean topology/error differential | PH-0, PH-1 | landed 2026-11-23: contract test + 9-case (V,F) differential; index-vector parity explicitly not claimed |
+| **PH-3 — convex decomposition (C + Lean)** | `Convex`, `Sat`, `ConvexDecomp` modules; convex-hull/part proxy API; coverage of the original surface, determinism; SAT/convexity differential | PH-2 | landed 2026-11-23: AABB parts (boxes are convex and proved so), face-partition coverage, 2 cases / 3 parts exact parity; general SAT/hull decomposition remains a planned extension |
+| **PH-4 — contact / manifold queries (C + Lean)** | `RayDda`, `RaySdf`, `Contact`, `NarrowPhase`, `Manifold`, `PersistentManifold`; contact = (point, normal, penetration) with orientation/equivariance theorems, broadphase necessity, manifold capacity/covering/determinism; contact differential corpus | PH-2, PH-3 | landed 2026-11-23: contact + manifold core with 3-case differential; ray DDA/SDF-segment twins, broadphase/narrowphase and temporal persistence remain follow-ups |
+| **PH-5 — tet meshes for simulation (optional)** | isosurface stuffing: BCC warp, sign-case tables, minimum-key diagonals, watertight outward boundary, positive orientation, determinism; differential against `test_tetmesh` | explicit go-ahead | bounded Lean case-table evidence landed; C warp/float path and full watertightness remain outside the model |
+
+Ordering: `PH-0 → PH-1 → (PH-2 ∥ PH-3) → PH-4`; PH-5 only on explicit
+go-ahead. Each proof group obeys §4.0's 10-minute cap and split/bounded/
+hypothesize/wall ladder; no weakened or `sorry`-carrying claims are landed.
+
+### 5.2 Interactions with known walls
+
+- The general-n angle-weighted sign seam (S) and topological degree for closed
+  meshes (§4.4) are inherited by any mesh→SDF path used to *feed* the part or
+  contact pipeline; PH modules state them as explicit premises where needed.
+- No Euler–Poincaré/homology in mathlib 4.36: genus/χ duality stays conditional
+  on `PoincareLefschetz.HasInteriorDuality` (PH-1).
+- Float/Float32 behaviour is differential evidence only; no universal native
+  Float theorems are claimed for contact tolerances.
+- GPU kernels stay out of scope (§0); CPU paths only.
+
+### 5.3 Validation additions
+
+- New opt-in gates under `TINYVDB_BUILD_LEAN_DIFF`: `check_sdf_parts.sh`
+  `check_proxy.sh`, `check_convex_parts.sh`, `check_contact.sh` (landed);
+  ray-DDA gate landed, SDF-segment differential (planned); exit 77 when the Lean toolchain or a C API is absent (skip ≠ pass).
+- Any new C API needs a failing regression test first, then the AGENTS.md CPU
+  matrix (scalar sanitizer, SIMD+OpenMP at OMP 1/8, clang); GPU only if GPU code
+  changes. Docs, CHANGELOG and this ledger are updated with every landing.
+
 ## 8. Sequencing, sizing, risks
 
 | Order | Phase | Est. effort | Risk |
@@ -531,11 +585,13 @@ the obtuse geometric seam (S) walled.
 ## 10. Definition of done — status 2026-11-21
 
 Toolchain: Lean/mathlib **v4.36.0** (upgraded from v4.35.0; `lean/AxiomAudit.lean`
-audits 4,164 `Vdb.*` declarations with `collectAxioms`, profile
+audits 4,669 `Vdb.*` declarations with `collectAxioms`, profile
 `propext`/`Classical.choice`/`Quot.sound` + `native_decide`/`bv_decide`
 certificates only). 135 Lean modules (128 under `Vdb/`), 0 `sorry`. Final
-verified run: `lake build` 18,508 jobs; CTest **80/80** (19 Lean differential
-gates + `lean_axioms` + 60 C tests). Scalar ASan/UBSan, SIMD+OpenMP (OMP 1/8)
+verified run: `lake build` 18,562 jobs; CTest **88/88** (24 Lean differential
+gates + `lean_axioms` + 63 C tests). Out-of-tree runs need
+`TINYVDB_BUILD_EXAMPLES=ON` (for `vdbdump`) and
+`VDBDUMP=<build>/vdbdump` for `lean_diff`/`lean_diff_vdbgen`. Scalar ASan/UBSan, SIMD+OpenMP (OMP 1/8)
 and clang matrices **59/59** each; GPU fallback passes with skips; the
 generated-shader GPU leg is unavailable here (no glslangValidator).
 
@@ -566,6 +622,29 @@ generated-shader GPU leg is unavailable here (no glslangValidator).
   in 4.36), Zhao 2005 convergence, universal native-Float32 agreement.
 - **Findings F1–F19** resolved; differential gates have 0 unexplained
   disagreements; each budget timeout/wall recorded in `VERIFICATION.md`.
+- **PH-0/PH-1 (physics track)** — PH-0 landed: `Vdb/PhysMesh.lean` supplies the
+  shared index-mesh type, half-edge/Euler counting and the quad→triangle
+  watertightness bridge. PH-1 Lean modules landed: `Vdb/SdfMask.lean`,
+  `Vdb/Segmentation.lean`, `Vdb/GenusMeasure.lean`, `Vdb/Cpt.lean`; the C↔Lean
+  part/cavity gate is landed (`Vdb/SdfPartsCheck.lean`,
+  `lean/scripts/sdf_parts_c.c`, `check_sdf_parts.sh`, CTest
+  `lean_diff_sdf_parts`): 24 seeded cases, 24 parts, 4 nonempty cavities, exact
+  dump parity. **PH-2 landed** (`Vdb/Qem`, `Vdb/EdgeCollapse`,
+  `Vdb/CollisionProxy`, `Vdb/CollisionProxyCheck`, `src/tinyvdb_mesh_simplify.{h,c}`,
+  `tests/test_mesh_simplify.c`, `lean_diff_proxy`): contract + 9-case (V,F)
+  differential; exact index-vector parity intentionally not claimed, general
+  manifold preservation is the bounded `collapse_watertight_fin4` result plus
+  the C output closure check. **PH-3 landed** (`Vdb/Convex`, `Vdb/ConvexDecomp`,
+  `Vdb/ConvexDecompCheck`, `src/tinyvdb_convex_decomp.{h,c}`,
+  `tests/test_convex_decomp.c`, `lean_diff_convex_parts`): shared-vertex union-find
+  components with an AABB per part, 2 cases / 3 parts with exact box+label parity.
+  **PH-4 landed** (`Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck`,
+  `src/tinyvdb_contact.{h,c}`, `tests/test_contact.c`, `lean_diff_contact`):
+  sphere/mesh contacts with a 3-case / 11-contact exact face+count differential.
+  Ray-DDA twin and gate landed (4 cases, 30 voxels exact); SDF-segment
+  differential is a follow-up. **PH-5 landed** (bounded Lean evidence):
+  `Vdb/TetStuffing` machine-checks the BCC stuffing case contracts over all 16
+  sign patterns; the C warping/float path remains outside the model.
 - **Publication** is the only remaining process item and requires explicit
   authorization plus the AGENTS.md pre-push audit; nothing has been pushed.
 
@@ -604,3 +683,13 @@ generated-shader GPU leg is unavailable here (no glslangValidator).
    `ELAN_TOOLCHAIN` from `lean/lean-toolchain`, because CTest invokes them from
    the build directory and elan would otherwise select the ambient (4.36)
    toolchain instead of the pinned 4.36 and corrupt the mathlib cache.
+9. **Physics scope (2026-11-23):** part decomposition covers *both* SDF
+   connected-component segmentation (existing C APIs) and convex decomposition
+   (new C + Lean, PH-3); contact/manifold queries are in scope (PH-4);
+   isosurface-stuffing tet meshing is parked as optional (PH-5).
+10. **Collision proxy implementation (2026-11-23):** mesh simplification has no
+    C API in this repo; PH-2 adds a C QEM/edge-collapse `_ex` API together with
+    its Lean model, proofs and differential harness.
+11. **Physics ordering (2026-11-23):** `PH-0 → PH-1 → (PH-2 ∥ PH-3) → PH-4`;
+    PH-5 only on explicit go-ahead. Publishing still requires separate explicit
+    authorization.
