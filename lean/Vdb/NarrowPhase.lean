@@ -59,5 +59,13 @@ theorem sphereBox_disjoint_of_separated {p : Point} {r : ℝ} {b : Box3}
   have hxi : p i - r ≤ x i := (hx i).1
   exact not_lt_of_ge hxi (lt_of_le_of_lt (hb i).2 h)
 
+/-- A separated sphere box cannot contain any contact point of the body. -/
+theorem no_contact_of_separated {p q : Point} {r : ℝ} {b : Box3} (i : Fin 3)
+    (hsep : b.2 i < p i - r) (hq : memBox b q) (hdist : dist p q ≤ r) : False := by
+  have hdisj := sphereBox_disjoint_of_separated (p := p) (r := r) (b := b) i hsep
+  have hinter := boxes_intersect_of_contact (p := p) (q := q) (r := r) (b := b) hdist hq
+  rcases hinter with ⟨x, hx, hxb⟩
+  exact Set.disjoint_left.mp hdisj hx hxb
+
 end NarrowPhase
 end Vdb

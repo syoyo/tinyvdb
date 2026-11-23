@@ -596,6 +596,8 @@ if(TINYVDB_BUILD_TESTS)
       COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_ray_dda.sh)
     add_test(NAME lean_diff_ray_sdf
       COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_ray_sdf.sh)
+    add_test(NAME lean_diff_collision_pipeline
+      COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_collision_pipeline.sh)
     add_test(NAME lean_diff_meshsdf
       COMMAND bash ${PROJECT_SOURCE_DIR}/lean/scripts/check_meshsdf.sh)
     add_test(NAME lean_diff_treemeshsdf

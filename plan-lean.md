@@ -518,7 +518,7 @@ proof about the C implementation. User decisions 9–12 in §11 fix the scope.
 | **PH-1 — SDF gaps + part decomposition (SDF)** | `SdfMask` (fog/interior mask), `Segmentation` (6/26 components, per-part field, cavities), `GenusMeasure` (χ/genus arithmetic under `HasInteriorDuality`), `Cpt` (closest-point projection); differential harness for segmentation/cavities | PH-0 | Lean modules landed; C↔Lean part/cavity harness green with negative controls |
 | **PH-2 — collision proxy by simplification (C + Lean)** | new C QEM/edge-collapse `_ex` API (status, output preserved on failure, alias rejection, arena rollback, worker-independent determinism); `Qem`, `EdgeCollapse`, `CollisionProxy` modules and a C↔Lean topology/error differential | PH-0, PH-1 | landed 2026-11-23: contract test + 9-case (V,F) differential; index-vector parity explicitly not claimed |
 | **PH-3 — convex decomposition (C + Lean)** | `Convex`, `Sat`, `ConvexDecomp` modules; convex-hull/part proxy API; coverage of the original surface, determinism; SAT/convexity differential | PH-2 | landed 2026-11-23: AABB parts (boxes are convex and proved so), face-partition coverage, 2 cases / 3 parts exact parity; general SAT/hull decomposition remains a planned extension |
-| **PH-4 — contact / manifold queries (C + Lean)** | `RayDda`, `RaySdf`, `Contact`, `NarrowPhase`, `Manifold`, `PersistentManifold`; contact = (point, normal, penetration) with orientation/equivariance theorems, broadphase necessity, manifold capacity/covering/determinism; contact differential corpus | PH-2, PH-3 | landed 2026-11-23: contact + manifold core with 3-case differential; ray DDA/SDF-segment twins, broadphase/narrowphase and temporal persistence remain follow-ups |
+| **PH-4 — contact / manifold queries (C + Lean)** | `RayDda`, `RaySdf`, `Contact`, `NarrowPhase`, `Manifold`, `PersistentManifold`; contact = (point, normal, penetration) with orientation/equivariance theorems, broadphase necessity, manifold capacity/covering/determinism; contact differential corpus | PH-2, PH-3 | landed: contact+manifold, ray DDA/SDF gates, broadphase pipeline (3 cases). General mesh–mesh narrowphase and temporal persistence remain follow-ups |
 | **PH-5 — tet meshes for simulation (optional)** | isosurface stuffing: BCC warp, sign-case tables, minimum-key diagonals, watertight outward boundary, positive orientation, determinism; differential against `test_tetmesh` | explicit go-ahead | bounded Lean case-table evidence landed; C warp/float path and full watertightness remain outside the model |
 
 Ordering: `PH-0 → PH-1 → (PH-2 ∥ PH-3) → PH-4`; PH-5 only on explicit
@@ -585,10 +585,10 @@ hypothesize/wall ladder; no weakened or `sorry`-carrying claims are landed.
 ## 10. Definition of done — status 2026-11-21
 
 Toolchain: Lean/mathlib **v4.36.0** (upgraded from v4.35.0; `lean/AxiomAudit.lean`
-audits 4,729 `Vdb.*` declarations with `collectAxioms`, profile
+audits 4,730 `Vdb.*` declarations with `collectAxioms`, profile
 `propext`/`Classical.choice`/`Quot.sound` + `native_decide`/`bv_decide`
 certificates only). 135 Lean modules (128 under `Vdb/`), 0 `sorry`. Final
-verified run: `lake build` 18,578 jobs; CTest **89/89** (25 Lean differential
+verified run: `lake build` 18,580 jobs; CTest **90/90** (26 Lean differential
 gates + `lean_axioms` + 63 C tests). Out-of-tree runs need
 `TINYVDB_BUILD_EXAMPLES=ON` (for `vdbdump`) and
 `VDBDUMP=<build>/vdbdump` for `lean_diff`/`lean_diff_vdbgen`. Scalar ASan/UBSan, SIMD+OpenMP (OMP 1/8)
@@ -642,7 +642,9 @@ generated-shader GPU leg is unavailable here (no glslangValidator).
   `src/tinyvdb_contact.{h,c}`, `tests/test_contact.c`, `lean_diff_contact`):
   sphere/mesh contacts with a 3-case / 11-contact exact face+count differential.
   Ray-DDA twin and gate landed (4 cases, 30 voxels exact); SDF-segment
-  differential landed (3 cases, pairs within 1e-6). **PH-5 landed** (bounded Lean evidence):
+  differential landed (3 cases, pairs within 1e-6); broadphase/narrowphase
+  pipeline C API `tvdb_collision_sphere_mesh_ex` and `lean_diff_collision_pipeline`
+  landed (3 cases, counts+faces exact). **PH-5 landed** (bounded Lean evidence):
   `Vdb/TetStuffing` machine-checks the BCC stuffing case contracts over all 16
   sign patterns; the C warping/float path remains outside the model.
 - **Bounded wall groups (§4.0)**: `Vdb/AngleNFaceRatBounded` (uniform-weight seam over 64 axis subsets, 7.31 s), `Vdb/FastSweep1D` (two-sweep 1-D Eikonal solution, 9.08 s), `Vdb/EulerDisjointBounded` (χ(∂K)=2χ(K) for separated cube subsets, 5.01 s). All machine-checked with exact rationals; none weakens the general walls. A n=6 geometric-seam group was attempted and walled in 14.68 s (boundary-map equality does not transport fan geometry/transfer data); the blocker is recorded in `lean/VERIFICATION.md`.

@@ -26,7 +26,7 @@ theorem here is a proof about C code.
 | contact / manifold queries | `src/tinyvdb_contact.{h,c}`: `tvdb_mesh_sphere_contacts_ex`; ray helpers `tvdb_voxels_along_ray_dense`, `tvdb_segments_along_ray` | `Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck`; `Bvh`, `MeshDistance` | landed: 3 cases, 11 manifold contacts, faces+counts exact; ray-DDA twin (4 cases, 30 voxels exact) and SDF-segment gate (3 cases, pairs within 1e-6) landed |
 | simulation tets (optional, PH-5) | `tvdb_sdf_to_tet_mesh`, `tvdb_level_set_to_tet_mesh`, graded/refine | `Vdb/TetStuffing.lean` (bounded case-table checks + non-degenerate canonical tet) | landed as bounded Lean evidence; warp/float numerical steps remain outside the model |
 
-Module count after PH-0/PH-5 + ray gates + bounded wall groups: **170** Lean files, **163** under `lean/Vdb/` (six
+Module count after PH-0/PH-5 + ray/collision gates + bounded wall groups: **171** Lean files, **164** under `lean/Vdb/` (six
 are the `sdfpartcheck`, `proxycheck`, `convexcheck`, `contactcheck` and `rayddacheck` roots).
 The `sorry` grep still reports only three pre-existing prose mentions in
 comments (`AngleNFaceComplete`, `SphericalStokes`, `AngleNFace`); no declaration
@@ -233,6 +233,8 @@ uses `sorry`.
 | `Vdb/StaircaseReflectionBounded.lean` | **Staircase-wall bounded group (§4.0, 2026-11-23, 46.30 s build).** `reflectionInvariant_true`: the lattice half-space staircase face count is invariant under x-reflection (coefficient a → −a, offset d → d − a·(T−1)) for all coefficients in {−2,−1,1,2}, grids up to 5³ and offsets in range. Extends the negative inconsistency families to signed planar cuts; general continuous-set consistency remains walled. |
 
 | `Vdb/EulerGridBounded.lean` | **Homology-wall bounded group (§4.0, 2026-11-23, 11.35 s build).** `allGridDuality_true` and `grid_duality`: for every subset of a 3×3×1 cube slab whose cubes never touch only at an edge/corner, `χ(∂K) = 2·χ(K)`; 119 such subsets. The restricted contact condition is necessary: corner-touching subsets violate the identity, which is recorded as a negative witness. Standalone module (`Vdb.Euler.C3` clashes with `Vdb.CubeGrid.C3`). |
+
+| `Vdb/CollisionPipelineCheck.lean` | **PH-4 collision pipeline gate.** Exact-rational AABB rejection and contact recomputation for `tvdb_collision_sphere_mesh_ex`; 3 cases (one touching, two broadly separated), counts and face ids exact. |
 
 ## Theorem inventory (landed)
 
@@ -882,13 +884,13 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   the quad-injectivity chain, plus the CI/clang, WASM C++17 and CUDA device
   records. None have been pushed; a push follows the AGENTS.md pre-push audit.
 * Lean differential gates are now wired into CTest under
-  `TINYVDB_BUILD_LEAN_DIFF=ON`: `lean_diff` (samples) plus twenty-five named tests
+  `TINYVDB_BUILD_LEAN_DIFF=ON`: `lean_diff` (samples) plus twenty-six named tests
   for mask classification, half, Godunov, fill, Euler, fast sweeping, CSG,
   SDF part/cavity decomposition, collision-proxy simplification, convex parts,
-  sphere/mesh contacts, ray DDA, SDF ray crossings, mesh→SDF, BVH, BVH tie explanation, mesh→SDF double fallback, sparse/tree
+  sphere/mesh contacts, ray DDA, SDF ray crossings, collision pipeline, mesh→SDF, BVH, BVH tie explanation, mesh→SDF double fallback, sparse/tree
   mesh→level-set, winding, MC adaptivity, MC topology, sparse/tree MC topology,
   DMC-1 topology, vdbgen and MC face-consistency; plus the `lean_axioms` gate
-  (AxiomAudit.lean, 4,729 declarations, documented profile only). Every shell
+  (AxiomAudit.lean, 4,730 declarations, documented profile only). Every shell
   harness exits **77** (CTest "skipped") when `lake` is absent; a real checker
   failure still fails. CTest registration and the skip path were verified
   2026-11-21 (21 tests registered, including `lean_axioms`; `PATH`-stripped run exits 77). Every script

@@ -104,6 +104,10 @@ lean_exe windingcheck where
 lean_exe mckeycheck where
   root := `Vdb.McAdaptKey
 
+/-- Model-side collision-pipeline twin (driven by `scripts/check_collision_pipeline.sh`). -/
+lean_exe collisioncheck where
+  root := `Vdb.CollisionPipelineCheck
+
 /-- Model-side SDF ray-crossing twin (driven by `scripts/check_ray_sdf.sh`). -/
 lean_exe raysdfcheck where
   root := `Vdb.RaySdfCheck

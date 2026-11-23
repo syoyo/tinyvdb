@@ -23,7 +23,7 @@ esac
 # appears.  We check the audit text contains the declaration count so a
 # silently truncated run cannot pass.
 case "$out" in
-  *"Vdb declarations audited: 4729"*) ;;
+  *"Vdb declarations audited: 4730"*) ;;
   *) echo "FAIL: audit did not cover the expected declaration count" >&2; exit 1;;
 esac
-echo "OK axiom audit: 4729 Vdb declarations, documented axiom profile only"
+echo "OK axiom audit: 4730 Vdb declarations, documented axiom profile only"

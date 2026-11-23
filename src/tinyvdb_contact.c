@@ -148,6 +148,51 @@ tvdb_status_t tvdb_mesh_sphere_contacts_ex(const tvdb_triangle_mesh *mesh,
   return TVDB_OK;
 }
 
+tvdb_status_t tvdb_mesh_aabb(const tvdb_triangle_mesh *mesh,
+                             tvdb_aabb_t *out, tvdb_error_t *err) {
+  if (!mesh || !out || (mesh->vertex_count && !mesh->vertices)) {
+    contact_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "mesh_aabb: invalid arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if (mesh->vertex_count == 0) {
+    for (int d = 0; d < 3; ++d) { out->bmin[d] = 0.0; out->bmax[d] = 0.0; }
+    return TVDB_OK;
+  }
+  for (int d = 0; d < 3; ++d) {
+    out->bmin[d] = (double)mesh->vertices[0].x;
+    out->bmax[d] = (double)mesh->vertices[0].x;
+  }
+  for (size_t i = 1; i < mesh->vertex_count; ++i) {
+    double v[3] = {(double)mesh->vertices[i].x, (double)mesh->vertices[i].y,
+                   (double)mesh->vertices[i].z};
+    for (int d = 0; d < 3; ++d) {
+      if (v[d] < out->bmin[d]) out->bmin[d] = v[d];
+      if (v[d] > out->bmax[d]) out->bmax[d] = v[d];
+    }
+  }
+  return TVDB_OK;
+}
+
+tvdb_status_t tvdb_collision_sphere_mesh_ex(const tvdb_triangle_mesh *mesh,
+    const double center[3], double radius, double merge_dist,
+    tvdb_contact_set_t *out, tvdb_arena_allocator_t *arena, tvdb_error_t *err) {
+  if (!out) {
+    contact_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "collision: null output");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  out->contacts = NULL;
+  out->count = 0;
+  tvdb_aabb_t box;
+  tvdb_status_t st = tvdb_mesh_aabb(mesh, &box, err);
+  if (st != TVDB_OK) return st;
+  for (int d = 0; d < 3; ++d) {
+    if (center[d] + radius < box.bmin[d] || center[d] - radius > box.bmax[d]) {
+      return TVDB_OK;  /* broadphase rejection */
+    }
+  }
+  return tvdb_mesh_sphere_contacts_ex(mesh, center, radius, merge_dist, out, arena, err);
+}
+
 bool tvdb_mesh_sphere_contacts(const tvdb_triangle_mesh *mesh,
     const double center[3], double radius, double merge_dist,
     tvdb_contact_set_t *out, tvdb_arena_allocator_t *arena) {

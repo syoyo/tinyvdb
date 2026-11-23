@@ -34,6 +34,22 @@ typedef struct {
 
 void tvdb_contact_set_free(tvdb_contact_set_t *set);
 
+typedef struct {
+  double bmin[3];
+  double bmax[3];
+} tvdb_aabb_t;
+
+/* Axis-aligned box of the mesh vertices. Failure preserves out. */
+tvdb_status_t tvdb_mesh_aabb(const tvdb_triangle_mesh *mesh,
+                             tvdb_aabb_t *out, tvdb_error_t *err);
+
+/* Broadphase+narrowphase query: rejects a sphere whose AABB is separated from
+   the mesh AABB, otherwise delegates to tvdb_mesh_sphere_contacts_ex. Contract
+   is identical to the contact API; a rejected query returns an empty set. */
+tvdb_status_t tvdb_collision_sphere_mesh_ex(const tvdb_triangle_mesh *mesh,
+    const double center[3], double radius, double merge_dist,
+    tvdb_contact_set_t *out, tvdb_arena_allocator_t *arena, tvdb_error_t *err);
+
 tvdb_status_t tvdb_mesh_sphere_contacts_ex(const tvdb_triangle_mesh *mesh,
     const double center[3], double radius, double merge_dist,
     tvdb_contact_set_t *out, tvdb_arena_allocator_t *arena, tvdb_error_t *err);
