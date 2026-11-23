@@ -65,5 +65,38 @@ theorem face_pos_of_extend {k : ℕ} (D : FanData k)
   exact fanChain_face_pos_of_fanCertificate
     (prependFaceN a b F) (prependFaceW wa wb F) hc
 
+/-- Any landed FanCertificate supplies FanData for the same chain. -/
+theorem FanData.ofCertificate {k : ℕ} {n : Fin (k + 3) → V3} {θ : Fin (k + 3) → ℝ}
+    (hc : FanCertificate n θ) : FanData k := by
+  rcases hc with ⟨chain, hlink, hn, hθ, hgeom, htrans⟩
+  exact ⟨chain, hlink, hgeom, by intro j; rw [← hn]; exact htrans j⟩
+
+/-- The seam (S) for an extension of an arbitrary certified fan, with the
+    geometric split data kept explicit. -/
+theorem face_pos_of_certificate {k : ℕ} {n : Fin (k + 3) → V3} {θ : Fin (k + 3) → ℝ}
+    (hc : FanCertificate n θ)
+    (a b m : V3) (wa wb d : ℝ)
+    (hm_link : m = pnSmul (-1) (Classical.choose (FanData.ofCertificate hc)).head.a)
+    (hd_link : d = (Classical.choose (FanData.ofCertificate hc)).head.wa)
+    (ha : dot a a = 1) (hb : dot b b = 1) (hm_unit : dot m m = 1)
+    (htri : triple a b m ≠ 0)
+    (hang1 : cornerAngle (isoEdge12 a b) (isoEdge13 a m) = wa)
+    (hang2 : cornerAngle (isoEdge12 a b) (isoEdge23 b m) = wb)
+    (hang3 : cornerAngle (isoEdge13 a m) (isoEdge23 b m) = d)
+    (htr_a : FanTriangleTransfer ⟨a, b, m, wa, wb, d⟩ a)
+    (htr_b : FanTriangleTransfer ⟨a, b, m, wa, wb, d⟩ b)
+    (htr_rest : ∀ i : Fin (k + 2),
+      FanTriangleTransfer ⟨a, b, m, wa, wb, d⟩
+        ((Classical.choose (FanData.ofCertificate hc)).boundaryN i.succ))
+    (htrD_a : FanChainTransferAt (Classical.choose (FanData.ofCertificate hc)) a)
+    (htrD_b : FanChainTransferAt (Classical.choose (FanData.ofCertificate hc)) b) :
+    ∀ j : Fin (k + 4),
+      0 < ∑ i : Fin (k + 4),
+        (prependFaceW wa wb (Classical.choose (FanData.ofCertificate hc))) i *
+          dot ((prependFaceN a b (Classical.choose (FanData.ofCertificate hc))) i)
+            ((prependFaceN a b (Classical.choose (FanData.ofCertificate hc))) j) := by
+  exact face_pos_of_extend (FanData.ofCertificate hc)
+    a b m wa wb d hm_link hd_link ha hb hm_unit htri hang1 hang2 hang3
+    htr_a htr_b htr_rest htrD_a htrD_b
+
 end V3
-end Vdb

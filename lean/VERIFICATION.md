@@ -238,7 +238,7 @@ uses `sorry`.
 
 | `Vdb/ConvexHull.lean` + `Vdb/ConvexHullCheck.lean` | **PH-2.1 supporting-plane hull.** `convex_pointHull` and `mem_pointHull_of_mem` prove the abstract convexity contract; the executable twin recomputes C `tvdb_points_convex_hull_ex` faces over exact rationals (3 cases, faces exact). |
 
-| `Vdb/AngleNFaceFanData.lean` | **n=6 seam wall group (§4.0, 2026-11-23, 8.83 s build).** `FanData` packages a fan chain with its proof data as a Prop; `FanData.certificate` and `face_pos_of_extend` give the reusable n → n+1 seam step from the landed `extendFanCertificate`. The geometric sixth-diagonal data remains an explicit premise; the unconditional n=6 theorem is still walled. |
+| `Vdb/AngleNFaceFanData.lean` | **n=6 seam wall group (§4.0, 2026-11-23, 8.83 s build).** `FanData` packages a fan chain with its proof data as a Prop; `FanData.certificate`, `FanData.ofCertificate`, `face_pos_of_extend` and `face_pos_of_certificate` give the reusable n → n+1 seam step from any landed certificate. The geometric sixth-diagonal data remains an explicit premise; the unconditional n=6 theorem is still walled. |
 
 | `Vdb/DiscreteComparison.lean` | **Zhao-tier wall group (§4.0, 2026-11-23, 8.27 s build).** `comparison_of_rank_step`: a finite rank-decreasing maximum argument proving `u ≤ v` from boundary order and an explicit maximum-propagation premise. The Eikonal-specific propagation lemma remains the open wall; no convergence claim is made. |
 
@@ -904,7 +904,7 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   sphere/mesh contacts, ray DDA, SDF ray crossings, collision pipeline, convex hull, mesh→SDF, BVH, BVH tie explanation, mesh→SDF double fallback, sparse/tree
   mesh→level-set, winding, MC adaptivity, MC topology, sparse/tree MC topology,
   DMC-1 topology, vdbgen and MC face-consistency; plus the `lean_axioms` gate
-  (AxiomAudit.lean, 5,206 declarations, documented profile only). Every shell
+  (AxiomAudit.lean, 5,208 declarations, documented profile only). Every shell
   harness exits **77** (CTest "skipped") when `lake` is absent; a real checker
   failure still fails. CTest registration and the skip path were verified
   2026-11-21 (21 tests registered, including `lean_axioms`; `PATH`-stripped run exits 77). Every script

@@ -19,7 +19,7 @@ theorem inventory, boundaries, findings and gate results are in
 | `sorry` / `admit` | **0** in landed modules |
 | `lake build` | **18,596 jobs**, success |
 | CTest | **91/91** (27 Lean differential gates + `lean_axioms` + 63 C tests; `TINYVDB_BUILD_EXAMPLES=ON` for `vdbdump`, out-of-tree runs pass `VDBDUMP=<build>/vdbdump`) |
-| Axiom audit | 5,206 `Vdb.*` declarations; only `propext`, `Classical.choice`, `Quot.sound` plus `native_decide`/`bv_decide` certificates |
+| Axiom audit | 5,208 `Vdb.*` declarations; only `propext`, `Classical.choice`, `Quot.sound` plus `native_decide`/`bv_decide` certificates |
 | C matrix | scalar ASan/UBSan **60/60**, SIMD+OpenMP and clang **59/59** full suite (new `test_mesh_simplify` additionally passed at OMP 1/8 and under clang), GPU fallback passes with skips |
 
 ## What is covered
