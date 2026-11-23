@@ -82,5 +82,21 @@ def allPieceContracts : Bool :=
 theorem tetPieces_contracts_checked : allPieceContracts = true := by
   native_decide
 
+/-- Axis warp of a BCC lattice vertex toward a nearby cut point. -/
+def warpAxis (h alpha x cut : Rat) : Rat :=
+  if |x - cut| ≤ alpha * h then cut else x
+
+theorem warpAxis_fixes_cut (h alpha cut : Rat) : warpAxis h alpha cut cut = cut := by
+  simp [warpAxis]
+
+theorem warpAxis_idempotent (h alpha x cut : Rat) :
+    warpAxis h alpha (warpAxis h alpha x cut) cut = warpAxis h alpha x cut := by
+  unfold warpAxis
+  split <;> simp [*]
+
+theorem warpAxis_eq_cut_of_near {h alpha x cut : Rat}
+    (hnear : |x - cut| ≤ alpha * h) : warpAxis h alpha x cut = cut := by
+  simp [warpAxis, hnear]
+
 end TetStuffing
 end Vdb
