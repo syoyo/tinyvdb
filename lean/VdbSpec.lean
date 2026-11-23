@@ -80,5 +80,6 @@ import Vdb.PersistentManifold
 import Vdb.AngleNFaceRatBounded
 import Vdb.AngleNFaceFanData
 import Vdb.FastSweep1D
+import Vdb.DiscreteComparison
 import Vdb.StaircaseReflectionBounded
 -- Vdb.EulerDisjointBounded is standalone: Vdb.Euler.C3 collides with Vdb.CubeGrid.C3

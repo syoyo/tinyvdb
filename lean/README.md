@@ -104,7 +104,7 @@ and reduces (S) to a co-normal flux identity). Winding degree theory is landed
 as a conditional reduction with unconditional continuity/constancy facts
 (`WindingDegree`). The C↔Lean DMC-1 topology differential matches all six invariants
 (crossed/verts/quads/comps/closed/χ) on all 256 shell-pinned fields.
-The module tally is 174 (167 under `Vdb/`); the C code is checked against the
+The module tally is 175 (168 under `Vdb/`); the C code is checked against the
 model by differential harnesses (bit-exact for CSG and mesh→SDF). Remaining work
 is reorganized into voxel-surface lanes VS-0…VS-4a and the physics-processing
 lanes PH-0…PH-5 in `../plan-lean.md` (mesh foundation and SDF/part-decomposition

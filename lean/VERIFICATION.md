@@ -26,7 +26,7 @@ theorem here is a proof about C code.
 | contact / manifold queries | `src/tinyvdb_contact.{h,c}`: `tvdb_mesh_sphere_contacts_ex`; ray helpers `tvdb_voxels_along_ray_dense`, `tvdb_segments_along_ray` | `Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck`; `Bvh`, `MeshDistance` | landed: 3 cases, 11 manifold contacts, faces+counts exact; ray-DDA twin (4 cases, 30 voxels exact) and SDF-segment gate (3 cases, pairs within 1e-6) landed |
 | simulation tets (optional, PH-5) | `tvdb_sdf_to_tet_mesh`, `tvdb_level_set_to_tet_mesh`, graded/refine | `Vdb/TetStuffing.lean` (bounded case-table checks + non-degenerate canonical tet) | landed as bounded Lean evidence; warp/float numerical steps remain outside the model |
 
-Module count after PH-0/PH-5 + ray/collision/hull gates + bounded wall groups: **174** Lean files, **167** under `lean/Vdb/` (six
+Module count after PH-0/PH-5 + ray/collision/hull gates + bounded wall groups: **175** Lean files, **168** under `lean/Vdb/` (six
 are the `sdfpartcheck`, `proxycheck`, `convexcheck`, `contactcheck` and `rayddacheck` roots).
 The `sorry` grep still reports only three pre-existing prose mentions in
 comments (`AngleNFaceComplete`, `SphericalStokes`, `AngleNFace`); no declaration
@@ -239,6 +239,8 @@ uses `sorry`.
 | `Vdb/ConvexHull.lean` + `Vdb/ConvexHullCheck.lean` | **PH-2.1 supporting-plane hull.** `convex_pointHull` and `mem_pointHull_of_mem` prove the abstract convexity contract; the executable twin recomputes C `tvdb_points_convex_hull_ex` faces over exact rationals (3 cases, faces exact). |
 
 | `Vdb/AngleNFaceFanData.lean` | **n=6 seam wall group (§4.0, 2026-11-23, 8.83 s build).** `FanData` packages a fan chain with its proof data as a Prop; `FanData.certificate` and `face_pos_of_extend` give the reusable n → n+1 seam step from the landed `extendFanCertificate`. The geometric sixth-diagonal data remains an explicit premise; the unconditional n=6 theorem is still walled. |
+
+| `Vdb/DiscreteComparison.lean` | **Zhao-tier wall group (§4.0, 2026-11-23, 8.27 s build).** `comparison_of_rank_step`: a finite rank-decreasing maximum argument proving `u ≤ v` from boundary order and an explicit maximum-propagation premise. The Eikonal-specific propagation lemma remains the open wall; no convergence claim is made. |
 
 ## Theorem inventory (landed)
 
@@ -894,7 +896,7 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   sphere/mesh contacts, ray DDA, SDF ray crossings, collision pipeline, convex hull, mesh→SDF, BVH, BVH tie explanation, mesh→SDF double fallback, sparse/tree
   mesh→level-set, winding, MC adaptivity, MC topology, sparse/tree MC topology,
   DMC-1 topology, vdbgen and MC face-consistency; plus the `lean_axioms` gate
-  (AxiomAudit.lean, 5,109 declarations, documented profile only). Every shell
+  (AxiomAudit.lean, 5,110 declarations, documented profile only). Every shell
   harness exits **77** (CTest "skipped") when `lake` is absent; a real checker
   failure still fails. CTest registration and the skip path were verified
   2026-11-21 (21 tests registered, including `lean_axioms`; `PATH`-stripped run exits 77). Every script
