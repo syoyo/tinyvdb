@@ -77,3 +77,4 @@ import Vdb.TetStuffing
 import Vdb.NarrowPhase
 import Vdb.PersistentManifold
 import Vdb.AngleNFaceRatBounded
+import Vdb.FastSweep1D
