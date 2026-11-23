@@ -26,7 +26,7 @@ theorem here is a proof about C code.
 | contact / manifold queries | `src/tinyvdb_contact.{h,c}`: `tvdb_mesh_sphere_contacts_ex`; ray helpers `tvdb_voxels_along_ray_dense`, `tvdb_segments_along_ray` | `Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck`; `Bvh`, `MeshDistance` | landed: 3 cases, 11 manifold contacts, faces+counts exact; ray-DDA twin (4 cases, 30 voxels exact) and SDF-segment gate (3 cases, pairs within 1e-6) landed |
 | simulation tets (optional, PH-5) | `tvdb_sdf_to_tet_mesh`, `tvdb_level_set_to_tet_mesh`, graded/refine | `Vdb/TetStuffing.lean` (bounded case-table checks + non-degenerate canonical tet) | landed as bounded Lean evidence; warp/float numerical steps remain outside the model |
 
-Module count after PH-0/PH-5 + ray gates + bounded wall groups: **169** Lean files, **162** under `lean/Vdb/` (six
+Module count after PH-0/PH-5 + ray gates + bounded wall groups: **170** Lean files, **163** under `lean/Vdb/` (six
 are the `sdfpartcheck`, `proxycheck`, `convexcheck`, `contactcheck` and `rayddacheck` roots).
 The `sorry` grep still reports only three pre-existing prose mentions in
 comments (`AngleNFaceComplete`, `SphericalStokes`, `AngleNFace`); no declaration
@@ -231,6 +231,8 @@ uses `sorry`.
 * **Wall attempt, n=6 geometric seam (§4.0, 2026-11-23, 14.68 s).** Statement: six-face (S) from a pentagon `FanCertificate` plus one fan split; approach: destruct the pentagon certificate and apply `fanChain_face_pos_of_extended`; command: `lake build Vdb.AngleNFaceSix`. Blocker: a `FanCertificate` fixes its own chain `F'`, and equality of boundary maps `F.boundaryN = F'.boundaryN` does not transport `FanChainGeom`/`FanChainTransferAt` from `F` to `F'`, so the split hypotheses cannot be stated against the externally given pentagon data. No weakened claim landed; the geometric diagonal/certificate construction for n=6 remains walled.
 
 | `Vdb/StaircaseReflectionBounded.lean` | **Staircase-wall bounded group (§4.0, 2026-11-23, 46.30 s build).** `reflectionInvariant_true`: the lattice half-space staircase face count is invariant under x-reflection (coefficient a → −a, offset d → d − a·(T−1)) for all coefficients in {−2,−1,1,2}, grids up to 5³ and offsets in range. Extends the negative inconsistency families to signed planar cuts; general continuous-set consistency remains walled. |
+
+| `Vdb/EulerGridBounded.lean` | **Homology-wall bounded group (§4.0, 2026-11-23, 11.35 s build).** `allGridDuality_true` and `grid_duality`: for every subset of a 3×3×1 cube slab whose cubes never touch only at an edge/corner, `χ(∂K) = 2·χ(K)`; 119 such subsets. The restricted contact condition is necessary: corner-touching subsets violate the identity, which is recorded as a negative witness. Standalone module (`Vdb.Euler.C3` clashes with `Vdb.CubeGrid.C3`). |
 
 ## Theorem inventory (landed)
 

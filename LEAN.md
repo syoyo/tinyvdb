@@ -15,9 +15,9 @@ theorem inventory, boundaries, findings and gate results are in
 | Item | Status |
 | --- | --- |
 | Toolchain | Lean / mathlib **v4.36.0** (`lean/lean-toolchain`, `lean/lakefile.lean`) |
-| Modules | **169** Lean files (162 under `lean/Vdb/`), `warningAsError` on |
+| Modules | **170** Lean files (163 under `lean/Vdb/`), `warningAsError` on |
 | `sorry` / `admit` | **0** in landed modules |
-| `lake build` | **18,576 jobs**, success |
+| `lake build` | **18,578 jobs**, success |
 | CTest | **89/89** (25 Lean differential gates + `lean_axioms` + 63 C tests; `TINYVDB_BUILD_EXAMPLES=ON` for `vdbdump`, out-of-tree runs pass `VDBDUMP=<build>/vdbdump`) |
 | Axiom audit | 4,729 `Vdb.*` declarations; only `propext`, `Classical.choice`, `Quot.sound` plus `native_decide`/`bv_decide` certificates |
 | C matrix | scalar ASan/UBSan **60/60**, SIMD+OpenMP and clang **59/59** full suite (new `test_mesh_simplify` additionally passed at OMP 1/8 and under clang), GPU fallback passes with skips |
