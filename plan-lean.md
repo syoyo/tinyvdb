@@ -645,6 +645,7 @@ generated-shader GPU leg is unavailable here (no glslangValidator).
   differential landed (3 cases, pairs within 1e-6). **PH-5 landed** (bounded Lean evidence):
   `Vdb/TetStuffing` machine-checks the BCC stuffing case contracts over all 16
   sign patterns; the C warping/float path remains outside the model.
+- **Bounded wall groups (§4.0)**: `Vdb/AngleNFaceRatBounded` (uniform-weight seam over 64 axis subsets, 7.31 s), `Vdb/FastSweep1D` (two-sweep 1-D Eikonal solution, 9.08 s), `Vdb/EulerDisjointBounded` (χ(∂K)=2χ(K) for separated cube subsets, 5.01 s). All machine-checked with exact rationals; none weakens the general walls. A n=6 geometric-seam group was attempted and walled in 14.68 s (boundary-map equality does not transport fan geometry/transfer data); the blocker is recorded in `lean/VERIFICATION.md`.
 - **Publication** is the only remaining process item and requires explicit
   authorization plus the AGENTS.md pre-push audit; nothing has been pushed.
 

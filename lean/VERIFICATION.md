@@ -228,6 +228,8 @@ uses `sorry`.
 
 | `Vdb/EulerDisjointBounded.lean` | **Homology-wall bounded group (§4.0, 2026-11-23, 5.01 s build).** `allSeparatedDual_true` (`native_decide`) and `separated_duality`: for every subset of eight spacing-3 unit cubes with no face-adjacent pair, the exact `Euler` definitions give `χ(∂K) = 2·χ(K)`. Bounded evidence for disjoint solids; the general duality/homology wall is unchanged. |
 
+* **Wall attempt, n=6 geometric seam (§4.0, 2026-11-23, 14.68 s).** Statement: six-face (S) from a pentagon `FanCertificate` plus one fan split; approach: destruct the pentagon certificate and apply `fanChain_face_pos_of_extended`; command: `lake build Vdb.AngleNFaceSix`. Blocker: a `FanCertificate` fixes its own chain `F'`, and equality of boundary maps `F.boundaryN = F'.boundaryN` does not transport `FanChainGeom`/`FanChainTransferAt` from `F` to `F'`, so the split hypotheses cannot be stated against the externally given pentagon data. No weakened claim landed; the geometric diagonal/certificate construction for n=6 remains walled.
+
 ## Theorem inventory (landed)
 
 | Theorem | Statement |
