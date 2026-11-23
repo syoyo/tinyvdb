@@ -588,7 +588,7 @@ Toolchain: Lean/mathlib **v4.36.0** (upgraded from v4.35.0; `lean/AxiomAudit.lea
 audits 5,206 `Vdb.*` declarations with `collectAxioms`, profile
 `propext`/`Classical.choice`/`Quot.sound` + `native_decide`/`bv_decide`
 certificates only). 135 Lean modules (128 under `Vdb/`), 0 `sorry`. Final
-verified run: `lake build` 18,594 jobs; CTest **91/91** (27 Lean differential
+verified run: `lake build` 18,596 jobs; CTest **91/91** (27 Lean differential
 gates + `lean_axioms` + 63 C tests). Out-of-tree runs need
 `TINYVDB_BUILD_EXAMPLES=ON` (for `vdbdump`) and
 `VDBDUMP=<build>/vdbdump` for `lean_diff`/`lean_diff_vdbgen`. Scalar ASan/UBSan, SIMD+OpenMP (OMP 1/8)

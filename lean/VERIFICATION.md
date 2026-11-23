@@ -26,7 +26,7 @@ theorem here is a proof about C code.
 | contact / manifold queries | `src/tinyvdb_contact.{h,c}`: `tvdb_mesh_sphere_contacts_ex`; ray helpers `tvdb_voxels_along_ray_dense`, `tvdb_segments_along_ray` | `Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck`; `Bvh`, `MeshDistance` | landed: 3 cases, 11 manifold contacts, faces+counts exact; ray-DDA twin (4 cases, 30 voxels exact) and SDF-segment gate (3 cases, pairs within 1e-6) landed |
 | simulation tets (optional, PH-5) | `tvdb_sdf_to_tet_mesh`, `tvdb_level_set_to_tet_mesh`, graded/refine | `Vdb/TetStuffing.lean` (bounded case-table checks + non-degenerate canonical tet) | landed as bounded Lean evidence; warp/float numerical steps remain outside the model |
 
-Module count after PH-0/PH-5 + ray/collision/hull gates + bounded wall groups: **178** Lean files, **171** under `lean/Vdb/` (six
+Module count after PH-0/PH-5 + ray/collision/hull gates + bounded wall groups: **179** Lean files, **172** under `lean/Vdb/` (two Euler-based modules remain standalone due to the pre-existing `Vdb.C3` name clash) (six
 are the `sdfpartcheck`, `proxycheck`, `convexcheck`, `contactcheck` and `rayddacheck` roots).
 The `sorry` grep still reports only three pre-existing prose mentions in
 comments (`AngleNFaceComplete`, `SphericalStokes`, `AngleNFace`); no declaration
@@ -247,6 +247,8 @@ uses `sorry`.
 | `Vdb/EikonalRankStepBounded.lean` | **Zhao-tier wall resolution (§4.0 bounded tier, 2026-11-23, 12.41 s build).** `rankStepOK_false`: the rank-decrease premise of `comparison_of_rank_step` is false for the 1-D Eikonal operator — witness `u = [0,1,2,1]`, `v = [0,0,1,1]` (h = 1), where a positive maximum is shared by interior voxels of non-decreasing rank. Convergence needs a different comparison argument; the generic theorem's premise is not discharged. |
 
 | `Vdb/StaircaseConsistency.lean` | **General staircase-consistency group (§4.0, 2026-11-23, 9.01 s build).** `Consistent` defines convergence of the face-count/area ratio to 1; `coef_estimator_inconsistent` transfers the landed planar limit theorem into a non-consistency theorem for plane families whose limit factor exceeds 1. `noSmallRatioOne_true` and `ratio_not_one_of_small` give an exact-integer bounded check that no coefficient triple in 1..12 has unit limit ratio. The full classification of exceptional triples remains open. |
+
+| `Vdb/CubicalChainsBounded.lean` | **Homology-bridge group (§4.0 bounded tier, 2026-11-23, 11.89 s build).** Mod-2 cubical chains as Finsets of cells with symmetric-difference boundary; `d2_d1_zero_true` and `d3_d2_zero_true` machine-check ∂² = 0 for a unit cube (faces→edges→vertices, cube→faces→edges). This is the minimal algebraic bridge toward a cubical chain complex; Euler–Poincaré and duality remain walled. |
 
 ## Theorem inventory (landed)
 
