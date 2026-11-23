@@ -26,7 +26,7 @@ theorem here is a proof about C code.
 | contact / manifold queries | `src/tinyvdb_contact.{h,c}`: `tvdb_mesh_sphere_contacts_ex`; ray helpers `tvdb_voxels_along_ray_dense`, `tvdb_segments_along_ray` | `Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck`; `Bvh`, `MeshDistance` | landed: 3 cases, 11 manifold contacts, faces+counts exact; ray-DDA twin (4 cases, 30 voxels exact) and SDF-segment gate (3 cases, pairs within 1e-6) landed |
 | simulation tets (optional, PH-5) | `tvdb_sdf_to_tet_mesh`, `tvdb_level_set_to_tet_mesh`, graded/refine | `Vdb/TetStuffing.lean` (bounded case-table checks + non-degenerate canonical tet) | landed as bounded Lean evidence; warp/float numerical steps remain outside the model |
 
-Module count after PH-0/PH-5 + ray/collision/hull gates + bounded wall groups: **176** Lean files, **169** under `lean/Vdb/` (six
+Module count after PH-0/PH-5 + ray/collision/hull gates + bounded wall groups: **177** Lean files, **170** under `lean/Vdb/` (six
 are the `sdfpartcheck`, `proxycheck`, `convexcheck`, `contactcheck` and `rayddacheck` roots).
 The `sorry` grep still reports only three pre-existing prose mentions in
 comments (`AngleNFaceComplete`, `SphericalStokes`, `AngleNFace`); no declaration
@@ -243,6 +243,8 @@ uses `sorry`.
 | `Vdb/DiscreteComparison.lean` | **Zhao-tier wall group (§4.0, 2026-11-23, 8.27 s build).** `comparison_of_rank_step`: a finite rank-decreasing maximum argument proving `u ≤ v` from boundary order and an explicit maximum-propagation premise. The Eikonal-specific propagation lemma remains the open wall; no convergence claim is made. |
 
 | `Vdb/EikonalMaxStep.lean` | **Zhao-tier wall group (§4.0, 2026-11-23, 9.29 s build).** `eikonal_max_step`: a positive maximum of `u − v` at an interior 1-D Eikonal voxel forces at least one neighbour to attain the same maximum. The rank-decrease form required by `DiscreteComparison` remains open, so no convergence theorem is claimed. |
+
+| `Vdb/EikonalRankStepBounded.lean` | **Zhao-tier wall resolution (§4.0 bounded tier, 2026-11-23, 12.41 s build).** `rankStepOK_false`: the rank-decrease premise of `comparison_of_rank_step` is false for the 1-D Eikonal operator — witness `u = [0,1,2,1]`, `v = [0,0,1,1]` (h = 1), where a positive maximum is shared by interior voxels of non-decreasing rank. Convergence needs a different comparison argument; the generic theorem's premise is not discharged. |
 
 ## Theorem inventory (landed)
 
@@ -898,7 +900,7 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   sphere/mesh contacts, ray DDA, SDF ray crossings, collision pipeline, convex hull, mesh→SDF, BVH, BVH tie explanation, mesh→SDF double fallback, sparse/tree
   mesh→level-set, winding, MC adaptivity, MC topology, sparse/tree MC topology,
   DMC-1 topology, vdbgen and MC face-consistency; plus the `lean_axioms` gate
-  (AxiomAudit.lean, 5,113 declarations, documented profile only). Every shell
+  (AxiomAudit.lean, 5,121 declarations, documented profile only). Every shell
   harness exits **77** (CTest "skipped") when `lake` is absent; a real checker
   failure still fails. CTest registration and the skip path were verified
   2026-11-21 (21 tests registered, including `lean_axioms`; `PATH`-stripped run exits 77). Every script
