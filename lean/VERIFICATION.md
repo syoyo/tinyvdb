@@ -26,7 +26,7 @@ theorem here is a proof about C code.
 | contact / manifold queries | `src/tinyvdb_contact.{h,c}`: `tvdb_mesh_sphere_contacts_ex`; ray helpers `tvdb_voxels_along_ray_dense`, `tvdb_segments_along_ray` | `Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck`; `Bvh`, `MeshDistance` | landed: 3 cases, 11 manifold contacts, faces+counts exact; ray-DDA twin (4 cases, 30 voxels exact) and SDF-segment gate (3 cases, pairs within 1e-6) landed |
 | simulation tets (optional, PH-5) | `tvdb_sdf_to_tet_mesh`, `tvdb_level_set_to_tet_mesh`, graded/refine | `Vdb/TetStuffing.lean` (bounded case-table checks + non-degenerate canonical tet) | landed as bounded Lean evidence; warp/float numerical steps remain outside the model |
 
-Module count after PH-0/PH-5 + ray gates + bounded wall groups: **167** Lean files, **160** under `lean/Vdb/` (six
+Module count after PH-0/PH-5 + ray gates + bounded wall groups: **168** Lean files, **161** under `lean/Vdb/` (six
 are the `sdfpartcheck`, `proxycheck`, `convexcheck`, `contactcheck` and `rayddacheck` roots).
 The `sorry` grep still reports only three pre-existing prose mentions in
 comments (`AngleNFaceComplete`, `SphericalStokes`, `AngleNFace`); no declaration
@@ -225,6 +225,8 @@ uses `sorry`.
 | `Vdb/AngleNFaceRatBounded.lean` | **Pre-existing wall group (§4.0 bounded tier, 2026-11-23, 7.31 s build).** Exact-rational uniform-weight algebraic seam over all 64 subsets of the six coordinate axes: `allPointedSeamPos_true` (`native_decide`) and `axes6_pointed_seam` (every pointed subset has a positive uniform-weight sum at each member). This is evidence for the algebra of (S), **not** the geometric corner-angle seam for n ≥ 6, which remains walled. |
 
 | `Vdb/FastSweep1D.lean` | **Zhao-tier bounded group (§4.0, 2026-11-23, 9.08 s build).** Two-sweep solution of the 1-D Eikonal problem with frozen endpoints: `leftPass`, `rightPass`, `sweep1D`, `exact1D`, and `allSweepsExact_true` (`native_decide`) plus `sweep1D_eq_exact` for grids up to 9 interior voxels and spacings 1,2,3. Multi-direction 3-D convergence remains walled. |
+
+| `Vdb/EulerDisjointBounded.lean` | **Homology-wall bounded group (§4.0, 2026-11-23, 5.01 s build).** `allSeparatedDual_true` (`native_decide`) and `separated_duality`: for every subset of eight spacing-3 unit cubes with no face-adjacent pair, the exact `Euler` definitions give `χ(∂K) = 2·χ(K)`. Bounded evidence for disjoint solids; the general duality/homology wall is unchanged. |
 
 ## Theorem inventory (landed)
 

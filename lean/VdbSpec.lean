@@ -78,3 +78,4 @@ import Vdb.NarrowPhase
 import Vdb.PersistentManifold
 import Vdb.AngleNFaceRatBounded
 import Vdb.FastSweep1D
+-- Vdb.EulerDisjointBounded is standalone: Vdb.Euler.C3 collides with Vdb.CubeGrid.C3
