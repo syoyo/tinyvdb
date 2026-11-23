@@ -79,5 +79,16 @@ theorem d2_d1_zero_true : d2_d1_zero = true := by native_decide
 
 theorem d3_d2_zero_true : d3_d2_zero = true := by native_decide
 
+/-- The unit cube's chain ranks reproduce its Euler characteristic. -/
+theorem unit_cube_chain_euler :
+    ((cubeVertices (0, 0, 0)).length : Int) - (cubeEdges (0, 0, 0)).length +
+      (cubeFaces2 (0, 0, 0)).length - 1 = (1 : Int) := by
+  native_decide
+
+theorem unit_cube_chi_matches :
+    ((cubeVertices (0, 0, 0)).length : Int) - (cubeEdges (0, 0, 0)).length +
+      (cubeFaces2 (0, 0, 0)).length - 1 = chiOf {(0, 0, 0)} := by
+  native_decide
+
 end CubicalChainsBounded
 end Vdb
