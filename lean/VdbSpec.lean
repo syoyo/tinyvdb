@@ -69,6 +69,7 @@ import Vdb.EdgeCollapse
 import Vdb.CollisionProxy
 import Vdb.Convex
 import Vdb.ConvexDecomp
+import Vdb.ConvexHull
 import Vdb.Contact
 import Vdb.Manifold
 import Vdb.RayDda

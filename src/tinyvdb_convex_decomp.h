@@ -34,6 +34,21 @@ typedef struct {
 
 void tvdb_convex_decomp_free(tvdb_convex_decomp_t *decomp);
 
+typedef struct {
+  double eps;   /* coplanarity tolerance; 0 selects 1e-9 */
+} tvdb_convex_hull_options_t;
+
+/* Convex hull of a small point set (3 doubles per point) by the deterministic
+   all-triples supporting-plane test. Only strictly supporting triples become
+   faces; coplanar point sets are rejected with TVDB_ERROR_INVALID_DATA. The
+   output mesh owns its buffers and follows the usual _ex contract. */
+tvdb_status_t tvdb_points_convex_hull_ex(const double *points, size_t count,
+    const tvdb_convex_hull_options_t *options, tvdb_triangle_mesh *out,
+    tvdb_arena_allocator_t *arena, tvdb_error_t *err);
+
+bool tvdb_points_convex_hull(const double *points, size_t count,
+    tvdb_triangle_mesh *out, tvdb_arena_allocator_t *arena);
+
 tvdb_status_t tvdb_mesh_convex_decompose_ex(const tvdb_triangle_mesh *mesh,
                                              tvdb_convex_decomp_t *out,
                                              tvdb_arena_allocator_t *arena,

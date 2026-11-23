@@ -2,6 +2,7 @@
 #include "tinyvdb_convex_decomp.h"
 
 #include <float.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,6 +142,90 @@ tvdb_status_t tvdb_mesh_convex_decompose_ex(const tvdb_triangle_mesh *mesh,
 
   free(parent); free(lo); free(hi); free(first); free(face_count); free(order);
   return TVDB_OK;
+}
+
+tvdb_status_t tvdb_points_convex_hull_ex(const double *points, size_t count,
+    const tvdb_convex_hull_options_t *options, tvdb_triangle_mesh *out,
+    tvdb_arena_allocator_t *arena, tvdb_error_t *err) {
+  if (!points || !out || !options || count < 3 ||
+      (out->vertex_capacity && !out->vertices) ||
+      (out->face_capacity && !out->faces)) {
+    decomp_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "convex_hull: invalid arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  double eps = options->eps > 0.0 ? options->eps : 1e-9;
+  for (size_t i = 0; i < count; ++i)
+    for (int d = 0; d < 3; ++d)
+      if (!isfinite(points[3 * i + d])) {
+        decomp_set_error(err, TVDB_ERROR_INVALID_DATA, "convex_hull: nonfinite point");
+        return TVDB_ERROR_INVALID_DATA;
+      }
+  size_t mark = arena ? arena->current_offset : 0;
+  tvdb_triangle *faces = (tvdb_triangle *)malloc(count * count * sizeof(tvdb_triangle));
+  if (!faces) {
+    decomp_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "convex_hull: out of memory");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  size_t nf = 0;
+  for (size_t i = 0; i < count; ++i)
+    for (size_t j = i + 1; j < count; ++j)
+      for (size_t k = j + 1; k < count; ++k) {
+        double ux = points[3*j] - points[3*i], uy = points[3*j+1] - points[3*i+1],
+               uz = points[3*j+2] - points[3*i+2];
+        double vx = points[3*k] - points[3*i], vy = points[3*k+1] - points[3*i+1],
+               vz = points[3*k+2] - points[3*i+2];
+        double nx = uy*vz - uz*vy, ny = uz*vx - ux*vz, nz = ux*vy - uy*vx;
+        if (sqrt(nx*nx + ny*ny + nz*nz) <= eps) continue;
+        bool support = true;
+        for (size_t l = 0; l < count; ++l) {
+          if (l == i || l == j || l == k) continue;
+          double d = nx * (points[3*l] - points[3*i]) +
+                     ny * (points[3*l+1] - points[3*i+1]) +
+                     nz * (points[3*l+2] - points[3*i+2]);
+          if (d > eps) { support = false; break; }
+        }
+        if (support) {
+          faces[nf].v0 = (uint32_t)i; faces[nf].v1 = (uint32_t)j; faces[nf].v2 = (uint32_t)k;
+          ++nf;
+        }
+      }
+  if (nf == 0) {
+    free(faces);
+    if (arena) arena->current_offset = mark;
+    decomp_set_error(err, TVDB_ERROR_INVALID_DATA,
+                     "convex_hull: no strict supporting faces (coplanar input?)");
+    return TVDB_ERROR_INVALID_DATA;
+  }
+  tvdb_vec3f *verts = (tvdb_vec3f *)(arena ?
+      tvdb_arena_alloc(arena, count * sizeof(tvdb_vec3f)) :
+      malloc(count * sizeof(tvdb_vec3f)));
+  tvdb_triangle *ofaces = (tvdb_triangle *)(arena ?
+      tvdb_arena_alloc(arena, nf * sizeof(tvdb_triangle)) :
+      malloc(nf * sizeof(tvdb_triangle)));
+  if (!verts || !ofaces) {
+    if (!arena) { free(verts); free(ofaces); }
+    free(faces);
+    if (arena) arena->current_offset = mark;
+    decomp_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "convex_hull: out of memory");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  for (size_t i = 0; i < count; ++i) {
+    verts[i].x = (float)points[3*i];
+    verts[i].y = (float)points[3*i+1];
+    verts[i].z = (float)points[3*i+2];
+  }
+  memcpy(ofaces, faces, nf * sizeof(tvdb_triangle));
+  if (!arena) { free(out->vertices); free(out->faces); }
+  out->vertices = verts; out->vertex_count = count; out->vertex_capacity = count;
+  out->faces = ofaces; out->face_count = nf; out->face_capacity = nf;
+  free(faces);
+  return TVDB_OK;
+}
+
+bool tvdb_points_convex_hull(const double *points, size_t count,
+    tvdb_triangle_mesh *out, tvdb_arena_allocator_t *arena) {
+  tvdb_convex_hull_options_t opt = {0.0};
+  return tvdb_points_convex_hull_ex(points, count, &opt, out, arena, NULL) == TVDB_OK;
 }
 
 bool tvdb_mesh_convex_decompose(const tvdb_triangle_mesh *mesh,

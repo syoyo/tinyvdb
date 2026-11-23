@@ -104,6 +104,10 @@ lean_exe windingcheck where
 lean_exe mckeycheck where
   root := `Vdb.McAdaptKey
 
+/-- Model-side convex-hull twin (driven by `scripts/check_convex_hull.sh`). -/
+lean_exe convexhullcheck where
+  root := `Vdb.ConvexHullCheck
+
 /-- Model-side collision-pipeline twin (driven by `scripts/check_collision_pipeline.sh`). -/
 lean_exe collisioncheck where
   root := `Vdb.CollisionPipelineCheck

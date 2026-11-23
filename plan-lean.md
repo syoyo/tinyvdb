@@ -517,7 +517,7 @@ proof about the C implementation. User decisions 9–12 in §11 fix the scope.
 | **PH-0 — mesh foundation + ledger** | shared `Vdb/PhysMesh.lean` index-mesh type (positions abstract, oriented triangles), `Watertight`/`Loopless`/`Nodup`, half-edge count and `2·χ = 2V − F`, quad→triangle watertightness bridge; physics coverage matrix in `VERIFICATION.md` | VS lanes | landed (2026-11-23) |
 | **PH-1 — SDF gaps + part decomposition (SDF)** | `SdfMask` (fog/interior mask), `Segmentation` (6/26 components, per-part field, cavities), `GenusMeasure` (χ/genus arithmetic under `HasInteriorDuality`), `Cpt` (closest-point projection); differential harness for segmentation/cavities | PH-0 | Lean modules landed; C↔Lean part/cavity harness green with negative controls |
 | **PH-2 — collision proxy by simplification (C + Lean)** | new C QEM/edge-collapse `_ex` API (status, output preserved on failure, alias rejection, arena rollback, worker-independent determinism); `Qem`, `EdgeCollapse`, `CollisionProxy` modules and a C↔Lean topology/error differential | PH-0, PH-1 | landed 2026-11-23: contract test + 9-case (V,F) differential; index-vector parity explicitly not claimed |
-| **PH-3 — convex decomposition (C + Lean)** | `Convex`, `Sat`, `ConvexDecomp` modules; convex-hull/part proxy API; coverage of the original surface, determinism; SAT/convexity differential | PH-2 | landed 2026-11-23: AABB parts (boxes are convex and proved so), face-partition coverage, 2 cases / 3 parts exact parity; general SAT/hull decomposition remains a planned extension |
+| **PH-3 — convex decomposition (C + Lean)** | `Convex`, `Sat`, `ConvexDecomp` modules; convex-hull/part proxy API; coverage of the original surface, determinism; SAT/convexity differential | PH-2 | landed 2026-11-23: AABB parts (boxes are convex and proved so), face-partition coverage, 2 cases / 3 parts exact parity; supporting-plane hull API `tvdb_points_convex_hull_ex` + `lean_diff_convex_hull` landed (3 cases, faces exact); general SAT-based part splitting remains a follow-up |
 | **PH-4 — contact / manifold queries (C + Lean)** | `RayDda`, `RaySdf`, `Contact`, `NarrowPhase`, `Manifold`, `PersistentManifold`; contact = (point, normal, penetration) with orientation/equivariance theorems, broadphase necessity, manifold capacity/covering/determinism; contact differential corpus | PH-2, PH-3 | landed: contact+manifold, ray DDA/SDF gates, broadphase pipeline (3 cases). General mesh–mesh narrowphase and temporal persistence remain follow-ups |
 | **PH-5 — tet meshes for simulation (optional)** | isosurface stuffing: BCC warp, sign-case tables, minimum-key diagonals, watertight outward boundary, positive orientation, determinism; differential against `test_tetmesh` | explicit go-ahead | bounded Lean case-table evidence landed; C warp/float path and full watertightness remain outside the model |
 
@@ -585,10 +585,10 @@ hypothesize/wall ladder; no weakened or `sorry`-carrying claims are landed.
 ## 10. Definition of done — status 2026-11-21
 
 Toolchain: Lean/mathlib **v4.36.0** (upgraded from v4.35.0; `lean/AxiomAudit.lean`
-audits 4,730 `Vdb.*` declarations with `collectAxioms`, profile
+audits 4,733 `Vdb.*` declarations with `collectAxioms`, profile
 `propext`/`Classical.choice`/`Quot.sound` + `native_decide`/`bv_decide`
 certificates only). 135 Lean modules (128 under `Vdb/`), 0 `sorry`. Final
-verified run: `lake build` 18,580 jobs; CTest **90/90** (26 Lean differential
+verified run: `lake build` 18,584 jobs; CTest **91/91** (27 Lean differential
 gates + `lean_axioms` + 63 C tests). Out-of-tree runs need
 `TINYVDB_BUILD_EXAMPLES=ON` (for `vdbdump`) and
 `VDBDUMP=<build>/vdbdump` for `lean_diff`/`lean_diff_vdbgen`. Scalar ASan/UBSan, SIMD+OpenMP (OMP 1/8)
