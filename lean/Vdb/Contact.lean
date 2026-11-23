@@ -31,6 +31,7 @@ structure Contact where
   normal : Point         -- unit direction from the surface toward the sphere
   depth : ℝ              -- radius − distance, positive when touching
   face : ℕ               -- source face index
+  deriving Inhabited
 
 /-- A contact is well-formed: strictly penetrating and carrying a unit normal. -/
 def Contact.WellFormed (c : Contact) : Prop :=

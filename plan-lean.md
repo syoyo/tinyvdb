@@ -540,7 +540,7 @@ hypothesize/wall ladder; no weakened or `sorry`-carrying claims are landed.
 
 - New opt-in gates under `TINYVDB_BUILD_LEAN_DIFF`: `check_sdf_parts.sh`
   `check_proxy.sh`, `check_convex_parts.sh`, `check_contact.sh` (landed);
-  ray-DDA gate landed, SDF-segment differential (planned); exit 77 when the Lean toolchain or a C API is absent (skip ≠ pass).
+  ray-DDA and SDF-segment gates landed; exit 77 when the Lean toolchain or a C API is absent (skip ≠ pass).
 - Any new C API needs a failing regression test first, then the AGENTS.md CPU
   matrix (scalar sanitizer, SIMD+OpenMP at OMP 1/8, clang); GPU only if GPU code
   changes. Docs, CHANGELOG and this ledger are updated with every landing.
@@ -585,10 +585,10 @@ hypothesize/wall ladder; no weakened or `sorry`-carrying claims are landed.
 ## 10. Definition of done — status 2026-11-21
 
 Toolchain: Lean/mathlib **v4.36.0** (upgraded from v4.35.0; `lean/AxiomAudit.lean`
-audits 4,669 `Vdb.*` declarations with `collectAxioms`, profile
+audits 4,706 `Vdb.*` declarations with `collectAxioms`, profile
 `propext`/`Classical.choice`/`Quot.sound` + `native_decide`/`bv_decide`
 certificates only). 135 Lean modules (128 under `Vdb/`), 0 `sorry`. Final
-verified run: `lake build` 18,562 jobs; CTest **88/88** (24 Lean differential
+verified run: `lake build` 18,570 jobs; CTest **89/89** (25 Lean differential
 gates + `lean_axioms` + 63 C tests). Out-of-tree runs need
 `TINYVDB_BUILD_EXAMPLES=ON` (for `vdbdump`) and
 `VDBDUMP=<build>/vdbdump` for `lean_diff`/`lean_diff_vdbgen`. Scalar ASan/UBSan, SIMD+OpenMP (OMP 1/8)
@@ -642,7 +642,7 @@ generated-shader GPU leg is unavailable here (no glslangValidator).
   `src/tinyvdb_contact.{h,c}`, `tests/test_contact.c`, `lean_diff_contact`):
   sphere/mesh contacts with a 3-case / 11-contact exact face+count differential.
   Ray-DDA twin and gate landed (4 cases, 30 voxels exact); SDF-segment
-  differential is a follow-up. **PH-5 landed** (bounded Lean evidence):
+  differential landed (3 cases, pairs within 1e-6). **PH-5 landed** (bounded Lean evidence):
   `Vdb/TetStuffing` machine-checks the BCC stuffing case contracts over all 16
   sign patterns; the C warping/float path remains outside the model.
 - **Publication** is the only remaining process item and requires explicit

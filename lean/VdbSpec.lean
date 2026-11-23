@@ -74,3 +74,6 @@ import Vdb.Manifold
 import Vdb.RayDda
 import Vdb.RaySdf
 import Vdb.TetStuffing
+import Vdb.NarrowPhase
+import Vdb.PersistentManifold
+import Vdb.AngleNFaceRatBounded

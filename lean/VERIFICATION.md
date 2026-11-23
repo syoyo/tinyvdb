@@ -23,10 +23,10 @@ theorem here is a proof about C code.
 | genus / surface χ | `tvdb_level_set_genus`, `tvdb_level_set_euler_characteristic` | `Vdb/GenusMeasure.lean`, `Euler`, `PoincareLefschetz` | conditional on `HasInteriorDuality` |
 | collision proxy (simplification) | `tinyvdb_mesh_simplify.h/.c`: `tvdb_mesh_simplify_ex` (QEM-ranked midpoint edge collapse, link test, closure verification) | `Vdb/Qem`, `Vdb/EdgeCollapse`, `Vdb/CollisionProxy`, `Vdb/CollisionProxyCheck`, `PhysMesh` | landed: C contract test + 9-case differential on (V,F); index vectors intentionally not compared |
 | convex decomposition | `src/tinyvdb_convex_decomp.{h,c}`: `tvdb_mesh_convex_decompose_ex` (shared-vertex components + AABB per part) | `Vdb/Convex`, `Vdb/ConvexDecomp`, `Vdb/ConvexDecompCheck` | landed: 2 cases, 3 parts, boxes+labels exact |
-| contact / manifold queries | `src/tinyvdb_contact.{h,c}`: `tvdb_mesh_sphere_contacts_ex`; ray helpers `tvdb_voxels_along_ray_dense`, `tvdb_segments_along_ray` | `Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck`; `Bvh`, `MeshDistance` | landed: 3 cases, 11 manifold contacts, faces+counts exact; ray-DDA twin landed (4 ray cases, 30 voxels exact); SDF-segment model is theorem-only |
+| contact / manifold queries | `src/tinyvdb_contact.{h,c}`: `tvdb_mesh_sphere_contacts_ex`; ray helpers `tvdb_voxels_along_ray_dense`, `tvdb_segments_along_ray` | `Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck`; `Bvh`, `MeshDistance` | landed: 3 cases, 11 manifold contacts, faces+counts exact; ray-DDA twin (4 cases, 30 voxels exact) and SDF-segment gate (3 cases, pairs within 1e-6) landed |
 | simulation tets (optional, PH-5) | `tvdb_sdf_to_tet_mesh`, `tvdb_level_set_to_tet_mesh`, graded/refine | `Vdb/TetStuffing.lean` (bounded case-table checks + non-degenerate canonical tet) | landed as bounded Lean evidence; warp/float numerical steps remain outside the model |
 
-Module count after PH-0/PH-5: **162** Lean files, **155** under `lean/Vdb/` (five
+Module count after PH-0/PH-5 + ray gates + bounded wall group: **166** Lean files, **159** under `lean/Vdb/` (six
 are the `sdfpartcheck`, `proxycheck`, `convexcheck`, `contactcheck` and `rayddacheck` roots).
 The `sorry` grep still reports only three pre-existing prose mentions in
 comments (`AngleNFaceComplete`, `SphericalStokes`, `AngleNFace`); no declaration
@@ -217,6 +217,12 @@ uses `sorry`.
 | `Vdb/RayDdaCheck.lean` | **PH-4 executable twin for `check_ray_dda.sh`.** Recomputes `tvdb_voxels_along_ray_dense` sequences with `Vdb.RayDda.ddaWalk`; 4 dyadic ray cases, 30 voxels, exact sequence parity. |
 
 | `Vdb/TetStuffing.lean` | **PH-5 (optional) isosurface stuffing.** Canonical BCC tetrahedron, `tetEdges`/`cutEdges`, the total `tetPieces` case table, and machine-checked Bool certificates over all 16 sign patterns (`cutEdges_bounded_checked`, `tetPieces_contracts_checked`) plus `canonical_tet_nonzero`. Warping near cut points and float range checks stay outside the model. |
+
+| `Vdb/RaySdfCheck.lean` | **PH-4 SDF ray gate.** Exact-rational trilinear sampling of a step field, ray-time offset handling, and `scanCrossings` comparison with `tvdb_segments_along_ray` on 3 cases (pairs within 1e-6). |
+| `Vdb/NarrowPhase.lean` | **PH-4 broadphase bound.** `sphereBox`, `mem_sphereBox_of_contact` (a contact at distance ≤ r lies in the sphere box, via `abs_coord_le_dist`), `boxes_intersect_of_contact`, and `sphereBox_disjoint_of_separated` (separated boxes can be pruned). |
+| `Vdb/PersistentManifold.lean` | **PH-4 temporal persistence.** `findFace`, `matchId`, `persist`, `findFace_sound`, `matchId_spec` (a reused id points at a real previous contact, otherwise a fresh id beyond the previous manifold) and determinism of the matching. |
+
+| `Vdb/AngleNFaceRatBounded.lean` | **Pre-existing wall group (§4.0 bounded tier, 2026-11-23, 7.31 s build).** Exact-rational uniform-weight algebraic seam over all 64 subsets of the six coordinate axes: `allPointedSeamPos_true` (`native_decide`) and `axes6_pointed_seam` (every pointed subset has a positive uniform-weight sum at each member). This is evidence for the algebra of (S), **not** the geometric corner-angle seam for n ≥ 6, which remains walled. |
 
 ## Theorem inventory (landed)
 
@@ -866,13 +872,13 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   the quad-injectivity chain, plus the CI/clang, WASM C++17 and CUDA device
   records. None have been pushed; a push follows the AGENTS.md pre-push audit.
 * Lean differential gates are now wired into CTest under
-  `TINYVDB_BUILD_LEAN_DIFF=ON`: `lean_diff` (samples) plus twenty-four named tests
+  `TINYVDB_BUILD_LEAN_DIFF=ON`: `lean_diff` (samples) plus twenty-five named tests
   for mask classification, half, Godunov, fill, Euler, fast sweeping, CSG,
   SDF part/cavity decomposition, collision-proxy simplification, convex parts,
-  sphere/mesh contacts, ray DDA, mesh→SDF, BVH, BVH tie explanation, mesh→SDF double fallback, sparse/tree
+  sphere/mesh contacts, ray DDA, SDF ray crossings, mesh→SDF, BVH, BVH tie explanation, mesh→SDF double fallback, sparse/tree
   mesh→level-set, winding, MC adaptivity, MC topology, sparse/tree MC topology,
   DMC-1 topology, vdbgen and MC face-consistency; plus the `lean_axioms` gate
-  (AxiomAudit.lean, 4,669 declarations, documented profile only). Every shell
+  (AxiomAudit.lean, 4,706 declarations, documented profile only). Every shell
   harness exits **77** (CTest "skipped") when `lake` is absent; a real checker
   failure still fails. CTest registration and the skip path were verified
   2026-11-21 (21 tests registered, including `lean_axioms`; `PATH`-stripped run exits 77). Every script
@@ -932,6 +938,7 @@ theorem from machine-checked bounded evidence and from an untested C path.
 | PH-3 `tvdb_mesh_convex_decompose_ex` | `Vdb/Convex`, `Vdb/ConvexDecomp`, `Vdb/ConvexDecompCheck` | `tests/test_convex_decomp.c` (two tetrahedra → 2 convex parts, all vertices covered, bad index preserves output) + `check_convex_parts.sh` (2 cases, 3 parts, boxes/labels exact) | deterministic union-find + AABB parts; no convexity proof is claimed about arbitrary hulls — each part is an axis-aligned box, whose convexity is proved in Lean |
 | PH-4 `tvdb_mesh_sphere_contacts_ex` | `Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck` | `tests/test_contact.c` (2 raw→1 manifold contact, geometry, invalid-input preservation) + `check_contact.sh` (3 cases, 11 contacts, faces/counts exact) | deterministic sort by depth and greedy separation; closest point and manifold contracts proved in Lean; ray-DDA twin landed, SDF-segment differential remains a follow-up |
 | PH-4 ray queries | `Vdb/RayDda`, `Vdb/RaySdf`, `Vdb/RayDdaCheck` | `check_ray_dda.sh` (4 cases, 30 voxels exact) | DDA voxel sequences bit-exact vs the real C traversal; SDF crossing parameter theorems proved, SDF-segment differential is a follow-up |
+| PH-4 ray crossings / narrowphase | `Vdb/RaySdf`, `Vdb/RaySdfCheck`, `Vdb/NarrowPhase`, `Vdb/PersistentManifold` | `check_ray_sdf.sh` (3 cases, pairs within 1e-6) | crossing theorem + broadphase pruning proved; temporal matching ids proven stable/determined |
 | Dense `tvdb_mesh_to_sdf_ex` | `MeshDistance`, `Bvh`, `MeshSdfCheck`, `MeshSdfBvhCheck`, `MeshSdfBvhTieCheck`, `MeshSdfDoubleCheck`, `NormalCone`/`ConeClosed`/`PseudoNormal` | `check_meshsdf.sh` (6,488/6,488 bit-exact) + `check_meshsdf_bvh.sh` (280 queries, 280 `search_eq_brute`, 280 distances) + `check_meshsdf_bvh_ties.sh` (148 exact ties all explained, 11 disagreements resolved) + `check_meshsdf_double.sh` (48/48 RNE) | closest point/sign proven for convex polyhedra; real C BVH traced against exact-ℚ pruned search, every Float32 tie explained from the real per-face kernel, and the double→float32 fallback mirrored bit-exactly; degenerate/collinear/large-coordinate inputs have C-side robustness coverage; no remaining differential gap on this row |
 | Sparse/tree mesh→volume (VS-1) | `NarrowBand` (`band_complete_tree`), `NarrowBandCompose`, `FloodFill`, `EikonalTop`, `TreeSweep`; bounded twin `Vdb/TreeMeshSdfCheck` | `lean/scripts/check_treemeshsdf.sh` (CTest): 2 meshes × 729 voxels, 1,406/1,458 bit-exact, rest ≤ 2⁻²⁴; negative control | first slice landed: exact-ℚ closest-triangle distance + ray-parity sign + clamp/keep-rule checked against the real `tvdb_mesh_to_level_set`; the seed stage is now mirrored bit-exactly (196 seeds, `badSeed=0`) and `SeedCoverage.triangle_seed_coverage` proves the spacing bound, discharging `hcover`; banner now names dilate, BVH, winding, flood fill, prune, tree layout as unmirrored |
 | Winding | `WindingNumber`, `WindingDipole*`, `WindingFarField`, `WindingDegree` | `check_winding.sh` (CTest): 194/194 | symmetries/dipole/far-field proven; `WindingDegree` lands continuity/constancy, a conditional integer-degree reduction, radial-escape vanishing and a canonical-triangle winding jump of −1 (solid-angle jump −4π); **gaps**: `GenericPathExists` for general closed meshes — finiteness, a degree-zero subclass and exact far-field zero for soups with a shared coplanar exterior point are proved; the general far-point step is circular without independent degree theory; aggregate tree claim out of scope |

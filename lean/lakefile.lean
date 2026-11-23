@@ -104,6 +104,10 @@ lean_exe windingcheck where
 lean_exe mckeycheck where
   root := `Vdb.McAdaptKey
 
+/-- Model-side SDF ray-crossing twin (driven by `scripts/check_ray_sdf.sh`). -/
+lean_exe raysdfcheck where
+  root := `Vdb.RaySdfCheck
+
 /-- Model-side ray-DDA twin (driven by `scripts/check_ray_dda.sh`). -/
 lean_exe rayddacheck where
   root := `Vdb.RayDdaCheck
