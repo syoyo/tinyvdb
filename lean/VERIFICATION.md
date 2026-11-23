@@ -26,7 +26,7 @@ theorem here is a proof about C code.
 | contact / manifold queries | `src/tinyvdb_contact.{h,c}`: `tvdb_mesh_sphere_contacts_ex`; ray helpers `tvdb_voxels_along_ray_dense`, `tvdb_segments_along_ray` | `Vdb/Contact`, `Vdb/Manifold`, `Vdb/ContactCheck`; `Bvh`, `MeshDistance` | landed: 3 cases, 11 manifold contacts, faces+counts exact; ray-DDA twin (4 cases, 30 voxels exact) and SDF-segment gate (3 cases, pairs within 1e-6) landed |
 | simulation tets (optional, PH-5) | `tvdb_sdf_to_tet_mesh`, `tvdb_level_set_to_tet_mesh`, graded/refine | `Vdb/TetStuffing.lean` (bounded case-table checks + non-degenerate canonical tet) | landed as bounded Lean evidence; warp/float numerical steps remain outside the model |
 
-Module count after PH-0/PH-5 + ray gates + bounded wall groups: **168** Lean files, **161** under `lean/Vdb/` (six
+Module count after PH-0/PH-5 + ray gates + bounded wall groups: **169** Lean files, **162** under `lean/Vdb/` (six
 are the `sdfpartcheck`, `proxycheck`, `convexcheck`, `contactcheck` and `rayddacheck` roots).
 The `sorry` grep still reports only three pre-existing prose mentions in
 comments (`AngleNFaceComplete`, `SphericalStokes`, `AngleNFace`); no declaration
@@ -229,6 +229,8 @@ uses `sorry`.
 | `Vdb/EulerDisjointBounded.lean` | **Homology-wall bounded group (§4.0, 2026-11-23, 5.01 s build).** `allSeparatedDual_true` (`native_decide`) and `separated_duality`: for every subset of eight spacing-3 unit cubes with no face-adjacent pair, the exact `Euler` definitions give `χ(∂K) = 2·χ(K)`. Bounded evidence for disjoint solids; the general duality/homology wall is unchanged. |
 
 * **Wall attempt, n=6 geometric seam (§4.0, 2026-11-23, 14.68 s).** Statement: six-face (S) from a pentagon `FanCertificate` plus one fan split; approach: destruct the pentagon certificate and apply `fanChain_face_pos_of_extended`; command: `lake build Vdb.AngleNFaceSix`. Blocker: a `FanCertificate` fixes its own chain `F'`, and equality of boundary maps `F.boundaryN = F'.boundaryN` does not transport `FanChainGeom`/`FanChainTransferAt` from `F` to `F'`, so the split hypotheses cannot be stated against the externally given pentagon data. No weakened claim landed; the geometric diagonal/certificate construction for n=6 remains walled.
+
+| `Vdb/StaircaseReflectionBounded.lean` | **Staircase-wall bounded group (§4.0, 2026-11-23, 46.30 s build).** `reflectionInvariant_true`: the lattice half-space staircase face count is invariant under x-reflection (coefficient a → −a, offset d → d − a·(T−1)) for all coefficients in {−2,−1,1,2}, grids up to 5³ and offsets in range. Extends the negative inconsistency families to signed planar cuts; general continuous-set consistency remains walled. |
 
 ## Theorem inventory (landed)
 
@@ -884,7 +886,7 @@ bit-exact), and by GPU/Vulkan/CUDA parity tests.
   sphere/mesh contacts, ray DDA, SDF ray crossings, mesh→SDF, BVH, BVH tie explanation, mesh→SDF double fallback, sparse/tree
   mesh→level-set, winding, MC adaptivity, MC topology, sparse/tree MC topology,
   DMC-1 topology, vdbgen and MC face-consistency; plus the `lean_axioms` gate
-  (AxiomAudit.lean, 4,720 declarations, documented profile only). Every shell
+  (AxiomAudit.lean, 4,729 declarations, documented profile only). Every shell
   harness exits **77** (CTest "skipped") when `lake` is absent; a real checker
   failure still fails. CTest registration and the skip path were verified
   2026-11-21 (21 tests registered, including `lean_axioms`; `PATH`-stripped run exits 77). Every script
