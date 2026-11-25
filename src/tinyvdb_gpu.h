@@ -61,6 +61,62 @@ tvdb_status_t tvdb_gpu_context_create(tvdb_gpu_backend_t backend,
                                       tvdb_gpu_context_t** out,
                                       tvdb_error_t* err);
 void tvdb_gpu_context_destroy(tvdb_gpu_context_t* ctx);
+
+// A function pointer of any Vulkan entry point type, cast from or to the real
+// one (PFN_vkGetInstanceProcAddr here). The header does not include vulkan.h.
+typedef void (*tvdb_gpu_vk_proc)(void);
+
+// A Vulkan device that someone else created, handed to a context to run on.
+//
+// Handles are the real ones passed as void*: VkInstance, VkPhysicalDevice,
+// VkDevice and VkQueue are all pointers in Vulkan. The feature flags say what
+// the caller enabled when it created the device, because a context cannot read
+// that back: the physical device may support a feature the device never asked
+// for. A flag set for something the physical device does not support is refused.
+//
+// Queue sharing: every vkQueueSubmit and vkQueueBindSparse the context makes
+// goes through lock_queue and unlock_queue when they are set, one call each,
+// never nested, so a caller that submits on the same queue can hold the same
+// lock. With both NULL the context submits without locking, which is only
+// correct when nothing else uses that queue while a tinyvdb call is running.
+// Either both are set or neither.
+typedef struct {
+  tvdb_gpu_vk_proc get_instance_proc_addr;  // vkGetInstanceProcAddr
+  void* instance;
+  void* physical_device;
+  void* device;
+  void* queue;
+  uint32_t queue_family;                    // family the queue belongs to; must support compute
+  int sparse_binding;                       // enabled on the device
+  int sparse_residency_image3d;
+  int sparse_residency_aliased;
+  int shader_float64;
+  int external_memory_fd;                   // VK_KHR_external_memory_fd enabled
+  void (*lock_queue)(void* user);
+  void (*unlock_queue)(void* user);
+  void* user;
+} tvdb_gpu_vulkan_device_t;
+
+// Create a Vulkan context on a device the caller owns. Nothing is created
+// beyond the context's own pools, pipelines and buffers, and tvdb_gpu_context_destroy
+// releases only those: it never waits for the whole device to go idle and never
+// destroys the device, the instance or the loader. Destroy every buffer, grid and
+// batch made from the context first, and keep the device alive until the context
+// is destroyed. Returns TVDB_ERROR_INVALID_ARGUMENT for a missing handle, a queue
+// family without compute, an out of range family, or a feature flag the physical
+// device does not support.
+tvdb_status_t tvdb_gpu_context_create_vulkan_external(const tvdb_gpu_vulkan_device_t* device,
+                                                      tvdb_gpu_context_t** out,
+                                                      tvdb_error_t* err);
+
+// The Vulkan handles and enabled features of a Vulkan context, in the form
+// tvdb_gpu_context_create_vulkan_external takes, with no queue lock set. For
+// running a second context on the same device, and for tests. The handles belong
+// to `ctx` and stay valid until it is destroyed. TVDB_ERROR_INVALID_ARGUMENT for
+// a non Vulkan context.
+tvdb_status_t tvdb_gpu_context_vulkan_device(const tvdb_gpu_context_t* ctx,
+                                             tvdb_gpu_vulkan_device_t* out,
+                                             tvdb_error_t* err);
 // 1 when this build contains GPU SPIR-V, 0 when the shaders are the all-zero
 // fallback include (built without glslangValidator). In the latter case Vulkan
 // contexts still create, but shader operations return TVDB_ERROR_UNIMPLEMENTED.

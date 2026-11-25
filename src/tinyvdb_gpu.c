@@ -659,6 +659,10 @@ struct tvdb_gpu_context {
   int supports_shader_float64;   // VkPhysicalDeviceFeatures.shaderFloat64
   int supports_sparse_aliased;   // sparseResidencyAliased: legal sparse memory aliasing
   int supports_external_memory;
+  int owns_vulkan;  /* 1 when this context made the instance and device, 0 when adopted */
+  void (*queue_lock)(void*);
+  void (*queue_unlock)(void*);
+  void* queue_user;
   char device_name[128];
   uint8_t device_uuid[16];  // physical-device identity shared by Vulkan and CUDA
   int has_device_uuid;
@@ -822,6 +826,22 @@ static int tvdb_vk_ok(VkResult r, tvdb_error_t* err, const char* label) {
   snprintf(msg, sizeof(msg), "%s failed: %d", label, (int)r);
   tvdb_gpu_set_error(err, TVDB_ERROR_IO, msg);
   return 0;
+}
+
+/* Every queue submission goes through these, so an adopted device whose queue
+ * the host also submits on can serialise them with the host's own lock. */
+static VkResult tvdb_vk_queue_submit(tvdb_gpu_context_t* ctx, const VkSubmitInfo* si, VkFence fence) {
+  if (ctx->queue_lock) ctx->queue_lock(ctx->queue_user);
+  VkResult r = ctx->vk.QueueSubmit(ctx->queue, 1, si, fence);
+  if (ctx->queue_unlock) ctx->queue_unlock(ctx->queue_user);
+  return r;
+}
+
+static VkResult tvdb_vk_queue_bind_sparse(tvdb_gpu_context_t* ctx, const VkBindSparseInfo* bsi, VkFence fence) {
+  if (ctx->queue_lock) ctx->queue_lock(ctx->queue_user);
+  VkResult r = ctx->vk.QueueBindSparse(ctx->queue, 1, bsi, fence);
+  if (ctx->queue_unlock) ctx->queue_unlock(ctx->queue_user);
+  return r;
 }
 
 #define TVDB_LOAD_INST(ctx, name) do { \
@@ -1076,7 +1096,7 @@ static tvdb_status_t tvdb_vk_run_copies(tvdb_gpu_context_t* ctx, const tvdb_vk_c
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cmd;
-    if (!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue, 1, &si, fence), err, "vkQueueSubmit")) { ctx->vk.DestroyFence(ctx->device, fence, NULL); goto fail; }
+    if (!tvdb_vk_ok(tvdb_vk_queue_submit(ctx, &si, fence), err, "vkQueueSubmit")) { ctx->vk.DestroyFence(ctx->device, fence, NULL); goto fail; }
   }
   if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences")) {
     ctx->vk.DestroyFence(ctx->device, fence, NULL); goto fail;
@@ -1228,7 +1248,7 @@ static tvdb_status_t tvdb_vk_end_submit_wait(tvdb_gpu_context_t* ctx,
   si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   si.commandBufferCount = 1;
   si.pCommandBuffers = &cmd;
-  if (!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue, 1, &si, fence), err, "vkQueueSubmit")) return err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(tvdb_vk_queue_submit(ctx, &si, fence), err, "vkQueueSubmit")) return err ? err->status : TVDB_ERROR_IO;
   if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences")) return err ? err->status : TVDB_ERROR_IO;
   ctx->vk.DestroyFence(ctx->device, fence, NULL);
   ctx->vk.DestroyCommandPool(ctx->device, pool, NULL);
@@ -1376,7 +1396,7 @@ static tvdb_status_t tvdb_vk_bind_sparse_image3d_all_pages(tvdb_gpu_context_t* c
     bsi.pImageOpaqueBinds = &opaque_bind_info;
   }
   tvdb_status_t st = TVDB_OK;
-  if (!tvdb_vk_ok(ctx->vk.QueueBindSparse(ctx->queue, 1, &bsi, fence), err, "vkQueueBindSparse")) st = err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(tvdb_vk_queue_bind_sparse(ctx, &bsi, fence), err, "vkQueueBindSparse")) st = err ? err->status : TVDB_ERROR_IO;
   else if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences(sparse)")) st = err ? err->status : TVDB_ERROR_IO;
   ctx->vk.DestroyFence(ctx->device, fence, NULL);
   free(binds);
@@ -1603,7 +1623,7 @@ static tvdb_status_t tvdb_vk_bind_sparse_image3d_regions(tvdb_gpu_context_t* ctx
     bsi.pImageBinds = &image_bind_info;
   }
   tvdb_status_t st = TVDB_OK;
-  if (!tvdb_vk_ok(ctx->vk.QueueBindSparse(ctx->queue, 1, &bsi, fence), err, "vkQueueBindSparse(partial)")) st = err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(tvdb_vk_queue_bind_sparse(ctx, &bsi, fence), err, "vkQueueBindSparse(partial)")) st = err ? err->status : TVDB_ERROR_IO;
   else if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences(partial sparse)")) st = err ? err->status : TVDB_ERROR_IO;
   ctx->vk.DestroyFence(ctx->device, fence, NULL);
   free(binds);
@@ -2338,7 +2358,7 @@ static tvdb_status_t tvdb_vk_dispatch(tvdb_gpu_context_t* ctx, const tvdb_vk_dis
   si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   si.commandBufferCount = 1;
   si.pCommandBuffers = &cmd;
-  if (!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue, 1, &si, fence), err, "vkQueueSubmit")) goto fail_fence;
+  if (!tvdb_vk_ok(tvdb_vk_queue_submit(ctx, &si, fence), err, "vkQueueSubmit")) goto fail_fence;
   if (d->defer_wait) {
     /* Hand ownership of the fence and command buffer to the context. A full
      * ring means a batch larger than the ring; drain it rather than growing. */
@@ -4755,6 +4775,32 @@ fail:
   return err ? err->status : TVDB_ERROR_IO;
 }
 
+/* Memory properties and the physical device UUID, shared by the context that
+ * creates its own device and the one that adopts a device. */
+static void tvdb_vk_read_device_identity(tvdb_gpu_context_t* ctx) {
+  ctx->vk.GetPhysicalDeviceMemoryProperties(ctx->physical_device, &ctx->memory_props);
+  {
+    /* Core in Vulkan 1.1; the KHR alias covers 1.0 instances exposing it. */
+    PFN_vkGetPhysicalDeviceProperties2 get_props2 = (PFN_vkGetPhysicalDeviceProperties2)
+        ctx->vk.GetInstanceProcAddr(ctx->instance, "vkGetPhysicalDeviceProperties2");
+    if (!get_props2)
+      get_props2 = (PFN_vkGetPhysicalDeviceProperties2)
+          ctx->vk.GetInstanceProcAddr(ctx->instance, "vkGetPhysicalDeviceProperties2KHR");
+    if (get_props2) {
+      VkPhysicalDeviceIDProperties idp;
+      VkPhysicalDeviceProperties2 p2;
+      memset(&idp, 0, sizeof(idp));
+      memset(&p2, 0, sizeof(p2));
+      idp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+      p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+      p2.pNext = &idp;
+      get_props2(ctx->physical_device, &p2);
+      memcpy(ctx->device_uuid, idp.deviceUUID, sizeof(ctx->device_uuid));
+      ctx->has_device_uuid = 1;
+    }
+  }
+}
+
 static tvdb_status_t tvdb_vulkan_context_create(uint32_t device_index,
                                                 tvdb_gpu_context_t** out,
                                                 tvdb_error_t* err) {
@@ -4764,6 +4810,7 @@ static tvdb_status_t tvdb_vulkan_context_create(uint32_t device_index,
     return TVDB_ERROR_OUT_OF_MEMORY;
   }
   ctx->backend = TVDB_GPU_BACKEND_VULKAN;
+  ctx->owns_vulkan = 1;
   if (!tvdb_load_vulkan_library(&ctx->vk)) {
     free(ctx);
     tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "Vulkan loader not found");
@@ -4841,27 +4888,7 @@ static tvdb_status_t tvdb_vulkan_context_create(uint32_t device_index,
   ctx->supports_shader_float64 = features.shaderFloat64 ? 1 : 0;
   ctx->supports_sparse_aliased =
       (ctx->supports_sparse_3d_images && features.sparseResidencyAliased) ? 1 : 0;
-  ctx->vk.GetPhysicalDeviceMemoryProperties(ctx->physical_device, &ctx->memory_props);
-  {
-    /* Core in Vulkan 1.1; the KHR alias covers 1.0 instances exposing it. */
-    PFN_vkGetPhysicalDeviceProperties2 get_props2 = (PFN_vkGetPhysicalDeviceProperties2)
-        ctx->vk.GetInstanceProcAddr(ctx->instance, "vkGetPhysicalDeviceProperties2");
-    if (!get_props2)
-      get_props2 = (PFN_vkGetPhysicalDeviceProperties2)
-          ctx->vk.GetInstanceProcAddr(ctx->instance, "vkGetPhysicalDeviceProperties2KHR");
-    if (get_props2) {
-      VkPhysicalDeviceIDProperties idp;
-      VkPhysicalDeviceProperties2 p2;
-      memset(&idp, 0, sizeof(idp));
-      memset(&p2, 0, sizeof(p2));
-      idp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
-      p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-      p2.pNext = &idp;
-      get_props2(ctx->physical_device, &p2);
-      memcpy(ctx->device_uuid, idp.deviceUUID, sizeof(ctx->device_uuid));
-      ctx->has_device_uuid = 1;
-    }
-  }
+  tvdb_vk_read_device_identity(ctx);
   float prio = 1.0f;
   VkDeviceQueueCreateInfo qci;
   memset(&qci, 0, sizeof(qci));
@@ -4927,6 +4954,114 @@ fail:
   return err ? err->status : TVDB_ERROR_IO;
 }
 
+tvdb_status_t tvdb_gpu_context_create_vulkan_external(const tvdb_gpu_vulkan_device_t* dev,
+                                                      tvdb_gpu_context_t** out,
+                                                      tvdb_error_t* err) {
+  if (!out) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "NULL output context");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  *out = NULL;
+  if (!dev || !dev->get_instance_proc_addr || !dev->instance || !dev->physical_device ||
+      !dev->device || !dev->queue) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                       "external Vulkan device needs vkGetInstanceProcAddr, instance, physical device, device and queue");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  if ((dev->lock_queue == NULL) != (dev->unlock_queue == NULL)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                       "lock_queue and unlock_queue must be set together");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_gpu_context_t* ctx = (tvdb_gpu_context_t*)calloc(1, sizeof(*ctx));
+  if (!ctx) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    return TVDB_ERROR_OUT_OF_MEMORY;
+  }
+  ctx->backend = TVDB_GPU_BACKEND_VULKAN;
+  ctx->owns_vulkan = 0;
+  ctx->vk.GetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dev->get_instance_proc_addr;
+  ctx->instance = (VkInstance)dev->instance;
+  ctx->physical_device = (VkPhysicalDevice)dev->physical_device;
+  ctx->device = (VkDevice)dev->device;
+  ctx->queue = (VkQueue)dev->queue;
+  ctx->queue_family = dev->queue_family;
+  ctx->queue_lock = dev->lock_queue;
+  ctx->queue_unlock = dev->unlock_queue;
+  ctx->queue_user = dev->user;
+  if (tvdb_vk_load_instance_functions(ctx, err) != TVDB_OK) goto fail;
+
+  uint32_t qcount = 0;
+  ctx->vk.GetPhysicalDeviceQueueFamilyProperties(ctx->physical_device, &qcount, NULL);
+  if (dev->queue_family >= qcount) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "queue family out of range");
+    goto fail;
+  }
+  VkQueueFamilyProperties* qprops = (VkQueueFamilyProperties*)calloc(qcount, sizeof(*qprops));
+  if (!qprops) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM");
+    goto fail;
+  }
+  ctx->vk.GetPhysicalDeviceQueueFamilyProperties(ctx->physical_device, &qcount, qprops);
+  const uint32_t queue_flags = qprops[dev->queue_family].queueFlags;
+  free(qprops);
+  if (!(queue_flags & VK_QUEUE_COMPUTE_BIT)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "queue family does not support compute");
+    goto fail;
+  }
+
+  VkPhysicalDeviceFeatures features;
+  memset(&features, 0, sizeof(features));
+  ctx->vk.GetPhysicalDeviceFeatures(ctx->physical_device, &features);
+  if ((dev->sparse_binding && !features.sparseBinding) ||
+      (dev->sparse_residency_image3d && !features.sparseResidencyImage3D) ||
+      (dev->sparse_residency_aliased && !features.sparseResidencyAliased) ||
+      (dev->shader_float64 && !features.shaderFloat64)) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT,
+                       "a feature flag is set that the physical device does not support");
+    goto fail;
+  }
+  ctx->supports_sparse_3d_images =
+      (dev->sparse_binding && dev->sparse_residency_image3d && (queue_flags & VK_QUEUE_SPARSE_BINDING_BIT)) ? 1 : 0;
+  ctx->supports_sparse_aliased = (ctx->supports_sparse_3d_images && dev->sparse_residency_aliased) ? 1 : 0;
+  ctx->supports_shader_float64 = dev->shader_float64 ? 1 : 0;
+
+  if (tvdb_vk_load_device_functions(ctx, err) != TVDB_OK) goto fail;
+  ctx->supports_external_memory = (dev->external_memory_fd && ctx->vk.GetMemoryFdKHR) ? 1 : 0;
+  tvdb_vk_read_device_identity(ctx);
+  snprintf(ctx->device_name, sizeof(ctx->device_name), "Vulkan external device");
+  *out = ctx;
+  return TVDB_OK;
+fail:
+  /* Nothing here was created by the context, so destroy must not touch it. */
+  ctx->device = VK_NULL_HANDLE;
+  ctx->instance = VK_NULL_HANDLE;
+  tvdb_gpu_context_destroy(ctx);
+  return err ? err->status : TVDB_ERROR_INVALID_ARGUMENT;
+}
+
+tvdb_status_t tvdb_gpu_context_vulkan_device(const tvdb_gpu_context_t* ctx,
+                                             tvdb_gpu_vulkan_device_t* out,
+                                             tvdb_error_t* err) {
+  if (!ctx || !out || ctx->backend != TVDB_GPU_BACKEND_VULKAN) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "not a Vulkan context");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  memset(out, 0, sizeof(*out));
+  out->get_instance_proc_addr = (tvdb_gpu_vk_proc)ctx->vk.GetInstanceProcAddr;
+  out->instance = (void*)ctx->instance;
+  out->physical_device = (void*)ctx->physical_device;
+  out->device = (void*)ctx->device;
+  out->queue = (void*)ctx->queue;
+  out->queue_family = ctx->queue_family;
+  out->sparse_binding = ctx->supports_sparse_3d_images;
+  out->sparse_residency_image3d = ctx->supports_sparse_3d_images;
+  out->sparse_residency_aliased = ctx->supports_sparse_aliased;
+  out->shader_float64 = 0;  /* the owned device does not enable shaderFloat64 */
+  out->external_memory_fd = ctx->supports_external_memory;
+  return TVDB_OK;
+}
+
 tvdb_status_t tvdb_gpu_context_create(tvdb_gpu_backend_t backend, uint32_t device_index,
                                       tvdb_gpu_context_t** out, tvdb_error_t* err) {
   if (!out) {
@@ -4965,7 +5100,10 @@ void tvdb_gpu_context_destroy(tvdb_gpu_context_t* ctx) {
     if (ctx->cu_ctx && ctx->cuda.cuCtxDestroy) ctx->cuda.cuCtxDestroy(ctx->cu_ctx);
     tvdb_gpu_driver_close(&ctx->cuda);
   } else {
-    if (ctx->device && ctx->vk.DeviceWaitIdle) ctx->vk.DeviceWaitIdle(ctx->device);
+    /* An adopted device may be busy with the host's own work, so only a device this
+     * context created is waited on as a whole. Everything the context submitted
+     * itself is drained by the flush below. */
+    if (ctx->owns_vulkan && ctx->device && ctx->vk.DeviceWaitIdle) ctx->vk.DeviceWaitIdle(ctx->device);
     if (ctx->device) tvdb_gpu_dispatch_flush(ctx, NULL);
     /* Release the cached pipelines before the device goes away. */
     for (uint32_t i = 0; i < ctx->pipeline_cache_count; ++i) {
@@ -4998,9 +5136,11 @@ void tvdb_gpu_context_destroy(tvdb_gpu_context_t* ctx) {
     if (ctx->device && ctx->desc_pool && ctx->vk.DestroyDescriptorPool) ctx->vk.DestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
     ctx->cmd_pool = VK_NULL_HANDLE;
     ctx->desc_pool = VK_NULL_HANDLE;
-    if (ctx->device && ctx->vk.DestroyDevice) ctx->vk.DestroyDevice(ctx->device, NULL);
-    if (ctx->instance && ctx->vk.DestroyInstance) ctx->vk.DestroyInstance(ctx->instance, NULL);
-    tvdb_dyn_close(ctx->vk.lib);
+    if (ctx->owns_vulkan) {
+      if (ctx->device && ctx->vk.DestroyDevice) ctx->vk.DestroyDevice(ctx->device, NULL);
+      if (ctx->instance && ctx->vk.DestroyInstance) ctx->vk.DestroyInstance(ctx->instance, NULL);
+      tvdb_dyn_close(ctx->vk.lib);
+    }
   }
   free(ctx);
 }
@@ -6162,7 +6302,7 @@ static tvdb_status_t tvdb_vk_sparse_image3d_submit_sample(tvdb_gpu_vulkan_sparse
   si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   si.commandBufferCount = 1;
   si.pCommandBuffers = &image->sample_cmd;
-  if (!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue, 1, &si, image->sample_fence), err, "vkQueueSubmit(persistent sample)")) return err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(tvdb_vk_queue_submit(ctx, &si, image->sample_fence), err, "vkQueueSubmit(persistent sample)")) return err ? err->status : TVDB_ERROR_IO;
   image->sample_in_flight = 1;
   if (wait) {
     if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &image->sample_fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences(persistent sample)")) return err ? err->status : TVDB_ERROR_IO;
@@ -6303,7 +6443,7 @@ static tvdb_status_t tvdb_vk_sample_batch_submit(tvdb_gpu_vulkan_sparse_image3d_
   si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   si.commandBufferCount = 1;
   si.pCommandBuffers = &batch->cmd;
-  if (!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue, 1, &si, batch->fence), err, "vkQueueSubmit(batch sample)")) return err ? err->status : TVDB_ERROR_IO;
+  if (!tvdb_vk_ok(tvdb_vk_queue_submit(ctx, &si, batch->fence), err, "vkQueueSubmit(batch sample)")) return err ? err->status : TVDB_ERROR_IO;
   batch->in_flight = 1;
   if (wait) {
     if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &batch->fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences(batch sample)")) return err ? err->status : TVDB_ERROR_IO;
@@ -9136,7 +9276,7 @@ static tvdb_status_t tvdb_index_map_query_vulkan(tvdb_gpu_context_t* ctx,
     memset(&si, 0, sizeof(si));
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1; si.pCommandBuffers = &cmd;
-    if (!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue, 1, &si, fence), err, "vkQueueSubmit")) {
+    if (!tvdb_vk_ok(tvdb_vk_queue_submit(ctx, &si, fence), err, "vkQueueSubmit")) {
       ctx->vk.DestroyFence(ctx->device, fence, NULL); goto fail; } }
   if (!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX), err, "vkWaitForFences")) {
     ctx->vk.DestroyFence(ctx->device, fence, NULL); goto fail; }

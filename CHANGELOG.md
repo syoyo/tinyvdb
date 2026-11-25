@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- `tvdb_gpu_context_create_vulkan_external` makes a Vulkan GPU context on an
+  instance, device and queue the caller already owns, described by
+  `tvdb_gpu_vulkan_device_t`. The context destroys only what it created: it
+  does not wait for the whole device to go idle and never destroys the device,
+  the instance or the loader. Features the caller enabled are stated in the
+  description, and a flag the physical device does not support is refused.
+  Queue submissions can go through `lock_queue` and `unlock_queue` so a host
+  that submits on the same queue can share its lock.
+- `tvdb_gpu_context_vulkan_device` returns the handles and enabled features of
+  a Vulkan context in that form, to run a second context on the same device
+  and for the test `test_gpu_external_device`.
+
 ### Changed
 
 - **Breaking (C API/ABI and Python):** removed the dead
