@@ -4,6 +4,12 @@
 
 ### Added
 
+- `tvdb_gpu_dispatch_resident_record` records a resident Vulkan dispatch batch
+  into a caller-owned command buffer without submitting or waiting. Its returned
+  handle retains descriptors and copied uniforms until the caller has completed
+  the command buffer and destroys the handle.
+- `tvdb_gpu_buffer_wrap_vulkan` binds a caller-owned Vulkan storage buffer to
+  resident dispatch without taking ownership of the buffer or its memory.
 - `tvdb_gpu_context_create_vulkan_external` makes a Vulkan GPU context on an
   instance, device and queue the caller already owns, described by
   `tvdb_gpu_vulkan_device_t`. The context destroys only what it created: it

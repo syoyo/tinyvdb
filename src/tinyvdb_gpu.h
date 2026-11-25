@@ -698,6 +698,15 @@ tvdb_status_t tvdb_gpu_axpy(tvdb_gpu_context_t* ctx, const float* x, const float
 // (the foundation for keeping sample/query results on device).
 tvdb_status_t tvdb_gpu_buffer_create(tvdb_gpu_context_t* ctx, size_t size_bytes,
                                      tvdb_gpu_buffer_t** out, tvdb_error_t* err);
+// Wrap a caller-owned VkBuffer for resident dispatch on the same VkDevice as ctx.
+// The buffer must have bound memory, at least size_bytes of usable storage, and
+// VK_BUFFER_USAGE_STORAGE_BUFFER_BIT. The caller owns the buffer and memory and
+// keeps both alive until every dispatch using the wrapper has completed.
+// Synchronization, queue-family ownership, and transfers remain caller-managed.
+// Destroying the wrapper never destroys the VkBuffer or its memory.
+tvdb_status_t tvdb_gpu_buffer_wrap_vulkan(tvdb_gpu_context_t* ctx, uint64_t vk_buffer,
+                                          size_t size_bytes, tvdb_gpu_buffer_t** out,
+                                          tvdb_error_t* err);
 void tvdb_gpu_buffer_destroy(tvdb_gpu_buffer_t* buf);
 tvdb_status_t tvdb_gpu_buffer_upload(tvdb_gpu_buffer_t* buf, const void* src, size_t size, tvdb_error_t* err);
 tvdb_status_t tvdb_gpu_buffer_download(tvdb_gpu_buffer_t* buf, void* dst, size_t size, tvdb_error_t* err);

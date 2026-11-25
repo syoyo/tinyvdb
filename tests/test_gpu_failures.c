@@ -145,19 +145,23 @@ static int test_resident_failure(void){
 }
 static int vk_lock_depth, vk_lock_calls, vk_unlock_calls, vk_submit_calls;
 static int vk_queue_idle_calls, vk_device_idle_calls, vk_wait_failure, vk_mock_error;
+static int vk_recorded_dispatches, vk_recorded_set_frees;
+static int vk_cmd_alloc_calls, vk_cmd_begin_calls, vk_cmd_end_calls;
+static int vk_alloc_set_calls, vk_fail_set_at;
+static VkCommandBuffer vk_expected_cmd;
 static void vk_test_lock(void* user){(void)user;++vk_lock_depth;++vk_lock_calls;if(vk_lock_depth!=1)vk_mock_error=1;}
 static void vk_test_unlock(void* user){(void)user;if(vk_lock_depth!=1)vk_mock_error=1;--vk_lock_depth;++vk_unlock_calls;}
-static VkResult vk_test_alloc_cmd(VkDevice d,const VkCommandBufferAllocateInfo* i,VkCommandBuffer* c){(void)d;(void)i;*c=(VkCommandBuffer)(uintptr_t)1;return VK_SUCCESS;}
-static VkResult vk_test_begin_cmd(VkCommandBuffer c,const VkCommandBufferBeginInfo* i){(void)c;(void)i;return VK_SUCCESS;}
-static VkResult vk_test_end_cmd(VkCommandBuffer c){(void)c;return VK_SUCCESS;}
+static VkResult vk_test_alloc_cmd(VkDevice d,const VkCommandBufferAllocateInfo* i,VkCommandBuffer* c){(void)d;(void)i;*c=(VkCommandBuffer)(uintptr_t)1;++vk_cmd_alloc_calls;return VK_SUCCESS;}
+static VkResult vk_test_begin_cmd(VkCommandBuffer c,const VkCommandBufferBeginInfo* i){(void)c;(void)i;++vk_cmd_begin_calls;return VK_SUCCESS;}
+static VkResult vk_test_end_cmd(VkCommandBuffer c){(void)c;++vk_cmd_end_calls;return VK_SUCCESS;}
 static tvdb_status_t vk_test_free_cmd(VkDevice d,VkCommandPool p,uint32_t n,const VkCommandBuffer* c){(void)d;(void)p;(void)n;(void)c;if(vk_wait_failure&&!vk_queue_idle_calls)vk_mock_error=1;return TVDB_OK;}
-static VkResult vk_test_alloc_set(VkDevice d,const VkDescriptorSetAllocateInfo* i,VkDescriptorSet* s){(void)d;(void)i;*s=(VkDescriptorSet)(uintptr_t)1;return VK_SUCCESS;}
+static VkResult vk_test_alloc_set(VkDevice d,const VkDescriptorSetAllocateInfo* i,VkDescriptorSet* s){(void)d;(void)i;if(++vk_alloc_set_calls==vk_fail_set_at)return -2;*s=(VkDescriptorSet)(uintptr_t)1;return VK_SUCCESS;}
 static void vk_test_update_sets(VkDevice d,uint32_t n,const VkWriteDescriptorSet* w,uint32_t c,const void* p){(void)d;(void)n;(void)w;(void)c;(void)p;}
-static tvdb_status_t vk_test_free_set(VkDevice d,VkDescriptorPool p,uint32_t n,const VkDescriptorSet* s){(void)d;(void)p;(void)n;(void)s;return TVDB_OK;}
+static tvdb_status_t vk_test_free_set(VkDevice d,VkDescriptorPool p,uint32_t n,const VkDescriptorSet* s){(void)d;(void)p;(void)n;(void)s;++vk_recorded_set_frees;return TVDB_OK;}
 static void vk_test_barrier(VkCommandBuffer c,VkFlags a,VkFlags b,VkFlags f,uint32_t m,const void* p,uint32_t n,const void* q,uint32_t o,const void* r){(void)c;(void)a;(void)b;(void)f;(void)m;(void)p;(void)n;(void)q;(void)o;(void)r;}
 static void vk_test_bind_pipeline(VkCommandBuffer c,uint32_t b,VkPipeline p){(void)c;(void)b;(void)p;}
 static void vk_test_bind_sets(VkCommandBuffer c,uint32_t b,VkPipelineLayout p,uint32_t a,uint32_t n,const VkDescriptorSet* s,uint32_t d,const uint32_t* o){(void)c;(void)b;(void)p;(void)a;(void)n;(void)s;(void)d;(void)o;}
-static void vk_test_dispatch(VkCommandBuffer c,uint32_t x,uint32_t y,uint32_t z){(void)c;(void)x;(void)y;(void)z;}
+static void vk_test_dispatch(VkCommandBuffer c,uint32_t x,uint32_t y,uint32_t z){(void)x;(void)y;(void)z;++vk_recorded_dispatches;if(vk_expected_cmd && c!=vk_expected_cmd)vk_mock_error=1;}
 static VkResult vk_test_create_fence(VkDevice d,const VkFenceCreateInfo* i,const void* a,VkFence* f){(void)d;(void)i;(void)a;*f=(VkFence)(uintptr_t)1;return VK_SUCCESS;}
 static void vk_test_destroy_fence(VkDevice d,VkFence f,const void* a){(void)d;(void)f;(void)a;}
 static VkResult vk_test_submit(VkQueue q,uint32_t n,const VkSubmitInfo* i,VkFence f){(void)q;(void)n;(void)i;(void)f;++vk_submit_calls;if(vk_lock_depth!=1)vk_mock_error=1;return VK_SUCCESS;}
@@ -204,6 +208,83 @@ static int test_resident_vulkan_queue_contract(void){
     }
     return 0;
 }
+static int test_resident_recorded_dispatch(void){
+    static const unsigned char spv[4]={3,2,23,7};
+    tvdb_gpu_context_t ctx;memset(&ctx,0,sizeof(ctx));
+    ctx.backend=TVDB_GPU_BACKEND_VULKAN;ctx.device=(VkDevice)(uintptr_t)1;
+    ctx.desc_pool=(VkDescriptorPool)(uintptr_t)1;ctx.cmd_pool=(VkCommandPool)(uintptr_t)1;
+    ctx.vk.AllocateCommandBuffers=vk_test_alloc_cmd;ctx.vk.BeginCommandBuffer=vk_test_begin_cmd;
+    ctx.vk.EndCommandBuffer=vk_test_end_cmd;
+    ctx.vk.AllocateDescriptorSets=vk_test_alloc_set;ctx.vk.UpdateDescriptorSets=vk_test_update_sets;
+    ctx.vk.FreeDescriptorSets=vk_test_free_set;ctx.vk.CmdPipelineBarrier=vk_test_barrier;
+    ctx.vk.CmdBindPipeline=vk_test_bind_pipeline;ctx.vk.CmdBindDescriptorSets=vk_test_bind_sets;
+    ctx.vk.CmdDispatch=vk_test_dispatch;ctx.vk.QueueSubmit=vk_test_submit;
+    ctx.vk.CreateBuffer=create_buffer;ctx.vk.DestroyBuffer=destroy_buffer;
+    ctx.vk.GetBufferMemoryRequirements=requirements;ctx.vk.AllocateMemory=allocate_memory;
+    ctx.vk.FreeMemory=free_memory;ctx.vk.BindBufferMemory=bind_memory;
+    ctx.vk.MapMemory=map_memory;ctx.vk.UnmapMemory=unmap_memory;
+    ctx.memory_props.memoryTypeCount=1;
+    ctx.memory_props.memoryTypes[0].propertyFlags=VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    ctx.pipeline_cache_count=1;ctx.pipeline_cache[0].spv=spv;ctx.pipeline_cache[0].spv_len=sizeof(spv);
+    ctx.pipeline_cache[0].descriptor_count=2;ctx.pipeline_cache[0].descriptor_types[0]=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    ctx.pipeline_cache[0].descriptor_types[1]=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    ctx.pipeline_cache[0].set_layout=(VkDescriptorSetLayout)(uintptr_t)1;
+    ctx.pipeline_cache[0].pipeline=(VkPipeline)(uintptr_t)1;
+    ctx.pipeline_cache[0].pipeline_layout=(VkPipelineLayout)(uintptr_t)1;
+    tvdb_gpu_buffer_t* buf=NULL;
+    if(tvdb_gpu_buffer_wrap_vulkan(&ctx,1,4,&buf,NULL)!=TVDB_OK)return 1;
+    const uint32_t uniform=7;
+    tvdb_gpu_resident_dispatch_t spec;memset(&spec,0,sizeof(spec));spec.spv=spv;spec.spv_len=sizeof(spv);
+    spec.num_bindings=2;spec.bindings[0].buffer=buf;
+    spec.bindings[1].uniform=&uniform;spec.bindings[1].uniform_size=sizeof(uniform);
+    spec.groups[0]=spec.groups[1]=spec.groups[2]=1;
+    spec.local_size[0]=spec.local_size[1]=spec.local_size[2]=1;
+    vk_submit_calls=vk_recorded_dispatches=vk_recorded_set_frees=0;fail_step=0;
+    vk_cmd_alloc_calls=vk_cmd_begin_calls=vk_cmd_end_calls=vk_mock_error=0;
+    vk_expected_cmd=(VkCommandBuffer)(uintptr_t)2;
+    tvdb_gpu_resident_recording_t* recording=NULL;
+    tvdb_status_t status=tvdb_gpu_dispatch_resident_record(&ctx,(void*)(uintptr_t)2,&spec,1,&recording,NULL);
+    if(status!=TVDB_OK || !recording || vk_recorded_dispatches!=1 || vk_submit_calls ||
+       vk_cmd_alloc_calls || vk_cmd_begin_calls || vk_cmd_end_calls || vk_mock_error ||
+       vk_recorded_set_frees || live_buffers!=1 || live_memory!=1 || live_maps!=1){
+        fprintf(stderr,"resident recording failed: status=%d dispatch=%d submit=%d frees=%d\n",
+            (int)status,vk_recorded_dispatches,vk_submit_calls,vk_recorded_set_frees);
+        return 1;
+    }
+    tvdb_gpu_resident_recording_destroy(recording);
+    vk_expected_cmd=NULL;
+    if(vk_recorded_set_frees!=1 || live_buffers || live_memory || live_maps)return 1;
+    tvdb_gpu_resident_dispatch_t pair[2]={spec,spec};
+    recording=(tvdb_gpu_resident_recording_t*)(uintptr_t)1;
+    vk_alloc_set_calls=vk_recorded_set_frees=vk_recorded_dispatches=0;vk_fail_set_at=2;
+    status=tvdb_gpu_dispatch_resident_record(&ctx,(void*)(uintptr_t)2,pair,2,&recording,NULL);
+    vk_fail_set_at=0;
+    if(status!=TVDB_ERROR_IO || recording || vk_recorded_dispatches!=1 ||
+       vk_recorded_set_frees!=1 || live_buffers || live_memory || live_maps || vk_submit_calls)return 1;
+    tvdb_gpu_buffer_destroy(buf);
+    return 0;
+}
+static int test_borrowed_vulkan_buffer(void){
+    tvdb_gpu_context_t ctx;memset(&ctx,0,sizeof(ctx));
+    ctx.backend=TVDB_GPU_BACKEND_VULKAN;ctx.device=(VkDevice)(uintptr_t)1;
+    ctx.vk.DestroyBuffer=destroy_buffer;
+    tvdb_gpu_buffer_t* buf=NULL;
+    tvdb_error_t err={0};
+    if(tvdb_gpu_buffer_wrap_vulkan(&ctx,17,64,&buf,&err)!=TVDB_OK || !buf ||
+       tvdb_gpu_buffer_size(buf)!=64 || tvdb_gpu_buffer_native_handle(buf)!=17)return 1;
+    uint32_t value=0;
+    if(tvdb_gpu_buffer_upload(buf,&value,sizeof(value),&err)!=TVDB_ERROR_UNIMPLEMENTED ||
+       tvdb_gpu_buffer_download(buf,&value,sizeof(value),&err)!=TVDB_ERROR_UNIMPLEMENTED)return 1;
+    tvdb_gpu_buffer_destroy(buf);
+    if(live_buffers || live_memory || live_maps)return 1;
+    buf=(tvdb_gpu_buffer_t*)(uintptr_t)1;
+    if(tvdb_gpu_buffer_wrap_vulkan(&ctx,0,64,&buf,&err)!=TVDB_ERROR_INVALID_ARGUMENT || buf)return 1;
+    if(tvdb_gpu_buffer_wrap_vulkan(&ctx,17,0,&buf,&err)!=TVDB_ERROR_INVALID_ARGUMENT || buf)return 1;
+    ctx.backend=TVDB_GPU_BACKEND_CUDA;
+    if(tvdb_gpu_buffer_wrap_vulkan(&ctx,17,64,&buf,&err)!=TVDB_ERROR_INVALID_ARGUMENT || buf)return 1;
+    return 0;
+}
 int main(void) {
     tvdb_gpu_context_t ctx; memset(&ctx, 0, sizeof(ctx));
     ctx.device = (VkDevice)(uintptr_t)1;
@@ -234,5 +315,6 @@ int main(void) {
     spec.bindings = &binding; spec.num_bindings = 1;
     if (tvdb_gpu_dispatch(&ctx, &spec, NULL) != TVDB_ERROR_INVALID_ARGUMENT) return 1;
     return test_composite_backend_selection() || test_resident_failure() || test_poisson_failure() ||
-        test_resident_vulkan_queue_contract();
+        test_resident_vulkan_queue_contract() || test_resident_recorded_dispatch() ||
+        test_borrowed_vulkan_buffer();
 }

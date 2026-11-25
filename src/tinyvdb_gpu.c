@@ -699,7 +699,7 @@ struct tvdb_gpu_context {
   CUmodule cu_vol_module;  /* tinyvdb_gpu_compute volumetric kernels */
 };
 struct tvdb_gpu_buffer { tvdb_vk_buffer vk; tvdb_gpu_context_t* ctx; tvdb_gpu_backend_t backend; CUdeviceptr cu; size_t size;
-                         CUexternalMemory ext_mem; int imported; int resident; };
+                         CUexternalMemory ext_mem; int imported; int resident; int borrowed_vk; };
 struct tvdb_gpu_dense_grid { tvdb_gpu_context_t* ctx; tvdb_gpu_buffer_t *values, *scratch[3]; tvdb_gpu_grid_desc_t desc; size_t bytes, count; };
 typedef struct {
   size_t refs, count;
@@ -12740,6 +12740,24 @@ tvdb_status_t tvdb_gpu_buffer_create(tvdb_gpu_context_t* ctx, size_t size_bytes,
   return TVDB_OK;
 }
 
+tvdb_status_t tvdb_gpu_buffer_wrap_vulkan(tvdb_gpu_context_t* ctx, uint64_t vk_buffer,
+                                          size_t size_bytes, tvdb_gpu_buffer_t** out,
+                                          tvdb_error_t* err) {
+  if (out) *out = NULL;
+  if (!ctx || ctx->backend != TVDB_GPU_BACKEND_VULKAN || !ctx->device ||
+      !vk_buffer || !size_bytes || !out) {
+    tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_wrap_vulkan arguments");
+    return TVDB_ERROR_INVALID_ARGUMENT;
+  }
+  tvdb_gpu_buffer_t* b = (tvdb_gpu_buffer_t*)calloc(1, sizeof(*b));
+  if (!b) { tvdb_gpu_set_error(err, TVDB_ERROR_OUT_OF_MEMORY, "OOM"); return TVDB_ERROR_OUT_OF_MEMORY; }
+  b->ctx = ctx; b->backend = TVDB_GPU_BACKEND_VULKAN; b->size = size_bytes;
+  b->vk.buffer = (VkBuffer)vk_buffer;
+  b->borrowed_vk = 1;
+  *out = b;
+  return TVDB_OK;
+}
+
 void tvdb_gpu_buffer_destroy(tvdb_gpu_buffer_t* buf) {
   if (!buf) return;
   if (buf->resident) buf->ctx->resident_metrics.live_bytes -= buf->size;
@@ -12751,7 +12769,7 @@ void tvdb_gpu_buffer_destroy(tvdb_gpu_buffer_t* buf) {
     } else if (buf->cu) {
       buf->ctx->cuda.cuMemFree(buf->cu);
     }
-  } else {
+  } else if (!buf->borrowed_vk) {
     tvdb_vk_destroy_buffer(buf->ctx, &buf->vk);
   }
   free(buf);
@@ -12759,6 +12777,7 @@ void tvdb_gpu_buffer_destroy(tvdb_gpu_buffer_t* buf) {
 
 tvdb_status_t tvdb_gpu_buffer_upload(tvdb_gpu_buffer_t* buf, const void* src, size_t size, tvdb_error_t* err) {
   if (!buf || !src || size > buf->size) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_upload arguments"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  if (buf->borrowed_vk) { tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "borrowed Vulkan buffer transfers are caller-managed"); return TVDB_ERROR_UNIMPLEMENTED; }
   if (buf->resident) buf->ctx->resident_metrics.upload_bytes += size;
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) {
     if (!tvdb_cuda_ok(buf->ctx, err, "cuMemcpyHtoD", buf->ctx->cuda.cuMemcpyHtoD(buf->cu, src, size))) return err ? err->status : TVDB_ERROR_IO;
@@ -12783,6 +12802,7 @@ tvdb_status_t tvdb_gpu_buffer_upload(tvdb_gpu_buffer_t* buf, const void* src, si
 
 tvdb_status_t tvdb_gpu_buffer_download(tvdb_gpu_buffer_t* buf, void* dst, size_t size, tvdb_error_t* err) {
   if (!buf || !dst || size > buf->size) { tvdb_gpu_set_error(err, TVDB_ERROR_INVALID_ARGUMENT, "invalid buffer_download arguments"); return TVDB_ERROR_INVALID_ARGUMENT; }
+  if (buf->borrowed_vk) { tvdb_gpu_set_error(err, TVDB_ERROR_UNIMPLEMENTED, "borrowed Vulkan buffer transfers are caller-managed"); return TVDB_ERROR_UNIMPLEMENTED; }
   if (buf->resident) buf->ctx->resident_metrics.download_bytes += size;
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) {
     if (!tvdb_cuda_ok(buf->ctx, err, "cuMemcpyDtoH", buf->ctx->cuda.cuMemcpyDtoH(dst, buf->cu, size))) return err ? err->status : TVDB_ERROR_IO;
@@ -12811,7 +12831,7 @@ size_t tvdb_gpu_buffer_size(const tvdb_gpu_buffer_t* buf) { return buf ? buf->si
 uint64_t tvdb_gpu_buffer_native_handle(const tvdb_gpu_buffer_t* buf) {
   if (!buf) return 0;
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) return (uint64_t)buf->cu;
-  return (uint64_t)(uintptr_t)buf->vk.buffer;
+  return (uint64_t)buf->vk.buffer;
 }
 
 // ---- cross-API external-memory interop (Vulkan export -> CUDA import) --------
