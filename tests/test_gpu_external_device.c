@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdint.h>
 #include "tinyvdb_gpu.h"
+#include "tinyvdb_gpu_resident.h"
 
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
@@ -47,6 +48,36 @@ static int same_grid(const tvdb_dense_grid* a, const tvdb_dense_grid* b) {
   if (a->nx != b->nx || a->ny != b->ny || a->nz != b->nz) return 0;
   const size_t n = (size_t)a->nx * (size_t)a->ny * (size_t)a->nz;
   return n > 0 && memcmp(a->data, b->data, n * sizeof(float)) == 0;
+}
+
+static int resident_sum_uses_lock(tvdb_gpu_context_t* ctx, lock_counter* locks) {
+  const tvdb_gpu_grid_desc_t desc = { 2, 2, 2, 1, TVDB_GPU_F32, 0, 0, 0, 1 };
+  const float input_a[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+  const float input_b[8] = { 8, 7, 6, 5, 4, 3, 2, 1 };
+  const float expected[8] = { 9, 9, 9, 9, 9, 9, 9, 9 };
+  float result[8] = { 0 };
+  tvdb_gpu_dense_grid_t *a = NULL, *b = NULL, *out = NULL;
+  tvdb_error_t err = { 0 };
+  int ok = 0;
+
+  if (tvdb_gpu_dense_grid_create(ctx, &desc, &a, &err) != TVDB_OK ||
+      tvdb_gpu_dense_grid_create(ctx, &desc, &b, &err) != TVDB_OK ||
+      tvdb_gpu_dense_grid_create(ctx, &desc, &out, &err) != TVDB_OK ||
+      tvdb_gpu_dense_grid_upload(a, input_a, sizeof input_a, &err) != TVDB_OK ||
+      tvdb_gpu_dense_grid_upload(b, input_b, sizeof input_b, &err) != TVDB_OK) goto done;
+
+  const int before = locks->locks;
+  if (tvdb_gpu_comp_resident(ctx, a, b, 2, out, &err) != TVDB_OK) goto done;
+  const int resident_locked = locks->locks > before;
+  if (tvdb_gpu_dense_grid_download(out, result, sizeof result, &err) != TVDB_OK) goto done;
+  ok = memcmp(result, expected, sizeof result) == 0 && resident_locked &&
+       locks->locks == locks->unlocks && locks->depth == 0 && locks->max_depth == 1;
+
+done:
+  tvdb_gpu_dense_grid_destroy(out);
+  tvdb_gpu_dense_grid_destroy(b);
+  tvdb_gpu_dense_grid_destroy(a);
+  return ok;
 }
 
 int main(void) {
@@ -131,6 +162,7 @@ int main(void) {
     CHECK(locks.locks > 0, "submissions went through the lock");
     CHECK(locks.locks == locks.unlocks, "every lock was unlocked");
     CHECK(locks.depth == 0 && locks.max_depth == 1, "locks were never nested");
+    CHECK(resident_sum_uses_lock(guest, &locks), "resident submission uses the shared-queue lock");
 
     tvdb_gpu_context_destroy(guest);
     guest = NULL;

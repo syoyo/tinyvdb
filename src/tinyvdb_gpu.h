@@ -79,6 +79,8 @@ typedef void (*tvdb_gpu_vk_proc)(void);
 // never nested, so a caller that submits on the same queue can hold the same
 // lock. With both NULL the context submits without locking, which is only
 // correct when nothing else uses that queue while a tinyvdb call is running.
+// A resident dispatch also uses the lock if a failed fence wait requires
+// vkQueueWaitIdle before its resources can be released.
 // Either both are set or neither.
 typedef struct {
   tvdb_gpu_vk_proc get_instance_proc_addr;  // vkGetInstanceProcAddr

@@ -200,13 +200,13 @@ tvdb_status_t tvdb_gpu_dispatch_resident(tvdb_gpu_context_t* ctx,
         VkFenceCreateInfo fi;memset(&fi,0,sizeof(fi));fi.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         if(!tvdb_vk_ok(ctx->vk.CreateFence(ctx->device,&fi,NULL,&fence),err,"resident fence")) {st=TVDB_ERROR_IO;goto done;}
         VkSubmitInfo si;memset(&si,0,sizeof(si));si.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;si.commandBufferCount=1;si.pCommandBuffers=&cmd;
-        if(!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue,1,&si,fence),err,"resident submit")) {st=TVDB_ERROR_IO;goto done;}
+        if(!tvdb_vk_ok(tvdb_vk_queue_submit(ctx,&si,fence),err,"resident submit")) {st=TVDB_ERROR_IO;goto done;}
         submitted=1; ++ctx->resident_metrics.submissions;
         if(!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device,1,&fence,VK_TRUE,UINT64_MAX),err,"resident wait")) st=TVDB_ERROR_IO;
     }
 done:
     if(cuda_launched) ctx->cuda.cuCtxSynchronize();
-    if(submitted && st!=TVDB_OK) ctx->vk.DeviceWaitIdle(ctx->device);
+    if(submitted && st!=TVDB_OK) tvdb_vk_queue_wait_idle(ctx);
     if(cmd) ctx->vk.FreeCommandBuffers(ctx->device,pool,1,&cmd);
     if(fence) ctx->vk.DestroyFence(ctx->device,fence,NULL);
     for(size_t j=0;j<count;++j) {

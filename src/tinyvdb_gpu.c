@@ -465,6 +465,7 @@ typedef VkResult (*PFN_vkGetFenceStatus)(VkDevice, VkFence);
 typedef VkResult (*PFN_vkWaitForFences)(VkDevice, uint32_t, const VkFence*, VkBool32, uint64_t);
 typedef VkResult (*PFN_vkQueueSubmit)(VkQueue, uint32_t, const VkSubmitInfo*, VkFence);
 typedef VkResult (*PFN_vkQueueBindSparse)(VkQueue, uint32_t, const VkBindSparseInfo*, VkFence);
+typedef VkResult (*PFN_vkQueueWaitIdle)(VkQueue);
 typedef VkResult (*PFN_vkDeviceWaitIdle)(VkDevice);
 
 typedef struct {
@@ -532,6 +533,7 @@ typedef struct {
   PFN_vkWaitForFences WaitForFences;
   PFN_vkQueueSubmit QueueSubmit;
   PFN_vkQueueBindSparse QueueBindSparse;
+  PFN_vkQueueWaitIdle QueueWaitIdle;
   PFN_vkDeviceWaitIdle DeviceWaitIdle;
 } tvdb_vk_table;
 
@@ -844,6 +846,13 @@ static VkResult tvdb_vk_queue_bind_sparse(tvdb_gpu_context_t* ctx, const VkBindS
   return r;
 }
 
+static VkResult tvdb_vk_queue_wait_idle(tvdb_gpu_context_t* ctx) {
+  if (ctx->queue_lock) ctx->queue_lock(ctx->queue_user);
+  VkResult r = ctx->vk.QueueWaitIdle(ctx->queue);
+  if (ctx->queue_unlock) ctx->queue_unlock(ctx->queue_user);
+  return r;
+}
+
 #define TVDB_LOAD_INST(ctx, name) do { \
   (ctx)->vk.name = (PFN_vk##name)(ctx)->vk.GetInstanceProcAddr((ctx)->instance, "vk" #name); \
   if (!(ctx)->vk.name) { tvdb_gpu_set_error(err, TVDB_ERROR_IO, "missing Vulkan instance function: vk" #name); return TVDB_ERROR_IO; } \
@@ -897,7 +906,7 @@ static tvdb_status_t tvdb_vk_load_device_functions(tvdb_gpu_context_t* ctx, tvdb
   TVDB_LOAD_DEV(ctx, DestroyFence); TVDB_LOAD_DEV(ctx, ResetFences);
   TVDB_LOAD_DEV(ctx, GetFenceStatus);
   TVDB_LOAD_DEV(ctx, WaitForFences); TVDB_LOAD_DEV(ctx, QueueSubmit);
-  TVDB_LOAD_DEV(ctx, QueueBindSparse);
+  TVDB_LOAD_DEV(ctx, QueueBindSparse); TVDB_LOAD_DEV(ctx, QueueWaitIdle);
   TVDB_LOAD_DEV(ctx, DeviceWaitIdle);
   // Optional external-memory export function (only present when the extension
   // is enabled); non-fatal if absent.
