@@ -5,8 +5,9 @@ extern "C" {
 #endif
 
 /* Explicit device storage. Contexts outlive their handles; calls on a context
- * are serialized by the caller. Operations are synchronous, with no implicit
- * grid readback. Destroying a handle does not destroy its context. */
+ * are serialized by the caller. Typed operations and the ordinary raw dispatch
+ * are synchronous, with no implicit grid readback. Destroying a handle does not
+ * destroy its context. */
 typedef enum { TVDB_GPU_F32 = 0, TVDB_GPU_F64 = 1 } tvdb_gpu_value_type_t;
 typedef struct {
     int nx, ny, nz, channels; /* channels: 1 or 3; f64 currently scalar only */
@@ -33,8 +34,8 @@ tvdb_gpu_buffer_t* tvdb_gpu_dense_grid_buffer(const tvdb_gpu_dense_grid_t*);
 
 /* Bind either a resident buffer or copied uniform bytes, never both. CUDA
  * kernels receive pointers in binding order. local_size must match the shader.
- * A batch records all Vulkan dispatches before submitting once. All bindings
- * stay alive until return. Raw dispatch may partially write outputs on error;
+ * A synchronous batch records all Vulkan dispatches before submitting once.
+ * Its bindings stay alive until return. Raw dispatch may partially write outputs on error;
  * typed grid operations use transactional scratch instead. */
 typedef struct {
     tvdb_gpu_buffer_t* buffer;
@@ -51,6 +52,23 @@ typedef struct {
 } tvdb_gpu_resident_dispatch_t;
 tvdb_status_t tvdb_gpu_dispatch_resident(tvdb_gpu_context_t*,
     const tvdb_gpu_resident_dispatch_t*, size_t count, tvdb_error_t*);
+
+/* Record Vulkan dispatches into a caller-owned VkCommandBuffer, passed as a
+ * pointer, that is already recording on the context's device. Tinyvdb does not
+ * end or submit it. The returned handle owns the
+ * descriptor sets and copied uniforms referenced by the recorded commands.
+ * Keep the context, bound buffers and handle alive until execution completes;
+ * destroy the handle only after completion or after discarding the command
+ * buffer. The caller supplies synchronization with work outside this batch,
+ * including queue-family ownership transfers and barriers after the last
+ * dispatch. On failure, discard or reset the partially recorded command buffer
+ * before using it. count==0 succeeds with *out==NULL. Recording does not drain
+ * pending tinyvdb submissions. Vulkan only. */
+typedef struct tvdb_gpu_resident_recording tvdb_gpu_resident_recording_t;
+tvdb_status_t tvdb_gpu_dispatch_resident_record(tvdb_gpu_context_t*, void* command_buffer,
+    const tvdb_gpu_resident_dispatch_t*, size_t count,
+    tvdb_gpu_resident_recording_t** out, tvdb_error_t*);
+void tvdb_gpu_resident_recording_destroy(tvdb_gpu_resident_recording_t*);
 
 /* op: 0 max, 1 min, 2 sum, 3 product; shapes, types and contexts must match. */
 tvdb_status_t tvdb_gpu_comp_resident(tvdb_gpu_context_t*, const tvdb_gpu_dense_grid_t*,

@@ -82,8 +82,30 @@ typedef struct {
     tvdb_vk_pipeline_entry* pipeline;
 } resident_dispatch_resources;
 
-tvdb_status_t tvdb_gpu_dispatch_resident(tvdb_gpu_context_t* ctx,
-    const tvdb_gpu_resident_dispatch_t* specs,size_t count,tvdb_error_t* err) {
+struct tvdb_gpu_resident_recording {
+    tvdb_gpu_context_t* ctx;
+    resident_dispatch_resources* resources;
+    size_t count;
+};
+
+static void resident_release_resources(tvdb_gpu_context_t* ctx,
+    resident_dispatch_resources* r,size_t count) {
+    for(size_t j=0;j<count;++j) {
+        if(r[j].set) ctx->vk.FreeDescriptorSets(ctx->device,ctx->desc_pool,1,&r[j].set);
+        for(int i=0;i<8;++i) tvdb_gpu_buffer_destroy(r[j].uniforms[i]);
+    }
+    free(r);
+}
+
+void tvdb_gpu_resident_recording_destroy(tvdb_gpu_resident_recording_t* recording) {
+    if(!recording) return;
+    resident_release_resources(recording->ctx,recording->resources,recording->count);
+    free(recording);
+}
+
+static tvdb_status_t resident_dispatch_impl(tvdb_gpu_context_t* ctx,
+    const tvdb_gpu_resident_dispatch_t* specs,size_t count,VkCommandBuffer caller_cmd,
+    tvdb_gpu_resident_recording_t** out_recording,tvdb_error_t* err) {
     if(!ctx || (count && !specs) || count>1024)
         return resident_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid resident dispatch batch");
     if(!count) return TVDB_OK;
@@ -107,24 +129,28 @@ tvdb_status_t tvdb_gpu_dispatch_resident(tvdb_gpu_context_t* ctx,
     resident_dispatch_resources* r=calloc(count,sizeof(*r));
     if(!r) return resident_error(err,TVDB_ERROR_OUT_OF_MEMORY,"resident batch allocation failed");
     tvdb_status_t st=TVDB_OK;
-    VkCommandBuffer cmd=NULL; VkFence fence=0; VkCommandPool pool=0;
+    VkCommandBuffer cmd=caller_cmd; VkFence fence=0; VkCommandPool pool=0;
     int submitted=0, cuda_launched=0;
     CUmodule module=NULL;
     if(ctx->backend==TVDB_GPU_BACKEND_CUDA) {
         st=tvdb_cuda_get_module(ctx,&module,err);
         if(st!=TVDB_OK) goto done;
     } else {
-        st=tvdb_vk_drain_pending(ctx,err);
-        if(st!=TVDB_OK) goto done;
+        if(!caller_cmd) {
+            st=tvdb_vk_drain_pending(ctx,err);
+            if(st!=TVDB_OK) goto done;
+        }
         st=tvdb_vk_ensure_pools(ctx,err);
         if(st!=TVDB_OK) goto done;
-        pool=ctx->cmd_pool;
-        VkCommandBufferAllocateInfo ai; memset(&ai,0,sizeof(ai));
-        ai.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; ai.commandPool=pool;
-        ai.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount=1;
-        if(!tvdb_vk_ok(ctx->vk.AllocateCommandBuffers(ctx->device,&ai,&cmd),err,"resident command allocation")) {st=TVDB_ERROR_IO;goto done;}
-        VkCommandBufferBeginInfo bi;memset(&bi,0,sizeof(bi));bi.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        if(!tvdb_vk_ok(ctx->vk.BeginCommandBuffer(cmd,&bi),err,"resident begin")) {st=TVDB_ERROR_IO;goto done;}
+        if(!caller_cmd) {
+            pool=ctx->cmd_pool;
+            VkCommandBufferAllocateInfo ai; memset(&ai,0,sizeof(ai));
+            ai.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO; ai.commandPool=pool;
+            ai.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount=1;
+            if(!tvdb_vk_ok(ctx->vk.AllocateCommandBuffers(ctx->device,&ai,&cmd),err,"resident command allocation")) {st=TVDB_ERROR_IO;goto done;}
+            VkCommandBufferBeginInfo bi;memset(&bi,0,sizeof(bi));bi.sType=VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            if(!tvdb_vk_ok(ctx->vk.BeginCommandBuffer(cmd,&bi),err,"resident begin")) {st=TVDB_ERROR_IO;goto done;}
+        }
     }
     for(size_t j=0;j<count;++j) {
         const tvdb_gpu_resident_dispatch_t* s=&specs[j];
@@ -195,25 +221,39 @@ tvdb_status_t tvdb_gpu_dispatch_resident(tvdb_gpu_context_t* ctx,
         if(!tvdb_cuda_ok(ctx,err,"resident synchronize",ctx->cuda.cuCtxSynchronize())) st=TVDB_ERROR_IO;
         cuda_launched=0;
         ++ctx->resident_metrics.submissions;
+    } else if(caller_cmd) {
+        tvdb_gpu_resident_recording_t* recording=calloc(1,sizeof(*recording));
+        if(!recording) {st=resident_error(err,TVDB_ERROR_OUT_OF_MEMORY,"resident recording allocation failed");goto done;}
+        recording->ctx=ctx;recording->resources=r;recording->count=count;
+        *out_recording=recording;
+        return TVDB_OK;
     } else {
         if(!tvdb_vk_ok(ctx->vk.EndCommandBuffer(cmd),err,"resident end")) {st=TVDB_ERROR_IO;goto done;}
         VkFenceCreateInfo fi;memset(&fi,0,sizeof(fi));fi.sType=VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         if(!tvdb_vk_ok(ctx->vk.CreateFence(ctx->device,&fi,NULL,&fence),err,"resident fence")) {st=TVDB_ERROR_IO;goto done;}
         VkSubmitInfo si;memset(&si,0,sizeof(si));si.sType=VK_STRUCTURE_TYPE_SUBMIT_INFO;si.commandBufferCount=1;si.pCommandBuffers=&cmd;
-        if(!tvdb_vk_ok(ctx->vk.QueueSubmit(ctx->queue,1,&si,fence),err,"resident submit")) {st=TVDB_ERROR_IO;goto done;}
+        if(!tvdb_vk_ok(tvdb_vk_queue_submit(ctx,&si,fence),err,"resident submit")) {st=TVDB_ERROR_IO;goto done;}
         submitted=1; ++ctx->resident_metrics.submissions;
         if(!tvdb_vk_ok(ctx->vk.WaitForFences(ctx->device,1,&fence,VK_TRUE,UINT64_MAX),err,"resident wait")) st=TVDB_ERROR_IO;
     }
 done:
     if(cuda_launched) ctx->cuda.cuCtxSynchronize();
-    if(submitted && st!=TVDB_OK) ctx->vk.DeviceWaitIdle(ctx->device);
-    if(cmd) ctx->vk.FreeCommandBuffers(ctx->device,pool,1,&cmd);
+    if(submitted && st!=TVDB_OK) tvdb_vk_queue_wait_idle(ctx);
+    if(cmd && !caller_cmd) ctx->vk.FreeCommandBuffers(ctx->device,pool,1,&cmd);
     if(fence) ctx->vk.DestroyFence(ctx->device,fence,NULL);
-    for(size_t j=0;j<count;++j) {
-        if(r[j].set) ctx->vk.FreeDescriptorSets(ctx->device,ctx->desc_pool,1,&r[j].set);
-        for(int i=0;i<8;++i) tvdb_gpu_buffer_destroy(r[j].uniforms[i]);
-    }
-    free(r);return st;
+    resident_release_resources(ctx,r,count);return st;
+}
+tvdb_status_t tvdb_gpu_dispatch_resident(tvdb_gpu_context_t* ctx,
+    const tvdb_gpu_resident_dispatch_t* specs,size_t count,tvdb_error_t* err) {
+    return resident_dispatch_impl(ctx,specs,count,NULL,NULL,err);
+}
+tvdb_status_t tvdb_gpu_dispatch_resident_record(tvdb_gpu_context_t* ctx,void* command_buffer,
+    const tvdb_gpu_resident_dispatch_t* specs,size_t count,
+    tvdb_gpu_resident_recording_t** out,tvdb_error_t* err) {
+    if(out) *out=NULL;
+    if(!ctx || ctx->backend!=TVDB_GPU_BACKEND_VULKAN || !command_buffer || !out)
+        return resident_error(err,TVDB_ERROR_INVALID_ARGUMENT,"invalid resident recording arguments");
+    return resident_dispatch_impl(ctx,specs,count,(VkCommandBuffer)command_buffer,out,err);
 }
 static int resident_same(const tvdb_gpu_dense_grid_t* a,const tvdb_gpu_dense_grid_t* b) {
     return a && b && a->ctx==b->ctx && a->desc.nx==b->desc.nx && a->desc.ny==b->desc.ny && a->desc.nz==b->desc.nz &&

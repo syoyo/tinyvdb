@@ -4,6 +4,27 @@
 
 ### Added
 
+- `tvdb_gpu_dispatch_resident_record` records a resident Vulkan dispatch batch
+  into a caller-owned command buffer without submitting or waiting. Its returned
+  handle retains descriptors and copied uniforms until the caller has completed
+  the command buffer and destroys the handle. A GPU-gated regression
+  (`tests/test_gpu_resident_record.c`) covers recording and borrowed buffers on
+  real hardware.
+- `tvdb_gpu_buffer_wrap_vulkan` binds a caller-owned Vulkan storage buffer to
+  resident dispatch without taking ownership of the buffer or its memory.
+- `tvdb_gpu_context_create_vulkan_external` makes a Vulkan GPU context on an
+  instance, device and queue the caller already owns, described by
+  `tvdb_gpu_vulkan_device_t`. The context destroys only what it created: it
+  does not wait for the whole device to go idle and never destroys the device,
+  the instance or the loader. Features the caller enabled are stated in the
+  description, and a flag the physical device does not support is refused.
+  Queue submissions can go through `lock_queue` and `unlock_queue` so a host
+  that submits on the same queue can share its lock.
+- `tvdb_gpu_context_vulkan_device` returns the handles and enabled features of
+  a Vulkan context in that form, to run a second context on the same device
+  and for the tests. Its description has no queue lock callbacks and reports
+  derived sparse capabilities, so callers sharing a queue must supply their own
+  callbacks.
 - Sphere/mesh contact generation with manifold reduction:
   `tvdb_mesh_sphere_contacts_ex` (and its wrapper) in
   `src/tinyvdb_contact.{h,c}` emits a contact for every triangle within the
