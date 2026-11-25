@@ -114,8 +114,12 @@ tvdb_status_t tvdb_gpu_context_create_vulkan_external(const tvdb_gpu_vulkan_devi
 // The Vulkan handles and enabled features of a Vulkan context, in the form
 // tvdb_gpu_context_create_vulkan_external takes, with no queue lock set. For
 // running a second context on the same device, and for tests. The handles belong
-// to `ctx` and stay valid until it is destroyed. TVDB_ERROR_INVALID_ARGUMENT for
-// a non Vulkan context.
+// to `ctx` and stay valid until it is destroyed. The sparse flags are the
+// capabilities this context can use, not a verbatim copy of the flags used to
+// create the device. Queue lock callbacks are deliberately not returned: a
+// second context made from this description submits without locking, so a
+// caller that shares the queue must set its own callbacks.
+// TVDB_ERROR_INVALID_ARGUMENT for a non Vulkan context.
 tvdb_status_t tvdb_gpu_context_vulkan_device(const tvdb_gpu_context_t* ctx,
                                              tvdb_gpu_vulkan_device_t* out,
                                              tvdb_error_t* err);

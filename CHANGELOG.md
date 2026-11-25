@@ -7,7 +7,9 @@
 - `tvdb_gpu_dispatch_resident_record` records a resident Vulkan dispatch batch
   into a caller-owned command buffer without submitting or waiting. Its returned
   handle retains descriptors and copied uniforms until the caller has completed
-  the command buffer and destroys the handle.
+  the command buffer and destroys the handle. A GPU-gated regression
+  (`tests/test_gpu_resident_record.c`) covers recording and borrowed buffers on
+  real hardware.
 - `tvdb_gpu_buffer_wrap_vulkan` binds a caller-owned Vulkan storage buffer to
   resident dispatch without taking ownership of the buffer or its memory.
 - `tvdb_gpu_context_create_vulkan_external` makes a Vulkan GPU context on an
@@ -20,7 +22,76 @@
   that submits on the same queue can share its lock.
 - `tvdb_gpu_context_vulkan_device` returns the handles and enabled features of
   a Vulkan context in that form, to run a second context on the same device
-  and for the test `test_gpu_external_device`.
+  and for the tests. Its description has no queue lock callbacks and reports
+  derived sparse capabilities, so callers sharing a queue must supply their own
+  callbacks.
+- Sphere/mesh contact generation with manifold reduction:
+  `tvdb_mesh_sphere_contacts_ex` (and its wrapper) in
+  `src/tinyvdb_contact.{h,c}` emits a contact for every triangle within the
+  sphere radius, sorts by depth and reduces the manifold greedily by a merge
+  distance. `tests/test_contact.c` and the `check_contact.sh` C↔Lean gate cover
+  the geometry, reduction and failure contract.
+- Collision-proxy simplification: `tvdb_mesh_simplify_ex` (plus the
+  `tvdb_mesh_simplify` wrapper) in `src/tinyvdb_mesh_simplify.{h,c}` builds a
+  low-face-count triangle mesh from an input mesh by deterministic QEM-ranked
+  edge collapse. The ranking uses the accumulated squared plane distance at the
+  edge midpoint; the collapse target is the midpoint rather than the full QEM
+  optimum (documented deviation). Boundary edges and edges failing the link test
+  can be skipped, and the result is checked for closed, loop-free, duplicate-free
+  topology before being accepted. It follows the `_ex` contract (status+error,
+  output preserved on failure, arena rollback, alias rejection, deterministic
+  serial emission). `tests/test_mesh_simplify.c` checks the contract and the
+  `check_proxy.sh` C↔Lean gate compares the output `(V,F)` on nine cases.
+- Convex part decomposition: `tvdb_mesh_convex_decompose_ex` (plus the
+  `tvdb_mesh_convex_decompose` wrapper) in `src/tinyvdb_convex_decomp.{h,c}`
+  groups triangles by shared-vertex connectivity and emits one axis-aligned
+  box part per component, with per-vertex part labels. Parts are ordered by
+  lowest source vertex index and the output is deterministic. `tests/test_convex_decomp.c`
+  and the `check_convex_parts.sh` C↔Lean gate cover coverage and box/label parity.
+- The Lean physics track lands `Vdb/PhysMesh`, `Vdb/SdfMask`,
+  `Vdb/Segmentation`, `Vdb/GenusMeasure`, `Vdb/Cpt`, `Vdb/Qem`,
+  `Vdb/EdgeCollapse`, `Vdb/CollisionProxy`, and the executable twins
+  `Vdb/SdfPartsCheck`/`Vdb/CollisionProxyCheck`; gates `lean_diff_sdf_parts` and
+  `lean_diff_proxy` are registered under `TINYVDB_BUILD_LEAN_DIFF`.
+- A staged dense dual marching cubes API: `tvdb_sdf_to_mesh_dual_ex` (plus the
+  `tvdb_sdf_to_mesh_dual` wrapper) emits one dual vertex per crossed cell and
+  one quad per sign-changing primal edge into a new owning `tvdb_quad_mesh`
+  (`src/tinyvdb_mesh_dual.h`). This first slice is **DMC-0 / surface nets**, not
+  Nielson DMC-1: it has no per-cube MC patch decomposition, so its topology does
+  not match the Lean DMC-1 vectors yet. It follows the `_ex` contract (status +
+  error, output preserved on failure, arena rollback, alias rejection,
+  deterministic emission), counts in parallel and emits in a fixed raster
+  order. `tvdb_grid_volume_to_mesh_dual_ex` adds the sparse/tree variant with
+  the same contract, using the grid transform and an active-bbox + margin scan
+  (with a cell budget). It is still DMC-0, not Nielson DMC-1, and does not
+  reproduce the Lean DMC-1 index vectors. `tests/test_mesh_dual.c` and
+  `tests/test_mesh_dual_tree.c` check independent counts, watertightness,
+  outward winding, determinism across worker pools and failure preservation.
+  `tests/test_mesh_degenerate_sdf.c` adds mesh→SDF robustness coverage for
+  degenerate/collinear faces, large coordinates and failure preservation; the
+  double-precision closest-point fallback remains a documented limit of the
+  Lean differential twin. An internal cube-local MC patch decomposition helper
+  (`tvdb_dual_patch_compute`) and `tests/test_mesh_dual_patch.c` verify the
+  256-case patch facts. A staged dense DMC-1 API
+  (`tvdb_sdf_to_mesh_dual_one_ex`, `tvdb_sdf_to_mesh_dual_one`) now emits one
+  vertex per (cell, MC patch) and one quad per crossed primal edge. Vertex
+  placement minimises the QEF of the crossing planes (interpolated gradients,
+  Cramer solve, centroid fallback and in-cell clamp).
+  `tvdb_sdf_to_mesh_dual_one_padded_ex` (and its wrapper) adds a shell-pinned
+  outside voxel around the lattice, so watertightness no longer requires the
+  crossing surface to be strictly interior; the CTest regression shows an
+  open 2,352-quad mesh becoming a closed 2,688-quad mesh on a boundary-touching
+  sphere. `tvdb_grid_volume_to_mesh_dual_one_ex` (and its wrapper) adds the
+  sparse/tree DMC-1 variant with index-space QEF placement and unconditional
+  shell pinning; `tests/test_mesh_dual_tree_one.c` checks counts, watertightness
+  (interior and boundary-touching spheres), determinism and the `_ex` contract.
+  A C↔Lean DMC-1 topology differential (`lean/scripts/check_dmc1_topology.sh`)
+  compares crossed-edge count, vertex count, quad count, component count,
+  directed-edge closure and χ on all 256 shell-pinned fields; vertex indices,
+  positions and patch ids are deliberately not compared.
+  `tests/test_mesh_dual_one.c`
+  checks counts, watertightness, winding and determinism on four analytic
+  fields. The original DMC-0 functions are byte-identical.
 
 ### Changed
 
@@ -107,6 +178,11 @@
   one voxel apart (25 versus 26 in x for the `test_merge` case), which failed
   `test_gpu_backend` under clang. Numeric results of clang builds now match
   GCC's. Explicit FMA intrinsics are unchanged.
+- The WASM module (`web/tinyvdb_embind.cc` via `web/CMakeLists.txt`) now builds
+  with `CMAKE_CXX_STANDARD 17` instead of 11. Emscripten 5.x rejects C++11 for
+  embind; 4.x (the CI pin) accepts C++17 too, so the bump is compatible both
+  ways. The local Emscripten 5.0.1 build passes the Node smoke test
+  (`web/test_wasm_smoke.js`, 183/183 checks).
 
 ## 0.9.1 — 2026-10-28
 

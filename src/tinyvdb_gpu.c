@@ -12831,7 +12831,7 @@ size_t tvdb_gpu_buffer_size(const tvdb_gpu_buffer_t* buf) { return buf ? buf->si
 uint64_t tvdb_gpu_buffer_native_handle(const tvdb_gpu_buffer_t* buf) {
   if (!buf) return 0;
   if (buf->backend == TVDB_GPU_BACKEND_CUDA) return (uint64_t)buf->cu;
-  return (uint64_t)buf->vk.buffer;
+  return (uint64_t)(uintptr_t)buf->vk.buffer;
 }
 
 // ---- cross-API external-memory interop (Vulkan export -> CUDA import) --------
