@@ -6,7 +6,19 @@
 # voxel_size=0.25, max_iters=10, tol=1e-6, and compares the FINAL grids
 # voxel by voxel: exact sign identity and |diff| <= 1e-5 * h.
 set -euo pipefail
+
+# CTest maps 77 to "skipped", not passed. Skip cleanly if the Lean
+# toolchain is absent; a real build/check failure still exits non-77.
+if ! command -v lake >/dev/null 2>&1; then
+  echo "SKIP: Lean toolchain (lake) is not available"
+  exit 77
+fi
 here=$(cd "$(dirname "$0")/.." && pwd)
+
+# The package pins its Lean toolchain in lean/lean-toolchain. CTest invokes
+# these scripts from the build directory, where elan would otherwise select
+# the ambient toolchain (possibly incompatible with the pinned mathlib).
+export ELAN_TOOLCHAIN="$(cat "$here/lean-toolchain")"
 root=$(cd "$here/.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/fastsweep.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT

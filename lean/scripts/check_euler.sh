@@ -7,7 +7,19 @@
 # the Lean exe prints chi(solid) directly with Vdb.chiOf. Every case must
 # satisfy c == 2 * lean.
 set -euo pipefail
+
+# CTest maps 77 to "skipped", not passed. Skip cleanly if the Lean
+# toolchain is absent; a real build/check failure still exits non-77.
+if ! command -v lake >/dev/null 2>&1; then
+  echo "SKIP: Lean toolchain (lake) is not available"
+  exit 77
+fi
 here=$(cd "$(dirname "$0")/.." && pwd)
+
+# The package pins its Lean toolchain in lean/lean-toolchain. CTest invokes
+# these scripts from the build directory, where elan would otherwise select
+# the ambient toolchain (possibly incompatible with the pinned mathlib).
+export ELAN_TOOLCHAIN="$(cat "$here/lean-toolchain")"
 root=$(cd "$here/.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/eulercheck.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT

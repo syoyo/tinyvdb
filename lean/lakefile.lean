@@ -16,7 +16,7 @@ import Lake
 open Lake DSL
 
 require mathlib from git
-  "https://github.com/leanprover-community/mathlib4.git" @ "v4.35.0"
+  "https://github.com/leanprover-community/mathlib4.git" @ "v4.36.0"
 
 package vdbSpec where
   -- Formalization artifact; proofs must stay sorry-free.
@@ -65,9 +65,79 @@ lean_exe csgcheck where
 lean_exe meshsdfcheck where
   root := `Vdb.MeshSdfCheck
 
+/-- Model-side dense mesh→SDF BVH differential twin (driven by
+    `scripts/check_meshsdf_bvh.sh`). -/
+lean_exe meshsdfbvhcheck where
+  root := `Vdb.MeshSdfBvhCheck
+
+/-- Model-side dense marching-cubes topology twin (driven by
+    `scripts/check_mc_topology.sh`). -/
+lean_exe mctopocheck where
+  root := `Vdb.McTopologyCheck
+
+/-- Model-side Float32 BVH tie-explanation twin (driven by
+    `scripts/check_meshsdf_bvh_ties.sh`). -/
+lean_exe meshsdfbvhtiecheck where
+  root := `Vdb.MeshSdfBvhTieCheck
+
+/-- Model-side mesh→SDF double-fallback/RNE twin (driven by
+    `scripts/check_meshsdf_double.sh`). -/
+lean_exe meshsdfdoublecheck where
+  root := `Vdb.MeshSdfDoubleCheck
+
+/-- Model-side sparse/tree marching-cubes topology twin (driven by
+    `scripts/check_mc_sparse_topology.sh`). -/
+lean_exe mcsparsetopocheck where
+  root := `Vdb.McSparseTopologyCheck
+
+/-- Model-side DMC-1 topology differential twin (driven by
+    `scripts/check_dmc1_topology.sh`). -/
+lean_exe dmc1topocheck where
+  root := `Vdb.Dmc1TopologyCheck
+
 /-- Model-side winding-number executable check (driven by `scripts/check_winding.sh`). -/
 lean_exe windingcheck where
   root := `Vdb.WindingCheck
+
+/-- Model-side MC-adaptivity Float-floor/int64-key twin (driven by
+    `scripts/check_mc_adapt.sh`). -/
+lean_exe mckeycheck where
+  root := `Vdb.McAdaptKey
+
+/-- Model-side convex-hull twin (driven by `scripts/check_convex_hull.sh`). -/
+lean_exe convexhullcheck where
+  root := `Vdb.ConvexHullCheck
+
+/-- Model-side collision-pipeline twin (driven by `scripts/check_collision_pipeline.sh`). -/
+lean_exe collisioncheck where
+  root := `Vdb.CollisionPipelineCheck
+
+/-- Model-side SDF ray-crossing twin (driven by `scripts/check_ray_sdf.sh`). -/
+lean_exe raysdfcheck where
+  root := `Vdb.RaySdfCheck
+
+/-- Model-side ray-DDA twin (driven by `scripts/check_ray_dda.sh`). -/
+lean_exe rayddacheck where
+  root := `Vdb.RayDdaCheck
+
+/-- Model-side sphere/mesh contact twin (driven by `scripts/check_contact.sh`). -/
+lean_exe contactcheck where
+  root := `Vdb.ContactCheck
+
+/-- Model-side convex-part decomposition twin (driven by
+    `scripts/check_convex_parts.sh`). -/
+lean_exe convexcheck where
+  root := `Vdb.ConvexDecompCheck
+
+/-- Model-side collision-proxy differential twin (driven by
+    `scripts/check_proxy.sh`). -/
+lean_exe proxycheck where
+  root := `Vdb.CollisionProxyCheck
+
+/-- Model-side SDF part/cavity differential twin (driven by
+    `scripts/check_sdf_parts.sh`). -/
+lean_exe sdfpartcheck where
+  root := `Vdb.SdfPartsCheck
 
 /-- Seeded well-formed `.vdb` generator (differential harness, model half). -/
 lean_exe vdbgen where

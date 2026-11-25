@@ -56,3 +56,34 @@ import Vdb.McTable
 import Vdb.TreeSweep
 import Vdb.PadGrid
 import Vdb.PadGridBoundary
+import Vdb.PhysMesh
+import Vdb.SdfMask
+import Vdb.Segmentation
+-- `Vdb.GenusMeasure` is deliberately not imported here: it depends on
+-- `Vdb.Euler`, whose `Vdb.C3` name collides with `Vdb.CubeGrid.C3` (both are in
+-- the root import). Like `Vdb.Euler` itself it is built by the `Vdb.+` glob but
+-- stays a standalone module.
+import Vdb.Cpt
+import Vdb.Qem
+import Vdb.EdgeCollapse
+import Vdb.CollisionProxy
+import Vdb.Convex
+import Vdb.ConvexDecomp
+import Vdb.ConvexHull
+import Vdb.Contact
+import Vdb.Manifold
+import Vdb.RayDda
+import Vdb.RaySdf
+import Vdb.TetStuffing
+import Vdb.NarrowPhase
+import Vdb.PersistentManifold
+import Vdb.AngleNFaceRatBounded
+import Vdb.AngleNFaceFanData
+import Vdb.FastSweep1D
+import Vdb.DiscreteComparison
+import Vdb.EikonalMaxStep
+import Vdb.EikonalRankStepBounded
+import Vdb.StaircaseReflectionBounded
+import Vdb.StaircaseConsistency
+-- Vdb.CubicalChainsBounded is standalone: Vdb.Euler.C3 collides with Vdb.CubeGrid.C3
+-- Vdb.EulerDisjointBounded is standalone: Vdb.Euler.C3 collides with Vdb.CubeGrid.C3

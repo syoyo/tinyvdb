@@ -64,10 +64,10 @@ def atan2' (y x : ℝ) : ℝ :=
 theorem atan2'_neg_y (y : ℝ) (x : ℝ) (hy : y ≠ 0) : atan2' (-y) x = -atan2' y x := by
   rcases lt_trichotomy y 0 with hy' | hy' | hy'
   · simp only [atan2']
-    split_ifs <;> simp_all [Real.arctan_neg, neg_div] <;> try linarith
+    split_ifs <;> simp_all [Real.arctan_neg, neg_div] <;> linarith
   · exact absurd hy' hy
   · simp only [atan2']
-    split_ifs <;> simp_all [Real.arctan_neg, neg_div] <;> try linarith
+    split_ifs <;> simp_all [Real.arctan_neg, neg_div] <;> linarith
 
 /-! ### 3-vectors and the scalar triple product -/
 

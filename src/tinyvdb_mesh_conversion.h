@@ -12,8 +12,11 @@ typedef struct {
 /* Reusable closest-triangle acceleration. Borrows the mesh and its arrays;
  * keep their pointers, counts and geometry fixed until destroy. Concurrent
  * generation into distinct outputs is supported with a shared borrowed pool.
- * Sign uses the closest face normal; this is not a watertight inside test for
- * open/inconsistently oriented meshes. Degenerate faces have zero normals. */
+ * Sign uses the closest feature: the face normal in a face interior, the summed
+ * normals of the two incident faces on an edge, and on a vertex the incident
+ * face whose normal pairs positively with the offset to the query point. This
+ * is not a watertight inside test for open/inconsistently oriented meshes.
+ * Degenerate faces have zero normals. */
 tvdb_status_t tvdb_mesh_sdf_create(const tvdb_triangle_mesh *mesh, tvdb_mesh_sdf_t **out,
                                    tvdb_error_t *err);
 void tvdb_mesh_sdf_destroy(tvdb_mesh_sdf_t *workspace);
